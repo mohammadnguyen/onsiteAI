@@ -13,7 +13,7 @@ import os
 # is loaded, so we set defaults here before the ``app.main`` import below.
 os.environ.setdefault(
     "DATABASE_URL",
-    "postgresql+asyncpg://sitetracker:sitetracker@localhost:5432/sitetracker_test",
+    "postgresql+asyncpg://sitetracker:sitetracker@localhost:5433/sitetracker_test",
 )
 os.environ.setdefault("JWT_SECRET", "test-secret")
 

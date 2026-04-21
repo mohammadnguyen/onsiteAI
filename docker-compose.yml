@@ -10,7 +10,10 @@ services:
       POSTGRES_PASSWORD: sitetracker
       POSTGRES_DB: sitetracker
     ports:
-      - "5432:5432"
+      # Host port 5433 → container 5432 to avoid clash with any native
+      # Postgres install on the Windows host. The backend compose service
+      # talks to the container over the internal network on 5432 regardless.
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
