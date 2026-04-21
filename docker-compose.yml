@@ -1,0 +1,38 @@
+# SiteTracker V1 — local development stack.
+# Compose v2 format (no `version:` key).
+
+services:
+  db:
+    image: postgres:16
+    container_name: sitetracker-db
+    environment:
+      POSTGRES_USER: sitetracker
+      POSTGRES_PASSWORD: sitetracker
+      POSTGRES_DB: sitetracker
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sitetracker"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Placeholder — the backend image and runtime config are defined in a later
+  # Phase 1 task once backend/Dockerfile exists. Left commented so `docker
+  # compose up -d db` works cleanly in the meantime.
+  #
+  # backend:
+  #   build: ./backend
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+  #   environment:
+  #     DATABASE_URL: postgresql+asyncpg://sitetracker:sitetracker@db:5432/sitetracker
+  #   ports:
+  #     - "8000:8000"
+
+volumes:
+  pgdata:

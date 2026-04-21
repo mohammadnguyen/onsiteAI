@@ -1,0 +1,32 @@
+# SiteTracker V1 — pre-commit config.
+#
+# NOT YET ACTIVATED. A later tooling task installs and runs these hooks.
+# This file just pins the configuration so everyone sees the same tools once
+# activation happens.
+#
+# When activated:
+#   pip install pre-commit  (or `uv tool install pre-commit`)
+#   pre-commit install
+
+repos:
+  # Python — ruff lint + format, scoped to the backend tree.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        name: ruff (lint) — backend
+        args: ["--fix"]
+        files: ^backend/.*\.py$
+      - id: ruff-format
+        name: ruff (format) — backend
+        files: ^backend/.*\.py$
+
+  # Prettier — JS/TS/JSON/YAML/Markdown. Scoped to everything EXCEPT backend,
+  # so Python files never round-trip through prettier.
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v3.1.0
+    hooks:
+      - id: prettier
+        name: prettier — mobile/admin/docs/root
+        types_or: [javascript, jsx, ts, tsx, json, yaml, markdown, css, html]
+        exclude: ^backend/

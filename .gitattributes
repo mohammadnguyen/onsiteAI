@@ -1,0 +1,54 @@
+# Normalize line endings across platforms — store LF in the repo.
+* text=auto eol=lf
+
+# Explicit text files
+*.py      text eol=lf
+*.ts      text eol=lf
+*.tsx     text eol=lf
+*.js      text eol=lf
+*.jsx     text eol=lf
+*.json    text eol=lf
+*.md      text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.toml    text eol=lf
+*.ini     text eol=lf
+*.sh      text eol=lf
+*.html    text eol=lf
+*.css     text eol=lf
+*.svg     text eol=lf
+
+# Windows-only scripts keep CRLF
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+*.ps1     text eol=crlf
+
+# Binary assets — never munge
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.webp    binary
+*.pdf     binary
+*.zip     binary
+*.gz      binary
+*.tar     binary
+*.ttf     binary
+*.otf     binary
+*.woff    binary
+*.woff2   binary
+*.eot     binary
+*.mp4     binary
+*.mov     binary
+*.mp3     binary
+*.wav     binary
+*.xlsx    binary
+*.xls     binary
+*.docx    binary
+
+# Lock files — treat as generated for diff legibility
+package-lock.json  text eol=lf linguist-generated=true
+pnpm-lock.yaml     text eol=lf linguist-generated=true
+yarn.lock          text eol=lf linguist-generated=true
+uv.lock            text eol=lf linguist-generated=true
