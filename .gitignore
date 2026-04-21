@@ -18,7 +18,6 @@ coverage.xml
 *.egg-info/
 .eggs/
 build/
-dist/
 pip-log.txt
 pip-delete-this-directory.txt
 alembic/versions/*.pyc
@@ -41,7 +40,6 @@ out/
 .svelte-kit/
 .vite/
 .rollup.cache/
-.tsbuildinfo
 *.tsbuildinfo
 
 # ---------- Vite / React / Admin ----------

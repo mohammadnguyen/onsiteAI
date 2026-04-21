@@ -50,7 +50,7 @@ Examples (from the original brief):
 
 | Input                             | Parsed                                                                  |
 | --------------------------------- | ----------------------------------------------------------------------- |
-| `$305 Bunnings Kelly bluemetal`   | $305, supplier Bunnings, job "Kelly", category Landscaping/Earthworks.  |
+| `$305 Bunnings Kelly bluemetal`   | $305, supplier Bunnings, job "Kelly", category Earthworks.              |
 | `工地1 水工材料 163`               | ¥163 (or $163 local), job alias "工地1", category Plumbing, note 水工材料. |
 
 Captures are always attributed to the signed-in user and time-stamped.
