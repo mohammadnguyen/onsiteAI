@@ -28,6 +28,13 @@ Node 20+, and the Expo Go app (for mobile dev).
 docker compose up -d db
 ```
 
+Postgres is exposed on **host port `5433`** (container port stays 5432) to avoid
+clashing with a native Postgres install, which is common on Windows dev
+machines. All configuration defaults — `backend/.env.example`,
+`backend/tests/conftest.py` — already use 5433. Inside the compose network, the
+backend service still talks to the DB as `db:5432`; only host-side tooling
+(`uv run alembic …`, host-run pytest) uses 5433.
+
 ### 2. Backend (FastAPI)
 
 ```bash
