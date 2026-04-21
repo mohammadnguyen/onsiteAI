@@ -1,0 +1,54 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "SiteTracker backend — internal cost control API for small residential builders."
+authors = [
+    { name = "SiteTracker Dev", email = "sitetracker-dev@local" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.18.4",
+    "asyncpg>=0.31.0",
+    "fastapi>=0.136.0",
+    "passlib[bcrypt]>=1.7.4",
+    "pydantic>=2",
+    "pydantic-settings>=2.14.0",
+    "pyjwt[crypto]>=2.12.1",
+    "python-multipart>=0.0.26",
+    "sqlalchemy[asyncio]>=2.0",
+    "uvicorn[standard]>=0.45.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.2,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "app"
+module-root = ""
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[dependency-groups]
+dev = [
+    "black>=26.3.1",
+    "httpx>=0.28.1",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.11",
+]

@@ -20,19 +20,26 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Placeholder — the backend image and runtime config are defined in a later
-  # Phase 1 task once backend/Dockerfile exists. Left commented so `docker
-  # compose up -d db` works cleanly in the meantime.
-  #
-  # backend:
-  #   build: ./backend
-  #   depends_on:
-  #     db:
-  #       condition: service_healthy
-  #   environment:
-  #     DATABASE_URL: postgresql+asyncpg://sitetracker:sitetracker@db:5432/sitetracker
-  #   ports:
-  #     - "8000:8000"
+  backend:
+    build: ./backend
+    container_name: sitetracker-backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://sitetracker:sitetracker@db:5432/sitetracker
+      JWT_SECRET: change-me-in-prod
+      ENVIRONMENT: development
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount source for hot reload. The anonymous volume on /app/.venv
+      # preserves the container-installed venv (Linux wheels) so the host's
+      # Windows venv doesn't shadow it.
+      - ./backend:/app
+      - /app/.venv
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    restart: unless-stopped
 
 volumes:
   pgdata:
