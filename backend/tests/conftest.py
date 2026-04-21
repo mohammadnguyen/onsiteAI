@@ -21,9 +21,7 @@ os.environ.setdefault(
     "postgresql+asyncpg://sitetracker:sitetracker@localhost:5433/sitetracker_test",
 )
 # 32+ bytes silences pyjwt's InsecureKeyLengthWarning (HMAC-SHA256 wants >= 32).
-os.environ.setdefault(
-    "JWT_SECRET", "test-secret-for-sitetracker-phase1-never-production"
-)
+os.environ.setdefault("JWT_SECRET", "test-secret-for-sitetracker-phase1-never-production")
 
 import uuid  # noqa: E402
 
@@ -131,3 +129,38 @@ async def admin_token(seeded_admin) -> str:
 async def admin_refresh_token(seeded_admin) -> str:
     """Signed refresh token for the seeded admin."""
     return create_refresh_token({"sub": str(seeded_admin.user_id)})
+
+
+@pytest_asyncio.fixture
+async def seeded_contributor(db_session) -> User:
+    """Insert a contributor user into the current (rolled-back) transaction.
+
+    Used by RBAC tests (Task 6 onward) to assert that non-admin callers
+    get a 403 on admin-only routes.
+    """
+    user = User(
+        user_id=uuid.uuid4(),
+        full_name="Seed Contributor",
+        email="contributor@example.com",
+        password_hash=hash_password("contributor"),
+        role=UserRole.contributor,
+        language_preference=LanguageCode.en,
+        is_active=True,
+    )
+    db_session.add(user)
+    await db_session.flush()
+    return user
+
+
+@pytest_asyncio.fixture
+async def contributor_token(seeded_contributor) -> str:
+    """Signed access token for the seeded contributor."""
+    return create_access_token({"sub": str(seeded_contributor.user_id)})
+
+
+@pytest_asyncio.fixture
+async def seed_categories(db_session):
+    """Populate the 23 builder categories within the current transaction."""
+    from app.core.seed import seed_builder_categories
+
+    return await seed_builder_categories(db_session)

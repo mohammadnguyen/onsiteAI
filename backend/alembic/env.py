@@ -1,4 +1,5 @@
 """Alembic async migration environment."""
+
 from __future__ import annotations
 
 import asyncio
@@ -12,11 +13,11 @@ from alembic import context
 
 from app.config import get_settings
 from app.models.base import Base
-from app.models import user  # noqa: F401  # ensure User metadata is registered
+from app.models import category, user  # noqa: F401  # ensure metadata is registered
 
-# NOTE: As new model modules are added (jobs, categories in later
-# tasks), import them here so Alembic autogenerate sees their metadata.
-# e.g. from app.models import job, category  # noqa: F401
+# NOTE: As new model modules are added (jobs in later tasks),
+# import them here so Alembic autogenerate sees their metadata.
+# e.g. from app.models import job  # noqa: F401
 
 config = context.config
 
