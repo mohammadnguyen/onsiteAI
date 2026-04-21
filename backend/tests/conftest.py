@@ -1,10 +1,13 @@
-"""Test fixtures for Phase 1 Task 1.
+"""Shared pytest fixtures for the backend test suite.
 
-Minimal harness: the only test so far (``test_health.py``) doesn't touch the
-database, so we only need an in-process HTTPX client wired to the ASGI app.
+A DB-backed fixture stack is introduced here for Task 3 (User model). Each
+test function gets an :class:`AsyncSession` bound to a transaction that is
+rolled back at teardown, so tests don't leak state. The schema is built
+directly from SQLAlchemy metadata against the ``sitetracker_test`` database
+(faster than Alembic for test bootstrap; migrations are still exercised
+separately in the upgrade/downgrade workflow).
 
-A DB-backed fixture (disposable schema, factory-boy, seeded admin) lands with
-Task 5's conftest expansion — not needed yet.
+The seeded admin-user fixture arrives with Task 5.
 """
 
 import os
@@ -19,8 +22,13 @@ os.environ.setdefault("JWT_SECRET", "test-secret")
 
 import pytest_asyncio  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine  # noqa: E402
 
 from app.main import app  # noqa: E402
+from app.models.base import Base  # noqa: E402
+from app.models import user as _user_model  # noqa: E402, F401  # register User metadata
+
+TEST_DB_URL = "postgresql+asyncpg://sitetracker:sitetracker@localhost:5433/sitetracker_test"
 
 
 @pytest_asyncio.fixture
@@ -29,3 +37,33 @@ async def client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
         yield ac
+
+
+@pytest_asyncio.fixture(scope="session")
+async def _test_engine():
+    """Session-scoped async engine for the dedicated ``sitetracker_test`` DB.
+
+    The test database must already exist (created once per fresh Docker
+    volume via ``CREATE DATABASE sitetracker_test OWNER sitetracker``). On
+    first use of this fixture, all tables are dropped and re-created from
+    :attr:`Base.metadata` so the schema always matches the current models.
+    """
+    engine = create_async_engine(TEST_DB_URL, future=True)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    yield engine
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def db_session(_test_engine):
+    """Yield an ``AsyncSession`` wrapped in a transaction rolled back on teardown."""
+    async with _test_engine.connect() as conn:
+        trans = await conn.begin()
+        session = AsyncSession(bind=conn, expire_on_commit=False)
+        try:
+            yield session
+        finally:
+            await session.close()
+            await trans.rollback()

@@ -29,6 +29,12 @@ module-root = ""
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Session-scoped loop so that a session-scoped async engine fixture (see
+# tests/conftest.py::_test_engine) uses the same event loop as individual
+# function-scoped tests. Without this, asyncpg raises "attached to a
+# different loop" when a test reuses a pooled connection from the engine.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 pythonpath = ["."]
 
