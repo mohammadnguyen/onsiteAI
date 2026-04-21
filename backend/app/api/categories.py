@@ -64,10 +64,9 @@ async def create_category(
     db: AsyncSession = Depends(get_db),
 ) -> Category:
     """Create a category (admin only)."""
-    # Check for a duplicate name up-front; we can't rely on the DB's
-    # UNIQUE-constraint error surfacing cleanly because this session is
-    # wrapped in an outer SAVEPOINT by the test harness and a failed
-    # INSERT poisons the transaction.
+    # Pre-check by name so we return a clean 409 and avoid poisoning the
+    # outer test SAVEPOINT with a failed INSERT. The DB's UNIQUE constraint
+    # on `category_name` remains the backstop for the race window.
     existing = (
         await db.execute(select(Category).where(Category.category_name == body.category_name))
     ).scalar_one_or_none()
