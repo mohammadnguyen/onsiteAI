@@ -24,9 +24,10 @@ def get_engine() -> AsyncEngine:
     """Return the process-wide async engine, creating it on first use."""
     global _engine
     if _engine is None:
+        settings = get_settings()
         _engine = create_async_engine(
-            get_settings().database_url,
-            echo=False,
+            settings.database_url,
+            echo=(settings.environment == "development"),
             future=True,
         )
     return _engine
@@ -36,6 +37,10 @@ def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
     """Return the process-wide async sessionmaker, creating it on first use."""
     global _sessionmaker
     if _sessionmaker is None:
+        # expire_on_commit=False prevents SQLAlchemy from re-issuing SELECTs on
+        # attribute access after a commit, which would trigger IO on detached
+        # instances outside the request-scoped session. Standard choice for
+        # async FastAPI apps.
         _sessionmaker = async_sessionmaker(
             get_engine(),
             expire_on_commit=False,

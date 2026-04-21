@@ -19,4 +19,12 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8000
 
+# This image is built --no-dev for prod size; pytest/ruff/black are NOT
+# available inside the container. Run tests on the host via `uv run pytest`.
+# The dev compose flow uses bind-mounted source + --reload; the built image is
+# only used when compose rebuilds the service from scratch.
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request,sys;urllib.request.urlopen('http://localhost:8000/healthz',timeout=2).read();sys.exit(0)" || exit 1
+
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
