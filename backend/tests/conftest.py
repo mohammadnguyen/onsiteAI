@@ -20,7 +20,10 @@ os.environ.setdefault(
     "DATABASE_URL",
     "postgresql+asyncpg://sitetracker:sitetracker@localhost:5433/sitetracker_test",
 )
-os.environ.setdefault("JWT_SECRET", "test-secret")
+# 32+ bytes silences pyjwt's InsecureKeyLengthWarning (HMAC-SHA256 wants >= 32).
+os.environ.setdefault(
+    "JWT_SECRET", "test-secret-for-sitetracker-phase1-never-production"
+)
 
 import uuid  # noqa: E402
 
