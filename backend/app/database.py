@@ -50,6 +50,20 @@ def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
 
 
 async def get_db() -> AsyncIterator[AsyncSession]:
-    """FastAPI dependency that yields an ``AsyncSession`` per request."""
+    """FastAPI dependency that yields an ``AsyncSession`` per request.
+
+    Commits the session when the handler returns normally, and rolls back if
+    the handler raises. Keeping the commit here (rather than in every
+    handler) keeps the write semantics consistent across endpoints and
+    matches the FastAPI-SQLAlchemy idiom. Tests replace this dependency via
+    ``app.dependency_overrides[get_db]`` so the commit here never runs
+    against the test database — test writes stay inside the fixture's
+    rollback-on-teardown transaction.
+    """
     async with get_sessionmaker()() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
