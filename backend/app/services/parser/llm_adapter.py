@@ -16,16 +16,49 @@ that returns the rules-derived partial unchanged. No network calls, no
 interface; the orchestrator and everything above it will not need to
 change.
 
-Contract
---------
-A real (non-mock) implementation of :meth:`LLMParser.parse` MUST NOT
-mutate ``rules_partial`` in place. It returns either the same object
-(when it has nothing to add) or a new :class:`ParsePartial` whose
-:attr:`ParsePartial.source_per_field` has been updated to ``"llm"``
-for every field the LLM overwrote. Fields the LLM does not touch keep
-their ``"rules"`` provenance. The orchestrator relies on
-``source_per_field`` for downstream diagnostics and audit entries, so
-skipping this bookkeeping is a correctness bug, not a style issue.
+Parser mutation contract (FROZEN before Batch 2)
+-------------------------------------------------
+The rules of engagement for every piece of the Phase 2 parser:
+
+1. **Stage functions are pure.** ``tokenize``, ``extract_amount``,
+   ``match_job``, ``match_supplier``, ``match_category``,
+   ``extract_payment_method``, ``detect_duplicate``, and
+   ``derive_review_reasons`` each take their own inputs and return a
+   narrow, stage-specific result object (e.g. ``AmountMatch``,
+   ``JobMatch``). They do NOT take or return a :class:`ParsePartial`.
+
+2. **The orchestrator is the sole constructor of ParsePartial.** It
+   calls each stage, collects the narrow results, and builds exactly
+   one :class:`ParsePartial` from them. ``source_per_field`` is
+   populated with ``"rules"`` for every field filled from a stage
+   result at construction time.
+
+3. **ParsePartial is treated as immutable once the orchestrator
+   returns it from the rules pass.** No stage — not the orchestrator,
+   not the LLM adapter — may mutate a ``ParsePartial`` in place. To
+   produce an updated partial, construct a new one via
+   ``dataclasses.replace(partial, field=new_value, ...)``.
+
+4. **LLMParser.parse(raw_text, rules_partial) -> ParsePartial** MUST
+   NOT mutate the input. Allowed returns:
+     - the same object, unchanged (identity-preserved) — MockLLMParser
+       does this and it is the Phase 2 behaviour
+     - a new :class:`ParsePartial` built via ``dataclasses.replace``
+       with updated field values AND updated ``source_per_field``
+       entries (``"llm"`` for every overwritten field) — this is
+       what Phase 2.5's ClaudeLLMParser will do
+   Mutating ``rules_partial`` in place is a correctness bug.
+
+5. The orchestrator may itself call ``dataclasses.replace`` on the
+   ParsePartial it built — e.g. when duplicate detection fires after
+   the main stages and needs to set ``duplicate_flag`` and
+   ``duplicate_of_expense_id``. Treating this as "constructing the
+   next partial" rather than "mutating the previous" keeps the
+   contract symmetrical.
+
+This contract is why stage result types are narrow dataclasses (see
+each stage module): they force the orchestrator to do the assembly
+and keep stages independently testable.
 """
 
 from __future__ import annotations
@@ -93,11 +126,16 @@ class LLMParser(abc.ABC):
 class MockLLMParser(LLMParser):
     """Deterministic no-op. Phase 2 ships only this.
 
-    Returns rules_partial unchanged (same object — callers treat the
-    result as immutable for diagnostic purposes). source_per_field is
-    not mutated; all fields remain "rules".
+    Returns the same ``rules_partial`` object unchanged. Because no
+    fields are overwritten, ``source_per_field`` remains entirely
+    ``"rules"`` and no bookkeeping is needed. Identity preservation
+    (``result is rules_partial``) is an intentional, documented
+    property — tests assert on it to pin the no-op behaviour.
 
-    Phase 2.5 will add ClaudeLLMParser wired behind this same interface.
+    Phase 2.5 adds ``ClaudeLLMParser`` behind the same interface; it
+    will construct new ``ParsePartial`` instances via
+    ``dataclasses.replace`` rather than mutating the input. See the
+    module docstring for the full contract.
     """
 
     async def parse(self, raw_text: str, rules_partial: ParsePartial) -> ParsePartial:
