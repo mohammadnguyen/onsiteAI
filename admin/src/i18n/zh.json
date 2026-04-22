@@ -1,0 +1,65 @@
+{
+  "login": {
+    "title": "SiteTracker 管理员登录",
+    "email": "邮箱",
+    "password": "密码",
+    "submit": "登录"
+  },
+  "nav": {
+    "jobs": "项目",
+    "users": "用户",
+    "logout": "退出登录"
+  },
+  "jobs": {
+    "title": "项目",
+    "new": "新建项目",
+    "none": "暂无项目。",
+    "job_name": "项目名称",
+    "job_code": "项目编号",
+    "site_address": "工地地址",
+    "contract_value": "合同金额(不含GST)",
+    "total_budget": "总预算(不含GST)",
+    "status": "状态",
+    "status_active": "进行中",
+    "status_completed": "已完成"
+  },
+  "job": {
+    "back": "返回项目列表",
+    "aliases": "别名",
+    "add_alias": "添加别名",
+    "alias_text": "别名",
+    "language": "语言",
+    "budgets": "类别预算",
+    "add_budget": "添加预算",
+    "category": "类别",
+    "amount": "预算金额(不含GST)",
+    "no_aliases": "暂无别名。",
+    "no_budgets": "暂无预算。"
+  },
+  "users": {
+    "title": "用户",
+    "invite": "邀请用户",
+    "email": "邮箱",
+    "role": "角色",
+    "name": "姓名",
+    "initial_password": "初始密码",
+    "language_preference": "语言偏好",
+    "active": "已激活",
+    "deactivate": "停用",
+    "role_admin": "管理员",
+    "role_contributor": "贡献者",
+    "confirm_deactivate": "确认停用此用户?"
+  },
+  "common": {
+    "save": "保存",
+    "cancel": "取消",
+    "close": "关闭",
+    "loading": "加载中...",
+    "error": "发生错误"
+  },
+  "lang": {
+    "label": "语言",
+    "english": "英文",
+    "chinese": "中文"
+  }
+}

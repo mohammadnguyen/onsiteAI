@@ -1,0 +1,65 @@
+{
+  "login": {
+    "title": "SiteTracker Admin Login",
+    "email": "Email",
+    "password": "Password",
+    "submit": "Sign in"
+  },
+  "nav": {
+    "jobs": "Jobs",
+    "users": "Users",
+    "logout": "Log out"
+  },
+  "jobs": {
+    "title": "Jobs",
+    "new": "New Job",
+    "none": "No jobs yet.",
+    "job_name": "Job name",
+    "job_code": "Job code",
+    "site_address": "Site address",
+    "contract_value": "Contract value (ex GST)",
+    "total_budget": "Total budget (ex GST)",
+    "status": "Status",
+    "status_active": "Active",
+    "status_completed": "Completed"
+  },
+  "job": {
+    "back": "Back to jobs",
+    "aliases": "Aliases",
+    "add_alias": "Add alias",
+    "alias_text": "Alias text",
+    "language": "Language",
+    "budgets": "Category budgets",
+    "add_budget": "Add budget",
+    "category": "Category",
+    "amount": "Budget amount (ex GST)",
+    "no_aliases": "No aliases yet.",
+    "no_budgets": "No budgets yet."
+  },
+  "users": {
+    "title": "Users",
+    "invite": "Invite user",
+    "email": "Email",
+    "role": "Role",
+    "name": "Full name",
+    "initial_password": "Initial password",
+    "language_preference": "Language preference",
+    "active": "Active",
+    "deactivate": "Deactivate",
+    "role_admin": "Admin",
+    "role_contributor": "Contributor",
+    "confirm_deactivate": "Deactivate this user?"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "close": "Close",
+    "loading": "Loading...",
+    "error": "Something went wrong"
+  },
+  "lang": {
+    "label": "Language",
+    "english": "English",
+    "chinese": "Chinese"
+  }
+}
