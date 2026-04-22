@@ -1,0 +1,208 @@
+"""Job / alias / category-budget HTTP routes.
+
+Thin layer that forwards to :mod:`app.services.jobs` and maps the
+service's domain exceptions onto HTTP status codes:
+
+* :class:`JobNotFound` / :class:`CategoryNotFound` -> 404
+* :class:`DuplicateAlias` / :class:`DuplicateBudget` -> 409
+
+Auth policy:
+
+* ``POST`` / ``PATCH`` of jobs, aliases, and budgets are all admin-only
+  (``Depends(require_admin)``).
+* ``GET /jobs`` and ``GET /jobs/{id}`` are accessible to any
+  authenticated caller — admin and contributor both see the same list
+  in Phase 1; assignment-scoped filtering is a later-phase concern.
+"""
+
+from __future__ import annotations
+
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_db
+from app.deps import get_current_user, require_admin
+from app.models.job import Job
+from app.models.user import User
+from app.schemas.job import (
+    JobAliasCreate,
+    JobAliasPublic,
+    JobCategoryBudgetCreate,
+    JobCategoryBudgetPublic,
+    JobCreate,
+    JobPublic,
+    JobUpdate,
+    JobWithDetailPublic,
+)
+from app.services.jobs import (
+    CategoryNotFound,
+    DuplicateAlias,
+    DuplicateBudget,
+    JobNotFound,
+    add_alias,
+    add_category_budget,
+    create_job,
+    get_job,
+    list_jobs,
+    update_job,
+)
+
+router = APIRouter(tags=["jobs"])
+
+
+@router.post(
+    "",
+    response_model=JobPublic,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_job_endpoint(
+    body: JobCreate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> Job:
+    """Create a job (admin only)."""
+    return await create_job(
+        db,
+        created_by=admin,
+        job_name=body.job_name,
+        job_code=body.job_code,
+        site_address=body.site_address,
+        contract_value_ex_gst=body.contract_value_ex_gst,
+        total_budget_ex_gst=body.total_budget_ex_gst,
+        status=body.status,
+    )
+
+
+@router.get(
+    "",
+    response_model=list[JobPublic],
+    status_code=status.HTTP_200_OK,
+)
+async def list_jobs_endpoint(
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[Job]:
+    """List all jobs (any authenticated caller)."""
+    return await list_jobs(db)
+
+
+@router.get(
+    "/{job_id}",
+    response_model=JobWithDetailPublic,
+    status_code=status.HTTP_200_OK,
+)
+async def get_job_endpoint(
+    job_id: uuid.UUID,
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Job:
+    """Fetch a job with its aliases + category budgets eager-loaded."""
+    try:
+        return await get_job(db, job_id)
+    except JobNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+        ) from exc
+
+
+@router.patch(
+    "/{job_id}",
+    response_model=JobPublic,
+    status_code=status.HTTP_200_OK,
+)
+async def update_job_endpoint(
+    job_id: uuid.UUID,
+    body: JobUpdate,
+    _admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> Job:
+    """Partially update a job (admin only)."""
+    try:
+        return await update_job(
+            db,
+            job_id,
+            job_name=body.job_name,
+            job_code=body.job_code,
+            site_address=body.site_address,
+            contract_value_ex_gst=body.contract_value_ex_gst,
+            total_budget_ex_gst=body.total_budget_ex_gst,
+            status=body.status,
+        )
+    except JobNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+        ) from exc
+
+
+@router.post(
+    "/{job_id}/aliases",
+    response_model=JobAliasPublic,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_alias_endpoint(
+    job_id: uuid.UUID,
+    body: JobAliasCreate,
+    _admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Attach an alias to a job (admin only).
+
+    409 on a duplicate normalised alias (globally unique — see the
+    ``JobAlias`` model's uniqueness contract).
+    """
+    try:
+        return await add_alias(
+            db,
+            job_id,
+            alias_text=body.alias_text,
+            language_code=body.language_code,
+        )
+    except JobNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+        ) from exc
+    except DuplicateAlias as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Alias with that normalised form already exists",
+        ) from exc
+
+
+@router.post(
+    "/{job_id}/category-budgets",
+    response_model=JobCategoryBudgetPublic,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_category_budget_endpoint(
+    job_id: uuid.UUID,
+    body: JobCategoryBudgetCreate,
+    _admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Attach a per-category budget row to a job (admin only).
+
+    404 if either the job or the category doesn't exist. 409 on a
+    duplicate ``(job_id, category_id)`` pair.
+    """
+    try:
+        return await add_category_budget(
+            db,
+            job_id,
+            category_id=body.category_id,
+            budget_amount_ex_gst=body.budget_amount_ex_gst,
+        )
+    except JobNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+        ) from exc
+    except CategoryNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Category not found"
+        ) from exc
+    except DuplicateBudget as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Budget for that job + category already exists",
+        ) from exc
