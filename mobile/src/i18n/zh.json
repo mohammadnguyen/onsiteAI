@@ -1,0 +1,42 @@
+{
+  "login": {
+    "title": "SiteTracker",
+    "email": "\u90ae\u7bb1",
+    "password": "\u5bc6\u7801",
+    "submit": "\u767b\u5f55",
+    "error": "\u767b\u5f55\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u51ed\u8bc1\u3002"
+  },
+  "tabs": {
+    "jobs": "\u9879\u76ee",
+    "expenses": "\u5f00\u652f",
+    "dashboard": "\u4eea\u8868\u76d8",
+    "labour": "\u5de5\u65f6",
+    "settings": "\u8bbe\u7f6e"
+  },
+  "jobs": {
+    "title": "\u9879\u76ee",
+    "empty": "\u6682\u65e0\u9879\u76ee\u3002",
+    "loading": "\u52a0\u8f7d\u4e2d..."
+  },
+  "job": {
+    "code": "\u7f16\u53f7",
+    "status": "\u72b6\u6001",
+    "contract": "\u5408\u540c\u91d1\u989d\uff08\u4e0d\u542bGST\uff09",
+    "budget": "\u603b\u9884\u7b97\uff08\u4e0d\u542bGST\uff09",
+    "address": "\u5de5\u5730\u5730\u5740",
+    "aliases": "\u522b\u540d",
+    "budgets": "\u5206\u7c7b\u9884\u7b97"
+  },
+  "settings": {
+    "title": "\u8bbe\u7f6e",
+    "language": "\u8bed\u8a00",
+    "english": "English",
+    "chinese": "\u4e2d\u6587",
+    "logout": "\u9000\u51fa\u767b\u5f55",
+    "signed_in_as": "\u5f53\u524d\u7528\u6237",
+    "coming_soon": "\u5373\u5c06\u63a8\u51fa"
+  },
+  "common": {
+    "error": "\u51fa\u73b0\u9519\u8bef\u3002"
+  }
+}

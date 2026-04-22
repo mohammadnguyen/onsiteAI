@@ -1,0 +1,42 @@
+{
+  "login": {
+    "title": "SiteTracker",
+    "email": "Email",
+    "password": "Password",
+    "submit": "Sign in",
+    "error": "Sign-in failed. Check your credentials."
+  },
+  "tabs": {
+    "jobs": "Jobs",
+    "expenses": "Expenses",
+    "dashboard": "Dashboard",
+    "labour": "Labour",
+    "settings": "Settings"
+  },
+  "jobs": {
+    "title": "Jobs",
+    "empty": "No jobs yet.",
+    "loading": "Loading jobs..."
+  },
+  "job": {
+    "code": "Code",
+    "status": "Status",
+    "contract": "Contract value (ex GST)",
+    "budget": "Total budget (ex GST)",
+    "address": "Site address",
+    "aliases": "Aliases",
+    "budgets": "Category budgets"
+  },
+  "settings": {
+    "title": "Settings",
+    "language": "Language",
+    "english": "English",
+    "chinese": "\u4e2d\u6587",
+    "logout": "Log out",
+    "signed_in_as": "Signed in as",
+    "coming_soon": "Coming soon"
+  },
+  "common": {
+    "error": "Something went wrong."
+  }
+}
