@@ -13,7 +13,7 @@ from alembic import context
 
 from app.config import get_settings
 from app.models.base import Base
-from app.models import category, expense, job, supplier, user  # noqa: F401  # ensure metadata is registered
+from app.models import category, expense, job, review_queue, supplier, user  # noqa: F401  # ensure metadata is registered
 
 # NOTE: As new model modules are added in later tasks,
 # import them here so Alembic autogenerate sees their metadata.

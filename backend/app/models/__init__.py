@@ -15,6 +15,12 @@ from app.models.expense import (
     ReviewStatus,
 )
 from app.models.job import Job, JobAlias, JobCategoryBudget, JobStatus
+from app.models.review_queue import (
+    ExpenseAuditLog,
+    ExpenseReviewQueue,
+    ReviewQueueStatus,
+    ReviewReasonCode,
+)
 from app.models.supplier import Supplier, SupplierAlias
 from app.models.user import LanguageCode, User, UserRole
 
@@ -22,6 +28,8 @@ __all__ = [
     "Base",
     "Category",
     "Expense",
+    "ExpenseAuditLog",
+    "ExpenseReviewQueue",
     "ExpenseType",
     "Job",
     "JobAlias",
@@ -30,6 +38,8 @@ __all__ = [
     "LanguageCode",
     "PaymentMethod",
     "ReceiptStatus",
+    "ReviewQueueStatus",
+    "ReviewReasonCode",
     "ReviewStatus",
     "Supplier",
     "SupplierAlias",
