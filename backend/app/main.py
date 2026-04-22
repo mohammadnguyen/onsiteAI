@@ -22,6 +22,20 @@ def create_app() -> FastAPI:
         title="SiteTracker API",
         version="0.1.0",
         description="Internal cost control API for small residential builders",
+        contact={
+            "name": "SiteTracker Engineering",
+            "email": "engineering@sitetracker.internal",
+        },
+        license_info={
+            "name": "Proprietary - Internal Use Only",
+        },
+        openapi_tags=[
+            {"name": "system", "description": "Service health and readiness."},
+            {"name": "auth", "description": "Login, refresh, logout, current user."},
+            {"name": "users", "description": "Admin user invites, list, and deactivation."},
+            {"name": "jobs", "description": "Jobs + aliases + category budgets."},
+            {"name": "categories", "description": "Builder-category catalogue (23 seeded)."},
+        ],
     )
 
     app.add_middleware(

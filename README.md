@@ -64,6 +64,30 @@ npm run dev
 # Admin on http://localhost:5173
 ```
 
+### Regenerate TypeScript API types
+
+The mobile and admin apps share a generated TypeScript client contract at
+`mobile/src/api/types.ts` and `admin/src/api/types.ts`. After changing any
+backend schema or endpoint, regenerate both files so the frontends stay in
+sync with the API.
+
+```powershell
+# Windows (primary — this repo's canonical script)
+pwsh scripts/gen-types.ps1
+```
+
+```bash
+# macOS / Linux / WSL / Git Bash fallback (also used in CI)
+bash scripts/gen-types.sh
+```
+
+Both scripts hit `http://localhost:8000/openapi.json`, so make sure the
+backend is running locally first (`uv run uvicorn app.main:app --reload`
+from `backend/`). The scripts write identical output to both `mobile/` and
+`admin/`, and those generated files should be committed whenever the API
+changes. Regeneration is manual for now; a pre-commit hook is planned for
+Phase 2.
+
 ## Where things live
 
 ```
