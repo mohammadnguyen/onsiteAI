@@ -20,7 +20,7 @@ management. Supports English and Simplified Chinese. See
 ## Quickstart
 
 Requirements: Docker Desktop, Python 3.12 + [`uv`](https://docs.astral.sh/uv/),
-Node 20+, and the Expo Go app (for mobile dev).
+Node 20+, and (optionally, for native mobile) the Expo Go app or a simulator.
 
 ### 1. Start Postgres
 
@@ -35,34 +35,63 @@ machines. All configuration defaults — `backend/.env.example`,
 backend service still talks to the DB as `db:5432`; only host-side tooling
 (`uv run alembic …`, host-run pytest) uses 5433.
 
-### 2. Backend (FastAPI)
+### 2. Backend (FastAPI) — port 8000
 
 ```bash
 cd backend
 cp .env.example .env
 uv sync
 uv run alembic upgrade head
-uv run uvicorn app.main:app --reload
-# API on http://localhost:8000, docs at /docs
+# Create the separate test DB once per fresh Docker volume:
+docker exec sitetracker-db psql -U sitetracker -d sitetracker -c "CREATE DATABASE sitetracker_test OWNER sitetracker;"
+# Seed the first admin user + the 23 builder categories:
+uv run python -m scripts.seed_admin --email admin@example.com --password admin --name "Admin"
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+# API on http://127.0.0.1:8000, interactive docs at /docs
 ```
 
-### 3. Mobile (Expo / React Native)
-
-```bash
-cd mobile
-npm install
-npx expo start
-# Scan the QR code with Expo Go (iOS or Android)
-```
-
-### 4. Admin (Vite / React)
+### 3. Admin (Vite / React) — port 5173
 
 ```bash
 cd admin
 npm install
 npm run dev
-# Admin on http://localhost:5173
+# Admin on http://127.0.0.1:5173
 ```
+
+Sign in at `/login` with `admin@example.com` / `admin`. Create a job, add
+aliases + category budgets, invite contributors from the Users page.
+
+### 4. Mobile (Expo / React Native)
+
+Pick one of the three targets below. Phase 1 was verified end-to-end via the
+**web** target on Windows; native iOS/Android runs belong on a device with
+Expo Go or a simulator.
+
+```bash
+cd mobile
+npm install
+
+# Option A — web preview (verified in Phase 1 on Windows)
+npm run web                # opens http://127.0.0.1:8081
+
+# Option B — Expo Go on a physical device (recommended for mobile QA)
+npx expo start             # scan the QR code with Expo Go (iOS/Android)
+
+# Option C — iOS Simulator (macOS + Xcode only)
+npx expo start --ios
+```
+
+If running mobile on a physical device, point it at your LAN IP instead of
+`127.0.0.1`:
+
+```bash
+EXPO_PUBLIC_API_URL=http://<your-lan-ip>:8000 npx expo start
+```
+
+Sign in on mobile with the same `admin@example.com` / `admin` credentials.
+Jobs created from the admin dashboard appear immediately in the mobile Jobs
+tab.
 
 ### Regenerate TypeScript API types
 
@@ -88,16 +117,32 @@ from `backend/`). The scripts write identical output to both `mobile/` and
 changes. Regeneration is manual for now; a pre-commit hook is planned for
 Phase 2.
 
+## Phase 1 end-to-end walkthrough
+
+Exercises every wire in the stack. Requires all three servers running from
+Quickstart above (Postgres on 5433, backend on 8000, admin on 5173).
+
+1. Visit <http://127.0.0.1:5173/login> → sign in as `admin@example.com` / `admin`.
+2. On the Jobs page, click **New Job** → fill `Kelly House`, `KH-01`, address, contract value `500000`, budget `450000` → **Save**.
+3. Click the `Kelly House` row → on the detail page, add alias `Kelly` (language `EN`) → add category budget `Plumbing` / `25000`.
+4. Navigate to **Users** → **Invite user** → create `jeffrey@example.com` / `contributor` / initial password `jeffpass`.
+5. Switch the header language dropdown to **Chinese** → every label flips (项目 / 用户 / 退出登录 …).
+6. Click **Log out** → redirected to `/login`; localStorage tokens are cleared.
+7. Manually navigating to <http://127.0.0.1:5173/jobs> with no token redirects back to `/login` (auth-gate).
+8. Start mobile web (`cd mobile && npm run web`) → visit <http://127.0.0.1:8081/login>.
+9. Sign in with the same admin creds → the Jobs tab shows the `Kelly House` row created in step 2.
+10. Settings tab → switch to 中文 → labels flip (项目 / 设置 / 当前用户 …) → **退出登录** clears tokens and routes back to `/login`.
+
 ## Where things live
 
 ```
 .
-├── backend/    FastAPI + SQLAlchemy 2 + Alembic + Pydantic v2
-├── mobile/     Expo SDK 52 + expo-router + TanStack Query + i18next
-├── admin/      Vite + React 18 + TanStack Query + Tailwind + shadcn/ui
+├── backend/    FastAPI + SQLAlchemy 2 (async) + Alembic + Pydantic v2
+├── mobile/     Expo SDK 54 + expo-router + TanStack Query + Zustand + i18next
+├── admin/      Vite + React 18 + React Router + TanStack Query + Zustand + plain Tailwind + i18next
 ├── docs/       Product spec and per-phase implementation plans
-├── scripts/    Monorepo-level helper scripts
-└── docker-compose.yml   Local Postgres (and later, containerised backend)
+├── scripts/    gen-types.ps1 / gen-types.sh (OpenAPI → TS types for both clients)
+└── docker-compose.yml   Local Postgres (host 5433 → container 5432)
 ```
 
 ## Documentation
