@@ -8,6 +8,7 @@ them for autogenerate.
 from app.models.base import Base
 from app.models.category import Category
 from app.models.job import Job, JobAlias, JobCategoryBudget, JobStatus
+from app.models.supplier import Supplier, SupplierAlias
 from app.models.user import LanguageCode, User, UserRole
 
 __all__ = [
@@ -18,6 +19,8 @@ __all__ = [
     "JobCategoryBudget",
     "JobStatus",
     "LanguageCode",
+    "Supplier",
+    "SupplierAlias",
     "User",
     "UserRole",
 ]
