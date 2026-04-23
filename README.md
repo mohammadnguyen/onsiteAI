@@ -62,7 +62,16 @@ npm run dev
 Sign in at `/login` with `admin@example.com` / `admin`. Create a job, add
 aliases + category budgets, invite contributors from the Users page.
 
-### 4. Mobile (Expo / React Native)
+### 4. Mobile (Expo / React Native) — preserved, paused
+
+> **Phase 2 status:** iOS/Expo is preserved in `mobile/` but paused during
+> web-first validation of the capture + review workflow. The Expo scaffold
+> still compiles (`npm run typecheck` and `npm run export:web` are both part
+> of the regression gate), but no Phase 2 feature work lives here yet — the
+> contributor capture flow for Phase 2 lives in the admin bundle under
+> `/capture` and `/my-expenses`. The iOS client will resume as a first-class
+> target against the same backend API + parser once the web workflow is
+> proven in daily use.
 
 Pick one of the three targets below. Phase 1 was verified end-to-end via the
 **web** target on Windows; native iOS/Android runs belong on a device with
@@ -132,6 +141,61 @@ Quickstart above (Postgres on 5433, backend on 8000, admin on 5173).
 8. Start mobile web (`cd mobile && npm run web`) → visit <http://127.0.0.1:8081/login>.
 9. Sign in with the same admin creds → the Jobs tab shows the `Kelly House` row created in step 2.
 10. Settings tab → switch to 中文 → labels flip (项目 / 设置 / 当前用户 …) → **退出登录** clears tokens and routes back to `/login`.
+
+## Phase 2 web-first walkthrough
+
+Exercises the full expense-capture → review → audit loop against the real
+backend + parser. Phase 2 is proven first on the web surface; iOS/Expo is
+preserved but paused (see the **Mobile** note in Quickstart). All contributor
+capture and admin triage lives in the admin bundle on port 5173 with role-aware
+routing — admins land on `/expenses`, contributors land on `/capture`.
+
+Requires Quickstart steps 1–3 plus the Phase 1 seed data (one admin, one job
+with a `Kelly` alias, one contributor). Phase 1 walkthrough above builds that
+baseline.
+
+**Admin triage (Batch 4a surface):**
+
+1. Sign in as `admin@example.com` / `admin` → lands on `/expenses`.
+2. **Suppliers** → click **New supplier**, create `Bunnings` → add alias
+   `bunnings`.
+3. Back on `/expenses`, click **New expense** (Admin capture via same
+   `/capture` route) → submit structured entry for testing; it appears on
+   `/expenses` with the job/supplier/category resolved.
+4. Navigate to `/review-queue` → select any open item → adjust supplier or
+   category in the edit form → add resolution notes → **Approve**. The
+   expense + queue row + audit row transition atomically.
+5. Reject another queue item with a note → verify the soft-deleted expense
+   disappears from `/expenses`'s default view and an audit row recorded the
+   transition.
+6. On `/expenses`, click a reviewed expense → in the drawer, **Edit** any
+   field → the **Audit log** tab shows the diff plus the edit reason.
+
+**Contributor capture (Batch 4b surface):**
+
+1. Log out → sign in as `jeffrey@example.com` / `jeffpass` → lands on
+   `/capture` (role-aware redirect).
+2. Type `$305 Bunnings Kelly bluemetal` → **Submit** → result view shows
+   **Saved** (amount 305, Job Kelly House, Supplier Bunnings, Category
+   Earthworks). If an earlier identical expense exists, a
+   **Duplicate suspected** chip surfaces and the row lands on the admin's
+   `/review-queue`.
+3. Click **New expense** → type `工地1 水工材料 163` → **Submit** → result
+   view shows **Saved — pending review** with `Supplier uncertain` +
+   `Amount uncertain` chips (zh parser path; job matched via Chinese alias).
+4. Click **New expense** → type `¥50 Kelly` → **Submit** → **Saved —
+   pending review** with `Unsupported currency` + peer chips (non-AUD
+   currency forces admin review).
+5. Navigate to `/review-queue` → redirected to an `Access denied` shell
+   with a link back to `/capture` (RequireAdmin guard working).
+6. Navigate to `/my-expenses` → items split into `Pending review` and
+   `Reviewed` sections (mine-only filter enforced by backend).
+7. Log out → log back in as admin → `/review-queue` → resolve the zh entry
+   with `Bunnings` as supplier. Log back in as Jeffrey → `/my-expenses`
+   now shows the 163 row under `Reviewed` (atomic cross-user transition).
+8. Language toggle → switch to 中文 in either role → all capture/queue/
+   review-reason chips localize (新增支出 / 审核队列 / 疑似重复 / 供应商
+   不确定 / 不支持的货币 / …). Round-trip back to English is clean.
 
 ## Where things live
 

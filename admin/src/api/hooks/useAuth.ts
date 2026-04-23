@@ -7,14 +7,30 @@ type LoginRequest = components['schemas']['LoginRequest']
 type TokenPair = components['schemas']['TokenPair']
 type UserPublic = components['schemas']['UserPublic']
 
+// Shared key + fetcher so Login.tsx can prime the cache via
+// queryClient.fetchQuery with the identical signature useMe() uses.
+// Keeping both in one place prevents key-drift bugs.
+export const ME_QUERY_KEY = ['auth', 'me'] as const
+
+export async function fetchMe(): Promise<UserPublic> {
+  const { data } = await api.get<UserPublic>('/auth/me')
+  return data
+}
+
 export function useLogin() {
   const setTokens = useAuthStore((s) => s.setTokens)
+  const qc = useQueryClient()
   return useMutation({
     mutationFn: async (body: LoginRequest): Promise<TokenPair> => {
       const { data } = await api.post<TokenPair>('/auth/login', body)
       return data
     },
     onSuccess: (data) => {
+      // Drop any me-cache that may have leaked from a previous session
+      // BEFORE the new token is written, so no component can read the
+      // old user's profile against the new token between these two
+      // state transitions.
+      qc.removeQueries({ queryKey: ME_QUERY_KEY })
       setTokens(data.access_token, data.refresh_token)
     },
   })
@@ -33,9 +49,11 @@ export function useLogout() {
     },
     onSettled: () => {
       clear()
-      // Invalidate /auth/me so the next login fetches a fresh profile
-      // rather than reading a stale cached user from the previous session.
-      void qc.invalidateQueries({ queryKey: ['auth', 'me'] })
+      // Fully remove (not just invalidate) /auth/me. Invalidation with
+      // staleTime: Infinity leaves the previous user's profile sitting in
+      // cache until a refetch completes — long enough for <Index> to read
+      // it and route the next user to the wrong landing page.
+      qc.removeQueries({ queryKey: ME_QUERY_KEY })
     },
   })
 }
@@ -43,11 +61,8 @@ export function useLogout() {
 export function useMe() {
   const accessToken = useAuthStore((s) => s.accessToken)
   return useQuery({
-    queryKey: ['auth', 'me'],
-    queryFn: async (): Promise<UserPublic> => {
-      const { data } = await api.get<UserPublic>('/auth/me')
-      return data
-    },
+    queryKey: ME_QUERY_KEY,
+    queryFn: fetchMe,
     enabled: !!accessToken,
     staleTime: Infinity,
     retry: 1,

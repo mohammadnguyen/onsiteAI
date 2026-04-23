@@ -1,13 +1,15 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { useLogin } from '../api/hooks/useAuth'
+import { useQueryClient } from '@tanstack/react-query'
+import { ME_QUERY_KEY, fetchMe, useLogin } from '../api/hooks/useAuth'
 import { extractErrorMessage } from '../api/client'
 
 export function Login() {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const login = useLogin()
+  const queryClient = useQueryClient()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -17,7 +19,17 @@ export function Login() {
     setError(null)
     try {
       await login.mutateAsync({ email, password })
-      navigate('/', { replace: true })
+      // Prime /auth/me against the NEW token before navigating. Routing
+      // through <Index> + useMe() races the first render against the
+      // background refetch; without this step, admins can land on /capture
+      // (contributor default) and vice versa until the refetch lands.
+      // fetchQuery is awaited here so we know the role at navigate time.
+      const me = await queryClient.fetchQuery({
+        queryKey: ME_QUERY_KEY,
+        queryFn: fetchMe,
+        staleTime: Infinity,
+      })
+      navigate(me.role === 'admin' ? '/expenses' : '/capture', { replace: true })
     } catch (err) {
       setError(extractErrorMessage(err))
     }
