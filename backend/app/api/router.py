@@ -7,11 +7,12 @@ so this router adds no prefix of its own.
 
 from fastapi import APIRouter
 
-from app.api import auth, categories, jobs, suppliers, users
+from app.api import auth, categories, expenses, jobs, suppliers, users
 
 api_router = APIRouter()
 api_router.include_router(auth.router, prefix="/auth")
 api_router.include_router(categories.router, prefix="/categories")
+api_router.include_router(expenses.router, prefix="/expenses")
 api_router.include_router(jobs.router, prefix="/jobs")
 api_router.include_router(suppliers.router, prefix="/suppliers")
 api_router.include_router(users.router, prefix="/users")
