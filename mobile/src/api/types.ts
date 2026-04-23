@@ -149,6 +149,102 @@ export interface paths {
         patch: operations["update_category_categories__category_id__patch"];
         trace?: never;
     };
+    "/expenses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Expenses Endpoint
+         * @description List expenses (contributors are restricted to their own rows).
+         */
+        get: operations["list_expenses_endpoint_expenses_get"];
+        put?: never;
+        /**
+         * Create Expense Endpoint
+         * @description Create an expense from raw text or structured fields.
+         *
+         *     The service runs the parser when ``raw_input_text`` is supplied
+         *     and merges any explicit structured overrides on top of the parser
+         *     draft (structured wins).
+         */
+        post: operations["create_expense_endpoint_expenses_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/expenses/parse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Parse Endpoint
+         * @description Run the parser and return draft + diagnostics. Does not persist.
+         */
+        post: operations["preview_parse_endpoint_expenses_parse_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/expenses/{expense_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Expense Endpoint
+         * @description Fetch a single expense with nested supplier + category.
+         */
+        get: operations["get_expense_endpoint_expenses__expense_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Expense Endpoint
+         * @description Admin-only soft delete: sets review_status=rejected + audits.
+         */
+        delete: operations["delete_expense_endpoint_expenses__expense_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Expense Endpoint
+         * @description Partial update with RBAC + audit rules enforced in the service.
+         */
+        patch: operations["update_expense_endpoint_expenses__expense_id__patch"];
+        trace?: never;
+    };
+    "/expenses/{expense_id}/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Audit Endpoint
+         * @description Admin-only audit trail, newest first.
+         */
+        get: operations["get_audit_endpoint_expenses__expense_id__audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/jobs": {
         parameters: {
             query?: never;
@@ -237,6 +333,163 @@ export interface paths {
          *     duplicate ``(job_id, category_id)`` pair.
          */
         post: operations["add_category_budget_endpoint_jobs__job_id__category_budgets_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/review-queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Queue
+         * @description List queue rows ordered by ``opened_at`` ASC (admin-only).
+         *
+         *     The ``status`` query param is aliased onto a Python-safe
+         *     ``status_filter`` parameter name to avoid shadowing
+         *     :mod:`fastapi.status`.
+         */
+        get: operations["list_queue_review_queue_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/review-queue/{review_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Queue Detail
+         * @description Return the queue row + nested expense + duplicate-of expense (admin-only).
+         */
+        get: operations["get_queue_detail_review_queue__review_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/review-queue/{review_id}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve Queue
+         * @description Approve a queue entry (admin-only).
+         *
+         *     The service runs the expense-update + queue-close + audit-write
+         *     inside the single request-scoped transaction ``get_db`` owns. Any
+         *     failure rolls back the whole unit; on success they all commit.
+         */
+        post: operations["resolve_queue_review_queue__review_id__resolve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/review-queue/{review_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reject Queue
+         * @description Reject a queue entry (admin-only). Atomic like :func:`resolve_queue`.
+         */
+        post: operations["reject_queue_review_queue__review_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/suppliers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Suppliers Endpoint
+         * @description List all suppliers (any authenticated caller).
+         *
+         *     With ``?active_only=1`` only ``is_active=True`` rows are returned.
+         */
+        get: operations["list_suppliers_endpoint_suppliers_get"];
+        put?: never;
+        /**
+         * Create Supplier Endpoint
+         * @description Create a supplier (admin only).
+         */
+        post: operations["create_supplier_endpoint_suppliers_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/suppliers/{supplier_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Supplier Endpoint
+         * @description Partially update a supplier (admin only).
+         */
+        patch: operations["update_supplier_endpoint_suppliers__supplier_id__patch"];
+        trace?: never;
+    };
+    "/suppliers/{supplier_id}/aliases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Alias Endpoint
+         * @description Attach an alias to a supplier (admin only).
+         *
+         *     409 on a duplicate normalised alias (globally unique — see the
+         *     ``SupplierAlias`` model's uniqueness contract).
+         */
+        post: operations["add_alias_endpoint_suppliers__supplier_id__aliases_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -333,6 +586,38 @@ export interface components {
             token_type: string;
         };
         /**
+         * AuditRow
+         * @description Wire shape of a single :class:`ExpenseAuditLog` row.
+         */
+        AuditRow: {
+            /**
+             * Audit Id
+             * Format: uuid
+             */
+            audit_id: string;
+            /**
+             * Expense Id
+             * Format: uuid
+             */
+            expense_id: string;
+            /**
+             * Edited By User Id
+             * Format: uuid
+             */
+            edited_by_user_id: string;
+            /**
+             * Edited At
+             * Format: date-time
+             */
+            edited_at: string;
+            /** Changed Fields */
+            changed_fields: {
+                [key: string]: unknown;
+            };
+            /** Reason */
+            reason: string | null;
+        };
+        /**
          * CategoryCreate
          * @description Body of ``POST /categories`` (admin-only).
          */
@@ -375,6 +660,262 @@ export interface components {
             display_order?: number | null;
             /** Is Active */
             is_active?: boolean | null;
+        };
+        /**
+         * ExpenseCreate
+         * @description Body of ``POST /expenses`` and the draft carrier in ``ParsePreview``.
+         *
+         *     Two submission modes are supported:
+         *
+         *     * **raw_input_text mode** — the caller passes only
+         *       ``raw_input_text`` (plus optional overrides) and the service
+         *       layer runs the parser first, merging any explicitly-set
+         *       structured fields on top of the parser's draft.
+         *     * **structured mode** — the caller supplies all the required
+         *       structured fields (``job_id``, ``amount_inc_gst``, etc.) and
+         *       ``raw_input_text`` is omitted; the parser is NOT invoked.
+         *
+         *     Validation of required fields (amount, job, supplier-or-description
+         *     for supplier expenses, date sanity) is performed in the service.
+         */
+        "ExpenseCreate-Input": {
+            /** Raw Input Text */
+            raw_input_text?: string | null;
+            /** Job Id */
+            job_id?: string | null;
+            /** Supplier Id */
+            supplier_id?: string | null;
+            /** @default supplier_expense */
+            expense_type: components["schemas"]["ExpenseType"];
+            /** Amount Inc Gst */
+            amount_inc_gst?: number | string | null;
+            /** Amount Ex Gst */
+            amount_ex_gst?: number | string | null;
+            /** Gst Amount */
+            gst_amount?: number | string | null;
+            /** @default unknown */
+            payment_method: components["schemas"]["PaymentMethod"];
+            /** Expense Date */
+            expense_date?: string | null;
+            /** Category Id */
+            category_id?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Notes */
+            notes?: string | null;
+            /** @default no_receipt */
+            receipt_status: components["schemas"]["ReceiptStatus"];
+        };
+        /**
+         * ExpenseCreate
+         * @description Body of ``POST /expenses`` and the draft carrier in ``ParsePreview``.
+         *
+         *     Two submission modes are supported:
+         *
+         *     * **raw_input_text mode** — the caller passes only
+         *       ``raw_input_text`` (plus optional overrides) and the service
+         *       layer runs the parser first, merging any explicitly-set
+         *       structured fields on top of the parser's draft.
+         *     * **structured mode** — the caller supplies all the required
+         *       structured fields (``job_id``, ``amount_inc_gst``, etc.) and
+         *       ``raw_input_text`` is omitted; the parser is NOT invoked.
+         *
+         *     Validation of required fields (amount, job, supplier-or-description
+         *     for supplier expenses, date sanity) is performed in the service.
+         */
+        "ExpenseCreate-Output": {
+            /** Raw Input Text */
+            raw_input_text?: string | null;
+            /** Job Id */
+            job_id?: string | null;
+            /** Supplier Id */
+            supplier_id?: string | null;
+            /** @default supplier_expense */
+            expense_type: components["schemas"]["ExpenseType"];
+            /** Amount Inc Gst */
+            amount_inc_gst?: string | null;
+            /** Amount Ex Gst */
+            amount_ex_gst?: string | null;
+            /** Gst Amount */
+            gst_amount?: string | null;
+            /** @default unknown */
+            payment_method: components["schemas"]["PaymentMethod"];
+            /** Expense Date */
+            expense_date?: string | null;
+            /** Category Id */
+            category_id?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Notes */
+            notes?: string | null;
+            /** @default no_receipt */
+            receipt_status: components["schemas"]["ReceiptStatus"];
+        };
+        /**
+         * ExpenseCreateResponse
+         * @description Body of ``POST /expenses`` 201 response.
+         *
+         *     Carries the persisted :class:`ExpensePublic` plus an optional
+         *     :class:`ParseDiagnostics` block — populated iff
+         *     ``raw_input_text`` drove the create. Structured-only submissions
+         *     return ``parse=None``.
+         */
+        ExpenseCreateResponse: {
+            expense: components["schemas"]["ExpensePublic"];
+            parse?: components["schemas"]["ParseDiagnostics"] | null;
+        };
+        /**
+         * ExpenseDetailPublic
+         * @description Body of ``GET /expenses/{id}`` — adds nested supplier + category.
+         */
+        ExpenseDetailPublic: {
+            /**
+             * Expense Id
+             * Format: uuid
+             */
+            expense_id: string;
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /** Supplier Id */
+            supplier_id: string | null;
+            /**
+             * Entered By User Id
+             * Format: uuid
+             */
+            entered_by_user_id: string;
+            expense_type: components["schemas"]["ExpenseType"];
+            /** Raw Input Text */
+            raw_input_text: string | null;
+            /** Description */
+            description: string | null;
+            /** Amount Inc Gst */
+            amount_inc_gst: string;
+            /** Amount Ex Gst */
+            amount_ex_gst: string;
+            /** Gst Amount */
+            gst_amount: string;
+            payment_method: components["schemas"]["PaymentMethod"];
+            /**
+             * Expense Date
+             * Format: date
+             */
+            expense_date: string;
+            /** Category Id */
+            category_id: string | null;
+            review_status: components["schemas"]["ReviewStatus"];
+            receipt_status: components["schemas"]["ReceiptStatus"];
+            /** Confidence Score */
+            confidence_score: string | null;
+            /** Duplicate Flag */
+            duplicate_flag: boolean;
+            /** Duplicate Of Expense Id */
+            duplicate_of_expense_id: string | null;
+            /** Notes */
+            notes: string | null;
+            supplier: components["schemas"]["SupplierPublic"] | null;
+            category: components["schemas"]["CategoryPublic"] | null;
+        };
+        /**
+         * ExpenseListResponse
+         * @description Body of ``GET /expenses``. Supports cursor-style pagination.
+         */
+        ExpenseListResponse: {
+            /** Items */
+            items: components["schemas"]["ExpensePublic"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /**
+         * ExpensePublic
+         * @description Compact expense wire shape for list + post-create + post-patch.
+         */
+        ExpensePublic: {
+            /**
+             * Expense Id
+             * Format: uuid
+             */
+            expense_id: string;
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /** Supplier Id */
+            supplier_id: string | null;
+            /**
+             * Entered By User Id
+             * Format: uuid
+             */
+            entered_by_user_id: string;
+            expense_type: components["schemas"]["ExpenseType"];
+            /** Raw Input Text */
+            raw_input_text: string | null;
+            /** Description */
+            description: string | null;
+            /** Amount Inc Gst */
+            amount_inc_gst: string;
+            /** Amount Ex Gst */
+            amount_ex_gst: string;
+            /** Gst Amount */
+            gst_amount: string;
+            payment_method: components["schemas"]["PaymentMethod"];
+            /**
+             * Expense Date
+             * Format: date
+             */
+            expense_date: string;
+            /** Category Id */
+            category_id: string | null;
+            review_status: components["schemas"]["ReviewStatus"];
+            receipt_status: components["schemas"]["ReceiptStatus"];
+            /** Confidence Score */
+            confidence_score: string | null;
+            /** Duplicate Flag */
+            duplicate_flag: boolean;
+            /** Duplicate Of Expense Id */
+            duplicate_of_expense_id: string | null;
+            /** Notes */
+            notes: string | null;
+        };
+        /**
+         * ExpenseType
+         * @description What kind of money-movement this expense represents.
+         * @enum {string}
+         */
+        ExpenseType: "supplier_expense" | "labour" | "adjustment";
+        /**
+         * ExpenseUpdate
+         * @description Body of ``PATCH /expenses/{id}``. Every field optional.
+         *
+         *     ``reason`` is an out-of-band audit note for admin edits on reviewed
+         *     rows — it is NOT written back as a column on the expense.
+         */
+        ExpenseUpdate: {
+            /** Supplier Id */
+            supplier_id?: string | null;
+            expense_type?: components["schemas"]["ExpenseType"] | null;
+            /** Amount Inc Gst */
+            amount_inc_gst?: number | string | null;
+            /** Amount Ex Gst */
+            amount_ex_gst?: number | string | null;
+            /** Gst Amount */
+            gst_amount?: number | string | null;
+            payment_method?: components["schemas"]["PaymentMethod"] | null;
+            /** Expense Date */
+            expense_date?: string | null;
+            /** Category Id */
+            category_id?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Notes */
+            notes?: string | null;
+            receipt_status?: components["schemas"]["ReceiptStatus"] | null;
+            review_status?: components["schemas"]["ReviewStatus"] | null;
+            /** Reason */
+            reason?: string | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -585,12 +1126,284 @@ export interface components {
             password: string;
         };
         /**
+         * ParseDiagnostics
+         * @description Subset of the parser's ``ParseResult`` exposed to API clients.
+         *
+         *     Includes per-stage confidences, the derived review reason codes,
+         *     ambiguity tuples, the ``matched_via`` labels, the candidate
+         *     supplier proposal, the duplicate-of pointer, and the per-field
+         *     source map (``{"amount": "rules", "job": "rules", ...}``) so the
+         *     UI can render "which fields did rules populate vs LLM".
+         */
+        ParseDiagnostics: {
+            /** Amount Conf */
+            amount_conf: number;
+            /** Job Conf */
+            job_conf: number;
+            /** Supplier Conf */
+            supplier_conf: number;
+            /** Category Conf */
+            category_conf: number;
+            /** Unsupported Currency */
+            unsupported_currency: boolean;
+            /** Review Reasons */
+            review_reasons: components["schemas"]["ReviewReasonCode"][];
+            /** Ambiguous Job Matches */
+            ambiguous_job_matches: string[];
+            /** Ambiguous Supplier Matches */
+            ambiguous_supplier_matches: string[];
+            /** Matched Job Via */
+            matched_job_via: string | null;
+            /** Matched Supplier Via */
+            matched_supplier_via: string | null;
+            /** Candidate Supplier Name */
+            candidate_supplier_name: string | null;
+            /** Duplicate Of Expense Id */
+            duplicate_of_expense_id: string | null;
+            /** Source Per Field */
+            source_per_field: {
+                [key: string]: string;
+            };
+        };
+        /**
+         * ParsePreview
+         * @description Body of ``POST /expenses/parse`` 200 response.
+         *
+         *     Does NOT persist anything: returns the parser's best-guess
+         *     :class:`ExpenseCreate` draft together with the diagnostics block
+         *     so the UI can show confidences + review reasons before the user
+         *     commits with ``POST /expenses``.
+         */
+        ParsePreview: {
+            draft: components["schemas"]["ExpenseCreate-Output"];
+            diagnostics: components["schemas"]["ParseDiagnostics"];
+        };
+        /**
+         * ParsePreviewRequest
+         * @description Body of ``POST /expenses/parse``.
+         *
+         *     A minimal request shape that does not force the caller to supply
+         *     every :class:`ExpenseCreate` field. Only ``raw_input_text`` is
+         *     required; ``expense_date`` defaults to today in the service and
+         *     ``expense_type`` defaults to :attr:`ExpenseType.supplier_expense`.
+         */
+        ParsePreviewRequest: {
+            /** Raw Input Text */
+            raw_input_text: string;
+            /** Expense Date */
+            expense_date?: string | null;
+            /** @default supplier_expense */
+            expense_type: components["schemas"]["ExpenseType"];
+        };
+        /**
+         * PaymentMethod
+         * @description How the expense was settled.
+         *
+         *     ``unknown`` is the default because the Phase 2 parser often cannot
+         *     determine the payment method from free text.
+         * @enum {string}
+         */
+        PaymentMethod: "cash" | "transfer" | "unknown";
+        /**
+         * ReceiptStatus
+         * @description Lifecycle of the physical / digital receipt for this expense.
+         *
+         *     Phase 2 has only two values — ``no_receipt`` (default, nothing on
+         *     file) and ``expected_later`` (admin flagged that a receipt will be
+         *     supplied later). A third "attached" value is introduced in Phase 5
+         *     when the receipt upload flow goes live; it must NOT be added here.
+         * @enum {string}
+         */
+        ReceiptStatus: "no_receipt" | "expected_later";
+        /**
          * RefreshRequest
          * @description Body of ``POST /auth/refresh``.
          */
         RefreshRequest: {
             /** Refresh Token */
             refresh_token: string;
+        };
+        /**
+         * RejectRequest
+         * @description Payload for ``POST /review-queue/{id}/reject``.
+         *
+         *     ``notes`` is stored on the queue row and included in the audit log.
+         */
+        RejectRequest: {
+            /** Notes */
+            notes?: string | null;
+        };
+        /**
+         * ResolveRequest
+         * @description Payload for ``POST /review-queue/{id}/resolve``.
+         *
+         *     ``expense_patch`` (optional) lets the admin update any expense
+         *     fields while approving; it's applied before the status flips to
+         *     reviewed. ``notes`` is stored on the queue row and included in the
+         *     audit log if present.
+         */
+        ResolveRequest: {
+            expense_patch?: components["schemas"]["ExpenseUpdate"] | null;
+            /** Notes */
+            notes?: string | null;
+        };
+        /**
+         * ReviewQueueDetail
+         * @description Detail shape for ``GET /review-queue/{id}``.
+         *
+         *     Bundles the queue row, the expense being reviewed, and — when the
+         *     queue entry was created because of a duplicate suspicion — the
+         *     earlier expense that produced the flag. Ambiguous-match metadata
+         *     is not persisted and thus not surfaced here.
+         */
+        ReviewQueueDetail: {
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * Expense Id
+             * Format: uuid
+             */
+            expense_id: string;
+            /** Review Reasons */
+            review_reasons: components["schemas"]["ReviewReasonCode"][];
+            status: components["schemas"]["ReviewQueueStatus"];
+            /**
+             * Opened At
+             * Format: date-time
+             */
+            opened_at: string;
+            /** Resolved By User Id */
+            resolved_by_user_id: string | null;
+            /** Resolved At */
+            resolved_at: string | null;
+            /** Resolution Notes */
+            resolution_notes: string | null;
+            expense: components["schemas"]["ExpenseDetailPublic"];
+            duplicate_of: components["schemas"]["ExpenseDetailPublic"] | null;
+        };
+        /**
+         * ReviewQueuePublic
+         * @description Summary shape for ``GET /review-queue`` list view.
+         */
+        ReviewQueuePublic: {
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * Expense Id
+             * Format: uuid
+             */
+            expense_id: string;
+            /** Review Reasons */
+            review_reasons: components["schemas"]["ReviewReasonCode"][];
+            status: components["schemas"]["ReviewQueueStatus"];
+            /**
+             * Opened At
+             * Format: date-time
+             */
+            opened_at: string;
+            /** Resolved By User Id */
+            resolved_by_user_id: string | null;
+            /** Resolved At */
+            resolved_at: string | null;
+            /** Resolution Notes */
+            resolution_notes: string | null;
+        };
+        /**
+         * ReviewQueueStatus
+         * @description Lifecycle of a queued review.
+         * @enum {string}
+         */
+        ReviewQueueStatus: "open" | "resolved" | "rejected";
+        /**
+         * ReviewReasonCode
+         * @description Why an expense landed in the review queue.
+         *
+         *     The declaration order is canonical — the UI renders reason chips
+         *     in exactly this order. Do not reorder without a plan-level change.
+         * @enum {string}
+         */
+        ReviewReasonCode: "job_uncertain" | "supplier_uncertain" | "category_uncertain" | "amount_uncertain" | "duplicate_suspected" | "unsupported_currency";
+        /**
+         * ReviewStatus
+         * @description Admin review verdict on an expense row.
+         * @enum {string}
+         */
+        ReviewStatus: "pending" | "reviewed" | "rejected";
+        /**
+         * SupplierAliasCreate
+         * @description Body of ``POST /suppliers/{supplier_id}/aliases`` (admin-only).
+         */
+        SupplierAliasCreate: {
+            /** Alias Text */
+            alias_text: string;
+            language_code?: components["schemas"]["LanguageCode"] | null;
+        };
+        /**
+         * SupplierAliasPublic
+         * @description Serialised view of a :class:`~app.models.supplier.SupplierAlias`.
+         */
+        SupplierAliasPublic: {
+            /**
+             * Alias Id
+             * Format: uuid
+             */
+            alias_id: string;
+            /**
+             * Supplier Id
+             * Format: uuid
+             */
+            supplier_id: string;
+            /** Alias Text */
+            alias_text: string;
+            /** Alias Text Normalized */
+            alias_text_normalized: string;
+            language_code: components["schemas"]["LanguageCode"] | null;
+        };
+        /**
+         * SupplierCreate
+         * @description Body of ``POST /suppliers`` (admin-only).
+         */
+        SupplierCreate: {
+            /** Supplier Name */
+            supplier_name: string;
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+        };
+        /**
+         * SupplierPublic
+         * @description Serialised view of a :class:`~app.models.supplier.Supplier` row.
+         */
+        SupplierPublic: {
+            /**
+             * Supplier Id
+             * Format: uuid
+             */
+            supplier_id: string;
+            /** Supplier Name */
+            supplier_name: string;
+            /** Supplier Normalized */
+            supplier_normalized: string;
+            /** Is Active */
+            is_active: boolean;
+        };
+        /**
+         * SupplierUpdate
+         * @description Body of ``PATCH /suppliers/{supplier_id}`` (admin-only).
+         */
+        SupplierUpdate: {
+            /** Supplier Name */
+            supplier_name?: string | null;
+            /** Is Active */
+            is_active?: boolean | null;
         };
         /**
          * TokenPair
@@ -922,6 +1735,238 @@ export interface operations {
             };
         };
     };
+    list_expenses_endpoint_expenses_get: {
+        parameters: {
+            query?: {
+                job_id?: string | null;
+                status?: components["schemas"]["ReviewStatus"] | null;
+                mine?: number;
+                from?: string | null;
+                to?: string | null;
+                receipt_status?: components["schemas"]["ReceiptStatus"] | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExpenseListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_expense_endpoint_expenses_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExpenseCreate-Input"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExpenseCreateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_parse_endpoint_expenses_parse_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ParsePreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParsePreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_expense_endpoint_expenses__expense_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                expense_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExpenseDetailPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_expense_endpoint_expenses__expense_id__delete: {
+        parameters: {
+            query?: {
+                reason?: string | null;
+            };
+            header?: never;
+            path: {
+                expense_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_expense_endpoint_expenses__expense_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                expense_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExpenseUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExpensePublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_audit_endpoint_expenses__expense_id__audit_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                expense_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditRow"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_jobs_endpoint_jobs_get: {
         parameters: {
             query?: never;
@@ -1098,6 +2143,268 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobCategoryBudgetPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_queue_review_queue_get: {
+        parameters: {
+            query?: {
+                status?: components["schemas"]["ReviewQueueStatus"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewQueuePublic"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_queue_detail_review_queue__review_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                review_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewQueueDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolve_queue_review_queue__review_id__resolve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                review_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_queue_review_queue__review_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                review_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RejectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_suppliers_endpoint_suppliers_get: {
+        parameters: {
+            query?: {
+                active_only?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupplierPublic"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_supplier_endpoint_suppliers_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SupplierCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupplierPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_supplier_endpoint_suppliers__supplier_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                supplier_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SupplierUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupplierPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_alias_endpoint_suppliers__supplier_id__aliases_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                supplier_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SupplierAliasCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupplierAliasPublic"];
                 };
             };
             /** @description Validation Error */
