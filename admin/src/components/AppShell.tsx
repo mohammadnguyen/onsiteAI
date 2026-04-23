@@ -30,6 +30,15 @@ export function AppShell({ children }: { children: ReactNode }) {
           <NavLink to="/users" className={linkClasses}>
             {t('nav.users')}
           </NavLink>
+          <NavLink to="/expenses" className={linkClasses}>
+            {t('nav.expenses')}
+          </NavLink>
+          <NavLink to="/review-queue" className={linkClasses}>
+            {t('nav.review_queue')}
+          </NavLink>
+          <NavLink to="/suppliers" className={linkClasses}>
+            {t('nav.suppliers')}
+          </NavLink>
         </nav>
         <div className="ml-auto flex items-center gap-3">
           <label className="text-sm text-slate-600">

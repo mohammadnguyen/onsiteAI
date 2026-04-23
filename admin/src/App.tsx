@@ -3,6 +3,10 @@ import { Login } from './pages/Login'
 import { Jobs } from './pages/Jobs'
 import { JobDetail } from './pages/JobDetail'
 import { Users } from './pages/Users'
+import { Expenses } from './pages/Expenses'
+import { ExpenseDetail } from './pages/ExpenseDetail'
+import { ReviewQueue } from './pages/ReviewQueue'
+import { Suppliers } from './pages/Suppliers'
 import { RequireAuth } from './components/RequireAuth'
 
 export default function App() {
@@ -30,6 +34,38 @@ export default function App() {
         element={
           <RequireAuth>
             <Users />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/expenses"
+        element={
+          <RequireAuth>
+            <Expenses />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/expenses/:id"
+        element={
+          <RequireAuth>
+            <ExpenseDetail />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/review-queue"
+        element={
+          <RequireAuth>
+            <ReviewQueue />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/suppliers"
+        element={
+          <RequireAuth>
+            <Suppliers />
           </RequireAuth>
         }
       />
