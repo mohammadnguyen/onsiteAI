@@ -189,5 +189,31 @@
     "label": "语言",
     "english": "英文",
     "chinese": "中文"
+  },
+  "capture": {
+    "title": "新增支出",
+    "textarea_placeholder": "输入或粘贴支出内容,例如:Bunnings 250 Elizabeth Street 水泥。",
+    "receipt_later": "稍后补发票",
+    "submit": "提交",
+    "advanced": "高级(手动填写)",
+    "job": "项目",
+    "supplier": "供应商",
+    "amount": "金额(含GST)",
+    "description": "描述",
+    "notes": "备注",
+    "result_saved": "已保存",
+    "result_pending_review": "已保存 — 待审核",
+    "new_expense": "新增支出"
+  },
+  "my_expenses": {
+    "title": "我的支出",
+    "pending_section": "待审核",
+    "reviewed_section": "已审核",
+    "empty": "暂无记录。"
+  },
+  "access_denied": {
+    "title": "访问被拒绝",
+    "message": "此页面仅限管理员访问。",
+    "go_to_capture": "前往新增支出"
   }
 }

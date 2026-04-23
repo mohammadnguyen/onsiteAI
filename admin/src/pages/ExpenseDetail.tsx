@@ -7,6 +7,7 @@ import {
   useExpenseAudit,
   useUpdateExpense,
 } from '../api/hooks/useExpenses'
+import { useMe } from '../api/hooks/useAuth'
 import { useCategories, useJobs } from '../api/hooks/useJobs'
 import { useSuppliers } from '../api/hooks/useSuppliers'
 import { AppShell } from '../components/AppShell'
@@ -25,6 +26,8 @@ export function ExpenseDetail() {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
+  const me = useMe()
+  const isAdmin = me.data?.role === 'admin'
   const expense = useExpense(id)
   const updateExpense = useUpdateExpense()
   const deleteExpense = useDeleteExpense()
@@ -168,17 +171,30 @@ export function ExpenseDetail() {
             <div className="flex items-center gap-2">
               {!editMode && (
                 <>
-                  <button type="button" onClick={beginEdit} className={btnSecondary}>
-                    {t('expense.edit')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onDelete}
-                    disabled={deleteExpense.isPending}
-                    className="bg-red-600 text-white rounded-md px-4 py-2 text-sm font-medium hover:bg-red-700 disabled:opacity-50"
-                  >
-                    {t('expense.delete')}
-                  </button>
+                  {/* Edit: admin always; contributor only when it's
+                      their own expense AND it's still pending. The
+                      backend enforces the same rule; this just avoids
+                      a surprise 403 in the happy-path UX. */}
+                  {(isAdmin ||
+                    (me.data &&
+                      expense.data.entered_by_user_id === me.data.user_id &&
+                      expense.data.review_status === 'pending')) && (
+                    <button type="button" onClick={beginEdit} className={btnSecondary}>
+                      {t('expense.edit')}
+                    </button>
+                  )}
+                  {/* Delete is admin-only (backend returns 403 for
+                      contributors). */}
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={onDelete}
+                      disabled={deleteExpense.isPending}
+                      className="bg-red-600 text-white rounded-md px-4 py-2 text-sm font-medium hover:bg-red-700 disabled:opacity-50"
+                    >
+                      {t('expense.delete')}
+                    </button>
+                  )}
                 </>
               )}
             </div>
@@ -192,13 +208,16 @@ export function ExpenseDetail() {
             >
               {t('expense.tab_detail')}
             </button>
-            <button
-              type="button"
-              onClick={() => setTab('audit')}
-              className={tabClass(tab === 'audit')}
-            >
-              {t('expense.tab_audit')}
-            </button>
+            {/* Audit log is admin-only (backend gates GET /expenses/{id}/audit). */}
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setTab('audit')}
+                className={tabClass(tab === 'audit')}
+              >
+                {t('expense.tab_audit')}
+              </button>
+            )}
           </div>
 
           {tab === 'detail' && !editMode && (

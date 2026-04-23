@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { Login } from './pages/Login'
 import { Jobs } from './pages/Jobs'
 import { JobDetail } from './pages/JobDetail'
@@ -7,17 +8,60 @@ import { Expenses } from './pages/Expenses'
 import { ExpenseDetail } from './pages/ExpenseDetail'
 import { ReviewQueue } from './pages/ReviewQueue'
 import { Suppliers } from './pages/Suppliers'
+import { Capture } from './pages/Capture'
+import { MyExpenses } from './pages/MyExpenses'
 import { RequireAuth } from './components/RequireAuth'
+import { RequireAdmin } from './components/RequireAdmin'
+import { useMe } from './api/hooks/useAuth'
+
+function Index() {
+  const me = useMe()
+  const { t } = useTranslation()
+  if (me.isLoading || !me.data) {
+    return <p className="p-6 text-slate-500">{t('common.loading')}</p>
+  }
+  return me.data.role === 'admin' ? (
+    <Navigate to="/expenses" replace />
+  ) : (
+    <Navigate to="/capture" replace />
+  )
+}
 
 export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route
+        path="/"
+        element={
+          <RequireAuth>
+            <Index />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/capture"
+        element={
+          <RequireAuth>
+            <Capture />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/my-expenses"
+        element={
+          <RequireAuth>
+            <MyExpenses />
+          </RequireAuth>
+        }
+      />
+      <Route
         path="/jobs"
         element={
           <RequireAuth>
-            <Jobs />
+            <RequireAdmin>
+              <Jobs />
+            </RequireAdmin>
           </RequireAuth>
         }
       />
@@ -25,7 +69,9 @@ export default function App() {
         path="/jobs/:id"
         element={
           <RequireAuth>
-            <JobDetail />
+            <RequireAdmin>
+              <JobDetail />
+            </RequireAdmin>
           </RequireAuth>
         }
       />
@@ -33,7 +79,9 @@ export default function App() {
         path="/users"
         element={
           <RequireAuth>
-            <Users />
+            <RequireAdmin>
+              <Users />
+            </RequireAdmin>
           </RequireAuth>
         }
       />
@@ -41,10 +89,17 @@ export default function App() {
         path="/expenses"
         element={
           <RequireAuth>
-            <Expenses />
+            <RequireAdmin>
+              <Expenses />
+            </RequireAdmin>
           </RequireAuth>
         }
       />
+      {/* Expense detail is accessible to both roles. Backend RBAC
+          enforces the actual ownership rules: admins see everything,
+          contributors see only their own (and may edit own+pending).
+          Admin-only UI controls (Delete, Audit log tab) are gated
+          inside ExpenseDetail itself via useMe(). */}
       <Route
         path="/expenses/:id"
         element={
@@ -57,7 +112,9 @@ export default function App() {
         path="/review-queue"
         element={
           <RequireAuth>
-            <ReviewQueue />
+            <RequireAdmin>
+              <ReviewQueue />
+            </RequireAdmin>
           </RequireAuth>
         }
       />
@@ -65,12 +122,13 @@ export default function App() {
         path="/suppliers"
         element={
           <RequireAuth>
-            <Suppliers />
+            <RequireAdmin>
+              <Suppliers />
+            </RequireAdmin>
           </RequireAuth>
         }
       />
-      <Route path="/" element={<Navigate to="/jobs" replace />} />
-      <Route path="*" element={<Navigate to="/jobs" replace />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
 }

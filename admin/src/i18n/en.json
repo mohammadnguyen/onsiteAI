@@ -189,5 +189,31 @@
     "label": "Language",
     "english": "English",
     "chinese": "Chinese"
+  },
+  "capture": {
+    "title": "New Expense",
+    "textarea_placeholder": "Type or paste what you spent, e.g. 'Bunnings 250 Elizabeth Street cement'.",
+    "receipt_later": "Add receipt later",
+    "submit": "Submit",
+    "advanced": "Advanced (manual fields)",
+    "job": "Job",
+    "supplier": "Supplier",
+    "amount": "Amount (inc GST)",
+    "description": "Description",
+    "notes": "Notes",
+    "result_saved": "Saved",
+    "result_pending_review": "Saved — pending review",
+    "new_expense": "New Expense"
+  },
+  "my_expenses": {
+    "title": "My Expenses",
+    "pending_section": "Pending review",
+    "reviewed_section": "Reviewed",
+    "empty": "Nothing here yet."
+  },
+  "access_denied": {
+    "title": "Access denied",
+    "message": "This page is for admins only.",
+    "go_to_capture": "Go to capture"
   }
 }

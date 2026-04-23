@@ -2,12 +2,13 @@ import type { ReactNode } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { setLanguage } from '../i18n'
-import { useLogout } from '../api/hooks/useAuth'
+import { useLogout, useMe } from '../api/hooks/useAuth'
 
 export function AppShell({ children }: { children: ReactNode }) {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
   const logout = useLogout()
+  const me = useMe()
 
   const linkClasses = ({ isActive }: { isActive: boolean }) =>
     `px-3 py-2 rounded-md text-sm font-medium ${
@@ -19,26 +20,47 @@ export function AppShell({ children }: { children: ReactNode }) {
     navigate('/login', { replace: true })
   }
 
+  const role = me.data?.role
+  const isAdmin = role === 'admin'
+  const isContributor = role === 'contributor'
+
   return (
     <div className="min-h-screen flex flex-col">
       <header className="bg-white border-b border-slate-200 px-6 py-3 flex items-center gap-4">
         <div className="text-lg font-semibold text-slate-900">SiteTracker</div>
         <nav className="flex gap-2">
-          <NavLink to="/jobs" className={linkClasses}>
-            {t('nav.jobs')}
-          </NavLink>
-          <NavLink to="/users" className={linkClasses}>
-            {t('nav.users')}
-          </NavLink>
-          <NavLink to="/expenses" className={linkClasses}>
-            {t('nav.expenses')}
-          </NavLink>
-          <NavLink to="/review-queue" className={linkClasses}>
-            {t('nav.review_queue')}
-          </NavLink>
-          <NavLink to="/suppliers" className={linkClasses}>
-            {t('nav.suppliers')}
-          </NavLink>
+          {isAdmin && (
+            <>
+              <NavLink to="/capture" className={linkClasses}>
+                {t('capture.new_expense')}
+              </NavLink>
+              <NavLink to="/expenses" className={linkClasses}>
+                {t('nav.expenses')}
+              </NavLink>
+              <NavLink to="/review-queue" className={linkClasses}>
+                {t('nav.review_queue')}
+              </NavLink>
+              <NavLink to="/jobs" className={linkClasses}>
+                {t('nav.jobs')}
+              </NavLink>
+              <NavLink to="/users" className={linkClasses}>
+                {t('nav.users')}
+              </NavLink>
+              <NavLink to="/suppliers" className={linkClasses}>
+                {t('nav.suppliers')}
+              </NavLink>
+            </>
+          )}
+          {isContributor && (
+            <>
+              <NavLink to="/capture" className={linkClasses}>
+                {t('capture.new_expense')}
+              </NavLink>
+              <NavLink to="/my-expenses" className={linkClasses}>
+                {t('my_expenses.title')}
+              </NavLink>
+            </>
+          )}
         </nav>
         <div className="ml-auto flex items-center gap-3">
           <label className="text-sm text-slate-600">

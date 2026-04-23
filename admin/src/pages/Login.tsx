@@ -17,7 +17,7 @@ export function Login() {
     setError(null)
     try {
       await login.mutateAsync({ email, password })
-      navigate('/jobs', { replace: true })
+      navigate('/', { replace: true })
     } catch (err) {
       setError(extractErrorMessage(err))
     }
