@@ -72,18 +72,24 @@ export function Capture() {
   const onSubmit = async (ev: FormEvent) => {
     ev.preventDefault()
     setFormError(null)
+    // Only include fields the user actually filled. Sending explicit
+    // nulls for unset optional fields would mark them as "caller-set"
+    // in the backend's Pydantic model_fields_set, causing the merge
+    // step to override the parser's extracted values with null and
+    // trigger a spurious "Amount is required" 422 on raw-text-only
+    // submissions.
     const body: ExpenseCreateInput = {
-      raw_input_text: rawInputText || null,
-      job_id: jobId || null,
-      supplier_id: supplierId || null,
-      amount_inc_gst: amountIncGst || null,
-      description: description || null,
-      notes: notes || null,
-      expense_date: expenseDate || null,
+      raw_input_text: rawInputText.trim(),
       expense_type: 'supplier_expense',
       payment_method: 'unknown',
       receipt_status: (receiptLater ? 'expected_later' : 'no_receipt') as ReceiptStatus,
     }
+    if (expenseDate) body.expense_date = expenseDate
+    if (jobId) body.job_id = jobId
+    if (supplierId) body.supplier_id = supplierId
+    if (amountIncGst) body.amount_inc_gst = amountIncGst
+    if (description) body.description = description
+    if (notes) body.notes = notes
     try {
       const resp = await createExpense.mutateAsync(body)
       setResult(resp)
