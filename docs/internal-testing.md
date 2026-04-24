@@ -86,7 +86,7 @@ Run both roles against the same dev backend. Treat every bullet as one manual st
 
 ## Issue log template
 
-Copy a row per issue into a shared spreadsheet (or keep it inline here — Phase 2 isn't at a scale where a tracker is necessary yet). Keep entries terse; one finding per row. Use one of the five issue types below as the **Type** column so triage can batch similar items.
+Copy a row per issue into a shared spreadsheet (or keep it inline here — Phase 2 isn't at a scale where a tracker is necessary yet). Keep entries terse; one finding per row. Use one of the six issue types below as the **Type** column so triage can batch similar items.
 
 **Issue types:**
 
@@ -97,6 +97,7 @@ Copy a row per issue into a shared spreadsheet (or keep it inline here — Phase
 | `duplicate-false-positive` | `duplicate_suspected` fires on two entries that are genuinely different transactions. |
 | `review-friction` | Review queue workflow itself is clunky — missing field, confusing copy, slow load, translation gap, etc. |
 | `unsupported-currency` | Non-AUD input is mishandled — amount extracted incorrectly, wrong chip raised, admin can't correct the value during resolve. |
+| `visibility-gap` | Admin had to do math the system should have shown directly — adding expenses by hand to get job-to-date, computing remaining budget, flagging a category overspend mentally, or opening a calculator / spreadsheet / paper to answer "how much have we spent on X?". One row per occurrence. Also log the row when admin has to leave this tool to reach the answer (ledger book, accountant export, another app). |
 
 **Template row (copy one per finding):**
 
@@ -108,17 +109,18 @@ Copy a row per issue into a shared spreadsheet (or keep it inline here — Phase
 **Worked example:**
 
 ```markdown
-| 2026-04-25 | parser-miss     | contributor | "¥50 Kelly"                  | description empty after Kelly consumed by job matcher | description = "Kelly" | low    | See Batch 4b report; cosmetic                        |
-| 2026-04-26 | alias-gap       | contributor | "bazza 200 concrete"         | supplier = Harvey Norman                              | supplier_uncertain fires | medium | need alias "bazza" → Harvey Norman                   |
-| 2026-04-27 | duplicate-fp    | admin       | two $120 Bunnings same day   | both approved (different jobs of the same project)    | duplicate_suspected fires | medium | rule fires on (job, amount, ±1 day, supplier)        |
+| 2026-04-25 | parser-miss     | contributor | "¥50 Kelly"                  | description empty after Kelly consumed by job matcher | description = "Kelly"    | low    | See Batch 4b report; cosmetic                           |
+| 2026-04-26 | alias-gap       | contributor | "bazza 200 concrete"         | supplier = Harvey Norman                              | supplier_uncertain fires | medium | need alias "bazza" → Harvey Norman                      |
+| 2026-04-27 | duplicate-fp    | admin       | two $120 Bunnings same day   | both approved (different jobs of the same project)    | duplicate_suspected fires| medium | rule fires on (job, amount, ±1 day, supplier)           |
 | 2026-04-28 | review-friction | admin       | /review-queue                | can edit job from review panel                        | job is read-only         | low    | acknowledged — `ExpenseUpdate` omits `job_id` by design |
-| 2026-04-29 | unsupported-ccy | contributor | "€50 Smith"                  | unsupported_currency chip + amount prefilled as 50    | chip fires, amount ok    | none   | working as intended — here for completeness          |
+| 2026-04-29 | unsupported-ccy | contributor | "€50 Smith"                  | unsupported_currency chip + amount prefilled as 50    | chip fires, amount ok    | none   | working as intended — here for completeness            |
+| 2026-04-30 | visibility-gap  | admin       | "Kelly House spend to date?" | dashboard tile shows running total                    | had to sum /expenses rows by hand; ~4 min | medium | would have skipped the math if the job detail page showed it |
 ```
 
 Fields:
 
 - **Date** — first occurrence.
-- **Type** — one of the five tags above.
+- **Type** — one of the six tags above.
 - **Role** — admin / contributor.
 - **Raw-input-or-URL** — the literal string the tester typed OR the UI location where friction was felt.
 - **Expected** — what the tester thought would happen.
@@ -136,7 +138,7 @@ After the window closes, the next build is **not** automatically more parser / r
 
 ### Step 1 — Count the log
 
-Produce exactly these five numbers:
+Produce exactly these six numbers:
 
 ```text
 parser-miss:               <n>
@@ -144,6 +146,7 @@ alias-gap:                 <n>
 duplicate-false-positive:  <n>
 review-friction:           <n>
 unsupported-currency:      <n>
+visibility-gap:            <n>
 ```
 
 ### Step 2 — Pick a branch
@@ -170,12 +173,17 @@ If two or three thresholds clear simultaneously, build them in the order above (
 
 Justified when the trial shows **capture is good enough** AND the bigger product gap is **visibility**. This is likely the default if Branch A's thresholds don't clear — the ledger has the data but the builder can't see "am I over budget on Kelly House?" without looking at the admin's expense list by hand.
 
-**Signals for this branch:**
+**Primary trigger (observable, countable):**
+
+- **≥ 3 `visibility-gap` rows in the log** — the admin had to manually calculate job spend, remaining budget, or category overspend; or had to leave the tool (calculator, spreadsheet, accountant export, paper) to answer "how much have we spent on X?". Three is the threshold because anyone might do it once or twice out of habit; three means the missing surface is blocking real work, not a quirk.
+
+If the primary trigger clears, Branch B gets priority even if one of Branch A's thresholds also clears — **visibility gaps are load-bearing for the business decision, capture issues are friction around a working flow.** The only exception is if a Branch A issue is actively breaking capture (admin can't triage, duplicate detection misfires badly enough to block approvals); see Step 3.
+
+**Supporting signals** (weight the decision when the primary trigger is close but not yet cleared):
 
 - Branch A thresholds don't clear (low parser-miss, low alias-gap, low review-friction)
-- Admin or operator says some version of "I have all the data, I just can't see it"
 - A day's worth of contributor entries lands successfully without friction
-- The business question "how much have we spent on X?" can't be answered from the existing UI
+- The admin's trial-end read is some version of "capture was fine; I want to see the numbers"
 
 **Phase 3 Lite scope** — the minimum dashboard that answers the budget question for one builder:
 
@@ -203,9 +211,14 @@ Justified when the trial shows **capture is good enough** AND the bigger product
 
 ### Step 3 — If both branches look justified
 
-If Branch A clears one threshold AND Branch B's signals are strong, prefer **Branch B first** unless the Branch A issue is user-visible friction (e.g., admin refuses to keep triaging because alias-gap is so repetitive). The reasoning: dashboard visibility compounds — every expense entered from this point forward benefits — whereas a parser fix only benefits the specific inputs it rescues. Dashboard-first is the higher-leverage move unless capture is actively breaking.
+The decision is straightforward when the counts split cleanly; the edge cases are when multiple thresholds clear at once. Resolve them as follows:
 
-If you are genuinely uncertain after counting, pause and share the five numbers + a short read of the admin's lived experience during the trial. The decision can be made together rather than by rule.
+- **`visibility-gap` ≥ 3 AND any Branch A threshold clears** → **Branch B first.** Capture has to bleed heavily to override the visibility gap — the rule of thumb is that the admin must be saying "I can't keep triaging like this" or an RBAC / data-safety issue is surfacing. A `parser-miss` count of 8 is not enough on its own; a `alias-gap` of 15 is not enough on its own; each of those costs the admin ~30 seconds of picker-clicking, whereas a visibility gap costs minutes of ad-hoc math per question.
+- **`visibility-gap` ≥ 3 AND no Branch A threshold clears** → **Branch B** (straightforward).
+- **`visibility-gap` < 3 AND any Branch A threshold clears** → **Branch A** (straightforward). The log is telling you capture is the pain point; dashboards can wait.
+- **`visibility-gap` < 3 AND no Branch A threshold clears** → **Pause and share the numbers.** No branch has justification; continuing the trial for another window is a reasonable outcome. Don't spin up a build just to have a build.
+
+Underlying reasoning for the Branch B preference: **dashboard visibility compounds.** Every expense entered from that point forward benefits from the new surface, including all historical entries. A parser fix only benefits the specific inputs it was designed to rescue. The arithmetic is: visibility gap × days in use = growing cost; parser miss × future identical inputs = bounded cost.
 
 ---
 

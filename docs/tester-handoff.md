@@ -99,6 +99,7 @@ Keep it loose. Roughly:
 - Morning: resolve the overnight queue. Each item takes ~20 seconds if the parser did OK, ~60 seconds if there's a fix to make (supplier swap, category tweak, duplicate review). That's the main time sink.
 - During resolve, if you're adding the same supplier alias twice in one week, note it as `alias-gap` — it's a signal we should build the "add-alias-from-review" action sooner.
 - If you ever think "this was hard to find in the review panel" or "I wish I could edit X," log it as `review-friction`.
+- **If you catch yourself computing a total by hand — adding expense rows to get job-to-date spend, subtracting to get remaining budget, scanning a category for overspend, or opening a calculator / spreadsheet / paper / another app to answer "how much have we spent on X?" — log it as `visibility-gap`, one row per occurrence.** This is the signal that the tool is missing the dashboard the business actually needs. Three of these across the trial makes Phase 3 Lite the next build.
 - End of day: quick pass through `/expenses` to sanity-check the reviewed set. Anything that looks wrong opens the audit log tab to see the diff.
 
 Also run the [admin-flow checklist from internal-testing.md](internal-testing.md#admin-flow) once near the start of the window — it's a 10-minute sweep that catches wiring issues before they poison the usage data.
@@ -107,13 +108,14 @@ Also run the [admin-flow checklist from internal-testing.md](internal-testing.md
 
 ## Where to record issues
 
-Single source: [`docs/internal-testing.md` → Issue log template](internal-testing.md#issue-log-template). Copy the template row into a shared spreadsheet or a simple markdown file both testers can edit. Keep one row per finding. Use the five tags exactly:
+Single source: [`docs/internal-testing.md` → Issue log template](internal-testing.md#issue-log-template). Copy the template row into a shared spreadsheet or a simple markdown file both testers can edit. Keep one row per finding. Use the six tags exactly:
 
 - `parser-miss`
 - `alias-gap`
 - `duplicate-false-positive`
 - `review-friction`
 - `unsupported-currency`
+- `visibility-gap` — the admin had to calculate a total (job spend, remaining budget, category overspend) by hand, or leave the tool (calculator, spreadsheet, accountant export, paper) to answer "how much have we spent on X?". One row per occurrence. **This is the trigger that justifies going to dashboards instead of more parser work — if the admin hits this 3+ times, Branch B gets priority.**
 
 If you're unsure which tag fits, pick one and add a `notes` hint — triage can re-tag at the end.
 
@@ -136,7 +138,7 @@ Anything else → log and keep going.
 
 ## After the window closes
 
-1. Count the log rows by tag. Result is five numbers:
+1. Count the log rows by tag. Result is six numbers:
 
    ```text
    parser-miss:               <n>
@@ -144,13 +146,14 @@ Anything else → log and keep going.
    duplicate-false-positive:  <n>
    review-friction:           <n>
    unsupported-currency:      <n>
+   visibility-gap:            <n>
    ```
 
 2. Walk the **[Post-trial decision framework](internal-testing.md#post-trial-decision-framework)** in `docs/internal-testing.md`. It forks into two explicit branches and the next build is **not** automatically more parser / review work:
 
-   - **Branch A — parser / review work** (Phase 2.5 Claude fallback / add-alias-from-review / description polish). Each candidate has its own threshold on the counts above. Commits only if a threshold clears.
-   - **Branch B — Phase 3 Lite dashboard / budget visibility.** Answers "am I over budget on this job?" via per-job and per-category actual-vs-budget numbers. Commits when Branch A thresholds don't clear AND the trial suggests the bigger gap is visibility rather than capture accuracy.
+   - **Branch A — parser / review work** (Phase 2.5 Claude fallback / add-alias-from-review / description polish). Each candidate has its own threshold on the capture counts above. Commits only if a threshold clears.
+   - **Branch B — Phase 3 Lite dashboard / budget visibility.** Primary trigger: **`visibility-gap` ≥ 3**. The admin had to do spend math by hand or leave the tool to answer a budget question three or more times — that's the observable signal that the missing dashboard is blocking real work.
 
-3. Share (a) the five numbers, (b) the admin's lived experience during the trial (was capture painful or smooth?), and (c) which branch seems justified. The branch decision is made together, not by rule — the framework exists to prevent defaulting to parser polish out of engineering inertia.
+3. Share (a) the six numbers, (b) the admin's lived experience during the trial (was capture painful or smooth?), and (c) which branch seems justified per the framework's Step-3 resolution rules. The branch decision is made together, not by rule alone — the framework exists to prevent defaulting to parser polish out of engineering inertia.
 
 4. No code work starts until the branch is picked. The trial is a data-collection exercise; the build that follows is scoped to the chosen branch.
