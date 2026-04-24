@@ -13,11 +13,9 @@ Keep this document terse. Add observations to the issue log, not to the prose.
 
 ## Clean-slate reset
 
-> **Status for current trial window (opened 2026-04-24):** already run. Cleared 8 expense(s); cascaded 5 review queue row(s) and 5 audit log row(s). The dev DB has no expense data; the Batch 4a/4b E2E seed junk is gone. Baseline setup (admin, contributor, Kelly House + its zh alias `工地1`, Bunnings supplier + `bunnings` alias, 23 category seeds) is preserved. You do **not** need to re-run the reset before onboarding the first tester.
+> **Status for current trial window:** the dev DB was **not** reset cold before the trial opened — see [`docs/trial-baseline.md`](trial-baseline.md) for the locked t=0 snapshot (7 expenses present; 4 real 晶晶 entries counted, 3 Kelly House Claude E2E rows excluded) and the official start timestamp (`2026-04-24 09:31:17 UTC`). That baseline doc is the source of truth for the current window. **Do not run the reset script during this window** — it would delete real trial data.
 
-The E2E runs during Batches 4a and 4b seeded identical-amount, same-job, same-date expenses. That poisons the duplicate detector during real testing — the `duplicate_suspected` review reason fires against test junk, not against genuine repeats.
-
-**For subsequent trial windows** (after this one wraps, or mid-trial if the dev DB fills up with noise), wipe expenses — review queue + audit log cascade automatically:
+The reset script below exists for **future trial windows** (after this one wraps, or before a new round that deliberately starts from empty). The E2E runs during Batches 4a and 4b seeded identical-amount, same-job, same-date expenses that would poison the duplicate detector if left in place alongside new real entries; running the reset between rounds keeps the duplicate signal clean.
 
 ```bash
 cd backend
@@ -27,7 +25,7 @@ uv run python -m scripts.reset_testing_expenses
 
 **What's deleted:** `expenses`, `expense_review_queue`, `expense_audit_log`.
 
-**What's preserved:** users, jobs, job aliases, category seeds, suppliers, supplier aliases. The org setup testers need stays intact.
+**What's preserved:** users, jobs, job aliases, category seeds, suppliers, supplier aliases.
 
 Re-runs are safe no-ops.
 
@@ -39,16 +37,16 @@ Run both roles against the same dev backend. Treat every bullet as one manual st
 
 ### Pre-flight (admin does this once before testers join)
 
-- [x] Postgres on `:5433` (host) — container `sitetracker-db` (healthy as of 2026-04-24).
-- [x] `uv run python -m scripts.reset_testing_expenses` — **done** for the current window (8 expenses, 5 queue rows, 5 audit rows cleared). Re-run only between rounds.
+- [x] Postgres on `:5433` (host) — container `sitetracker-db` (healthy at baseline).
+- [x] DB state captured in [`docs/trial-baseline.md`](trial-baseline.md) at `2026-04-24 09:31:17 UTC`. **Do not reset during this window.** The 3 pre-baseline Claude E2E rows are already tagged for exclusion in that doc.
 - [x] Admin seeded: `admin@example.com` / `admin` (from Phase 1 `seed_admin`).
-- [x] Contributor seeded from E2E: `jeffrey@example.com` / `jeffpass` — use this for the first trial. Create additional contributors through `/users` if more testers join.
-- [x] Kelly House job exists with EN alias `Kelly` + zh alias `工地1`.
+- [x] Contributor seeded: `jeffrey@example.com` / `jeffpass`.
+- [x] Kelly House job (seed) + 晶晶 job (user-added) present with their aliases. See `trial-baseline.md` for the full inventory.
 - [x] Bunnings supplier with alias `bunnings`.
 - [x] 23 category seeds present (from Phase 1).
 - [ ] Backend on `:8000` — start with `cd backend && uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload` just before the trial opens.
 - [ ] Admin on `:5173` — start with `cd admin && npm run dev` just before the trial opens.
-- [ ] Add 4–9 more real suppliers you expect the team to type (with short-form aliases), as the trial surfaces them — one of the things we want to measure is how often alias-gap issues fire, so don't pre-seed aggressively.
+- [ ] Add more real suppliers you expect the team to type (with short-form aliases), as the trial surfaces them — one of the things we want to measure is how often alias-gap fires, so don't pre-seed aggressively.
 
 ### Admin flow
 

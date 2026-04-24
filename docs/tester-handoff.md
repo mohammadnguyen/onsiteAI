@@ -42,17 +42,11 @@ Start backend + admin just before the window opens. Leave Postgres up.
 
 ---
 
-## Baseline data present (as of 2026-04-24)
+## Baseline data present
 
-The reset already ran; the DB is clean of expense test data.
+**Source of truth: [`docs/trial-baseline.md`](trial-baseline.md).** That doc is the immutable record of the DB state at the official trial-start timestamp (`2026-04-24 09:31:17 UTC`) — including which pre-existing expense rows count as real trial data and which are excluded as Claude E2E noise. Read it before triaging the log at window-close; do not rely on "DB is empty" assumptions that were true before the baseline was locked.
 
-- **Jobs:** `Kelly House` (code `KH-01`) with aliases `Kelly` (EN) and `工地１` (ZH — full-width digit, but NFKC normalization means `工地1` ASCII digit works too).
-- **Suppliers:** `Bunnings` with alias `bunnings`.
-- **Categories:** all 23 Phase 1 seeds (Plumbing, Carpentry, Concrete, Earthworks, Electrical, etc.).
-- **Users:** admin + contributor as above.
-- **Expenses / queue / audit:** empty. All entries created during the trial are real trial data.
-
-If you want more jobs or suppliers before the window opens, create them through the admin UI — do not pre-seed aliases aggressively. One of the things we're measuring is **how often `alias-gap` fires**; if every alias is pre-seeded, we learn nothing.
+Non-expense baseline (users, jobs, aliases, suppliers, categories) is also captured in that doc. If you want more jobs or suppliers before the window opens, create them through the admin UI — do not pre-seed aliases aggressively. One of the things we're measuring is **how often `alias-gap` fires**; if every alias is pre-seeded, we learn nothing.
 
 ---
 
