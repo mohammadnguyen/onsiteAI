@@ -136,6 +136,8 @@ The goal is not to fix everything during the trial — it's to have a well-organ
 
 After the window closes, the next build is **not** automatically more parser / review work. The decision is a fork based on what the log actually shows plus the current business concern. The rule is **"fix what's actually hurting, not what's engineering-interesting."**
 
+> **Baseline reference.** When counting log rows + expense rows after the trial closes, apply the row-classification rules in [`docs/trial-baseline.md`](trial-baseline.md). That doc captures the 7 expenses present in the dev DB at the official trial-start timestamp (`2026-04-24 09:31:17 UTC`) and notes which 3 are pre-trial Claude E2E noise that must be excluded from business interpretation.
+
 ### Step 1 — Count the log
 
 Produce exactly these six numbers:
