@@ -99,7 +99,7 @@ Keep it loose. Roughly:
 - Morning: resolve the overnight queue. Each item takes ~20 seconds if the parser did OK, ~60 seconds if there's a fix to make (supplier swap, category tweak, duplicate review). That's the main time sink.
 - During resolve, if you're adding the same supplier alias twice in one week, note it as `alias-gap` — it's a signal we should build the "add-alias-from-review" action sooner.
 - If you ever think "this was hard to find in the review panel" or "I wish I could edit X," log it as `review-friction`.
-- **If you catch yourself computing a total by hand — adding expense rows to get job-to-date spend, subtracting to get remaining budget, scanning a category for overspend, or opening a calculator / spreadsheet / paper / another app to answer "how much have we spent on X?" — log it as `visibility-gap`, one row per occurrence.** This is the signal that the tool is missing the dashboard the business actually needs. Three of these across the trial makes Phase 3 Lite the next build.
+- **If you catch yourself computing a total by hand — adding expense rows to get job-to-date spend, subtracting to get remaining budget, scanning a category for overspend, or opening a calculator / spreadsheet / paper / another app to answer "how much have we spent on X?" — log it as `visibility-gap`, one row per occurrence.** This is the signal that the tool is missing the dashboard the business actually needs. Three of these across the trial makes Phase 3 Lite the next build. **Optional but useful:** prefix the `notes` field with one of four scenario tags so post-trial analysis can split the count by scenario — `scenario: total_job_spend`, `scenario: remaining_budget`, `scenario: category_overspend`, `scenario: spend_question_x`.
 - End of day: quick pass through `/expenses` to sanity-check the reviewed set. Anything that looks wrong opens the audit log tab to see the diff.
 
 Also run the [admin-flow checklist from internal-testing.md](internal-testing.md#admin-flow) once near the start of the window — it's a 10-minute sweep that catches wiring issues before they poison the usage data.
@@ -115,7 +115,7 @@ Single source: [`docs/internal-testing.md` → Issue log template](internal-test
 - `duplicate-false-positive`
 - `review-friction`
 - `unsupported-currency`
-- `visibility-gap` — the admin had to calculate a total (job spend, remaining budget, category overspend) by hand, or leave the tool (calculator, spreadsheet, accountant export, paper) to answer "how much have we spent on X?". One row per occurrence. **This is the trigger that justifies going to dashboards instead of more parser work — if the admin hits this 3+ times, Branch B gets priority.**
+- `visibility-gap` — the admin had to calculate a total (job spend, remaining budget, category overspend) by hand, or leave the tool (calculator, spreadsheet, accountant export, paper) to answer "how much have we spent on X?". One row per occurrence. **This is the trigger that justifies going to dashboards instead of more parser work — if the admin hits this 3+ times, Branch B gets priority.** Optional: prefix `notes` with one of `scenario: total_job_spend` / `scenario: remaining_budget` / `scenario: category_overspend` / `scenario: spend_question_x` so post-trial analysis can split the count by scenario.
 
 If you're unsure which tag fits, pick one and add a `notes` hint — triage can re-tag at the end.
 

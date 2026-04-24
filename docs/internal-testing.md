@@ -97,7 +97,7 @@ Copy a row per issue into a shared spreadsheet (or keep it inline here — Phase
 | `duplicate-false-positive` | `duplicate_suspected` fires on two entries that are genuinely different transactions. |
 | `review-friction` | Review queue workflow itself is clunky — missing field, confusing copy, slow load, translation gap, etc. |
 | `unsupported-currency` | Non-AUD input is mishandled — amount extracted incorrectly, wrong chip raised, admin can't correct the value during resolve. |
-| `visibility-gap` | Admin had to do math the system should have shown directly — adding expenses by hand to get job-to-date, computing remaining budget, flagging a category overspend mentally, or opening a calculator / spreadsheet / paper to answer "how much have we spent on X?". One row per occurrence. Also log the row when admin has to leave this tool to reach the answer (ledger book, accountant export, another app). |
+| `visibility-gap` | Admin had to do math the system should have shown directly — adding expenses by hand to get job-to-date, computing remaining budget, flagging a category overspend mentally, or opening a calculator / spreadsheet / paper to answer "how much have we spent on X?". One row per occurrence. Also log the row when admin has to leave this tool to reach the answer (ledger book, accountant export, another app). **Optional but useful:** prefix the `notes` field with `scenario: <type>` so post-trial analysis can split the count by the kind of question that went unanswered. Use one of four types: `total_job_spend`, `remaining_budget`, `category_overspend`, `spend_question_x` (any "how much did we spend on X?" that isn't one of the first three). |
 
 **Template row (copy one per finding):**
 
@@ -114,7 +114,7 @@ Copy a row per issue into a shared spreadsheet (or keep it inline here — Phase
 | 2026-04-27 | duplicate-fp    | admin       | two $120 Bunnings same day   | both approved (different jobs of the same project)    | duplicate_suspected fires| medium | rule fires on (job, amount, ±1 day, supplier)           |
 | 2026-04-28 | review-friction | admin       | /review-queue                | can edit job from review panel                        | job is read-only         | low    | acknowledged — `ExpenseUpdate` omits `job_id` by design |
 | 2026-04-29 | unsupported-ccy | contributor | "€50 Smith"                  | unsupported_currency chip + amount prefilled as 50    | chip fires, amount ok    | none   | working as intended — here for completeness            |
-| 2026-04-30 | visibility-gap  | admin       | "Kelly House spend to date?" | dashboard tile shows running total                    | had to sum /expenses rows by hand; ~4 min | medium | would have skipped the math if the job detail page showed it |
+| 2026-04-30 | visibility-gap  | admin       | "Kelly House spend to date?" | dashboard tile shows running total                    | had to sum /expenses rows by hand; ~4 min | medium | scenario: total_job_spend — would have skipped the math if the job detail page showed it |
 ```
 
 Fields:
