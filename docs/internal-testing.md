@@ -13,9 +13,11 @@ Keep this document terse. Add observations to the issue log, not to the prose.
 
 ## Clean-slate reset
 
+> **Status for current trial window (opened 2026-04-24):** already run. Cleared 8 expense(s); cascaded 5 review queue row(s) and 5 audit log row(s). The dev DB has no expense data; the Batch 4a/4b E2E seed junk is gone. Baseline setup (admin, contributor, Kelly House + its zh alias `工地1`, Bunnings supplier + `bunnings` alias, 23 category seeds) is preserved. You do **not** need to re-run the reset before onboarding the first tester.
+
 The E2E runs during Batches 4a and 4b seeded identical-amount, same-job, same-date expenses. That poisons the duplicate detector during real testing — the `duplicate_suspected` review reason fires against test junk, not against genuine repeats.
 
-Before inviting testers, wipe expenses (review queue + audit log cascade automatically):
+**For subsequent trial windows** (after this one wraps, or mid-trial if the dev DB fills up with noise), wipe expenses — review queue + audit log cascade automatically:
 
 ```bash
 cd backend
@@ -25,9 +27,9 @@ uv run python -m scripts.reset_testing_expenses
 
 **What's deleted:** `expenses`, `expense_review_queue`, `expense_audit_log`.
 
-**What's preserved:** users, jobs, job aliases, category seeds, suppliers, supplier aliases. The org setup testers need (Bunnings, Kelly House + its zh alias, categories, admin + contributor accounts) stays intact.
+**What's preserved:** users, jobs, job aliases, category seeds, suppliers, supplier aliases. The org setup testers need stays intact.
 
-Re-runs are safe no-ops. If testers generate their own junk during the trial, run it again between rounds.
+Re-runs are safe no-ops.
 
 ---
 
@@ -37,13 +39,16 @@ Run both roles against the same dev backend. Treat every bullet as one manual st
 
 ### Pre-flight (admin does this once before testers join)
 
-- [ ] Backend on `:8000`, admin on `:5173`, Postgres on `:5433` (host).
-- [ ] `uv run python -m scripts.reset_testing_expenses` — dev DB expense-clean.
-- [ ] Admin seeded: `admin@example.com` / `admin`.
-- [ ] Contributor seeded via admin UI: one real builder per tester — their name + real email + a temp password.
-- [ ] At least one job exists with EN + zh aliases covering the real site names the team actually uses.
-- [ ] At least 5–10 real suppliers you expect to see, each with aliases for the short-form names the team types.
-- [ ] 23 category seeds present (from Phase 1).
+- [x] Postgres on `:5433` (host) — container `sitetracker-db` (healthy as of 2026-04-24).
+- [x] `uv run python -m scripts.reset_testing_expenses` — **done** for the current window (8 expenses, 5 queue rows, 5 audit rows cleared). Re-run only between rounds.
+- [x] Admin seeded: `admin@example.com` / `admin` (from Phase 1 `seed_admin`).
+- [x] Contributor seeded from E2E: `jeffrey@example.com` / `jeffpass` — use this for the first trial. Create additional contributors through `/users` if more testers join.
+- [x] Kelly House job exists with EN alias `Kelly` + zh alias `工地1`.
+- [x] Bunnings supplier with alias `bunnings`.
+- [x] 23 category seeds present (from Phase 1).
+- [ ] Backend on `:8000` — start with `cd backend && uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload` just before the trial opens.
+- [ ] Admin on `:5173` — start with `cd admin && npm run dev` just before the trial opens.
+- [ ] Add 4–9 more real suppliers you expect the team to type (with short-form aliases), as the trial surfaces them — one of the things we want to measure is how often alias-gap issues fire, so don't pre-seed aggressively.
 
 ### Admin flow
 
