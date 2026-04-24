@@ -54,6 +54,7 @@ from app.models import (
     ExpenseReviewQueue,
     ExpenseType,
     Job,
+    PaymentMethod,
     ReceiptStatus,
     ReviewQueueStatus,
     ReviewStatus,
@@ -61,6 +62,7 @@ from app.models import (
     User,
     UserRole,
 )
+from app.models.expense import compute_gst_split
 from app.schemas.expense import (
     ExpenseCreate,
     ExpenseUpdate,
@@ -119,7 +121,6 @@ class JobNotFoundForExpense(Exception):
 # ---------------------------------------------------------------------------
 
 
-_GST_DIVISOR = Decimal("1.1")
 _MAX_PAST_YEARS = 5
 
 
@@ -204,20 +205,22 @@ def _compute_gst_split(
     amount_inc: Decimal,
     amount_ex: Decimal | None,
     gst: Decimal | None,
+    payment_method: PaymentMethod | None,
 ) -> tuple[Decimal, Decimal]:
     """Derive the ex-GST / GST pair from the inclusive total when unset.
 
     Mirrors the ``_compute_gst_split`` listener on
     :class:`~app.models.expense.Expense` but runs eagerly in Python so
-    the service can write all three columns in a single INSERT (the
-    listener covers the case where the caller only supplied
-    ``amount_inc_gst``, but writing the split ourselves also lets us
+    the service can write all three columns in a single INSERT and
     return consistent values in the wire response without waiting for
-    a ``db.refresh`` round trip).
+    a ``db.refresh`` round trip.
+
+    The payment-method-aware rule lives in
+    :func:`app.models.expense.compute_gst_split`; this wrapper only
+    honors structured overrides (caller-supplied ex or gst figures).
     """
     if amount_ex is None and gst is None:
-        ex = (amount_inc / _GST_DIVISOR).quantize(Decimal("0.01"))
-        return ex, amount_inc - ex
+        return compute_gst_split(amount_inc, payment_method)
     if amount_ex is None:
         return amount_inc - gst, gst  # type: ignore[operator]
     if gst is None:
@@ -375,9 +378,14 @@ async def create_expense(
 
     # Compute GST split up front (the model listener would do this at
     # flush time; doing it here keeps the wire response immediately
-    # consistent).
+    # consistent). Cash payments are GST-exclusive — see
+    # :func:`app.models.expense.compute_gst_split` for the business
+    # rule documentation.
     amount_ex, gst = _compute_gst_split(
-        merged["amount_inc_gst"], merged["amount_ex_gst"], merged["gst_amount"]
+        merged["amount_inc_gst"],
+        merged["amount_ex_gst"],
+        merged["gst_amount"],
+        merged["payment_method"],
     )
 
     # Pick review_status + confidence_score from the parse result, if any.
@@ -641,16 +649,20 @@ async def update_expense(
         if field in patch_set:
             setattr(expense, field, getattr(patch, field))
 
-    # If amount_inc_gst changed AND neither of the split components were
-    # explicitly set in the patch, recompute the split.
+    # Recompute the split whenever amount_inc_gst OR payment_method
+    # changed AND neither split component was explicitly set in the
+    # patch. payment_method matters because `cash` uses a different
+    # rule (GST-exclusive) than other methods — flipping between them
+    # would otherwise leave the stored split inconsistent with the
+    # rule documented on :func:`compute_gst_split`.
     if (
-        "amount_inc_gst" in patch_set
+        ("amount_inc_gst" in patch_set or "payment_method" in patch_set)
         and "amount_ex_gst" not in patch_set
         and "gst_amount" not in patch_set
     ):
-        ex = (expense.amount_inc_gst / _GST_DIVISOR).quantize(Decimal("0.01"))
+        ex, gst = compute_gst_split(expense.amount_inc_gst, expense.payment_method)
         expense.amount_ex_gst = ex
-        expense.gst_amount = expense.amount_inc_gst - ex
+        expense.gst_amount = gst
 
     # Re-validate the post-update expense state.
     _validate_save(

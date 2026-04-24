@@ -192,8 +192,12 @@
   },
   "capture": {
     "title": "新增支出",
-    "textarea_placeholder": "输入或粘贴支出内容,例如:Bunnings 250 Elizabeth Street 水泥。",
+    "textarea_placeholder": "输入或粘贴支出内容,例如:Bunnings 250 Elizabeth Street 水泥 或 Bunnings $500 现金 晶晶家。",
     "receipt_later": "稍后补发票",
+    "payment_label": "付款:",
+    "payment_auto": "自动识别",
+    "payment_cash": "现金",
+    "payment_transfer": "银行转账",
     "submit": "提交",
     "advanced": "高级(手动填写)",
     "job": "项目",

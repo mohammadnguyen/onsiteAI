@@ -56,24 +56,39 @@ If you want more jobs or suppliers before the window opens, create them through 
 
 ---
 
-## 10 example inputs to try (contributor)
+## Payment method + GST rule
 
-Mix them into your own real entries — don't submit only these. Each is picked to exercise a different parser path the test plan expects. The **expect** column is what the parser *should* do; if it doesn't, that's an issue-log row.
+Every entry has a payment selector above the receipt-later checkbox: **Auto** / **Cash** / **Bank transfer**.
+
+* **Auto** (default) — if the raw text contains a payment keyword (`cash` / `eft` / `transfer` / `bank` / `paid` / 现金 / 转账 / 银行) the parser extracts it. Otherwise the row is stored as `unknown` and the admin sets it during resolve.
+* **Cash** or **Bank transfer** — explicit user choice, wins over parser extraction.
+
+**GST rule:** cash payments are treated as **GST-exclusive** — the typed amount becomes both `amount_inc_gst` and `amount_ex_gst`, and `gst_amount` is `$0.00`. Small cash builder purchases usually lack a tax invoice so the GST input credit can't be claimed; carrying a phantom GST figure would misrepresent the books. All other payment methods (transfer, unknown) keep the standard 1/11 split.
+
+The result view now shows three amount rows: **Amount (inc GST)**, **Amount (ex GST)**, **GST** — so the rule's outcome is visible on every save.
+
+## 12 example inputs to try (contributor)
+
+Mix them into your own real entries — don't submit only these. Each is picked to exercise a different parser path. The **expect** column is what the parser *should* do; if it doesn't, that's an issue-log row.
 
 | # | Input | Expect | Why this input |
 |---|---|---|---|
-| 1 | `$305 Bunnings Kelly bluemetal` | Saved (auto-reviewed). Amount 305, Job Kelly House, Supplier Bunnings, Category Earthworks. | Plan spec anchor #1 — EN reviewed happy path. |
-| 2 | `$420 Bunnings Kelly concrete` | Saved. Amount 420, Job Kelly House, Supplier Bunnings, Category Concrete. | Different category via single EN keyword. |
+| 1 | `$305 Bunnings Kelly bluemetal` | Saved (auto-reviewed). Amount inc 305, ex 277.27, GST 27.73 (standard split, Payment `unknown`), Job Kelly House, Supplier Bunnings, Category Earthworks. | Plan spec anchor #1 — EN reviewed happy path. |
+| 2 | `$420 Bunnings Kelly concrete` | Saved. Amount 420 / 381.82 / 38.18, Payment `unknown`, Category Concrete. | Different category via single EN keyword. |
 | 3 | `工地1 水工材料 163` | Saved — pending review. Chips: `Amount uncertain`, `Supplier uncertain`. Job matched via zh alias, Category Plumbing. | Plan spec anchor #2 — zh path + bare-number amount. |
 | 4 | `¥50 Kelly` | Saved — pending review. Chip: `Unsupported currency` (plus peers). Amount 50 extracted, Job Kelly. | Plan spec anchor #3 — non-AUD currency handling. |
-| 5 | `bunnings Kelly 88 timber cash` | Saved (auto-reviewed). Supplier Bunnings (via `bunnings` alias), Amount 88, Job Kelly, Category Carpentry, Payment `cash`. | Exercises the lowercase alias path + EN payment method detection. |
-| 6 | `Bunnings 250 Kelly 水泥 转账` | Saved (auto-reviewed). Amount 250, Job Kelly, Supplier Bunnings, Category Concrete (zh keyword 水泥), Payment `transfer` (zh 转账). | Mixed EN/zh — parser should handle both scripts in one line. |
-| 7 | `Kelly $1,234.56 electrical sparky` | Saved (auto-reviewed). Amount 1234.56 (1000-separator survives), Category Electrical (two-keyword boost: `electrical` + `sparky`). | Tests decimal + thousand-separator + high-confidence category. |
-| 8 | `Kelly 80` | Saved — pending review. Chips: `Amount uncertain`, `Supplier uncertain`, `Category uncertain`. Amount 80, Job Kelly. | Bare-minimum input — see how much the parser confidently extracts when most tokens are missing. |
-| 9 | `$305 Bunnings Kelly bluemetal` (submit AGAIN) | Saved — pending review. Chip: `Duplicate suspected` (references expense #1). | Intentional duplicate — lets the admin practice the resolve-duplicate workflow and verify the duplicate-of link works. |
-| 10 | `Harvey Norman Kelly 350 tiles` | Saved — pending review. Chips: `Supplier uncertain` (Harvey Norman has no alias yet) and possibly `Category uncertain`. | `alias-gap` probe — the admin gets to practice adding a new supplier + alias during queue resolve. |
+| 5 | `bunnings Kelly 88 timber cash` | Saved (auto-reviewed). Amount inc 88, ex **88.00**, GST **0.00** (cash rule). Supplier Bunnings (via `bunnings` alias), Category Carpentry, Payment `cash`. | Lowercase alias + EN cash keyword → GST-exclusive split. |
+| 6 | `Bunnings 250 Kelly 水泥 转账` | Saved (auto-reviewed). Amount inc 250, ex 227.27, GST 22.73 (standard split — transfer), Category Concrete (zh keyword 水泥), Payment `transfer` (zh 转账). | Mixed EN/zh, confirms the transfer path keeps the standard split. |
+| 7 | `bunnings $500 现金 Kelly bluemetal` | Saved. Amount inc 500, ex **500.00**, GST **0.00** (cash rule). Supplier Bunnings, Category Earthworks, Payment `cash` (from 现金). | The user-provided cash example — zh keyword drives the GST rule. |
+| 8 | `水泥 $1000 转账 Kelly` | Saved — pending review (supplier_uncertain — no supplier in text). Amount inc 1000, ex **909.09**, GST **90.91** (standard split — transfer). Category Concrete, Payment `transfer`. | The user-provided transfer example — zh 转账 drives standard 1/11 split. |
+| 9 | `Kelly $1,234.56 electrical sparky` | Saved (auto-reviewed). Amount 1234.56 (1000-separator survives), ex 1122.33, GST 112.23, Category Electrical. | Tests decimal + thousand-separator + high-confidence category. |
+| 10 | `Kelly 80` — then pick **Cash** radio before submit | Saved — pending review (amount/supplier/category uncertain). Payment `cash` (UI override), GST 0. | Confirms the UI picker overrides an absent parser extraction. |
+| 11 | `$305 Bunnings Kelly bluemetal` (submit AGAIN) | Saved — pending review. Chip: `Duplicate suspected` (references expense #1). | Intentional duplicate — admin workflow practice. |
+| 12 | `Harvey Norman Kelly 350 tiles` | Saved — pending review. Chips: `Supplier uncertain` (Harvey Norman has no alias yet) and possibly `Category uncertain`. | `alias-gap` probe — admin adds a new supplier + alias during resolve. |
 
-After running through these, spend the rest of the trial typing **real entries** the way the builder actually types them on site. The 10 above are a warmup; the real value is in unscripted input.
+After running through these, spend the rest of the trial typing **real entries** the way the builder actually types them on site. The list above is a warmup; the real value is in unscripted input.
+
+> **Tip:** The user-provided examples above use `Kelly` as the job name; the user's original request used their own job alias `晶晶家`. For the trial, either (a) create a new job via the admin UI and give it the alias you actually type (`晶晶家`, site addresses, nicknames — whatever the team uses), or (b) use the seeded `Kelly` / `工地1` / `工地１` aliases. The parser doesn't care which job exists; it just needs *some* seeded alias to match.
 
 ---
 

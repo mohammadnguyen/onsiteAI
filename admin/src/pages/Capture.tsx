@@ -11,6 +11,13 @@ type ExpenseCreateInput = components['schemas']['ExpenseCreate-Input']
 type ExpenseCreateResponse = components['schemas']['ExpenseCreateResponse']
 type ReviewReasonCode = components['schemas']['ReviewReasonCode']
 type ReceiptStatus = components['schemas']['ReceiptStatus']
+type PaymentMethod = components['schemas']['PaymentMethod']
+
+// Capture's payment selector has three UX states: "auto" means let
+// the parser decide (or fall back to ``unknown``); "cash" / "transfer"
+// are explicit user choices that take precedence over parser output
+// via the backend's caller-set merge logic.
+type PaymentSel = 'auto' | 'cash' | 'transfer'
 
 const REASON_COLOR: Record<ReviewReasonCode, string> = {
   amount_uncertain: 'bg-amber-100 text-amber-800',
@@ -40,6 +47,7 @@ export function Capture() {
 
   const [rawInputText, setRawInputText] = useState('')
   const [receiptLater, setReceiptLater] = useState(false)
+  const [paymentSel, setPaymentSel] = useState<PaymentSel>('auto')
   const [expenseDate, setExpenseDate] = useState<string>(todayIso())
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [jobId, setJobId] = useState('')
@@ -53,6 +61,7 @@ export function Capture() {
   const resetForm = () => {
     setRawInputText('')
     setReceiptLater(false)
+    setPaymentSel('auto')
     setExpenseDate(todayIso())
     setAdvancedOpen(false)
     setJobId('')
@@ -78,12 +87,23 @@ export function Capture() {
     // step to override the parser's extracted values with null and
     // trigger a spurious "Amount is required" 422 on raw-text-only
     // submissions.
-    const body: ExpenseCreateInput = {
+    // Use a local type that treats payment_method as optional. The
+    // generated ExpenseCreateInput marks it required because the
+    // openapi-typescript generator doesn't honor Pydantic defaults, but
+    // the backend accepts its omission (falls back to ``unknown``).
+    // Only including the field when the user explicitly picked cash
+    // or transfer keeps it out of Pydantic's model_fields_set — so
+    // the parser-extracted value survives when the user leaves the
+    // selector on "Auto".
+    type CaptureBody = Omit<ExpenseCreateInput, 'payment_method'> & {
+      payment_method?: PaymentMethod
+    }
+    const body: CaptureBody = {
       raw_input_text: rawInputText.trim(),
       expense_type: 'supplier_expense',
-      payment_method: 'unknown',
       receipt_status: (receiptLater ? 'expected_later' : 'no_receipt') as ReceiptStatus,
     }
+    if (paymentSel !== 'auto') body.payment_method = paymentSel as PaymentMethod
     if (expenseDate) body.expense_date = expenseDate
     if (jobId) body.job_id = jobId
     if (supplierId) body.supplier_id = supplierId
@@ -91,7 +111,7 @@ export function Capture() {
     if (description) body.description = description
     if (notes) body.notes = notes
     try {
-      const resp = await createExpense.mutateAsync(body)
+      const resp = await createExpense.mutateAsync(body as ExpenseCreateInput)
       setResult(resp)
     } catch (err) {
       setFormError(extractErrorMessage(err))
@@ -124,6 +144,27 @@ export function Capture() {
                 placeholder={t('capture.textarea_placeholder')}
                 className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-slate-500"
               />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+              <span className="font-medium text-slate-700">
+                {t('capture.payment_label')}
+              </span>
+              {(['auto', 'cash', 'transfer'] as const).map((opt) => (
+                <label key={opt} className="inline-flex items-center gap-1.5">
+                  <input
+                    type="radio"
+                    name="payment-method"
+                    value={opt}
+                    checked={paymentSel === opt}
+                    onChange={() => setPaymentSel(opt)}
+                    className="border-slate-300"
+                  />
+                  <span className="text-slate-700">
+                    {t(`capture.payment_${opt}` as const)}
+                  </span>
+                </label>
+              ))}
             </div>
 
             <div className="flex items-center gap-2">
@@ -318,6 +359,8 @@ function ResultView({
 
       <dl className="bg-white rounded-lg border border-slate-200 p-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
         <Info label={t('capture.amount')} value={expense.amount_inc_gst} />
+        <Info label={t('expense.amount_ex_gst')} value={expense.amount_ex_gst} />
+        <Info label={t('expense.gst')} value={expense.gst_amount} />
         <Info label={t('capture.job')} value={jobNameOf(expense.job_id)} />
         <Info
           label={t('capture.supplier')}
@@ -327,7 +370,10 @@ function ResultView({
           label={t('expense.category')}
           value={categoryNameOf(expense.category_id)}
         />
-        <Info label={t('expense.payment')} value={expense.payment_method} />
+        <Info
+          label={t('expense.payment')}
+          value={t(`expense.payment_${expense.payment_method}` as const)}
+        />
         <Info label={t('expense.date')} value={expense.expense_date} />
       </dl>
 

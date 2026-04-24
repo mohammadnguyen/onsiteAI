@@ -192,8 +192,12 @@
   },
   "capture": {
     "title": "New Expense",
-    "textarea_placeholder": "Type or paste what you spent, e.g. 'Bunnings 250 Elizabeth Street cement'.",
+    "textarea_placeholder": "Type or paste what you spent, e.g. 'Bunnings 250 Elizabeth Street cement' or 'Bunnings $500 现金 晶晶家'.",
     "receipt_later": "Add receipt later",
+    "payment_label": "Payment:",
+    "payment_auto": "Auto",
+    "payment_cash": "Cash",
+    "payment_transfer": "Bank transfer",
     "submit": "Submit",
     "advanced": "Advanced (manual fields)",
     "job": "Job",

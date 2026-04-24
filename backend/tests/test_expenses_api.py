@@ -37,6 +37,7 @@ from app.models import (
     JobAlias,
     JobStatus,
     LanguageCode,
+    PaymentMethod,
     ReceiptStatus,
     ReviewQueueStatus,
     ReviewReasonCode,
@@ -366,6 +367,7 @@ async def _seed_structured_expense(
     supplier_id=None,
     review_status: ReviewStatus = ReviewStatus.reviewed,
     receipt_status: ReceiptStatus = ReceiptStatus.no_receipt,
+    payment_method: PaymentMethod = PaymentMethod.unknown,
     expense_date: _datetime.date | None = None,
 ) -> Expense:
     exp = Expense(
@@ -376,6 +378,7 @@ async def _seed_structured_expense(
         expense_type=ExpenseType.supplier_expense,
         description=description,
         amount_inc_gst=Decimal(amount),
+        payment_method=payment_method,
         expense_date=expense_date or _datetime.date.today(),
         review_status=review_status,
         receipt_status=receipt_status,
@@ -717,6 +720,148 @@ async def test_patch_amount_inc_gst_recomputes_ex_and_gst(client, db_session, wo
     assert Decimal(body["gst_amount"]) == Decimal("20.00")
 
 
+@pytest.mark.asyncio
+async def test_create_cash_payment_is_gst_exclusive(client, world, admin_token):
+    """Structured POST with payment_method=cash -> ex=inc, gst=0.00."""
+    r = await client.post(
+        "/expenses",
+        headers=_auth(admin_token),
+        json={
+            "job_id": str(world["job_a"].job_id),
+            "amount_inc_gst": "500",
+            "payment_method": "cash",
+            "expense_date": _today_iso(),
+            "description": "cash purchase",
+        },
+    )
+    assert r.status_code == 201, r.text
+    expense = r.json()["expense"]
+    assert expense["payment_method"] == "cash"
+    assert Decimal(expense["amount_inc_gst"]) == Decimal("500")
+    assert Decimal(expense["amount_ex_gst"]) == Decimal("500.00")
+    assert Decimal(expense["gst_amount"]) == Decimal("0.00")
+
+
+@pytest.mark.asyncio
+async def test_create_transfer_payment_uses_standard_split(client, world, admin_token):
+    """Structured POST with payment_method=transfer -> ex=inc/1.1."""
+    r = await client.post(
+        "/expenses",
+        headers=_auth(admin_token),
+        json={
+            "job_id": str(world["job_a"].job_id),
+            "amount_inc_gst": "1100",
+            "payment_method": "transfer",
+            "expense_date": _today_iso(),
+            "description": "bank transfer",
+        },
+    )
+    assert r.status_code == 201, r.text
+    expense = r.json()["expense"]
+    assert expense["payment_method"] == "transfer"
+    assert Decimal(expense["amount_ex_gst"]) == Decimal("1000.00")
+    assert Decimal(expense["gst_amount"]) == Decimal("100.00")
+
+
+@pytest.mark.asyncio
+async def test_create_raw_text_with_cash_keyword_applies_cash_rule(
+    client, world, admin_token
+):
+    """Raw text containing the `cash` keyword -> parser extracts cash -> GST=0."""
+    r = await client.post(
+        "/expenses",
+        headers=_auth(admin_token),
+        json={
+            "raw_input_text": "Kelly $80 cash timber",
+            "expense_date": _today_iso(),
+        },
+    )
+    assert r.status_code == 201, r.text
+    expense = r.json()["expense"]
+    assert expense["payment_method"] == "cash"
+    assert Decimal(expense["amount_ex_gst"]) == Decimal("80.00")
+    assert Decimal(expense["gst_amount"]) == Decimal("0.00")
+
+
+@pytest.mark.asyncio
+async def test_create_raw_text_with_zh_cash_keyword_applies_cash_rule(
+    client, world, admin_token
+):
+    """Raw text containing 现金 -> parser extracts cash -> GST=0."""
+    r = await client.post(
+        "/expenses",
+        headers=_auth(admin_token),
+        json={
+            "raw_input_text": "Kelly 现金 200 水泥",
+            "expense_date": _today_iso(),
+        },
+    )
+    assert r.status_code == 201, r.text
+    expense = r.json()["expense"]
+    assert expense["payment_method"] == "cash"
+    assert Decimal(expense["amount_inc_gst"]) == Decimal("200")
+    assert Decimal(expense["amount_ex_gst"]) == Decimal("200.00")
+    assert Decimal(expense["gst_amount"]) == Decimal("0.00")
+
+
+@pytest.mark.asyncio
+async def test_patch_payment_method_to_cash_recomputes_gst_to_zero(
+    client, db_session, world, admin_token
+):
+    """Admin PATCH payment_method=cash on a transfer row -> GST recomputes to 0."""
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        amount="1100",
+        review_status=ReviewStatus.pending,
+    )
+    # Seeded with the default unknown split (1/11), so ex=1000 gst=100 before.
+    assert exp.amount_ex_gst == Decimal("1000.00")
+    assert exp.gst_amount == Decimal("100.00")
+
+    r = await client.patch(
+        f"/expenses/{exp.expense_id}",
+        headers=_auth(admin_token),
+        json={"payment_method": "cash"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["payment_method"] == "cash"
+    assert Decimal(body["amount_inc_gst"]) == Decimal("1100")
+    assert Decimal(body["amount_ex_gst"]) == Decimal("1100.00")
+    assert Decimal(body["gst_amount"]) == Decimal("0.00")
+
+
+@pytest.mark.asyncio
+async def test_patch_payment_method_from_cash_to_transfer_recomputes_gst(
+    client, db_session, world, admin_token
+):
+    """Admin PATCH payment_method=transfer on a cash row -> GST recomputes to 1/11."""
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        amount="500",
+        review_status=ReviewStatus.pending,
+        payment_method=PaymentMethod.cash,
+    )
+    assert exp.amount_ex_gst == Decimal("500.00")
+    assert exp.gst_amount == Decimal("0.00")
+
+    r = await client.patch(
+        f"/expenses/{exp.expense_id}",
+        headers=_auth(admin_token),
+        json={"payment_method": "transfer"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["payment_method"] == "transfer"
+    # 500 / 1.1 ≈ 454.55 (rounded half-up, Bankers' rounding not used in app)
+    assert Decimal(body["amount_ex_gst"]) == Decimal("454.55")
+    assert Decimal(body["gst_amount"]) == Decimal("500") - Decimal("454.55")
+
+
 # ---------------------------------------------------------------------------
 # DELETE
 # ---------------------------------------------------------------------------
@@ -816,9 +961,15 @@ async def test_get_audit_admin_200(client, db_session, world, admin_token):
     assert r.status_code == 200, r.text
     rows = r.json()
     assert len(rows) == 2
-    # Newest first: reason "second" comes before "first".
-    assert rows[0]["reason"] == "second"
-    assert rows[1]["reason"] == "first"
+    # Both patches ran inside the test fixture's single transaction, so
+    # PostgreSQL ``NOW()`` returns the identical server_default value
+    # for both rows (``NOW()`` is transaction-start time). The listing
+    # therefore can't reliably order them "newest first" against a
+    # shared-transaction test. Just assert both reasons are present;
+    # real-world traffic has each request in its own transaction so
+    # the production order-by-edited_at_desc is meaningful there.
+    reasons = {row["reason"] for row in rows}
+    assert reasons == {"first", "second"}
 
 
 # ---------------------------------------------------------------------------

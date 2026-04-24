@@ -67,6 +67,53 @@ async def test_expense_roundtrip_with_computed_gst(db_session, seeded_admin):
 
 
 @pytest.mark.asyncio
+async def test_cash_is_gst_exclusive(db_session, seeded_admin):
+    """Cash payments are GST-exclusive: ex == inc, gst == 0."""
+    job = await _make_job(db_session, seeded_admin)
+
+    expense = Expense(
+        expense_id=uuid.uuid4(),
+        job_id=job.job_id,
+        entered_by_user_id=seeded_admin.user_id,
+        amount_inc_gst=Decimal("500.00"),
+        payment_method=PaymentMethod.cash,
+        expense_date=date(2026, 4, 24),
+    )
+    db_session.add(expense)
+    await db_session.flush()
+    await db_session.refresh(expense)
+
+    # The "inc_gst" column name is legacy; for cash the stored value is
+    # the total paid and is ALSO the ex-GST figure. The split listener
+    # honors the cash rule documented on compute_gst_split.
+    assert expense.amount_inc_gst == Decimal("500.00")
+    assert expense.amount_ex_gst == Decimal("500.00")
+    assert expense.gst_amount == Decimal("0.00")
+
+
+@pytest.mark.asyncio
+async def test_transfer_uses_standard_split(db_session, seeded_admin):
+    """Transfer and unknown both use the standard 1/11 split."""
+    job = await _make_job(db_session, seeded_admin)
+
+    expense = Expense(
+        expense_id=uuid.uuid4(),
+        job_id=job.job_id,
+        entered_by_user_id=seeded_admin.user_id,
+        amount_inc_gst=Decimal("1100.00"),
+        payment_method=PaymentMethod.transfer,
+        expense_date=date(2026, 4, 24),
+    )
+    db_session.add(expense)
+    await db_session.flush()
+    await db_session.refresh(expense)
+
+    assert expense.amount_inc_gst == Decimal("1100.00")
+    assert expense.amount_ex_gst == Decimal("1000.00")
+    assert expense.gst_amount == Decimal("100.00")
+
+
+@pytest.mark.asyncio
 async def test_expense_roundtrip_with_overridden_gst(db_session, seeded_admin):
     """If the caller sets all three amounts, the listener leaves them alone."""
     job = await _make_job(db_session, seeded_admin)

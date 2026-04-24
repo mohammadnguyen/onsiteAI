@@ -8,12 +8,24 @@ An :class:`Expense` is a single money-movement row booked against a
 GST split convention
 --------------------
 V1 operates under the Australian 10% GST regime where the inclusive
-price is the "source of truth". When the caller supplies only
-``amount_inc_gst``, the ``_compute_gst_split`` event listener derives
-the ex-GST / GST components via:
+price is the "source of truth" for most payments. When the caller
+supplies only ``amount_inc_gst``, the ``_compute_gst_split`` event
+listener derives the ex-GST / GST components using one of two rules
+driven by ``payment_method``:
 
-    amount_ex_gst = round(amount_inc_gst / Decimal("1.1"), 2)
-    gst_amount   = amount_inc_gst - amount_ex_gst
+* ``cash`` — treated as **GST-exclusive**. Small cash purchases in
+  Australian residential construction typically lack a tax invoice,
+  so we can't claim the GST input credit. The captured amount IS the
+  ex-GST amount and the GST component is zero::
+
+      amount_ex_gst = amount_inc_gst
+      gst_amount    = Decimal("0.00")
+
+* any other payment method (``transfer`` / ``unknown``) — standard
+  1/11 split::
+
+      amount_ex_gst = round(amount_inc_gst / Decimal("1.1"), 2)
+      gst_amount    = amount_inc_gst - amount_ex_gst
 
 Structured entry (bookkeeping-style) may pass all three amounts
 explicitly — if the listener sees a value already set on
@@ -227,15 +239,48 @@ class Expense(Base, TimestampMixin):
 _GST_DIVISOR = Decimal("1.1")
 
 
+def compute_gst_split(
+    amount_inc_gst: Decimal,
+    payment_method: "PaymentMethod | str | None",
+) -> tuple[Decimal, Decimal]:
+    """Return ``(amount_ex_gst, gst_amount)`` from an inclusive total.
+
+    Business rule is driven by the payment method:
+
+    * ``cash`` → GST-exclusive. The captured amount becomes
+      ``amount_ex_gst`` verbatim and ``gst_amount`` is ``0.00``. Small
+      cash builder purchases typically have no tax invoice, so the
+      input credit can't be claimed and carrying a phantom GST figure
+      on the row would misrepresent the books.
+
+    * anything else (``transfer`` / ``unknown`` / ``None``) → standard
+      Australian 1/11 split.
+
+    This helper is the single source of truth for the rule; both the
+    ``before_insert`` / ``before_update`` listener below and the
+    service-layer eager compute in :mod:`app.services.expenses` call
+    into it so the split can't drift across call sites.
+    """
+    pm = (
+        payment_method.value
+        if isinstance(payment_method, PaymentMethod)
+        else (payment_method or "")
+    )
+    if pm == PaymentMethod.cash.value:
+        ex = amount_inc_gst.quantize(Decimal("0.01"))
+        return ex, Decimal("0.00")
+    ex = (amount_inc_gst / _GST_DIVISOR).quantize(Decimal("0.01"))
+    return ex, amount_inc_gst - ex
+
+
 def _compute_gst_split(mapper, connection, target: Expense) -> None:
     if target.amount_inc_gst is None:
         return
     inc = target.amount_inc_gst
-    # Derive ex-GST from inc first (so gst can be filled from the pair).
     if target.amount_ex_gst is None and target.gst_amount is None:
-        ex = (inc / _GST_DIVISOR).quantize(Decimal("0.01"))
+        ex, gst = compute_gst_split(inc, target.payment_method)
         target.amount_ex_gst = ex
-        target.gst_amount = inc - ex
+        target.gst_amount = gst
     elif target.amount_ex_gst is None:
         target.amount_ex_gst = inc - target.gst_amount
     elif target.gst_amount is None:
