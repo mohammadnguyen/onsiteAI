@@ -1,11 +1,11 @@
 # Phase 2 internal-testing prep
 
-Post–Batch 4c snapshot for internal-testing rollout. Three sections:
+Post–Batch 4c snapshot for internal-testing rollout.
 
 1. [Clean-slate reset](#clean-slate-reset) — what to run before testers log in
 2. [Internal testing checklist](#internal-testing-checklist) — admin + contributor flows to exercise
 3. [Issue log template](#issue-log-template) — copy/paste rows when you spot something
-4. [Top 3 highest-value fixes to consider after 1–2 weeks](#top-3-highest-value-fixes-to-consider-after-12-weeks) — decision queue
+4. [Post-trial decision framework](#post-trial-decision-framework) — **forked decision** between parser/review work (Branch A) and dashboard-first Phase 3 Lite (Branch B). Not a default; the branch is chosen from trial counts + business signals.
 
 Keep this document terse. Add observations to the issue log, not to the prose.
 
@@ -130,44 +130,91 @@ The goal is not to fix everything during the trial — it's to have a well-organ
 
 ---
 
-## Top 3 highest-value fixes to consider after 1–2 weeks
+## Post-trial decision framework
 
-These are the candidates most likely to pay off based on the Batch 4b + 4c findings and the out-of-scope items the plan deliberately deferred. Rank is a prediction; real usage data will re-rank them.
+After the window closes, the next build is **not** automatically more parser / review work. The decision is a fork based on what the log actually shows plus the current business concern. The rule is **"fix what's actually hurting, not what's engineering-interesting."**
 
-### 1. Ship Phase 2.5 (real Claude fallback behind `LLMParser`)
+### Step 1 — Count the log
 
-**Why this ranks first.** The parser is rules-only today. Every row in the issue log tagged `parser-miss` or `alias-gap` is a candidate for the LLM fallback to rescue — it's the single change that reduces multiple classes of issue at once. The interface is already shipped (`backend/app/services/parser/llm_adapter.py`); Phase 2.5 just drops in `ClaudeLLMParser(LLMParser)` and activates it via `ANTHROPIC_API_KEY`.
+Produce exactly these five numbers:
 
-**Effort:** small — the plan already scoped it (see [`docs/phase-2-plan.md` → Phase 2.5](#) if/when it's added; the plan lives in the user's plan history today). Add `anthropic` dependency, implement the adapter, record fixtures, measure cost/latency on 20 real entries, keep or defer.
+```text
+parser-miss:               <n>
+alias-gap:                 <n>
+duplicate-false-positive:  <n>
+review-friction:           <n>
+unsupported-currency:      <n>
+```
 
-**Signal to commit:** trial surfaces ≥ 5 distinct parser-miss findings that would plausibly be handled by an LLM (ambiguous descriptions, rare supplier names, mixed EN/zh phrasings without seeded keywords).
+### Step 2 — Pick a branch
 
-### 2. Admin "add alias from review queue" inline action
+Walk the two branches below in order. Commit to whichever clears its threshold first. **Do not default to parser/review polish just because the issue log exists — the log is a gate, not a mandate.**
 
-**Why this ranks second.** Every `alias-gap` issue has the same resolution path: the admin already has the expense, the supplier (or job), and the raw text in front of them in the review panel. Today they have to approve, then go to `/suppliers` or `/jobs`, find the row, open the alias form, type the alias from memory. That's four context switches per gap, and teams that find five gaps a week will stop bothering.
+---
 
-**What to build:** in the review detail panel, when the admin picks a supplier/job to assign, surface a "Save 'X' as alias for this supplier/job" checkbox next to the picker. Checked + approve → atomically write the alias row *in the same transaction* as the expense patch + queue close + audit.
+### Branch A — Parser / review work (only if the log demands it)
 
-**Effort:** medium. New endpoint field on the resolve payload; service writes the alias; UI adds one checkbox and one toast. Does not need a schema change on the alias tables.
+Justified when the trial data shows real pain in capture or triage. Each candidate has a threshold; meeting at least ONE threshold below justifies a Branch A build window. If no threshold is cleared, go to Branch B.
 
-**Signal to commit:** trial surfaces ≥ 10 `alias-gap` findings across all testers. Fewer than that and the four-clicks workaround is fine.
+| Candidate | Threshold to commit | Effort |
+|---|---|---|
+| **Phase 2.5** — real Claude fallback behind the `LLMParser` interface | ≥ 5 distinct `parser-miss` findings plausibly LLM-rescueable (ambiguous descriptions, rare suppliers, mixed EN/zh phrasings without seeded keywords) | Small. Interface + mock already shipped — adds `anthropic` dep + real adapter + fixture tests + 20-input cost/latency measurement. |
+| **Add-alias-from-review** — inline "save this as an alias" checkbox in the review resolve panel, atomic with the approve transaction | ≥ 10 `alias-gap` findings across all testers | Medium. New endpoint field; service writes the alias; UI adds one checkbox + toast. No schema change. |
+| **Description fallback polish** — trim already-consumed tokens from `description`; label the supplier/description fallback column; add a `supplier_or_description` accessor | ≥ 3 `parser-miss` findings where description still contains matched tokens OR ≥ 3 `review-friction` findings confused by the fallback column | Small. One parser stage + two UI labels + one schema field. |
 
-### 3. Description fallback + supplier-first review
+If two or three thresholds clear simultaneously, build them in the order above (Phase 2.5 first because it rescues multiple classes of issue with one change).
 
-**Why this ranks third.** The Batch 4b E2E surfaced a cosmetic parser issue (`Kelly` appearing in description after being consumed by the job matcher) and a display-logic quirk (`/my-expenses` supplier column falls back to description when supplier is null — works, but reads oddly). Neither blocks anyone; both will generate `parser-miss` or `review-friction` log rows.
+---
 
-**What to do:** (a) in `parser/description.py` (to be added), remove already-consumed tokens from the description result so it contains only unmatched tokens; (b) in `Capture.tsx`'s result view and `MyExpenses.tsx`'s row, label the fallback column "Supplier / description" so the behaviour is visible; (c) add a `supplier_or_description` derived accessor on the expense schema so clients don't re-implement the fallback.
+### Branch B — Dashboard / budget visibility first (Phase 3 Lite)
 
-**Effort:** small. One parser stage; two UI labels; one schema field.
+Justified when the trial shows **capture is good enough** AND the bigger product gap is **visibility**. This is likely the default if Branch A's thresholds don't clear — the ledger has the data but the builder can't see "am I over budget on Kelly House?" without looking at the admin's expense list by hand.
 
-**Signal to commit:** ≥ 3 `parser-miss` findings where description still contains tokens claimed by other matchers, or ≥ 3 `review-friction` findings confused by the supplier/description column.
+**Signals for this branch:**
+
+- Branch A thresholds don't clear (low parser-miss, low alias-gap, low review-friction)
+- Admin or operator says some version of "I have all the data, I just can't see it"
+- A day's worth of contributor entries lands successfully without friction
+- The business question "how much have we spent on X?" can't be answered from the existing UI
+
+**Phase 3 Lite scope** — the minimum dashboard that answers the budget question for one builder:
+
+1. **Job list page** (new / revised `/jobs`):
+   - Each row shows: total cost to date, total budget, remaining budget, % consumed, overspend flag (red chip when remaining < 0 or % > 100)
+   - Sorted by % consumed descending (highest-risk job first)
+2. **Job detail page** (revised `/jobs/:id`):
+   - Header KPI row: total spent (inc GST + ex GST), total budget, remaining, % consumed
+   - Category table: per category, actual ex-GST vs budget ex-GST, remaining, overspend flag
+   - Expenses feeding the numbers are already listed elsewhere via `/expenses?job_id=…`; don't re-list them here
+
+**Explicitly out of scope for Lite** (these stay in full Phase 3 and ship later):
+
+- Top-5 suppliers / top-5 categories roll-ups
+- Monthly trend chart
+- Estimated margin (contract_value − total cost)
+- Reviewed-vs-pending banding on the totals
+- Drill-down from a KPI to the feeding expense list
+
+**Effort estimate:** medium. Backend gets one aggregation endpoint (`GET /jobs/{id}/budget-summary` returning totals + per-category split) and an extension of `GET /jobs` to include per-row totals. Frontend adds two styled views on the existing Jobs / JobDetail pages. No new schema, no migrations — everything reads from `expenses` + `job_category_budgets` (Phase 1) + `jobs.total_budget` (Phase 1).
+
+**Why this is a real candidate, not a detour:** Phase 3 was always the next scheduled phase after Phase 2 validation. The question the trial answers is whether parser/review debt forces a detour through Phase 2.5 / Branch A FIRST, or whether we can go directly to Phase 3 Lite because the capture flow is already acceptable.
+
+---
+
+### Step 3 — If both branches look justified
+
+If Branch A clears one threshold AND Branch B's signals are strong, prefer **Branch B first** unless the Branch A issue is user-visible friction (e.g., admin refuses to keep triaging because alias-gap is so repetitive). The reasoning: dashboard visibility compounds — every expense entered from this point forward benefits — whereas a parser fix only benefits the specific inputs it rescues. Dashboard-first is the higher-leverage move unless capture is actively breaking.
+
+If you are genuinely uncertain after counting, pause and share the five numbers + a short read of the admin's lived experience during the trial. The decision can be made together rather than by rule.
 
 ---
 
 ## What this pass explicitly does not do
 
-- **No Phase 3** (dashboards) — blocked behind "Phase 2 parser is good enough for real use."
-- **No Phase 2.5** — listed above as a candidate, not scheduled.
+- **No code** — this pass is trial preparation only. Any build (Branch A or Branch B) starts after the window closes and the decision framework above has picked the branch.
+- **No Phase 2.5 yet** — listed above as a Branch A candidate; commits only if its threshold clears.
+- **No Phase 3 Lite yet** — listed above as the Branch B candidate; commits only if the branch signals justify it.
+- **No full Phase 3** (top-5 rollups, monthly trend, margin, banding) — out of Lite scope. Ships only after Lite answers the budget question for real.
 - **No Phase 5** (receipt attachments, labour attendance) — Phase 5 scope.
 - **No mobile/Expo feature work** — preserved per Batch 4c README; resumes after web-first validation succeeds.
 - **No DB migrations** — the reset is a `DELETE`, not a schema change.

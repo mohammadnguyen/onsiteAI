@@ -146,8 +146,11 @@ Anything else → log and keep going.
    unsupported-currency:      <n>
    ```
 
-2. Re-read the **Top 3 highest-value fixes** section in [`docs/internal-testing.md`](internal-testing.md#top-3-highest-value-fixes-to-consider-after-12-weeks) with those counts in mind. Each candidate has a "signal to commit" threshold; check whether real usage cleared it.
+2. Walk the **[Post-trial decision framework](internal-testing.md#post-trial-decision-framework)** in `docs/internal-testing.md`. It forks into two explicit branches and the next build is **not** automatically more parser / review work:
 
-3. Produce a ranked top-3 for the next build window based on **trial counts × severity**, not engineering preference. If the counts don't support any of the prediction top-3, the real top-3 is whatever the log actually contains.
+   - **Branch A — parser / review work** (Phase 2.5 Claude fallback / add-alias-from-review / description polish). Each candidate has its own threshold on the counts above. Commits only if a threshold clears.
+   - **Branch B — Phase 3 Lite dashboard / budget visibility.** Answers "am I over budget on this job?" via per-job and per-category actual-vs-budget numbers. Commits when Branch A thresholds don't clear AND the trial suggests the bigger gap is visibility rather than capture accuracy.
 
-4. Share the numbers + ranked top-3 before scheduling any follow-up code work. The trial is a data-collection exercise; it's not a commit unless the data justifies one.
+3. Share (a) the five numbers, (b) the admin's lived experience during the trial (was capture painful or smooth?), and (c) which branch seems justified. The branch decision is made together, not by rule — the framework exists to prevent defaulting to parser polish out of engineering inertia.
+
+4. No code work starts until the branch is picked. The trial is a data-collection exercise; the build that follows is scoped to the chosen branch.
