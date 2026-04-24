@@ -132,11 +132,13 @@ The goal is not to fix everything during the trial — it's to have a well-organ
 
 ## Post-trial decision framework
 
-After the window closes, the next build is **not** automatically more parser / review work. The decision is a fork based on what the log actually shows plus the current business concern. The rule is **"fix what's actually hurting, not what's engineering-interesting."**
+**Locked hard rule — do not dilute, do not reframe as a soft preference. This is the post-trial decision order unless the user explicitly changes it.**
+
+After the window closes, the **first priority check is `visibility-gap`**. Parser / review work is NOT the default next build. The decision is a fork based on the `visibility-gap` count first, Branch A thresholds only if `visibility-gap` doesn't clear.
 
 > **Baseline reference.** When counting log rows + expense rows after the trial closes, apply the row-classification rules in [`docs/trial-baseline.md`](trial-baseline.md). That doc captures the 7 expenses present in the dev DB at the official trial-start timestamp (`2026-04-24 09:31:17 UTC`) and notes which 3 are pre-trial Claude E2E noise that must be excluded from business interpretation.
 
-### Step 1 — Count the log
+### Step 1 — Count all six tags
 
 Produce exactly these six numbers:
 
@@ -149,15 +151,25 @@ unsupported-currency:      <n>
 visibility-gap:            <n>
 ```
 
-### Step 2 — Pick a branch
+### Step 2 — Priority check: `visibility-gap`
 
-Walk the two branches below in order. Commit to whichever clears its threshold first. **Do not default to parser/review polish just because the issue log exists — the log is a gate, not a mandate.**
+Before evaluating any parser / review follow-up, explicitly evaluate whether `visibility-gap` justifies **Branch B — Phase 3 Lite dashboard / budget visibility**.
 
----
+**Hard rule:**
 
-### Branch A — Parser / review work (only if the log demands it)
+- **If `visibility-gap >= 3`** → Branch B is the recommended next phase. The next Claude output **MUST begin with the exact phrase:**
 
-Justified when the trial data shows real pain in capture or triage. Each candidate has a threshold; meeting at least ONE threshold below justifies a Branch A build window. If no threshold is cleared, go to Branch B.
+  > **"Branch B is the recommended next phase."**
+
+  Then prepare a focused Branch B plan using the seven-section scope locked in [Branch B plan shape](#branch-b-plan-shape) below. **Do not propose Branch A candidates. Do not default to Phase 2.5. Do not default to parser/review polish. Do not assume Branch A just because parser-related tags exist.**
+
+  The **only** override is if capture is clearly breaking in a way that **materially blocks daily use** — e.g., admin cannot resolve a queue item at all, duplicate detector is firing so aggressively that approvals grind to a halt, or an RBAC / data-safety issue is surfacing. High bar. A `parser-miss` count of 8 is not enough. A `alias-gap` count of 15 is not enough. The override is reserved for "we literally cannot keep running the trial under these conditions" situations, not for "capture has friction."
+
+- **If `visibility-gap < 3`** → proceed to Step 3 and evaluate Branch A normally against its existing thresholds.
+
+### Step 3 — Branch A evaluation (only reached if `visibility-gap < 3`)
+
+Justified when the trial data shows real pain in capture or triage. Each candidate has a threshold; meeting at least ONE threshold below justifies a Branch A build window. If no Branch A threshold clears either, pause and share the numbers — continuing the trial for another window is a reasonable outcome. Do not spin up a build just to have a build.
 
 | Candidate | Threshold to commit | Effort |
 |---|---|---|
@@ -167,58 +179,49 @@ Justified when the trial data shows real pain in capture or triage. Each candida
 
 If two or three thresholds clear simultaneously, build them in the order above (Phase 2.5 first because it rescues multiple classes of issue with one change).
 
+### Underlying reasoning for Branch B priority
+
+**Dashboard visibility compounds.** Every expense entered from that point forward benefits from the new surface, including all historical entries. A parser fix only benefits the specific inputs it was designed to rescue. The arithmetic is: visibility gap × days in use = growing cost; parser miss × future identical inputs = bounded cost.
+
+Visibility gaps cost minutes of ad-hoc math per question and block real business decisions (can we afford this subcontractor? are we over budget?). Parser issues cost ~30 seconds of admin picker-clicking per occurrence and are friction around a working flow. The priority order reflects the cost arithmetic, not engineering preference.
+
 ---
 
-### Branch B — Dashboard / budget visibility first (Phase 3 Lite)
+## Branch B plan shape
 
-Justified when the trial shows **capture is good enough** AND the bigger product gap is **visibility**. This is likely the default if Branch A's thresholds don't clear — the ledger has the data but the builder can't see "am I over budget on Kelly House?" without looking at the admin's expense list by hand.
+When `visibility-gap >= 3` triggers Branch B, the plan Claude produces **must cover only** the seven sections below and must **not** include any of the explicitly-out-of-scope items. Any broader or adjacent work is a separate phase.
 
-**Primary trigger (observable, countable):**
+### In scope (seven sections)
 
-- **≥ 3 `visibility-gap` rows in the log** — the admin had to manually calculate job spend, remaining budget, or category overspend; or had to leave the tool (calculator, spreadsheet, accountant export, paper) to answer "how much have we spent on X?". Three is the threshold because anyone might do it once or twice out of habit; three means the missing surface is blocking real work, not a quirk.
+1. **Jobs list cost / budget visibility** — each row on `/jobs` shows total cost to date, total budget, remaining budget, % consumed, overspend flag (red when remaining < 0 or % > 100). Sorted by % consumed descending so the highest-risk job surfaces first.
+2. **Job detail KPI header** — header row on `/jobs/:id` showing total spent (inc GST + ex GST), total budget, remaining, % consumed.
+3. **Category actual vs budget table** — on the same job detail page, one row per category with actual ex-GST vs budget ex-GST, remaining, overspend flag.
+4. **Minimal backend aggregation endpoints** — one endpoint for the job-detail KPIs + category split (e.g. `GET /jobs/{id}/budget-summary`), extension of `GET /jobs` to include per-row totals. No new schema; reads from existing `expenses` + `job_category_budgets` + `jobs.total_budget`.
+5. **Minimal admin web surfaces** — restyle `admin/src/pages/Jobs.tsx` + `admin/src/pages/JobDetail.tsx` to surface the new numbers. No new routes.
+6. **Test strategy** — backend unit + integration tests for the aggregation math (ex/inc GST splits, rejected-row exclusion, empty-job edge cases, pending-vs-reviewed treatment). Frontend verified via Claude Preview E2E per prior batches.
+7. **Execution batches** — batch breakdown: (1) backend aggregation + tests, (2) admin UI wiring + i18n, (3) manual E2E + regression gate + commit.
 
-If the primary trigger clears, Branch B gets priority even if one of Branch A's thresholds also clears — **visibility gaps are load-bearing for the business decision, capture issues are friction around a working flow.** The only exception is if a Branch A issue is actively breaking capture (admin can't triage, duplicate detection misfires badly enough to block approvals); see Step 3.
+### Out of scope for Branch B
 
-**Supporting signals** (weight the decision when the primary trigger is close but not yet cleared):
+These are **explicitly excluded** from any Branch B plan. If they're needed, they ship in a separate phase.
 
-- Branch A thresholds don't clear (low parser-miss, low alias-gap, low review-friction)
-- A day's worth of contributor entries lands successfully without friction
-- The admin's trial-end read is some version of "capture was fine; I want to see the numbers"
+- Claude fallback (Phase 2.5)
+- Review queue expansion (add-alias-from-review, resolve-panel extensions, description polish)
+- Excel export (Phase 4)
+- iOS / TestFlight work (Phase 6)
+- Attachments (Phase 5)
+- Notifications
+- Labour attendance (Phase 5)
 
-**Phase 3 Lite scope** — the minimum dashboard that answers the budget question for one builder:
+### Also deferred to full Phase 3 (not Lite)
 
-1. **Job list page** (new / revised `/jobs`):
-   - Each row shows: total cost to date, total budget, remaining budget, % consumed, overspend flag (red chip when remaining < 0 or % > 100)
-   - Sorted by % consumed descending (highest-risk job first)
-2. **Job detail page** (revised `/jobs/:id`):
-   - Header KPI row: total spent (inc GST + ex GST), total budget, remaining, % consumed
-   - Category table: per category, actual ex-GST vs budget ex-GST, remaining, overspend flag
-   - Expenses feeding the numbers are already listed elsewhere via `/expenses?job_id=…`; don't re-list them here
-
-**Explicitly out of scope for Lite** (these stay in full Phase 3 and ship later):
+These ship **after** Phase 3 Lite answers the budget question for real. Not part of the first Branch B build.
 
 - Top-5 suppliers / top-5 categories roll-ups
 - Monthly trend chart
-- Estimated margin (contract_value − total cost)
+- Estimated margin (`contract_value − total cost`)
 - Reviewed-vs-pending banding on the totals
 - Drill-down from a KPI to the feeding expense list
-
-**Effort estimate:** medium. Backend gets one aggregation endpoint (`GET /jobs/{id}/budget-summary` returning totals + per-category split) and an extension of `GET /jobs` to include per-row totals. Frontend adds two styled views on the existing Jobs / JobDetail pages. No new schema, no migrations — everything reads from `expenses` + `job_category_budgets` (Phase 1) + `jobs.total_budget` (Phase 1).
-
-**Why this is a real candidate, not a detour:** Phase 3 was always the next scheduled phase after Phase 2 validation. The question the trial answers is whether parser/review debt forces a detour through Phase 2.5 / Branch A FIRST, or whether we can go directly to Phase 3 Lite because the capture flow is already acceptable.
-
----
-
-### Step 3 — If both branches look justified
-
-The decision is straightforward when the counts split cleanly; the edge cases are when multiple thresholds clear at once. Resolve them as follows:
-
-- **`visibility-gap` ≥ 3 AND any Branch A threshold clears** → **Branch B first.** Capture has to bleed heavily to override the visibility gap — the rule of thumb is that the admin must be saying "I can't keep triaging like this" or an RBAC / data-safety issue is surfacing. A `parser-miss` count of 8 is not enough on its own; a `alias-gap` of 15 is not enough on its own; each of those costs the admin ~30 seconds of picker-clicking, whereas a visibility gap costs minutes of ad-hoc math per question.
-- **`visibility-gap` ≥ 3 AND no Branch A threshold clears** → **Branch B** (straightforward).
-- **`visibility-gap` < 3 AND any Branch A threshold clears** → **Branch A** (straightforward). The log is telling you capture is the pain point; dashboards can wait.
-- **`visibility-gap` < 3 AND no Branch A threshold clears** → **Pause and share the numbers.** No branch has justification; continuing the trial for another window is a reasonable outcome. Don't spin up a build just to have a build.
-
-Underlying reasoning for the Branch B preference: **dashboard visibility compounds.** Every expense entered from that point forward benefits from the new surface, including all historical entries. A parser fix only benefits the specific inputs it was designed to rescue. The arithmetic is: visibility gap × days in use = growing cost; parser miss × future identical inputs = bounded cost.
 
 ---
 
