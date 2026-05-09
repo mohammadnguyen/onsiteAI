@@ -178,6 +178,25 @@
     "loading": "Loading suppliers...",
     "error": "Failed to load suppliers"
   },
+  "budget": {
+    "spent_inc_gst": "Spent inc GST",
+    "spent_ex_gst": "Spent ex GST",
+    "budget_ex_gst": "Budget ex GST",
+    "remaining_ex_gst": "Remaining ex GST",
+    "actual_ex_gst": "Actual ex GST",
+    "percent_consumed": "% consumed",
+    "status_on_track": "On track",
+    "status_approaching": "Approaching",
+    "status_over_budget": "Over budget",
+    "status_no_budget": "No budget",
+    "no_budget_set": "No budget set",
+    "section_title": "Budget vs actual",
+    "col_status": "Status",
+    "col_category": "Category",
+    "empty_no_expenses": "No expenses on this job yet",
+    "empty_no_budgets": "No category budgets set",
+    "plus_gst": "+ GST"
+  },
   "common": {
     "save": "Save",
     "cancel": "Cancel",

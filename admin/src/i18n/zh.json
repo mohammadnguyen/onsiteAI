@@ -178,6 +178,25 @@
     "loading": "加载中...",
     "error": "加载供应商失败"
   },
+  "budget": {
+    "spent_inc_gst": "已花(含GST)",
+    "spent_ex_gst": "已花(不含GST)",
+    "budget_ex_gst": "预算(不含GST)",
+    "remaining_ex_gst": "剩余(不含GST)",
+    "actual_ex_gst": "实际(不含GST)",
+    "percent_consumed": "已用百分比",
+    "status_on_track": "正常",
+    "status_approaching": "接近预算",
+    "status_over_budget": "超预算",
+    "status_no_budget": "无预算",
+    "no_budget_set": "未设预算",
+    "section_title": "预算与实际",
+    "col_status": "状态",
+    "col_category": "类别",
+    "empty_no_expenses": "此项目暂无支出",
+    "empty_no_budgets": "未设置类别预算",
+    "plus_gst": "+ GST"
+  },
   "common": {
     "save": "保存",
     "cancel": "取消",

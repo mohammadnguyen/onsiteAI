@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useCreateJob, useJobs } from '../api/hooks/useJobs'
@@ -6,6 +6,13 @@ import { AppShell } from '../components/AppShell'
 import { Modal } from '../components/Modal'
 import { extractErrorMessage } from '../api/client'
 import type { components } from '../api/types'
+import {
+  BudgetChip,
+  compareJobsByConsumption,
+  formatMoney,
+  formatPercent,
+  getBudgetBand,
+} from '../lib/budget'
 
 type JobStatus = components['schemas']['JobStatus']
 
@@ -74,40 +81,7 @@ export function Jobs() {
       {jobs.data && jobs.data.length === 0 && (
         <p className="text-sm text-slate-600">{t('jobs.none')}</p>
       )}
-      {jobs.data && jobs.data.length > 0 && (
-        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-slate-600">
-              <tr>
-                <th className="text-left px-4 py-2 font-medium">{t('jobs.job_name')}</th>
-                <th className="text-left px-4 py-2 font-medium">{t('jobs.job_code')}</th>
-                <th className="text-left px-4 py-2 font-medium">{t('jobs.contract_value')}</th>
-                <th className="text-left px-4 py-2 font-medium">{t('jobs.total_budget')}</th>
-                <th className="text-left px-4 py-2 font-medium">{t('jobs.status')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {jobs.data.map((job) => (
-                <tr key={job.job_id} className="border-t border-slate-100 hover:bg-slate-50">
-                  <td className="px-4 py-2">
-                    <Link to={`/jobs/${job.job_id}`} className="text-slate-900 hover:underline">
-                      {job.job_name}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-2 text-slate-700">{job.job_code ?? '—'}</td>
-                  <td className="px-4 py-2 text-slate-700">{job.contract_value_ex_gst ?? '—'}</td>
-                  <td className="px-4 py-2 text-slate-700">{job.total_budget_ex_gst ?? '—'}</td>
-                  <td className="px-4 py-2 text-slate-700">
-                    {job.status === 'active'
-                      ? t('jobs.status_active')
-                      : t('jobs.status_completed')}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {jobs.data && jobs.data.length > 0 && <JobsTable jobs={jobs.data} />}
 
       <Modal open={open} onClose={() => setOpen(false)} title={t('jobs.new')}>
         <form onSubmit={onSubmit} className="space-y-3">
@@ -177,6 +151,88 @@ export function Jobs() {
         </form>
       </Modal>
     </AppShell>
+  )
+}
+
+type JobRow = components['schemas']['JobPublic']
+
+/**
+ * Phase 3 Lite jobs table.
+ *
+ * Default sort is `% consumed` desc so the highest-risk job lands on
+ * top, with NULL-budget rows pushed to the bottom (alphabetical
+ * tie-break). Sort lives client-side per the plan — this page handles
+ * 5–20 rows in real use; full Phase 3 can move sorting server-side.
+ *
+ * The `Spent inc GST` / `Spent ex GST` columns sit beside `Budget ex
+ * GST` / `Remaining ex GST` so the user can read GST-basis at a glance
+ * (the labels never collapse to bare "Spent" / "Budget"; that
+ * convention is frozen by docs/phase-3-lite-plan.md).
+ */
+function JobsTable({ jobs }: { jobs: JobRow[] }) {
+  const { t } = useTranslation()
+  const sorted = useMemo(() => [...jobs].sort(compareJobsByConsumption), [jobs])
+
+  return (
+    <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 text-slate-600">
+          <tr>
+            <th className="text-left px-4 py-2 font-medium">{t('jobs.job_name')}</th>
+            <th className="text-left px-4 py-2 font-medium">{t('jobs.job_code')}</th>
+            <th className="text-right px-4 py-2 font-medium">{t('budget.spent_inc_gst')}</th>
+            <th className="text-right px-4 py-2 font-medium">{t('budget.spent_ex_gst')}</th>
+            <th className="text-right px-4 py-2 font-medium">{t('budget.budget_ex_gst')}</th>
+            <th className="text-right px-4 py-2 font-medium">{t('budget.remaining_ex_gst')}</th>
+            <th className="text-right px-4 py-2 font-medium">{t('budget.percent_consumed')}</th>
+            <th className="text-left px-4 py-2 font-medium">{t('jobs.status')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((job) => {
+            const s = job.summary
+            const hasBudget =
+              s != null &&
+              s.total_budget_ex_gst !== null &&
+              Number(s.total_budget_ex_gst) > 0
+            const band = getBudgetBand(s?.percent_consumed ?? null, hasBudget)
+            return (
+              <tr key={job.job_id} className="border-t border-slate-100 hover:bg-slate-50">
+                <td className="px-4 py-2">
+                  <Link to={`/jobs/${job.job_id}`} className="text-slate-900 hover:underline">
+                    {job.job_name}
+                  </Link>
+                </td>
+                <td className="px-4 py-2 text-slate-700">{job.job_code ?? '—'}</td>
+                <td className="px-4 py-2 text-slate-800 text-right tabular-nums">
+                  {formatMoney(s?.actual_inc_gst)}
+                </td>
+                <td className="px-4 py-2 text-slate-800 text-right tabular-nums">
+                  {formatMoney(s?.actual_ex_gst)}
+                </td>
+                <td className="px-4 py-2 text-slate-800 text-right tabular-nums">
+                  {formatMoney(s?.total_budget_ex_gst ?? null)}
+                </td>
+                <td className="px-4 py-2 text-slate-800 text-right tabular-nums">
+                  {formatMoney(s?.remaining_ex_gst ?? null)}
+                </td>
+                <td className="px-4 py-2 text-slate-800 text-right tabular-nums">
+                  <div className="flex items-center justify-end gap-2">
+                    <span>{formatPercent(s?.percent_consumed ?? null)}</span>
+                    <BudgetChip band={band} t={t} />
+                  </div>
+                </td>
+                <td className="px-4 py-2 text-slate-700">
+                  {job.status === 'active'
+                    ? t('jobs.status_active')
+                    : t('jobs.status_completed')}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
   )
 }
 

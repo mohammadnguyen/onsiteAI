@@ -255,6 +255,14 @@ export interface paths {
         /**
          * List Jobs Endpoint
          * @description List all jobs (any authenticated caller).
+         *
+         *     Phase 3 Lite: each row carries a ``summary`` field with the per-job
+         *     ex-GST aggregates used by the dashboard. The summary is populated
+         *     for every row — jobs with no expenses get an all-zero summary so
+         *     the UI never has to special-case missing data. The auth posture is
+         *     unchanged from Phase 1 (any authenticated user can list jobs); the
+         *     dashboard surface that consumes ``summary`` is admin-only by route
+         *     composition (admin nav), not by route auth.
          */
         get: operations["list_jobs_endpoint_jobs_get"];
         put?: never;
@@ -291,6 +299,30 @@ export interface paths {
          * @description Partially update a job (admin only).
          */
         patch: operations["update_job_endpoint_jobs__job_id__patch"];
+        trace?: never;
+    };
+    "/jobs/{job_id}/budget-summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Job Budget Summary Endpoint
+         * @description Per-job actual-vs-budget rollup with per-category breakdown (admin only).
+         *
+         *     Phase 3 Lite. The categories list includes every category with
+         *     either a budget row or at least one non-rejected expense on the
+         *     job; categories with neither are omitted.
+         */
+        get: operations["get_job_budget_summary_endpoint_jobs__job_id__budget_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/jobs/{job_id}/aliases": {
@@ -616,6 +648,31 @@ export interface components {
             };
             /** Reason */
             reason: string | null;
+        };
+        /**
+         * CategoryBudgetRow
+         * @description One row in the per-category breakdown on ``/jobs/{id}/budget-summary``.
+         *
+         *     ``budget_ex_gst`` and ``remaining_ex_gst`` are ``None`` when there is
+         *     no ``job_category_budgets`` row for this category — the UI renders
+         *     "—" and a `No budget` chip.
+         */
+        CategoryBudgetRow: {
+            /**
+             * Category Id
+             * Format: uuid
+             */
+            category_id: string;
+            /** Category Name */
+            category_name: string;
+            /** Actual Ex Gst */
+            actual_ex_gst: string;
+            /** Budget Ex Gst */
+            budget_ex_gst: string | null;
+            /** Remaining Ex Gst */
+            remaining_ex_gst: string | null;
+            /** Overspend */
+            overspend: boolean;
         };
         /**
          * CategoryCreate
@@ -953,6 +1010,37 @@ export interface components {
             language_code: components["schemas"]["LanguageCode"] | null;
         };
         /**
+         * JobBudgetSummary
+         * @description Full envelope for ``GET /jobs/{job_id}/budget-summary`` (admin-only).
+         *
+         *     Per-job totals (matching :class:`JobSummary`) plus the union of
+         *     categories with either a budget row or at least one non-rejected
+         *     expense. Categories with neither are omitted (no zero-zero rows).
+         */
+        JobBudgetSummary: {
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /** Actual Inc Gst */
+            actual_inc_gst: string;
+            /** Actual Ex Gst */
+            actual_ex_gst: string;
+            /** Gst Amount */
+            gst_amount: string;
+            /** Total Budget Ex Gst */
+            total_budget_ex_gst: string | null;
+            /** Remaining Ex Gst */
+            remaining_ex_gst: string | null;
+            /** Percent Consumed */
+            percent_consumed: string | null;
+            /** Overspend */
+            overspend: boolean;
+            /** Categories */
+            categories: components["schemas"]["CategoryBudgetRow"][];
+        };
+        /**
          * JobCategoryBudgetCreate
          * @description Body of ``POST /jobs/{job_id}/category-budgets`` (admin-only).
          */
@@ -1016,6 +1104,12 @@ export interface components {
          * @description Compact serialised view of a :class:`~app.models.job.Job`.
          *
          *     Used by ``GET /jobs`` (list) and by non-detail POST/PATCH responses.
+         *
+         *     The optional ``summary`` field is populated by ``GET /jobs`` (Phase 3
+         *     Lite) so the list page can render budget visibility per row without a
+         *     second round trip. Create/update responses leave it ``None``: those
+         *     are write-action results, not snapshots, and the cost of a one-off
+         *     aggregation on every write is not justified by the dashboard need.
          */
         JobPublic: {
             /**
@@ -1039,6 +1133,7 @@ export interface components {
              * Format: uuid
              */
             created_by: string;
+            summary?: components["schemas"]["JobSummary"] | null;
         };
         /**
          * JobStatus
@@ -1049,6 +1144,31 @@ export interface components {
          * @enum {string}
          */
         JobStatus: "active" | "completed";
+        /**
+         * JobSummary
+         * @description Per-job aggregate; embedded in :class:`JobPublic` on ``GET /jobs``.
+         *
+         *     ``remaining_ex_gst`` and ``percent_consumed`` are ``None`` when no
+         *     budget is set (NULL or zero). ``overspend`` is always a bool — it
+         *     is ``False`` (not ``None``) when no budget is set so the UI never
+         *     has to handle a tri-state for the chip.
+         */
+        JobSummary: {
+            /** Actual Inc Gst */
+            actual_inc_gst: string;
+            /** Actual Ex Gst */
+            actual_ex_gst: string;
+            /** Gst Amount */
+            gst_amount: string;
+            /** Total Budget Ex Gst */
+            total_budget_ex_gst: string | null;
+            /** Remaining Ex Gst */
+            remaining_ex_gst: string | null;
+            /** Percent Consumed */
+            percent_consumed: string | null;
+            /** Overspend */
+            overspend: boolean;
+        };
         /**
          * JobUpdate
          * @description Body of ``PATCH /jobs/{job_id}`` (admin-only).
@@ -1095,6 +1215,7 @@ export interface components {
              * Format: uuid
              */
             created_by: string;
+            summary?: components["schemas"]["JobSummary"] | null;
             /**
              * Aliases
              * @default []
@@ -2073,6 +2194,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_job_budget_summary_endpoint_jobs__job_id__budget_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobBudgetSummary"];
                 };
             };
             /** @description Validation Error */
