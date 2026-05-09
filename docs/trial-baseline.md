@@ -1,6 +1,31 @@
 # Phase 2 internal trial — official baseline
 
-This doc captures the state of the dev DB at the moment the trial began. It exists so the post-trial counting process can unambiguously separate **real trial data** from **Claude E2E noise** left over from Batch 4–related verification work. It is intentionally immutable — do not update it as the trial progresses; the issue log in `internal-testing.md` is the live surface.
+> **Superseded for dashboard verification purposes (2026-05-10, Path A operator decision).** The dev DB on `localhost:5433/sitetracker` no longer contains any of the rows recorded below — the trial-baseline volume that held this t=0 snapshot is no longer present on this machine. The current Postgres holds a different, fresher `晶晶` job (UUID `daefdeef-4efd-4418-9639-9f5889ccb1cd`, created 2026-05-09 11:23 UTC) which is now the **operative source of truth** for Phase 3 Lite and any downstream dashboard work.
+>
+> This historical baseline is preserved as-is for reference — it documents what t=0 of the 7-day Phase 2 trial looked like and the counting rules used at the time. It is **not** an acceptance target for Phase 3 Lite or any later phase.
+>
+> **Operative dashboard baseline as of 2026-05-10 (live `daefdeef-…` 晶晶 job):**
+>
+> | Field | Value |
+> |---|---:|
+> | `actual_inc_gst` | $172,898.00 |
+> | `actual_ex_gst` | $157,180.00 |
+> | `gst_amount` | $15,718.00 |
+> | `total_budget_ex_gst` | $188,000.00 |
+> | `remaining_ex_gst` | $30,820.00 |
+> | `percent_consumed` | 83.61 % |
+> | `overspend` | false |
+> | banding chip | `Approaching` (80 ≤ 83.61 < 100) |
+>
+> Per-category breakdown (both no-budget): `Concrete` $2,634.55 actual; `Plumbing` $154,545.45 actual.
+>
+> Phase 3 Lite (commits `2ab7f2a` backend + `5c493b8` admin) is accepted as **technically verified** against this operative baseline. Numbers in `docs/phase-3-lite-plan.md` examples (the `3c51556a-…` job, $9,344 totals, 7.76% consumed) reflect the original trial DB and are **historical only** — they do not match the current live DB and should not be used as acceptance targets.
+
+---
+
+## Historical record (Phase 2 trial t=0, 2026-04-24)
+
+The remainder of this document captures the t=0 snapshot of the Phase 2 internal trial, immutable and used by the post-trial counting process to unambiguously separate **real trial data** from **Claude E2E noise** left over from Batch 4–related verification work. The issue log in `internal-testing.md` was the live surface during the trial. None of the rows below exist in the current dev DB.
 
 ---
 
