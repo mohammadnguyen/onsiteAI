@@ -26,6 +26,7 @@ from app.database import get_db
 from app.deps import get_current_user, require_admin
 from app.models.job import Job
 from app.models.user import User
+from app.schemas.budget_summary import JobBudgetSummary
 from app.schemas.job import (
     JobAliasCreate,
     JobAliasPublic,
@@ -36,6 +37,7 @@ from app.schemas.job import (
     JobUpdate,
     JobWithDetailPublic,
 )
+from app.services.budget_summary import summarize_job, summarize_jobs
 from app.services.jobs import (
     CategoryNotFound,
     DuplicateAlias,
@@ -83,9 +85,25 @@ async def create_job_endpoint(
 async def list_jobs_endpoint(
     _user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> list[Job]:
-    """List all jobs (any authenticated caller)."""
-    return await list_jobs(db)
+) -> list[JobPublic]:
+    """List all jobs (any authenticated caller).
+
+    Phase 3 Lite: each row carries a ``summary`` field with the per-job
+    ex-GST aggregates used by the dashboard. The summary is populated
+    for every row — jobs with no expenses get an all-zero summary so
+    the UI never has to special-case missing data. The auth posture is
+    unchanged from Phase 1 (any authenticated user can list jobs); the
+    dashboard surface that consumes ``summary`` is admin-only by route
+    composition (admin nav), not by route auth.
+    """
+    jobs = await list_jobs(db)
+    summaries = await summarize_jobs(db, job_ids=[j.job_id for j in jobs])
+    return [
+        JobPublic.model_validate(j).model_copy(
+            update={"summary": summaries.get(j.job_id)}
+        )
+        for j in jobs
+    ]
 
 
 @router.get(
@@ -101,6 +119,30 @@ async def get_job_endpoint(
     """Fetch a job with its aliases + category budgets eager-loaded."""
     try:
         return await get_job(db, job_id)
+    except JobNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+        ) from exc
+
+
+@router.get(
+    "/{job_id}/budget-summary",
+    response_model=JobBudgetSummary,
+    status_code=status.HTTP_200_OK,
+)
+async def get_job_budget_summary_endpoint(
+    job_id: uuid.UUID,
+    _admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> JobBudgetSummary:
+    """Per-job actual-vs-budget rollup with per-category breakdown (admin only).
+
+    Phase 3 Lite. The categories list includes every category with
+    either a budget row or at least one non-rejected expense on the
+    job; categories with neither are omitted.
+    """
+    try:
+        return await summarize_job(db, job_id)
     except JobNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"

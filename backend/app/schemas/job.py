@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.job import JobStatus
 from app.models.user import LanguageCode
+from app.schemas.budget_summary import JobSummary
 from app.schemas.category import CategoryPublic
 
 
@@ -94,6 +95,12 @@ class JobPublic(BaseModel):
     """Compact serialised view of a :class:`~app.models.job.Job`.
 
     Used by ``GET /jobs`` (list) and by non-detail POST/PATCH responses.
+
+    The optional ``summary`` field is populated by ``GET /jobs`` (Phase 3
+    Lite) so the list page can render budget visibility per row without a
+    second round trip. Create/update responses leave it ``None``: those
+    are write-action results, not snapshots, and the cost of a one-off
+    aggregation on every write is not justified by the dashboard need.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -106,6 +113,7 @@ class JobPublic(BaseModel):
     total_budget_ex_gst: Decimal | None
     status: JobStatus
     created_by: uuid.UUID
+    summary: JobSummary | None = None
 
 
 class JobWithDetailPublic(JobPublic):
