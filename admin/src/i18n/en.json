@@ -22,6 +22,15 @@
     "site_address": "Site address",
     "contract_value": "Contract value (ex GST)",
     "total_budget": "Total budget (ex GST)",
+    "contract_value_input": "Contract value",
+    "total_budget_input": "Total budget",
+    "target_profit_ratio_pct": "Target profit %",
+    "warning_amber_pct": "Amber warning threshold (%)",
+    "warning_red_pct": "Red warning threshold (%)",
+    "warning_threshold_default_hint": "Leave blank to use the default ({{value}}).",
+    "settings_section": "Job settings",
+    "save_settings": "Save settings",
+    "settings_saved": "Settings saved.",
     "status": "Status",
     "status_active": "Active",
     "status_completed": "Completed"
@@ -196,6 +205,12 @@
     "empty_no_expenses": "No expenses on this job yet",
     "empty_no_budgets": "No category budgets set",
     "plus_gst": "+ GST"
+  },
+  "gst": {
+    "basis_ex": "ex",
+    "basis_inc": "inc",
+    "basis_toggle_aria": "GST basis",
+    "ex_hint": "= ${{value}} ex GST"
   },
   "common": {
     "save": "Save",

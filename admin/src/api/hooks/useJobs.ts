@@ -4,6 +4,7 @@ import type { components } from '../types'
 
 type JobPublic = components['schemas']['JobPublic']
 type JobCreate = components['schemas']['JobCreate']
+type JobUpdate = components['schemas']['JobUpdate']
 type JobWithDetailPublic = components['schemas']['JobWithDetailPublic']
 type JobAliasCreate = components['schemas']['JobAliasCreate']
 type JobAliasPublic = components['schemas']['JobAliasPublic']
@@ -41,6 +42,32 @@ export function useCreateJob() {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['jobs'] })
+    },
+  })
+}
+
+/**
+ * Phase 3 Lite+ — PATCH /jobs/{id}.
+ *
+ * Used by the new Job Settings form (Batch 2) so the user can edit
+ * contract value, total budget, target profit %, and warning
+ * thresholds in place. Invalidates both the list and the single-job
+ * cache so any embedded `summary` or `budget-summary` consumer picks
+ * up the new values without a manual refetch.
+ */
+export function useUpdateJob(jobId: string | undefined) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (body: JobUpdate): Promise<JobPublic> => {
+      const { data } = await api.patch<JobPublic>(`/jobs/${jobId}`, body)
+      return data
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['jobs'] })
+      if (jobId) {
+        void qc.invalidateQueries({ queryKey: ['jobs', jobId] })
+        void qc.invalidateQueries({ queryKey: ['jobs', jobId, 'budget-summary'] })
+      }
     },
   })
 }

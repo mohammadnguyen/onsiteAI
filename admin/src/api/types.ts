@@ -1016,6 +1016,26 @@ export interface components {
          *     Per-job totals (matching :class:`JobSummary`) plus the union of
          *     categories with either a budget row or at least one non-rejected
          *     expense. Categories with neither are omitted (no zero-zero rows).
+         *
+         *     Phase 3 Lite+ extends with five derived margin fields plus the two
+         *     effective threshold fields. All of the margin fields are nullable
+         *     and computed only when the inputs allow — see the nullable-rules
+         *     table in ``docs/phase-3-lite-plus-plan.md``. Specifically:
+         *
+         *     * ``target_cost_limit_ex_gst`` requires contract + target
+         *     * ``budgeted_profit_ex_gst`` requires contract + total_budget
+         *     * ``budgeted_profit_ratio_pct`` requires contract (and contract > 0)
+         *       + total_budget
+         *     * ``budget_delta_vs_target_cost_ex_gst`` requires all three of
+         *       contract + target + total_budget
+         *
+         *     There is intentionally **no** ``actual_profit_*`` field. Mid-project
+         *     actual profit is not knowable (future costs aren't included). The
+         *     UI may surface ``contract − cost_to_date`` as a low-emphasis
+         *     contextual line labelled "Remaining contract value after costs to
+         *     date" with an explicit "not actual profit" disclaimer; that
+         *     presentation rule is documented in the plan and enforced by the
+         *     frontend, not by this schema.
          */
         JobBudgetSummary: {
             /**
@@ -1037,6 +1057,20 @@ export interface components {
             percent_consumed: string | null;
             /** Overspend */
             overspend: boolean;
+            /** Target Profit Ratio Pct */
+            target_profit_ratio_pct: string | null;
+            /** Target Cost Limit Ex Gst */
+            target_cost_limit_ex_gst: string | null;
+            /** Budgeted Profit Ex Gst */
+            budgeted_profit_ex_gst: string | null;
+            /** Budgeted Profit Ratio Pct */
+            budgeted_profit_ratio_pct: string | null;
+            /** Budget Delta Vs Target Cost Ex Gst */
+            budget_delta_vs_target_cost_ex_gst: string | null;
+            /** Effective Warning Amber Pct */
+            effective_warning_amber_pct: string;
+            /** Effective Warning Red Pct */
+            effective_warning_red_pct: string;
             /** Categories */
             categories: components["schemas"]["CategoryBudgetRow"][];
         };
@@ -1084,6 +1118,10 @@ export interface components {
         /**
          * JobCreate
          * @description Body of ``POST /jobs`` (admin-only).
+         *
+         *     Phase 3 Lite+ adds three optional percent fields. All three are
+         *     enforced by both Pydantic (here) and DB CHECK constraints (see
+         *     ``backend/app/models/job.py`` and migration ``b3e7a8f1c042``).
          */
         JobCreate: {
             /** Job Name */
@@ -1096,6 +1134,12 @@ export interface components {
             contract_value_ex_gst?: number | string | null;
             /** Total Budget Ex Gst */
             total_budget_ex_gst?: number | string | null;
+            /** Target Profit Ratio Pct */
+            target_profit_ratio_pct?: number | string | null;
+            /** Warning Amber Pct */
+            warning_amber_pct?: number | string | null;
+            /** Warning Red Pct */
+            warning_red_pct?: number | string | null;
             /** @default active */
             status: components["schemas"]["JobStatus"];
         };
@@ -1127,6 +1171,12 @@ export interface components {
             contract_value_ex_gst: string | null;
             /** Total Budget Ex Gst */
             total_budget_ex_gst: string | null;
+            /** Target Profit Ratio Pct */
+            target_profit_ratio_pct?: string | null;
+            /** Warning Amber Pct */
+            warning_amber_pct?: string | null;
+            /** Warning Red Pct */
+            warning_red_pct?: string | null;
             status: components["schemas"]["JobStatus"];
             /**
              * Created By
@@ -1152,6 +1202,14 @@ export interface components {
          *     budget is set (NULL or zero). ``overspend`` is always a bool — it
          *     is ``False`` (not ``None``) when no budget is set so the UI never
          *     has to handle a tri-state for the chip.
+         *
+         *     Phase 3 Lite+ adds the two ``effective_warning_*_pct`` fields. They
+         *     are **always** populated — either the per-job stored override (from
+         *     ``JobPublic.warning_*_pct``) or the system default (80.00 / 100.00).
+         *     The stored fields stay nullable on ``JobPublic``; the effective
+         *     fields here are what the chip-banding logic on the frontend
+         *     consumes. This separation is point 3 of the operator review
+         *     (2026-05-10): never overwrite a NULL stored value with a default.
          */
         JobSummary: {
             /** Actual Inc Gst */
@@ -1168,10 +1226,21 @@ export interface components {
             percent_consumed: string | null;
             /** Overspend */
             overspend: boolean;
+            /** Effective Warning Amber Pct */
+            effective_warning_amber_pct: string;
+            /** Effective Warning Red Pct */
+            effective_warning_red_pct: string;
         };
         /**
          * JobUpdate
          * @description Body of ``PATCH /jobs/{job_id}`` (admin-only).
+         *
+         *     Phase 3 Lite+ extends with the same three optional percent fields
+         *     as ``JobCreate``. The cross-field amber-lt-red check still applies
+         *     on PATCH; if only one of (amber, red) is supplied, it must still
+         *     be coherent with whatever the row already holds — that combined
+         *     check is enforced server-side by the DB CHECK constraint after the
+         *     update is applied (Pydantic only sees the patch payload).
          */
         JobUpdate: {
             /** Job Name */
@@ -1184,6 +1253,12 @@ export interface components {
             contract_value_ex_gst?: number | string | null;
             /** Total Budget Ex Gst */
             total_budget_ex_gst?: number | string | null;
+            /** Target Profit Ratio Pct */
+            target_profit_ratio_pct?: number | string | null;
+            /** Warning Amber Pct */
+            warning_amber_pct?: number | string | null;
+            /** Warning Red Pct */
+            warning_red_pct?: number | string | null;
             status?: components["schemas"]["JobStatus"] | null;
         };
         /**
@@ -1209,6 +1284,12 @@ export interface components {
             contract_value_ex_gst: string | null;
             /** Total Budget Ex Gst */
             total_budget_ex_gst: string | null;
+            /** Target Profit Ratio Pct */
+            target_profit_ratio_pct?: string | null;
+            /** Warning Amber Pct */
+            warning_amber_pct?: string | null;
+            /** Warning Red Pct */
+            warning_red_pct?: string | null;
             status: components["schemas"]["JobStatus"];
             /**
              * Created By

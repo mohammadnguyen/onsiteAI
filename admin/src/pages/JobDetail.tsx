@@ -7,9 +7,11 @@ import {
   useAddCategoryBudget,
   useCategories,
   useJob,
+  useUpdateJob,
 } from '../api/hooks/useJobs'
 import { useJobBudgetSummary } from '../api/hooks/useBudgetSummary'
 import { AppShell } from '../components/AppShell'
+import { GstAmountInput } from '../components/GstAmountInput'
 import { extractErrorMessage } from '../api/client'
 import type { components } from '../api/types'
 import {
@@ -22,6 +24,7 @@ import {
 type LanguageCode = components['schemas']['LanguageCode']
 type JobBudgetSummary = components['schemas']['JobBudgetSummary']
 type CategoryBudgetRow = components['schemas']['CategoryBudgetRow']
+type JobWithDetailPublic = components['schemas']['JobWithDetailPublic']
 
 export function JobDetail() {
   const { t } = useTranslation()
@@ -61,6 +64,8 @@ export function JobDetail() {
     try {
       await addBudget.mutateAsync({
         category_id: categoryId,
+        // ``amount`` is the canonical ex-GST string emitted by
+        // GstAmountInput regardless of which basis the user typed in.
         budget_amount_ex_gst: amount,
       })
       setCategoryId('')
@@ -111,6 +116,8 @@ export function JobDetail() {
 
           {summary.data && <KpiHeader summary={summary.data} t={t} />}
           {summary.data && <BudgetVsActual summary={summary.data} t={t} />}
+
+          <JobSettingsForm job={job.data} />
 
           <section className="bg-white rounded-lg border border-slate-200 p-6">
             <h2 className="text-lg font-semibold text-slate-900 mb-4">{t('job.aliases')}</h2>
@@ -210,19 +217,14 @@ export function JobDetail() {
                   ))}
                 </select>
               </label>
-              <label>
-                <span className="block text-xs font-medium text-slate-600 mb-1">
-                  {t('job.amount')}
-                </span>
-                <input
-                  required
-                  type="number"
-                  step="0.01"
+              <div className="flex-1 min-w-[220px]">
+                <GstAmountInput
+                  label={t('job.amount')}
                   value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  className={inputClass}
+                  onChange={setAmount}
+                  required
                 />
-              </label>
+              </div>
               <button type="submit" disabled={addBudget.isPending} className={btnPrimary}>
                 {addBudget.isPending ? t('common.loading') : t('job.add_budget')}
               </button>
@@ -245,6 +247,145 @@ function Info({ label, value }: { label: string; value: string }) {
       <dt className="text-xs font-medium text-slate-500 uppercase">{label}</dt>
       <dd className="text-slate-900">{value}</dd>
     </div>
+  )
+}
+
+/**
+ * Phase 3 Lite+ — Job Settings inline form.
+ *
+ * Edits the job's scalar fields in place: contract value, total budget
+ * (both with `<GstAmountInput>` for the inc/ex toggle), target profit %,
+ * and the per-job warning thresholds (amber/red). Hits the extended
+ * `PATCH /jobs/{id}` endpoint shipped in Batch 1.
+ *
+ * Form state is initialised from the current `JobWithDetailPublic` and
+ * sent through `useUpdateJob`. After a successful PATCH the parent
+ * query refetches via cache invalidation; the form keeps its current
+ * draft state (it does not reset on remote update). For the solo-builder
+ * use case where this form is the only writer, that's the right
+ * behaviour — the values shown are what the user typed.
+ *
+ * Validation is deliberately a thin client-side sanity layer: range
+ * checks for target / red so the user gets a same-keystroke complaint
+ * instead of a 422 round-trip. The DB CHECK constraints from Batch 1
+ * are the actual backstop; Pydantic returns the canonical error.
+ */
+function JobSettingsForm({ job }: { job: JobWithDetailPublic }) {
+  const { t } = useTranslation()
+  const updateJob = useUpdateJob(job.job_id)
+
+  const [contractValue, setContractValue] = useState(job.contract_value_ex_gst ?? '')
+  const [totalBudget, setTotalBudget] = useState(job.total_budget_ex_gst ?? '')
+  const [targetProfit, setTargetProfit] = useState(job.target_profit_ratio_pct ?? '')
+  const [warnAmber, setWarnAmber] = useState(job.warning_amber_pct ?? '')
+  const [warnRed, setWarnRed] = useState(job.warning_red_pct ?? '')
+  const [error, setError] = useState<string | null>(null)
+  const [savedFlash, setSavedFlash] = useState(false)
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    setSavedFlash(false)
+    try {
+      // Empty-string → null so the backend stores NULL (not "0"); the
+      // GstAmountInput emits "" for cleared inputs, the plain percent
+      // inputs emit "" when cleared. The API treats null as "leave
+      // unset / don't override default" for the threshold fields.
+      await updateJob.mutateAsync({
+        contract_value_ex_gst: contractValue.trim() === '' ? null : contractValue,
+        total_budget_ex_gst: totalBudget.trim() === '' ? null : totalBudget,
+        target_profit_ratio_pct: targetProfit.trim() === '' ? null : targetProfit,
+        warning_amber_pct: warnAmber.trim() === '' ? null : warnAmber,
+        warning_red_pct: warnRed.trim() === '' ? null : warnRed,
+      })
+      setSavedFlash(true)
+    } catch (err) {
+      setError(extractErrorMessage(err))
+    }
+  }
+
+  return (
+    <section className="bg-white rounded-lg border border-slate-200 p-6">
+      <h2 className="text-lg font-semibold text-slate-900 mb-4">
+        {t('jobs.settings_section')}
+      </h2>
+      <form onSubmit={submit} className="space-y-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <GstAmountInput
+            label={t('jobs.contract_value_input')}
+            value={contractValue}
+            onChange={setContractValue}
+          />
+          <GstAmountInput
+            label={t('jobs.total_budget_input')}
+            value={totalBudget}
+            onChange={setTotalBudget}
+          />
+          <label className="block">
+            <span className="block text-sm font-medium text-slate-700 mb-1">
+              {t('jobs.target_profit_ratio_pct')}
+            </span>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              max="99.99"
+              value={targetProfit}
+              onChange={(e) => setTargetProfit(e.target.value)}
+              className={inputClass}
+            />
+          </label>
+          <div /> {/* spacer to keep the warning thresholds on a fresh row */}
+          <label className="block">
+            <span className="block text-sm font-medium text-slate-700 mb-1">
+              {t('jobs.warning_amber_pct')}
+            </span>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              placeholder="80"
+              value={warnAmber}
+              onChange={(e) => setWarnAmber(e.target.value)}
+              className={inputClass}
+            />
+            <span className="block text-xs text-slate-500 mt-1">
+              {t('jobs.warning_threshold_default_hint', { value: '80' })}
+            </span>
+          </label>
+          <label className="block">
+            <span className="block text-sm font-medium text-slate-700 mb-1">
+              {t('jobs.warning_red_pct')}
+            </span>
+            <input
+              type="number"
+              step="0.01"
+              min="0.01"
+              placeholder="100"
+              value={warnRed}
+              onChange={(e) => setWarnRed(e.target.value)}
+              className={inputClass}
+            />
+            <span className="block text-xs text-slate-500 mt-1">
+              {t('jobs.warning_threshold_default_hint', { value: '100' })}
+            </span>
+          </label>
+        </div>
+        <div className="flex items-center gap-3">
+          <button type="submit" disabled={updateJob.isPending} className={btnPrimary}>
+            {updateJob.isPending ? t('common.loading') : t('jobs.save_settings')}
+          </button>
+          {savedFlash && !updateJob.isPending && (
+            <span className="text-sm text-emerald-700">{t('jobs.settings_saved')}</span>
+          )}
+        </div>
+        {error && (
+          <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md p-2">
+            {error}
+          </div>
+        )}
+      </form>
+    </section>
   )
 }
 

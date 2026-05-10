@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useCreateJob, useJobs } from '../api/hooks/useJobs'
 import { AppShell } from '../components/AppShell'
+import { GstAmountInput } from '../components/GstAmountInput'
 import { Modal } from '../components/Modal'
 import { extractErrorMessage } from '../api/client'
 import type { components } from '../api/types'
@@ -107,24 +108,16 @@ export function Jobs() {
               className={inputClass}
             />
           </Field>
-          <Field label={t('jobs.contract_value')}>
-            <input
-              type="number"
-              step="0.01"
-              value={contractValue}
-              onChange={(e) => setContractValue(e.target.value)}
-              className={inputClass}
-            />
-          </Field>
-          <Field label={t('jobs.total_budget')}>
-            <input
-              type="number"
-              step="0.01"
-              value={totalBudget}
-              onChange={(e) => setTotalBudget(e.target.value)}
-              className={inputClass}
-            />
-          </Field>
+          <GstAmountInput
+            label={t('jobs.contract_value_input')}
+            value={contractValue}
+            onChange={setContractValue}
+          />
+          <GstAmountInput
+            label={t('jobs.total_budget_input')}
+            value={totalBudget}
+            onChange={setTotalBudget}
+          />
           <Field label={t('jobs.status')}>
             <select
               value={status}

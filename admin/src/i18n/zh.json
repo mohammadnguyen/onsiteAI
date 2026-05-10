@@ -22,6 +22,15 @@
     "site_address": "工地地址",
     "contract_value": "合同金额(不含GST)",
     "total_budget": "总预算(不含GST)",
+    "contract_value_input": "合同金额",
+    "total_budget_input": "总预算",
+    "target_profit_ratio_pct": "目标利润率 %",
+    "warning_amber_pct": "黄色预警阈值 (%)",
+    "warning_red_pct": "红色预警阈值 (%)",
+    "warning_threshold_default_hint": "留空则使用默认值 ({{value}})。",
+    "settings_section": "项目设置",
+    "save_settings": "保存设置",
+    "settings_saved": "设置已保存。",
     "status": "状态",
     "status_active": "进行中",
     "status_completed": "已完成"
@@ -196,6 +205,12 @@
     "empty_no_expenses": "此项目暂无支出",
     "empty_no_budgets": "未设置类别预算",
     "plus_gst": "+ GST"
+  },
+  "gst": {
+    "basis_ex": "不含",
+    "basis_inc": "含",
+    "basis_toggle_aria": "GST 基准",
+    "ex_hint": "= ${{value}} 不含GST"
   },
   "common": {
     "save": "保存",
