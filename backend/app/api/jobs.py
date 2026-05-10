@@ -20,6 +20,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -163,24 +164,44 @@ async def update_job_endpoint(
     _admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> Job:
-    """Partially update a job (admin only)."""
+    """Partially update a job (admin only).
+
+    PATCH semantics (Phase 3 Lite+ correction):
+
+    * Field omitted from JSON → no change to the column.
+    * Field present with explicit ``null`` → clear the column to NULL
+      (only valid for nullable columns; the DB CHECK / NOT NULL
+      constraints are the backstop for misuse).
+
+    The differentiation is done by ``model_dump(exclude_unset=True)`` —
+    Pydantic tracks which fields the caller actually included in the
+    request body, separately from the field defaults.
+
+    Cross-field DB CHECK violations that Pydantic can't see (e.g.
+    PATCHing only ``warning_amber_pct`` to a value that's no longer
+    strictly less than the stored ``warning_red_pct``) come back from
+    SQLAlchemy as ``IntegrityError`` and are translated to a 422 here
+    so the client gets a validation error rather than a 500.
+    """
+    set_fields = body.model_dump(exclude_unset=True)
     try:
-        return await update_job(
-            db,
-            job_id,
-            job_name=body.job_name,
-            job_code=body.job_code,
-            site_address=body.site_address,
-            contract_value_ex_gst=body.contract_value_ex_gst,
-            total_budget_ex_gst=body.total_budget_ex_gst,
-            target_profit_ratio_pct=body.target_profit_ratio_pct,
-            warning_amber_pct=body.warning_amber_pct,
-            warning_red_pct=body.warning_red_pct,
-            status=body.status,
-        )
+        return await update_job(db, job_id, **set_fields)
     except JobNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+        ) from exc
+    except IntegrityError as exc:
+        # Cross-field DB CHECK violation. ``exc.orig`` is the asyncpg
+        # error and includes the constraint name so the UI can map it
+        # to a friendly message. We deliberately do NOT call
+        # ``db.rollback()`` here — SQLAlchemy auto-rolls back the
+        # session on close (which FastAPI's request lifecycle handles
+        # via the ``get_db`` dependency). Calling rollback explicitly
+        # collides with the test fixture's outer transaction wrapper
+        # and surfaces a confusing SAWarning.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Database constraint violated: {exc.orig}",
         ) from exc
 
 

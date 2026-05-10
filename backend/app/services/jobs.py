@@ -142,36 +142,55 @@ async def get_job(db: AsyncSession, job_id: uuid.UUID) -> Job:
     return job
 
 
+# Sentinel for "argument not provided" so the service can distinguish
+# "caller did not mention this field" from "caller explicitly sent null".
+# Phase 3 Lite+ correction: the API exposes JSON-null as a clear, which
+# the route layer (``app/api/jobs.py``) translates by extracting only the
+# fields the user actually included via ``model_dump(exclude_unset=True)``
+# and forwarding them as kwargs. Anything not sent stays at the sentinel
+# default, so this loop leaves the column alone.
+_UNSET: object = object()
+
+
 async def update_job(
     db: AsyncSession,
     job_id: uuid.UUID,
     *,
-    job_name: str | None = None,
-    job_code: str | None = None,
-    site_address: str | None = None,
-    contract_value_ex_gst: Decimal | None = None,
-    total_budget_ex_gst: Decimal | None = None,
-    target_profit_ratio_pct: Decimal | None = None,
-    warning_amber_pct: Decimal | None = None,
-    warning_red_pct: Decimal | None = None,
-    status=None,
+    job_name: str | object = _UNSET,
+    job_code: str | None | object = _UNSET,
+    site_address: str | None | object = _UNSET,
+    contract_value_ex_gst: Decimal | None | object = _UNSET,
+    total_budget_ex_gst: Decimal | None | object = _UNSET,
+    target_profit_ratio_pct: Decimal | None | object = _UNSET,
+    warning_amber_pct: Decimal | None | object = _UNSET,
+    warning_red_pct: Decimal | None | object = _UNSET,
+    status: object = _UNSET,
 ) -> Job:
-    """Partial update; only non-``None`` fields are applied.
+    """Partial update of a :class:`Job`. Two distinct caller intents:
 
-    This matches Task 6's :func:`update_category` convention: the caller
-    passes exactly the fields it wants to change; everything else is
-    left untouched. Raises :class:`JobNotFound` on a missing id.
+    * **Field omitted (kwarg not passed)** → leave the column alone.
+    * **Field set to ``None``** → clear the column to NULL. Only valid
+      for nullable columns; the DB CHECK / NOT NULL constraints catch
+      misuse.
 
-    Phase 3 Lite+ adds three optional percent fields. Note the
-    convention limitation: passing ``None`` here does NOT clear an
-    existing stored value — it simply skips that field. Callers that
-    need to clear a stored override (e.g. revert ``warning_amber_pct``
-    to NULL so the system default re-applies) need to use a sentinel
-    or a dedicated DELETE endpoint; that flow is out of scope for
-    Phase 3 Lite+ and is left as future work.
+    Raises :class:`JobNotFound` on a missing id. Cross-field constraint
+    violations (e.g. patching ``warning_amber_pct`` to a value that's
+    no longer strictly less than the stored ``warning_red_pct``) are
+    caught by the DB ``ck_jobs_warning_amber_lt_red`` CHECK and surface
+    as ``IntegrityError`` — the API layer translates that to a 422.
+
+    Phase 3 Lite+ correction (commit pending): the prior behaviour was
+    "any None means skip", which made it impossible for the Job
+    Settings form to clear ``target_profit_ratio_pct`` /
+    ``warning_amber_pct`` / ``warning_red_pct`` /
+    ``contract_value_ex_gst`` / ``total_budget_ex_gst`` back to NULL
+    once they had been set — the only escape hatch was direct SQL.
+    The new semantics align with how the Pydantic ``JobUpdate`` body
+    is typed (``T | None``) and how the front-end form already
+    submitted ``null`` for cleared inputs.
     """
     job = await get_job(db, job_id)
-    updates = {
+    candidates = {
         "job_name": job_name,
         "job_code": job_code,
         "site_address": site_address,
@@ -182,9 +201,10 @@ async def update_job(
         "warning_red_pct": warning_red_pct,
         "status": status,
     }
-    for k, v in updates.items():
-        if v is not None:
-            setattr(job, k, v)
+    for k, v in candidates.items():
+        if v is _UNSET:
+            continue
+        setattr(job, k, v)
     await db.flush()
     await db.refresh(job, ["aliases", "category_budgets"])
     return job

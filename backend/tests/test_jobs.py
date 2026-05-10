@@ -186,6 +186,248 @@ async def test_patch_job_404(client, admin_token):
     assert r.status_code == 404
 
 
+# ===========================================================================
+# Phase 3 Lite+ correction — explicit-null PATCH semantics.
+#
+# The original update_job treated "any None means skip", so the Job Settings
+# form had no way to clear target_profit_ratio_pct / warning_amber_pct /
+# warning_red_pct / contract_value_ex_gst / total_budget_ex_gst back to NULL
+# once they had been set. The corrected route uses model_dump(exclude_unset
+# =True) so:
+#
+# * Field omitted from JSON → no change to the column.
+# * Field present with explicit null → clear the column.
+#
+# Tests cover: omit preserves; explicit-null clears; clearing thresholds
+# falls back to effective defaults; clearing target removes derived
+# margin fields; cross-field DB CHECK violations come back as 422.
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_patch_omit_preserves_existing_value(client, admin_token):
+    """PATCH that omits a field must NOT touch its stored value."""
+    # Create job with target set up front.
+    job = await _create_job(
+        client,
+        admin_token,
+        name="Preserve Test",
+        target_profit_ratio_pct="15.00",
+        contract_value_ex_gst="200000.00",
+    )
+    job_id = job["job_id"]
+    # PATCH something else; do not mention the target.
+    r = await client.patch(
+        f"/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"site_address": "99 New Street"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["site_address"] == "99 New Street"
+    assert Decimal(str(body["target_profit_ratio_pct"])) == Decimal("15.00")
+    assert Decimal(str(body["contract_value_ex_gst"])) == Decimal("200000.00")
+
+
+@pytest.mark.asyncio
+async def test_patch_explicit_null_clears_target_profit_ratio_pct(
+    client, admin_token
+):
+    """PATCH with explicit null on target_profit_ratio_pct must clear it."""
+    job = await _create_job(
+        client, admin_token, name="Clear Target", target_profit_ratio_pct="20.00"
+    )
+    assert Decimal(str(job["target_profit_ratio_pct"])) == Decimal("20.00")
+
+    r = await client.patch(
+        f"/jobs/{job['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"target_profit_ratio_pct": None},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["target_profit_ratio_pct"] is None
+
+
+@pytest.mark.asyncio
+async def test_patch_explicit_null_clears_contract_and_budget(
+    client, admin_token
+):
+    job = await _create_job(
+        client,
+        admin_token,
+        name="Clear Money",
+        contract_value_ex_gst="200000.00",
+        total_budget_ex_gst="180000.00",
+    )
+    r = await client.patch(
+        f"/jobs/{job['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "contract_value_ex_gst": None,
+            "total_budget_ex_gst": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["contract_value_ex_gst"] is None
+    assert body["total_budget_ex_gst"] is None
+
+
+@pytest.mark.asyncio
+async def test_patch_explicit_null_clears_warning_thresholds(
+    client, admin_token
+):
+    """Clearing per-job thresholds must restore the system defaults
+    (80 / 100) on the embedded summary's effective_warning_*_pct."""
+    job = await _create_job(
+        client,
+        admin_token,
+        name="Clear Thresholds",
+        warning_amber_pct="60.00",
+        warning_red_pct="90.00",
+    )
+    job_id = job["job_id"]
+
+    # Sanity: stored = override; effective = override (visible on /jobs).
+    list_r = await client.get(
+        "/jobs", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    pre = next(j for j in list_r.json() if j["job_id"] == job_id)
+    assert Decimal(str(pre["warning_amber_pct"])) == Decimal("60.00")
+    assert Decimal(str(pre["warning_red_pct"])) == Decimal("90.00")
+    assert Decimal(str(pre["summary"]["effective_warning_amber_pct"])) == Decimal(
+        "60.00"
+    )
+
+    # Clear both via explicit null.
+    r = await client.patch(
+        f"/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"warning_amber_pct": None, "warning_red_pct": None},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["warning_amber_pct"] is None
+    assert body["warning_red_pct"] is None
+
+    # After clearing, effective_* falls back to the system defaults.
+    list_r2 = await client.get(
+        "/jobs", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    post = next(j for j in list_r2.json() if j["job_id"] == job_id)
+    assert post["warning_amber_pct"] is None
+    assert post["warning_red_pct"] is None
+    assert Decimal(str(post["summary"]["effective_warning_amber_pct"])) == Decimal(
+        "80.00"
+    )
+    assert Decimal(str(post["summary"]["effective_warning_red_pct"])) == Decimal(
+        "100.00"
+    )
+
+
+@pytest.mark.asyncio
+async def test_patch_clear_target_removes_derived_margin_fields(
+    client, admin_token, db_session
+):
+    """When target_profit_ratio_pct goes back to NULL, the derived
+    target_cost_limit and budget_delta fields on the budget-summary
+    envelope must collapse to None (no input → no derivation).
+
+    This is the user-visible cleanup that makes the Target margin panel
+    disappear when the user clears the target."""
+    job = await _create_job(
+        client,
+        admin_token,
+        name="Margin Cleanup",
+        contract_value_ex_gst="200000.00",
+        total_budget_ex_gst="188000.00",
+        target_profit_ratio_pct="15.00",
+    )
+    job_id = job["job_id"]
+
+    # Pre-clear: summary carries the derived fields.
+    pre = await client.get(
+        f"/jobs/{job_id}/budget-summary",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    pre_body = pre.json()
+    assert Decimal(str(pre_body["target_cost_limit_ex_gst"])) == Decimal("170000.00")
+    assert Decimal(str(pre_body["budget_delta_vs_target_cost_ex_gst"])) == Decimal(
+        "18000.00"
+    )
+
+    # Clear target via PATCH null.
+    r = await client.patch(
+        f"/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"target_profit_ratio_pct": None},
+    )
+    assert r.status_code == 200, r.text
+
+    post = await client.get(
+        f"/jobs/{job_id}/budget-summary",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    post_body = post.json()
+    assert post_body["target_profit_ratio_pct"] is None
+    assert post_body["target_cost_limit_ex_gst"] is None
+    assert post_body["budget_delta_vs_target_cost_ex_gst"] is None
+    # contract + budget remain → budgeted_profit + ratio still derive.
+    assert Decimal(str(post_body["budgeted_profit_ex_gst"])) == Decimal("12000.00")
+    assert Decimal(str(post_body["budgeted_profit_ratio_pct"])) == Decimal("6.00")
+
+
+@pytest.mark.asyncio
+async def test_patch_partial_threshold_violating_db_check_returns_422(
+    client, admin_token
+):
+    """Cross-field constraint that Pydantic can't see at PATCH time
+    (because only one of amber/red is in the payload) must come back
+    as 422, not 500. Job has stored amber=70 / red=80; PATCHing red=60
+    alone would make amber>=red, violating ck_jobs_warning_amber_lt_red."""
+    job = await _create_job(
+        client,
+        admin_token,
+        name="DB Check 422",
+        warning_amber_pct="70.00",
+        warning_red_pct="80.00",
+    )
+    r = await client.patch(
+        f"/jobs/{job['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"warning_red_pct": "60.00"},  # < stored amber 70
+    )
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "ck_jobs_warning_amber_lt_red" in detail
+
+
+@pytest.mark.asyncio
+async def test_patch_clear_one_threshold_with_partner_set_succeeds(
+    client, admin_token
+):
+    """Clearing only amber while red stays set must succeed — the
+    NULL-safe CHECK ``warning_amber_pct IS NULL OR …`` allows the
+    partial-clear case."""
+    job = await _create_job(
+        client,
+        admin_token,
+        name="Partial Clear",
+        warning_amber_pct="70.00",
+        warning_red_pct="90.00",
+    )
+    r = await client.patch(
+        f"/jobs/{job['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"warning_amber_pct": None},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["warning_amber_pct"] is None
+    assert Decimal(str(body["warning_red_pct"])) == Decimal("90.00")
+
+
 @pytest.mark.asyncio
 async def test_add_alias_contributor_forbidden(
     client, admin_token, contributor_token
