@@ -5,6 +5,7 @@ import { useCreateJob, useJobs } from '../api/hooks/useJobs'
 import { AppShell } from '../components/AppShell'
 import { GstAmountInput } from '../components/GstAmountInput'
 import { Modal } from '../components/Modal'
+import { TotalBudgetField } from '../components/TotalBudgetField'
 import { extractErrorMessage } from '../api/client'
 import type { components } from '../api/types'
 import {
@@ -29,6 +30,9 @@ export function Jobs() {
   const [jobCode, setJobCode] = useState('')
   const [siteAddress, setSiteAddress] = useState('')
   const [contractValue, setContractValue] = useState('')
+  // Phase 3 Lite++: target profit % is now part of the New Job modal so
+  // <TotalBudgetField> can derive the budget from contract × (1 − target/100).
+  const [targetProfit, setTargetProfit] = useState('')
   const [totalBudget, setTotalBudget] = useState('')
   const [status, setStatus] = useState<JobStatus>('active')
   const [formError, setFormError] = useState<string | null>(null)
@@ -38,6 +42,7 @@ export function Jobs() {
     setJobCode('')
     setSiteAddress('')
     setContractValue('')
+    setTargetProfit('')
     setTotalBudget('')
     setStatus('active')
     setFormError(null)
@@ -52,7 +57,11 @@ export function Jobs() {
         job_code: jobCode.trim() ? jobCode : null,
         site_address: siteAddress.trim() ? siteAddress : null,
         contract_value_ex_gst: contractValue ? contractValue : null,
+        // <TotalBudgetField> already kept totalBudget in sync with the
+        // auto-calc when in auto mode, so submitting `totalBudget` is
+        // correct for both modes. Explicit "" → null for empty.
         total_budget_ex_gst: totalBudget ? totalBudget : null,
+        target_profit_ratio_pct: targetProfit ? targetProfit : null,
         status,
       })
       resetForm()
@@ -115,8 +124,20 @@ export function Jobs() {
             value={contractValue}
             onChange={setContractValue}
           />
-          <GstAmountInput
-            label={t('jobs.total_budget_input')}
+          <Field label={t('jobs.target_profit_ratio_pct')}>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              max="99.99"
+              value={targetProfit}
+              onChange={(e) => setTargetProfit(e.target.value)}
+              className={inputClass}
+            />
+          </Field>
+          <TotalBudgetField
+            contractValueExGst={contractValue}
+            targetProfitRatioPct={targetProfit}
             value={totalBudget}
             onChange={setTotalBudget}
           />

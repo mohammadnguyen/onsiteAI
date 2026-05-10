@@ -233,3 +233,100 @@ export function renderBudgetMoney(
 export function basisSuffixKey(mode: GstDisplayMode): string {
   return mode === 'inc' ? 'budget.suffix_inc' : 'budget.suffix_ex'
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3 Lite++ — auto-calculated total budget
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the target cost limit (== auto-calculated total budget) from
+ * canonical ex-GST inputs.
+ *
+ * Formula (frozen, mirrors backend ``_compute_margin_fields``):
+ *
+ *     target_cost_limit_ex_gst = contract × (1 − target_profit_ratio_pct / 100)
+ *
+ * Both inputs are Decimal-strings. Returns a Decimal-string quantized to
+ * 0.01 via cent-level integer rounding (no float equality drift). Empty
+ * input or non-numeric input returns "" — the caller treats that as
+ * "auto-calc not possible right now".
+ *
+ * **GST canonicalization is the caller's responsibility.** The contract
+ * string passed in MUST already be in ex-GST (the canonical basis used
+ * everywhere the budget math runs). The form's ``<GstAmountInput>``
+ * always emits ex-GST regardless of which basis the user typed in, so
+ * the contract value reaching this helper is always correctly canonical.
+ *
+ * Worked examples:
+ *   calcTargetCostLimit("200000", "15")    → "170000.00"
+ *   calcTargetCostLimit("200000.00", "15.00") → "170000.00"
+ *   calcTargetCostLimit("100", "0")         → "100.00" (0% target)
+ *   calcTargetCostLimit("1234.56", "12.5")  → "1080.24"
+ *   calcTargetCostLimit("", "15")           → ""  (no contract)
+ *   calcTargetCostLimit("200000", "")       → ""  (no target)
+ *   calcTargetCostLimit("200000", "100")    → "0.00" (full target — degenerate; backend Pydantic rejects target ≥ 100)
+ */
+export function calcTargetCostLimit(
+  contractExGst: string,
+  targetProfitRatioPct: string,
+): string {
+  if (contractExGst.trim() === '' || targetProfitRatioPct.trim() === '') return ''
+  const contract = Number(contractExGst)
+  const target = Number(targetProfitRatioPct)
+  if (!Number.isFinite(contract) || !Number.isFinite(target)) return ''
+  // Compute in cents to dodge JS float drift on the (1 - target/100) factor:
+  //   result_cents = round(contract_cents × (10000 − target_basis_points) / 10000)
+  // Then divide by 100 for the dollar-string. Tolerable for amounts up to
+  // ~$10M (matches the gst.ts precision note).
+  const resultDollars = (contract * (100 - target)) / 100
+  return resultDollars.toFixed(2)
+}
+
+/**
+ * Compare two Decimal-string money values for equality at the cent level.
+ *
+ * Used by ``<TotalBudgetField>`` to decide whether a stored budget
+ * matches the auto-calculated value (and therefore the form should open
+ * in 'auto' mode) or differs (and therefore should open in 'manual'
+ * override mode).
+ *
+ * Both arguments are rounded to the nearest cent as integers, then
+ * compared as integers — this avoids float-equality drift like
+ * ``188000 - 188000 === 1.4e-14`` from naïve subtraction.
+ *
+ * Either argument null/empty/non-numeric → returns ``false``.
+ */
+export function budgetsMatchToCent(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean {
+  if (a === null || a === undefined || a === '') return false
+  if (b === null || b === undefined || b === '') return false
+  const an = Number(a)
+  const bn = Number(b)
+  if (!Number.isFinite(an) || !Number.isFinite(bn)) return false
+  return Math.round(an * 100) === Math.round(bn * 100)
+}
+
+/**
+ * Compute the effective profit margin (as a percent string) given
+ * contract value and a chosen budget — used by the override warning
+ * line so the user sees the consequence of their manual budget on
+ * their actual margin.
+ *
+ *     effective_margin_pct = (contract − budget) / contract × 100
+ *
+ * Returns "" when either input is missing/invalid or contract is 0
+ * (avoid divide-by-zero — matches the backend rule).
+ */
+export function calcEffectiveMarginPct(
+  contractExGst: string,
+  budgetExGst: string,
+): string {
+  if (contractExGst.trim() === '' || budgetExGst.trim() === '') return ''
+  const contract = Number(contractExGst)
+  const budget = Number(budgetExGst)
+  if (!Number.isFinite(contract) || !Number.isFinite(budget)) return ''
+  if (contract === 0) return ''
+  return (((contract - budget) / contract) * 100).toFixed(2)
+}

@@ -12,10 +12,13 @@ import {
 import { useJobBudgetSummary } from '../api/hooks/useBudgetSummary'
 import { AppShell } from '../components/AppShell'
 import { GstAmountInput } from '../components/GstAmountInput'
+import { TotalBudgetField, type TotalBudgetMode } from '../components/TotalBudgetField'
 import { extractErrorMessage } from '../api/client'
 import type { components } from '../api/types'
 import {
   BudgetChip,
+  budgetsMatchToCent,
+  calcTargetCostLimit,
   formatMoney,
   formatPercent,
   getBudgetBand,
@@ -260,6 +263,26 @@ function JobSettingsForm({ job }: { job: JobWithDetailPublic }) {
   const [targetProfit, setTargetProfit] = useState(job.target_profit_ratio_pct ?? '')
   const [warnAmber, setWarnAmber] = useState(job.warning_amber_pct ?? '')
   const [warnRed, setWarnRed] = useState(job.warning_red_pct ?? '')
+
+  // Phase 3 Lite++ — derive the initial budget mode ONCE from the loaded
+  // job state. Auto when target+contract+budget all line up to the cent;
+  // manual otherwise (including the no-target-set case which makes auto
+  // impossible). After mount, <TotalBudgetField> owns the mode via its
+  // radio buttons.
+  const initialBudgetMode: TotalBudgetMode = (() => {
+    // Generated TS types for nullable fields are `T | null | undefined`,
+    // so guard against both before calling the calc helpers.
+    if (!job.target_profit_ratio_pct || !job.contract_value_ex_gst) {
+      return 'manual'
+    }
+    const expected = calcTargetCostLimit(
+      job.contract_value_ex_gst,
+      job.target_profit_ratio_pct,
+    )
+    return budgetsMatchToCent(job.total_budget_ex_gst, expected)
+      ? 'auto'
+      : 'manual'
+  })()
   const [error, setError] = useState<string | null>(null)
   const [savedFlash, setSavedFlash] = useState(false)
 
@@ -297,11 +320,6 @@ function JobSettingsForm({ job }: { job: JobWithDetailPublic }) {
             value={contractValue}
             onChange={setContractValue}
           />
-          <GstAmountInput
-            label={t('jobs.total_budget_input')}
-            value={totalBudget}
-            onChange={setTotalBudget}
-          />
           <label className="block">
             <span className="block text-sm font-medium text-slate-700 mb-1">
               {t('jobs.target_profit_ratio_pct')}
@@ -316,7 +334,15 @@ function JobSettingsForm({ job }: { job: JobWithDetailPublic }) {
               className={inputClass}
             />
           </label>
-          <div /> {/* spacer to keep the warning thresholds on a fresh row */}
+          <div className="sm:col-span-2">
+            <TotalBudgetField
+              contractValueExGst={contractValue}
+              targetProfitRatioPct={targetProfit}
+              value={totalBudget}
+              onChange={setTotalBudget}
+              initialMode={initialBudgetMode}
+            />
+          </div>
           <label className="block">
             <span className="block text-sm font-medium text-slate-700 mb-1">
               {t('jobs.warning_amber_pct')}

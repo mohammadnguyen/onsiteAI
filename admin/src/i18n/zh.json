@@ -228,7 +228,14 @@
     "budgeted_profit_label": "预算利润",
     "budgeted_profit_secondary": "= {{ratio}} 当前预算下的利润率",
     "cost_to_date_remaining_label": "已发生成本后剩余合同金额",
-    "cost_to_date_remaining_disclaimer": "并非实际利润 — 不含未来成本。"
+    "cost_to_date_remaining_disclaimer": "并非实际利润 — 不含未来成本。",
+    "mode_auto": "根据目标利润自动计算",
+    "mode_manual": "手动设置预算",
+    "auto_disabled_hint": "请先设置合同金额和目标利润率,才能启用自动计算。",
+    "auto_formula_hint": "自动计算:{{contract}} × (1 − {{target}}) = {{result}}",
+    "override_warning_over": "当前预算超出目标成本上限 {{delta}}。实际利润率 {{ratio}},而非目标 {{target}}。",
+    "override_info_under": "当前预算比目标成本上限低 {{delta}}(比目标更保守)。",
+    "override_info_match": "当前预算正好等于目标成本上限。"
   },
   "gst": {
     "basis_ex": "不含",

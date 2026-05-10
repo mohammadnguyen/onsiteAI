@@ -228,7 +228,14 @@
     "budgeted_profit_label": "Budgeted profit",
     "budgeted_profit_secondary": "= {{ratio}} margin given chosen budget",
     "cost_to_date_remaining_label": "Remaining contract value after costs to date",
-    "cost_to_date_remaining_disclaimer": "Not actual profit — does not include future costs."
+    "cost_to_date_remaining_disclaimer": "Not actual profit — does not include future costs.",
+    "mode_auto": "Auto-calculate from target profit",
+    "mode_manual": "Manual budget",
+    "auto_disabled_hint": "Set contract value and target profit % to enable auto-calculate.",
+    "auto_formula_hint": "Auto-calculated: {{contract}} × (1 − {{target}}) = {{result}}",
+    "override_warning_over": "Budget exceeds target cost limit by {{delta}}. Effective margin would be {{ratio}}, not {{target}}.",
+    "override_info_under": "Budget is {{delta}} below target cost limit (more conservative than target).",
+    "override_info_match": "Budget matches the target cost limit exactly."
   },
   "gst": {
     "basis_ex": "ex",
