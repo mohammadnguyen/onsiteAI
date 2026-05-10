@@ -73,9 +73,19 @@ async def create_job(
     site_address: str | None = None,
     contract_value_ex_gst: Decimal | None = None,
     total_budget_ex_gst: Decimal | None = None,
+    target_profit_ratio_pct: Decimal | None = None,
+    warning_amber_pct: Decimal | None = None,
+    warning_red_pct: Decimal | None = None,
     status=None,
 ) -> Job:
-    """Insert a new :class:`Job` owned by ``created_by``."""
+    """Insert a new :class:`Job` owned by ``created_by``.
+
+    Phase 3 Lite+ adds three optional percent fields. Pydantic on
+    :class:`~app.schemas.job.JobCreate` enforces the value ranges and
+    the amber-lt-red cross-field rule before this is reached. The DB
+    CHECK constraints (added in migration ``b3e7a8f1c042``) are the
+    backstop.
+    """
     kwargs: dict = {
         "job_id": uuid.uuid4(),
         "job_name": job_name,
@@ -83,6 +93,9 @@ async def create_job(
         "site_address": site_address,
         "contract_value_ex_gst": contract_value_ex_gst,
         "total_budget_ex_gst": total_budget_ex_gst,
+        "target_profit_ratio_pct": target_profit_ratio_pct,
+        "warning_amber_pct": warning_amber_pct,
+        "warning_red_pct": warning_red_pct,
         "created_by": created_by.user_id,
     }
     if status is not None:
@@ -138,6 +151,9 @@ async def update_job(
     site_address: str | None = None,
     contract_value_ex_gst: Decimal | None = None,
     total_budget_ex_gst: Decimal | None = None,
+    target_profit_ratio_pct: Decimal | None = None,
+    warning_amber_pct: Decimal | None = None,
+    warning_red_pct: Decimal | None = None,
     status=None,
 ) -> Job:
     """Partial update; only non-``None`` fields are applied.
@@ -145,6 +161,14 @@ async def update_job(
     This matches Task 6's :func:`update_category` convention: the caller
     passes exactly the fields it wants to change; everything else is
     left untouched. Raises :class:`JobNotFound` on a missing id.
+
+    Phase 3 Lite+ adds three optional percent fields. Note the
+    convention limitation: passing ``None`` here does NOT clear an
+    existing stored value — it simply skips that field. Callers that
+    need to clear a stored override (e.g. revert ``warning_amber_pct``
+    to NULL so the system default re-applies) need to use a sentinel
+    or a dedicated DELETE endpoint; that flow is out of scope for
+    Phase 3 Lite+ and is left as future work.
     """
     job = await get_job(db, job_id)
     updates = {
@@ -153,6 +177,9 @@ async def update_job(
         "site_address": site_address,
         "contract_value_ex_gst": contract_value_ex_gst,
         "total_budget_ex_gst": total_budget_ex_gst,
+        "target_profit_ratio_pct": target_profit_ratio_pct,
+        "warning_amber_pct": warning_amber_pct,
+        "warning_red_pct": warning_red_pct,
         "status": status,
     }
     for k, v in updates.items():

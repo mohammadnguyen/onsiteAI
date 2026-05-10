@@ -39,6 +39,14 @@ class JobSummary(BaseModel):
     budget is set (NULL or zero). ``overspend`` is always a bool — it
     is ``False`` (not ``None``) when no budget is set so the UI never
     has to handle a tri-state for the chip.
+
+    Phase 3 Lite+ adds the two ``effective_warning_*_pct`` fields. They
+    are **always** populated — either the per-job stored override (from
+    ``JobPublic.warning_*_pct``) or the system default (80.00 / 100.00).
+    The stored fields stay nullable on ``JobPublic``; the effective
+    fields here are what the chip-banding logic on the frontend
+    consumes. This separation is point 3 of the operator review
+    (2026-05-10): never overwrite a NULL stored value with a default.
     """
 
     actual_inc_gst: Decimal
@@ -48,6 +56,8 @@ class JobSummary(BaseModel):
     remaining_ex_gst: Decimal | None
     percent_consumed: Decimal | None
     overspend: bool
+    effective_warning_amber_pct: Decimal
+    effective_warning_red_pct: Decimal
 
 
 class CategoryBudgetRow(BaseModel):
@@ -72,6 +82,26 @@ class JobBudgetSummary(BaseModel):
     Per-job totals (matching :class:`JobSummary`) plus the union of
     categories with either a budget row or at least one non-rejected
     expense. Categories with neither are omitted (no zero-zero rows).
+
+    Phase 3 Lite+ extends with five derived margin fields plus the two
+    effective threshold fields. All of the margin fields are nullable
+    and computed only when the inputs allow — see the nullable-rules
+    table in ``docs/phase-3-lite-plus-plan.md``. Specifically:
+
+    * ``target_cost_limit_ex_gst`` requires contract + target
+    * ``budgeted_profit_ex_gst`` requires contract + total_budget
+    * ``budgeted_profit_ratio_pct`` requires contract (and contract > 0)
+      + total_budget
+    * ``budget_delta_vs_target_cost_ex_gst`` requires all three of
+      contract + target + total_budget
+
+    There is intentionally **no** ``actual_profit_*`` field. Mid-project
+    actual profit is not knowable (future costs aren't included). The
+    UI may surface ``contract − cost_to_date`` as a low-emphasis
+    contextual line labelled "Remaining contract value after costs to
+    date" with an explicit "not actual profit" disclaimer; that
+    presentation rule is documented in the plan and enforced by the
+    frontend, not by this schema.
     """
 
     job_id: uuid.UUID
@@ -82,4 +112,13 @@ class JobBudgetSummary(BaseModel):
     remaining_ex_gst: Decimal | None
     percent_consumed: Decimal | None
     overspend: bool
+    # Phase 3 Lite+ — target margin fields (all nullable per the rules above)
+    target_profit_ratio_pct: Decimal | None
+    target_cost_limit_ex_gst: Decimal | None
+    budgeted_profit_ex_gst: Decimal | None
+    budgeted_profit_ratio_pct: Decimal | None
+    budget_delta_vs_target_cost_ex_gst: Decimal | None
+    # Phase 3 Lite+ — effective thresholds (always populated)
+    effective_warning_amber_pct: Decimal
+    effective_warning_red_pct: Decimal
     categories: list[CategoryBudgetRow]

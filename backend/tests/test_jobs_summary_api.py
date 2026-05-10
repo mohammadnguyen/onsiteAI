@@ -41,12 +41,20 @@ async def _mk_job(
     *,
     name: str = "Job",
     total_budget_ex_gst: Decimal | None = None,
+    contract_value_ex_gst: Decimal | None = None,
+    target_profit_ratio_pct: Decimal | None = None,
+    warning_amber_pct: Decimal | None = None,
+    warning_red_pct: Decimal | None = None,
 ) -> Job:
     job = Job(
         job_id=uuid.uuid4(),
         job_name=name,
         status=JobStatus.active,
         total_budget_ex_gst=total_budget_ex_gst,
+        contract_value_ex_gst=contract_value_ex_gst,
+        target_profit_ratio_pct=target_profit_ratio_pct,
+        warning_amber_pct=warning_amber_pct,
+        warning_red_pct=warning_red_pct,
         created_by=admin.user_id,
     )
     db.add(job)
@@ -312,3 +320,192 @@ async def test_budget_summary_decimal_string_shape(
         assert isinstance(body[field], str), field
         # Two decimal places exactly.
         assert "." in body[field] and len(body[field].split(".")[-1]) == 2
+
+
+# ===========================================================================
+# Phase 3 Lite+ — API integration for stored + derived + effective fields
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_post_jobs_accepts_phase3liteplus_fields(client, admin_token):
+    """POST /jobs persists target_profit + warning thresholds; round-trip wire shape."""
+    r = await client.post(
+        "/jobs",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "job_name": "Lite+ POST",
+            "contract_value_ex_gst": "200000.00",
+            "total_budget_ex_gst": "188000.00",
+            "target_profit_ratio_pct": "15.00",
+            "warning_amber_pct": "70.00",
+            "warning_red_pct": "90.00",
+        },
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert Decimal(body["target_profit_ratio_pct"]) == Decimal("15.00")
+    assert Decimal(body["warning_amber_pct"]) == Decimal("70.00")
+    assert Decimal(body["warning_red_pct"]) == Decimal("90.00")
+
+
+@pytest.mark.asyncio
+async def test_post_jobs_target_at_100_returns_422(client, admin_token):
+    """target_profit_ratio_pct = 100 must be rejected at Pydantic (422)."""
+    r = await client.post(
+        "/jobs",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"job_name": "Bad Target", "target_profit_ratio_pct": "100.00"},
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_post_jobs_negative_target_returns_422(client, admin_token):
+    r = await client.post(
+        "/jobs",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"job_name": "Bad Target Neg", "target_profit_ratio_pct": "-1.00"},
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_post_jobs_amber_geq_red_returns_422(client, admin_token):
+    """amber >= red is a Pydantic cross-field violation (422)."""
+    r = await client.post(
+        "/jobs",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "job_name": "Amber GE Red",
+            "warning_amber_pct": "90.00",
+            "warning_red_pct": "80.00",
+        },
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_post_jobs_red_zero_returns_422(client, admin_token):
+    """red must be strictly positive (gt=0)."""
+    r = await client.post(
+        "/jobs",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"job_name": "Red Zero", "warning_red_pct": "0.00"},
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_patch_jobs_updates_phase3liteplus_fields(
+    client, db_session, seeded_admin, admin_token
+):
+    job = await _mk_job(db_session, seeded_admin, name="Lite+ PATCH")
+    r = await client.patch(
+        f"/jobs/{job.job_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "target_profit_ratio_pct": "15.00",
+            "warning_amber_pct": "70.00",
+            "warning_red_pct": "90.00",
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert Decimal(body["target_profit_ratio_pct"]) == Decimal("15.00")
+    assert Decimal(body["warning_amber_pct"]) == Decimal("70.00")
+    assert Decimal(body["warning_red_pct"]) == Decimal("90.00")
+
+
+@pytest.mark.asyncio
+async def test_get_jobs_summary_carries_effective_thresholds_default(
+    client, db_session, seeded_admin, admin_token
+):
+    """Job with NULL stored thresholds → summary carries defaults 80 / 100."""
+    await _mk_job(db_session, seeded_admin, name="Default Thresholds")
+    r = await client.get(
+        "/jobs", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert r.status_code == 200
+    row = next(j for j in r.json() if j["job_name"] == "Default Thresholds")
+    # Stored values still NULL on JobPublic
+    assert row["warning_amber_pct"] is None
+    assert row["warning_red_pct"] is None
+    # Effective values populated on the summary
+    assert Decimal(row["summary"]["effective_warning_amber_pct"]) == Decimal("80.00")
+    assert Decimal(row["summary"]["effective_warning_red_pct"]) == Decimal("100.00")
+
+
+@pytest.mark.asyncio
+async def test_get_jobs_summary_carries_effective_thresholds_override(
+    client, db_session, seeded_admin, admin_token
+):
+    await _mk_job(
+        db_session,
+        seeded_admin,
+        name="Override Thresholds",
+        warning_amber_pct=Decimal("70.00"),
+        warning_red_pct=Decimal("90.00"),
+    )
+    r = await client.get(
+        "/jobs", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    row = next(j for j in r.json() if j["job_name"] == "Override Thresholds")
+    # Stored values present on JobPublic
+    assert Decimal(row["warning_amber_pct"]) == Decimal("70.00")
+    assert Decimal(row["warning_red_pct"]) == Decimal("90.00")
+    # Effective values match the stored override (no fallback applied)
+    assert Decimal(row["summary"]["effective_warning_amber_pct"]) == Decimal("70.00")
+    assert Decimal(row["summary"]["effective_warning_red_pct"]) == Decimal("90.00")
+
+
+@pytest.mark.asyncio
+async def test_get_budget_summary_carries_all_phase3liteplus_fields(
+    client, db_session, seeded_admin, admin_token
+):
+    """The full envelope carries margin fields + effective thresholds."""
+    job = await _mk_job(
+        db_session,
+        seeded_admin,
+        name="Full Envelope",
+        contract_value_ex_gst=Decimal("200000.00"),
+        total_budget_ex_gst=Decimal("188000.00"),
+        target_profit_ratio_pct=Decimal("15.00"),
+    )
+    r = await client.get(
+        f"/jobs/{job.job_id}/budget-summary",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert Decimal(body["target_profit_ratio_pct"]) == Decimal("15.00")
+    assert Decimal(body["target_cost_limit_ex_gst"]) == Decimal("170000.00")
+    assert Decimal(body["budgeted_profit_ex_gst"]) == Decimal("12000.00")
+    assert Decimal(body["budgeted_profit_ratio_pct"]) == Decimal("6.00")
+    assert Decimal(body["budget_delta_vs_target_cost_ex_gst"]) == Decimal("18000.00")
+    assert Decimal(body["effective_warning_amber_pct"]) == Decimal("80.00")
+    assert Decimal(body["effective_warning_red_pct"]) == Decimal("100.00")
+    # Confirm the misleading "actual_profit_*" fields are NOT in the wire response.
+    assert "actual_profit_ex_gst" not in body
+    assert "actual_profit_ratio_pct" not in body
+
+
+@pytest.mark.asyncio
+async def test_get_budget_summary_null_margin_fields_when_inputs_missing(
+    client, db_session, seeded_admin, admin_token
+):
+    """A job with no contract/target/budget gets null margin fields."""
+    job = await _mk_job(db_session, seeded_admin, name="Bare Job")
+    r = await client.get(
+        f"/jobs/{job.job_id}/budget-summary",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    body = r.json()
+    assert body["target_profit_ratio_pct"] is None
+    assert body["target_cost_limit_ex_gst"] is None
+    assert body["budgeted_profit_ex_gst"] is None
+    assert body["budgeted_profit_ratio_pct"] is None
+    assert body["budget_delta_vs_target_cost_ex_gst"] is None
+    # Effective thresholds always populated.
+    assert body["effective_warning_amber_pct"] == "80.00"
+    assert body["effective_warning_red_pct"] == "100.00"

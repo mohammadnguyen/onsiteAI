@@ -73,6 +73,9 @@ async def create_job_endpoint(
         site_address=body.site_address,
         contract_value_ex_gst=body.contract_value_ex_gst,
         total_budget_ex_gst=body.total_budget_ex_gst,
+        target_profit_ratio_pct=body.target_profit_ratio_pct,
+        warning_amber_pct=body.warning_amber_pct,
+        warning_red_pct=body.warning_red_pct,
         status=body.status,
     )
 
@@ -170,6 +173,9 @@ async def update_job_endpoint(
             site_address=body.site_address,
             contract_value_ex_gst=body.contract_value_ex_gst,
             total_budget_ex_gst=body.total_budget_ex_gst,
+            target_profit_ratio_pct=body.target_profit_ratio_pct,
+            warning_amber_pct=body.warning_amber_pct,
+            warning_red_pct=body.warning_red_pct,
             status=body.status,
         )
     except JobNotFound as exc:

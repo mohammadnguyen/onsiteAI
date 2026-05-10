@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.job import JobStatus
 from app.models.user import LanguageCode
@@ -26,26 +26,73 @@ from app.schemas.budget_summary import JobSummary
 from app.schemas.category import CategoryPublic
 
 
+def _validate_amber_lt_red(
+    amber: Decimal | None, red: Decimal | None
+) -> None:
+    """Cross-field check: amber must be strictly less than red when both set.
+
+    Mirrors the DB CHECK ``ck_jobs_warning_amber_lt_red`` so callers see
+    a 422 from Pydantic before reaching the DB. NULL-safe.
+    """
+    if amber is not None and red is not None and amber >= red:
+        raise ValueError(
+            "warning_amber_pct must be strictly less than warning_red_pct"
+        )
+
+
 class JobCreate(BaseModel):
-    """Body of ``POST /jobs`` (admin-only)."""
+    """Body of ``POST /jobs`` (admin-only).
+
+    Phase 3 Lite+ adds three optional percent fields. All three are
+    enforced by both Pydantic (here) and DB CHECK constraints (see
+    ``backend/app/models/job.py`` and migration ``b3e7a8f1c042``).
+    """
 
     job_name: str = Field(min_length=1, max_length=255)
     job_code: str | None = Field(default=None, min_length=1, max_length=64)
     site_address: str | None = Field(default=None, max_length=512)
     contract_value_ex_gst: Decimal | None = Field(default=None, ge=0)
     total_budget_ex_gst: Decimal | None = Field(default=None, ge=0)
+    target_profit_ratio_pct: Decimal | None = Field(
+        default=None, ge=0, lt=100
+    )
+    warning_amber_pct: Decimal | None = Field(default=None, ge=0)
+    warning_red_pct: Decimal | None = Field(default=None, gt=0)
     status: JobStatus = JobStatus.active
+
+    @model_validator(mode="after")
+    def _amber_lt_red(self) -> "JobCreate":
+        _validate_amber_lt_red(self.warning_amber_pct, self.warning_red_pct)
+        return self
 
 
 class JobUpdate(BaseModel):
-    """Body of ``PATCH /jobs/{job_id}`` (admin-only)."""
+    """Body of ``PATCH /jobs/{job_id}`` (admin-only).
+
+    Phase 3 Lite+ extends with the same three optional percent fields
+    as ``JobCreate``. The cross-field amber-lt-red check still applies
+    on PATCH; if only one of (amber, red) is supplied, it must still
+    be coherent with whatever the row already holds — that combined
+    check is enforced server-side by the DB CHECK constraint after the
+    update is applied (Pydantic only sees the patch payload).
+    """
 
     job_name: str | None = Field(default=None, min_length=1, max_length=255)
     job_code: str | None = Field(default=None, min_length=1, max_length=64)
     site_address: str | None = Field(default=None, max_length=512)
     contract_value_ex_gst: Decimal | None = Field(default=None, ge=0)
     total_budget_ex_gst: Decimal | None = Field(default=None, ge=0)
+    target_profit_ratio_pct: Decimal | None = Field(
+        default=None, ge=0, lt=100
+    )
+    warning_amber_pct: Decimal | None = Field(default=None, ge=0)
+    warning_red_pct: Decimal | None = Field(default=None, gt=0)
     status: JobStatus | None = None
+
+    @model_validator(mode="after")
+    def _amber_lt_red(self) -> "JobUpdate":
+        _validate_amber_lt_red(self.warning_amber_pct, self.warning_red_pct)
+        return self
 
 
 class JobAliasCreate(BaseModel):
@@ -111,6 +158,12 @@ class JobPublic(BaseModel):
     site_address: str | None
     contract_value_ex_gst: Decimal | None
     total_budget_ex_gst: Decimal | None
+    # Phase 3 Lite+ stored fields. May be NULL — the API never overwrites
+    # NULL with a default. Effective values (with the 80 / 100 fallback)
+    # are surfaced separately on the embedded ``summary``.
+    target_profit_ratio_pct: Decimal | None = None
+    warning_amber_pct: Decimal | None = None
+    warning_red_pct: Decimal | None = None
     status: JobStatus
     created_by: uuid.UUID
     summary: JobSummary | None = None

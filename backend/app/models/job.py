@@ -21,7 +21,7 @@ import uuid
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import UUID
+from sqlalchemy import UUID, CheckConstraint
 from sqlalchemy import Enum as SqlaEnum
 from sqlalchemy import ForeignKey, Numeric, String, UniqueConstraint, event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -66,6 +66,24 @@ class Job(Base, TimestampMixin):
     total_budget_ex_gst: Mapped[Decimal | None] = mapped_column(
         Numeric(12, 2), nullable=True
     )
+    # Phase 3 Lite+ — target profit margin as a percent (e.g. 15.00 = 15%).
+    # Range constraint enforced at both Pydantic and DB CHECK layers
+    # (``ck_jobs_target_profit_ratio_pct_range``). NULL = not set.
+    target_profit_ratio_pct: Mapped[Decimal | None] = mapped_column(
+        Numeric(5, 2), nullable=True
+    )
+    # Phase 3 Lite+ — per-job warning thresholds for the budget chip.
+    # Both nullable; NULL means "use the system default" — that fallback
+    # is resolved at the API boundary (see ``services/budget_summary.
+    # _effective_thresholds``) and is intentionally never written back
+    # to the column. Stored values stay nullable so the UI can tell
+    # "user explicitly set 80" apart from "user left at default 80".
+    warning_amber_pct: Mapped[Decimal | None] = mapped_column(
+        Numeric(5, 2), nullable=True
+    )
+    warning_red_pct: Mapped[Decimal | None] = mapped_column(
+        Numeric(5, 2), nullable=True
+    )
     status: Mapped[JobStatus] = mapped_column(
         SqlaEnum(
             JobStatus, name="job_status", native_enum=True, create_type=True
@@ -91,6 +109,32 @@ class Job(Base, TimestampMixin):
         lazy="selectin",
     )
     created_by_user: Mapped["User"] = relationship(lazy="joined")
+
+    # CHECK constraints mirror the Alembic migration
+    # ``b3e7a8f1c042_add_job_target_profit_and_thresholds`` so the test
+    # bootstrap (which uses ``Base.metadata.create_all`` rather than
+    # Alembic) builds an identical schema and the constraint tests
+    # exercise the real DB-level enforcement, not just Pydantic.
+    __table_args__ = (
+        CheckConstraint(
+            "target_profit_ratio_pct IS NULL OR "
+            "(target_profit_ratio_pct >= 0 AND target_profit_ratio_pct < 100)",
+            name="ck_jobs_target_profit_ratio_pct_range",
+        ),
+        CheckConstraint(
+            "warning_amber_pct IS NULL OR warning_amber_pct >= 0",
+            name="ck_jobs_warning_amber_pct_nonneg",
+        ),
+        CheckConstraint(
+            "warning_red_pct IS NULL OR warning_red_pct > 0",
+            name="ck_jobs_warning_red_pct_positive",
+        ),
+        CheckConstraint(
+            "warning_amber_pct IS NULL OR warning_red_pct IS NULL OR "
+            "warning_amber_pct < warning_red_pct",
+            name="ck_jobs_warning_amber_lt_red",
+        ),
+    )
 
 
 class JobAlias(Base, TimestampMixin):
