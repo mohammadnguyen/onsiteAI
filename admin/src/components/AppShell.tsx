@@ -3,6 +3,7 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { setLanguage } from '../i18n'
 import { useLogout, useMe } from '../api/hooks/useAuth'
+import { useGstDisplay, type GstDisplayMode } from '../store/gstDisplay'
 
 export function AppShell({ children }: { children: ReactNode }) {
   const { t, i18n } = useTranslation()
@@ -23,6 +24,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const role = me.data?.role
   const isAdmin = role === 'admin'
   const isContributor = role === 'contributor'
+
+  // Phase 3 Lite+ GST display preference (per browser, persisted via
+  // Zustand). Visible only to admins; contributors don't see budget
+  // tiles, so the toggle would be noise on their nav.
+  const gstDisplay = useGstDisplay()
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -63,6 +69,22 @@ export function AppShell({ children }: { children: ReactNode }) {
           )}
         </nav>
         <div className="ml-auto flex items-center gap-3">
+          {isAdmin && (
+            <label className="text-sm text-slate-600">
+              {t('budget.gst_display_label')}:
+              <select
+                className="ml-2 border border-slate-300 rounded-md px-2 py-1 text-sm"
+                value={gstDisplay.mode}
+                onChange={(e) =>
+                  gstDisplay.setMode(e.target.value as GstDisplayMode)
+                }
+              >
+                <option value="ex">{t('budget.gst_display_ex')}</option>
+                <option value="both">{t('budget.gst_display_both')}</option>
+                <option value="inc">{t('budget.gst_display_inc')}</option>
+              </select>
+            </label>
+          )}
           <label className="text-sm text-slate-600">
             {t('lang.label')}:
             <select

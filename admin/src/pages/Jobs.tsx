@@ -13,7 +13,9 @@ import {
   formatMoney,
   formatPercent,
   getBudgetBand,
+  renderBudgetMoney,
 } from '../lib/budget'
+import { useGstDisplay } from '../store/gstDisplay'
 
 type JobStatus = components['schemas']['JobStatus']
 
@@ -164,7 +166,16 @@ type JobRow = components['schemas']['JobPublic']
  */
 function JobsTable({ jobs }: { jobs: JobRow[] }) {
   const { t } = useTranslation()
+  const { mode: gstMode } = useGstDisplay()
   const sorted = useMemo(() => [...jobs].sort(compareJobsByConsumption), [jobs])
+
+  // Headers respect the GST display preference: "Budget ex GST" / "Budget
+  // inc GST" / "Remaining ex GST" / "Remaining inc GST". The basis suffix
+  // is the same for both columns so the user's eye reads the basis once.
+  const budgetHeader =
+    gstMode === 'inc' ? t('budget.budget_inc_gst') : t('budget.budget_ex_gst')
+  const remainingHeader =
+    gstMode === 'inc' ? t('budget.remaining_inc_gst') : t('budget.remaining_ex_gst')
 
   return (
     <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto">
@@ -175,8 +186,8 @@ function JobsTable({ jobs }: { jobs: JobRow[] }) {
             <th className="text-left px-4 py-2 font-medium">{t('jobs.job_code')}</th>
             <th className="text-right px-4 py-2 font-medium">{t('budget.spent_inc_gst')}</th>
             <th className="text-right px-4 py-2 font-medium">{t('budget.spent_ex_gst')}</th>
-            <th className="text-right px-4 py-2 font-medium">{t('budget.budget_ex_gst')}</th>
-            <th className="text-right px-4 py-2 font-medium">{t('budget.remaining_ex_gst')}</th>
+            <th className="text-right px-4 py-2 font-medium">{budgetHeader}</th>
+            <th className="text-right px-4 py-2 font-medium">{remainingHeader}</th>
             <th className="text-right px-4 py-2 font-medium">{t('budget.percent_consumed')}</th>
             <th className="text-left px-4 py-2 font-medium">{t('jobs.status')}</th>
           </tr>
@@ -188,7 +199,26 @@ function JobsTable({ jobs }: { jobs: JobRow[] }) {
               s != null &&
               s.total_budget_ex_gst !== null &&
               Number(s.total_budget_ex_gst) > 0
-            const band = getBudgetBand(s?.percent_consumed ?? null, hasBudget)
+            // Phase 3 Lite+ — chip uses per-job effective thresholds plus
+            // the remaining_ex_gst safety check so a budget exhaustion at
+            // <100% still surfaces as `over_budget`.
+            const band = getBudgetBand(
+              s?.percent_consumed ?? null,
+              s?.remaining_ex_gst ?? null,
+              hasBudget,
+              s?.effective_warning_amber_pct ?? null,
+              s?.effective_warning_red_pct ?? null,
+            )
+            const budgetCell = renderBudgetMoney(
+              s?.total_budget_ex_gst ?? null,
+              gstMode,
+              t,
+            )
+            const remainingCell = renderBudgetMoney(
+              s?.remaining_ex_gst ?? null,
+              gstMode,
+              t,
+            )
             return (
               <tr key={job.job_id} className="border-t border-slate-100 hover:bg-slate-50">
                 <td className="px-4 py-2">
@@ -204,10 +234,16 @@ function JobsTable({ jobs }: { jobs: JobRow[] }) {
                   {formatMoney(s?.actual_ex_gst)}
                 </td>
                 <td className="px-4 py-2 text-slate-800 text-right tabular-nums">
-                  {formatMoney(s?.total_budget_ex_gst ?? null)}
+                  <div>{budgetCell.primary}</div>
+                  {budgetCell.secondary && (
+                    <div className="text-xs text-slate-500">{budgetCell.secondary}</div>
+                  )}
                 </td>
                 <td className="px-4 py-2 text-slate-800 text-right tabular-nums">
-                  {formatMoney(s?.remaining_ex_gst ?? null)}
+                  <div>{remainingCell.primary}</div>
+                  {remainingCell.secondary && (
+                    <div className="text-xs text-slate-500">{remainingCell.secondary}</div>
+                  )}
                 </td>
                 <td className="px-4 py-2 text-slate-800 text-right tabular-nums">
                   <div className="flex items-center justify-end gap-2">

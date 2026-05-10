@@ -19,7 +19,9 @@ import {
   formatMoney,
   formatPercent,
   getBudgetBand,
+  renderBudgetMoney,
 } from '../lib/budget'
+import { useGstDisplay, type GstDisplayMode } from '../store/gstDisplay'
 
 type LanguageCode = components['schemas']['LanguageCode']
 type JobBudgetSummary = components['schemas']['JobBudgetSummary']
@@ -90,32 +92,11 @@ export function JobDetail() {
 
       {job.data && (
         <div className="mt-4 space-y-6">
-          <div className="bg-white rounded-lg border border-slate-200 p-6">
-            <h1 className="text-2xl font-semibold text-slate-900 mb-4">{job.data.job_name}</h1>
-            <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
-              <Info label={t('jobs.job_code')} value={job.data.job_code ?? '—'} />
-              <Info
-                label={t('jobs.status')}
-                value={
-                  job.data.status === 'active'
-                    ? t('jobs.status_active')
-                    : t('jobs.status_completed')
-                }
-              />
-              <Info label={t('jobs.site_address')} value={job.data.site_address ?? '—'} />
-              <Info
-                label={t('jobs.contract_value')}
-                value={job.data.contract_value_ex_gst ?? '—'}
-              />
-              <Info
-                label={t('jobs.total_budget')}
-                value={job.data.total_budget_ex_gst ?? '—'}
-              />
-            </dl>
-          </div>
+          <JobHeader job={job.data} summary={summary.data ?? null} />
 
-          {summary.data && <KpiHeader summary={summary.data} t={t} />}
-          {summary.data && <BudgetVsActual summary={summary.data} t={t} />}
+          {summary.data && <KpiHeader summary={summary.data} />}
+          {summary.data && <BudgetVsActual summary={summary.data} />}
+          {summary.data && <TargetMarginPanel summary={summary.data} />}
 
           <JobSettingsForm job={job.data} />
 
@@ -390,29 +371,154 @@ function JobSettingsForm({ job }: { job: JobWithDetailPublic }) {
 }
 
 /**
- * Phase 3 Lite — KPI header row.
+ * Phase 3 Lite+ — top job header card.
  *
- * Four primary tiles labelled exactly per the plan: `Spent inc GST`,
- * `Spent ex GST`, `Budget ex GST`, `Remaining ex GST`. The `% consumed`
- * pill sits to the right (or below on narrow widths). The Spent inc GST
- * tile carries a secondary line with the GST split when non-zero so the
- * user can sanity-check the inclusive total.
+ * Replaces the old raw-string dl with formatted money values and the
+ * cost-to-date snapshot. The snapshot is a low-emphasis contextual
+ * line beneath the formatted contract value: it shows "remaining
+ * contract value after costs to date" with an explicit "not actual
+ * profit" disclaimer. Mid-project actual profit is not knowable, so
+ * the line is intentionally NOT framed as profit anywhere — operator
+ * constraint (point 1 of the 2026-05-10 review).
  */
-function KpiHeader({
+function JobHeader({
+  job,
   summary,
-  t,
 }: {
-  summary: JobBudgetSummary
-  t: TFunction
+  job: JobWithDetailPublic
+  summary: JobBudgetSummary | null
 }) {
+  const { t } = useTranslation()
+  const { mode } = useGstDisplay()
+
+  const contractEx = job.contract_value_ex_gst ?? null
+  const budgetEx = job.total_budget_ex_gst ?? null
+  const contractDisplay = renderBudgetMoney(contractEx, mode, t)
+  const budgetDisplay = renderBudgetMoney(budgetEx, mode, t)
+
+  // Cost-to-date headroom in the contract: only computable when contract
+  // is set AND the summary has loaded (we need actual_ex_gst). The line
+  // is *intentionally* not framed as profit — see the operator review.
+  const costToDateRemainingEx =
+    contractEx !== null && summary !== null
+      ? (Number(contractEx) - Number(summary.actual_ex_gst)).toFixed(2)
+      : null
+  const costToDateRemainingDisplay =
+    costToDateRemainingEx !== null
+      ? renderBudgetMoney(costToDateRemainingEx, mode, t)
+      : null
+
+  return (
+    <div className="bg-white rounded-lg border border-slate-200 p-6">
+      <h1 className="text-2xl font-semibold text-slate-900 mb-4">{job.job_name}</h1>
+      <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+        <Info label={t('jobs.job_code')} value={job.job_code ?? '—'} />
+        <Info
+          label={t('jobs.status')}
+          value={
+            job.status === 'active'
+              ? t('jobs.status_active')
+              : t('jobs.status_completed')
+          }
+        />
+        <Info label={t('jobs.site_address')} value={job.site_address ?? '—'} />
+        {/* Contract value (formatted) + cost-to-date snapshot beneath it */}
+        <div>
+          <dt className="text-xs font-medium text-slate-500 uppercase">
+            {basisAwareLabel(t, mode, 'jobs.contract_value', 'jobs.contract_value_input')}
+          </dt>
+          <dd className="text-slate-900">{contractDisplay.primary}</dd>
+          {contractDisplay.secondary && (
+            <dd className="text-xs text-slate-500">{contractDisplay.secondary}</dd>
+          )}
+          {costToDateRemainingDisplay && (
+            <div className="mt-2 pt-2 border-t border-slate-100">
+              <dt className="text-xs font-medium text-slate-500">
+                {t('budget.cost_to_date_remaining_label')}
+              </dt>
+              <dd className="text-sm text-slate-700 tabular-nums">
+                {costToDateRemainingDisplay.primary}
+              </dd>
+              {costToDateRemainingDisplay.secondary && (
+                <dd className="text-xs text-slate-400">
+                  {costToDateRemainingDisplay.secondary}
+                </dd>
+              )}
+              <dd className="text-xs text-slate-400 italic mt-1">
+                {t('budget.cost_to_date_remaining_disclaimer')}
+              </dd>
+            </div>
+          )}
+        </div>
+        <div>
+          <dt className="text-xs font-medium text-slate-500 uppercase">
+            {basisAwareLabel(t, mode, 'jobs.total_budget', 'jobs.total_budget_input')}
+          </dt>
+          <dd className="text-slate-900">{budgetDisplay.primary}</dd>
+          {budgetDisplay.secondary && (
+            <dd className="text-xs text-slate-500">{budgetDisplay.secondary}</dd>
+          )}
+        </div>
+      </dl>
+    </div>
+  )
+}
+
+/** When in `'inc'` display mode, the existing "Contract value (ex GST)"
+ * label becomes inconsistent with the displayed inc figure. Swap to a
+ * basis-neutral label so the user's eye trusts the displayed number. */
+function basisAwareLabel(
+  t: TFunction,
+  mode: GstDisplayMode,
+  exLabelKey: string,
+  neutralLabelKey: string,
+): string {
+  return mode === 'inc' ? t(neutralLabelKey) : t(exLabelKey)
+}
+
+/**
+ * Phase 3 Lite+ — KPI header row.
+ *
+ * Phase 3 Lite shipped four budget tiles + a `% consumed` pill. Phase 3
+ * Lite+ extends with an optional `Target profit %` tile (only when the
+ * job has `target_profit_ratio_pct` set), and routes the chip through
+ * the new 5-band scheme using the per-job effective thresholds. Budget
+ * and Remaining tiles respect the GST display preference: in `'both'`
+ * mode they show a small inc-GST secondary; in `'inc'` mode the primary
+ * value flips to inc and the label suffix flips to "(inc GST)".
+ */
+function KpiHeader({ summary }: { summary: JobBudgetSummary }) {
+  const { t } = useTranslation()
+  const { mode } = useGstDisplay()
+
   const hasBudget =
     summary.total_budget_ex_gst !== null && Number(summary.total_budget_ex_gst) > 0
-  const band = getBudgetBand(summary.percent_consumed, hasBudget)
+  const band = getBudgetBand(
+    summary.percent_consumed,
+    summary.remaining_ex_gst,
+    hasBudget,
+    summary.effective_warning_amber_pct,
+    summary.effective_warning_red_pct,
+  )
   const gst = Number(summary.gst_amount)
+
+  const budgetLabel =
+    mode === 'inc' ? t('budget.budget_inc_gst') : t('budget.budget_ex_gst')
+  const remainingLabel =
+    mode === 'inc' ? t('budget.remaining_inc_gst') : t('budget.remaining_ex_gst')
+  const budgetDisplay = renderBudgetMoney(summary.total_budget_ex_gst, mode, t)
+  const remainingDisplay = renderBudgetMoney(summary.remaining_ex_gst, mode, t)
+
+  const hasTarget = summary.target_profit_ratio_pct !== null
+  // Six tiles when target is set, five otherwise. Conditional grid keeps
+  // the layout balanced on lg screens; on smaller screens the grid wraps.
+  const gridCols = hasTarget
+    ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-6'
+    : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-5'
 
   return (
     <section className="bg-white rounded-lg border border-slate-200 p-6">
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className={`grid gap-4 ${gridCols}`}>
         <KpiTile
           label={t('budget.spent_inc_gst')}
           value={formatMoney(summary.actual_inc_gst)}
@@ -427,26 +533,37 @@ function KpiHeader({
           value={formatMoney(summary.actual_ex_gst)}
         />
         <KpiTile
-          label={t('budget.budget_ex_gst')}
-          value={formatMoney(summary.total_budget_ex_gst)}
-          secondary={hasBudget ? undefined : t('budget.no_budget_set')}
+          label={budgetLabel}
+          value={budgetDisplay.primary}
+          secondary={
+            hasBudget
+              ? budgetDisplay.secondary ?? undefined
+              : t('budget.no_budget_set')
+          }
         />
         <KpiTile
-          label={t('budget.remaining_ex_gst')}
-          value={formatMoney(summary.remaining_ex_gst)}
+          label={remainingLabel}
+          value={remainingDisplay.primary}
+          secondary={hasBudget ? remainingDisplay.secondary ?? undefined : undefined}
           chip={!hasBudget ? <BudgetChip band="no_budget" t={t} /> : undefined}
         />
         <div className="rounded-md border border-slate-200 bg-slate-50 p-4 flex flex-col items-start justify-center">
           <div className="text-xs font-medium text-slate-500 uppercase">
             {t('budget.percent_consumed')}
           </div>
-          <div className="mt-1 flex items-center gap-2">
+          <div className="mt-1 flex items-center gap-2 flex-wrap">
             <span className="text-xl font-semibold text-slate-900 tabular-nums">
               {formatPercent(summary.percent_consumed)}
             </span>
             <BudgetChip band={band} t={t} />
           </div>
         </div>
+        {hasTarget && (
+          <KpiTile
+            label={t('budget.target_profit_ratio_pct')}
+            value={formatPercent(summary.target_profit_ratio_pct)}
+          />
+        )}
       </div>
     </section>
   )
@@ -476,23 +593,19 @@ function KpiTile({
 }
 
 /**
- * Phase 3 Lite — per-category Actual-vs-Budget panel.
- *
- * One row per category that has either a budget row or at least one
- * non-rejected expense on the job. Sort: % consumed desc among rows
- * with budgets; budget-less rows go last (alphabetical by name).
+ * Phase 3 Lite — per-category Actual-vs-Budget panel, extended in
+ * Phase 3 Lite+ to use the 5-band chip with the per-job effective
+ * thresholds. One row per category that has either a budget row or
+ * at least one non-rejected expense on the job. Sort: % consumed desc
+ * among rows with budgets; budget-less rows go last (alphabetical
+ * by name).
  *
  * Empty-state hints sit above the table when no expenses or no budgets
  * exist; the table still renders the rows so the user can see the
  * actual values even when there's nothing to compare against.
  */
-function BudgetVsActual({
-  summary,
-  t,
-}: {
-  summary: JobBudgetSummary
-  t: TFunction
-}) {
+function BudgetVsActual({ summary }: { summary: JobBudgetSummary }) {
+  const { t } = useTranslation()
   const sorted = useMemo(() => sortCategoryRows(summary.categories), [summary.categories])
   const hasAnyRow = sorted.length > 0
   const allBudgetless = sorted.every((r) => r.budget_ex_gst === null)
@@ -523,9 +636,10 @@ function BudgetVsActual({
             {sorted.map((row) => {
               const hasBudget =
                 row.budget_ex_gst !== null && Number(row.budget_ex_gst) > 0
-              // Per-category percent for chip purposes; we don't render the
-              // number here (the panel is busy enough), but the chip uses
-              // the same banding scheme as the job-level chip.
+              // Per-category percent for chip purposes; we don't render
+              // the number here (the panel is busy enough), but the chip
+              // uses the same 5-band routing rules as the job-level chip,
+              // including the over-budget protection on remaining < 0.
               const percent =
                 hasBudget && row.budget_ex_gst !== null
                   ? (
@@ -533,7 +647,13 @@ function BudgetVsActual({
                       100
                     ).toFixed(2)
                   : null
-              const band = getBudgetBand(percent, hasBudget)
+              const band = getBudgetBand(
+                percent,
+                row.remaining_ex_gst,
+                hasBudget,
+                summary.effective_warning_amber_pct,
+                summary.effective_warning_red_pct,
+              )
               return (
                 <tr key={row.category_id} className="border-t border-slate-100">
                   <td className="py-1 text-slate-800">{row.category_name}</td>
@@ -557,6 +677,115 @@ function BudgetVsActual({
       )}
     </section>
   )
+}
+
+/**
+ * Phase 3 Lite+ — Target margin panel.
+ *
+ * Renders only when the job has `target_profit_ratio_pct` set. Shows
+ * three rows (target cost limit, your budget + delta vs target cost,
+ * budgeted profit + ratio) plus a hint if contract value isn't set
+ * yet. None of the math is rendered here — it's all read straight
+ * from the API summary's pre-computed derived fields, which are tested
+ * against the operator-frozen formulas in Batch 1.
+ */
+function TargetMarginPanel({ summary }: { summary: JobBudgetSummary }) {
+  const { t } = useTranslation()
+  if (summary.target_profit_ratio_pct === null) return null
+
+  const hasContract = summary.target_cost_limit_ex_gst !== null
+
+  return (
+    <section className="bg-white rounded-lg border border-slate-200 p-6">
+      <h2 className="text-lg font-semibold text-slate-900 mb-4">
+        {t('budget.target_margin_section')}
+      </h2>
+      {!hasContract && (
+        <p className="text-sm text-slate-600">
+          {t('budget.target_margin_set_contract_hint')}
+        </p>
+      )}
+      {hasContract && (
+        <dl className="space-y-4 text-sm">
+          <TargetMarginRow
+            label={t('budget.target_cost_limit_label')}
+            value={formatMoney(summary.target_cost_limit_ex_gst)}
+            secondary={t('budget.target_cost_limit_formula', {
+              target: formatPercent(summary.target_profit_ratio_pct),
+            })}
+          />
+          <TargetMarginRow
+            label={t('budget.your_budget_label')}
+            value={formatMoney(summary.total_budget_ex_gst)}
+            secondary={renderBudgetDelta(summary, t)}
+            secondaryEmphasis={summary.budget_delta_vs_target_cost_ex_gst !== null}
+          />
+          <TargetMarginRow
+            label={t('budget.budgeted_profit_label')}
+            value={formatMoney(summary.budgeted_profit_ex_gst)}
+            secondary={
+              summary.budgeted_profit_ratio_pct !== null
+                ? t('budget.budgeted_profit_secondary', {
+                    ratio: formatPercent(summary.budgeted_profit_ratio_pct),
+                  })
+                : undefined
+            }
+          />
+        </dl>
+      )}
+    </section>
+  )
+}
+
+function TargetMarginRow({
+  label,
+  value,
+  secondary,
+  secondaryEmphasis,
+}: {
+  label: string
+  value: string
+  secondary?: string
+  secondaryEmphasis?: boolean
+}) {
+  return (
+    <div>
+      <dt className="text-xs font-medium text-slate-500 uppercase">{label}</dt>
+      <dd className="text-base font-semibold text-slate-900 tabular-nums">{value}</dd>
+      {secondary && (
+        <dd
+          className={
+            secondaryEmphasis
+              ? 'text-xs text-slate-700'
+              : 'text-xs text-slate-500'
+          }
+        >
+          {secondary}
+        </dd>
+      )}
+    </div>
+  )
+}
+
+/** Build the secondary line for the "Your budget" row in the target
+ * margin panel: signed delta + intent-explaining wording. Returns
+ * undefined if the delta isn't computable (any of contract / target /
+ * budget missing). */
+function renderBudgetDelta(
+  summary: JobBudgetSummary,
+  t: TFunction,
+): string | undefined {
+  const delta = summary.budget_delta_vs_target_cost_ex_gst
+  if (delta === null) return undefined
+  const n = Number(delta)
+  if (Number.isNaN(n)) return undefined
+  if (n === 0) return t('budget.your_budget_delta_match')
+  // Format the absolute delta with the regular money formatter so the
+  // currency sign + thousands separator come along.
+  const absFormatted = formatMoney(Math.abs(n).toFixed(2))
+  return n > 0
+    ? t('budget.your_budget_delta_over', { delta: absFormatted })
+    : t('budget.your_budget_delta_under', { delta: absFormatted })
 }
 
 function sortCategoryRows(rows: CategoryBudgetRow[]): CategoryBudgetRow[] {
