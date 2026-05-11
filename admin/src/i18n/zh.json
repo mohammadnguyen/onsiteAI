@@ -86,7 +86,15 @@
     "receipt_expected_later": "稍后补发",
     "empty": "没有符合条件的支出。",
     "loading": "加载中...",
-    "error": "加载支出失败"
+    "error": "加载支出失败",
+    "export_title": "Excel 导出 (会计交接)",
+    "export_from": "起始日期",
+    "export_to": "结束日期",
+    "export_include_pending": "包含待审核 / 未审核条目",
+    "export_download": "下载 Excel",
+    "export_inclusion_hint": "默认:仅导出已审核的支出。已拒绝的支出始终被排除。勾选上方选项可同时导出待审核(未审核)条目。",
+    "export_empty_warning": "当前筛选条件没有匹配的支出 — 工作簿将只包含表头和说明行。",
+    "export_downloaded": "已下载 {{filename}}"
   },
   "expense": {
     "back": "返回支出列表",

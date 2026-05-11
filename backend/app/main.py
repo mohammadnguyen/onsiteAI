@@ -44,6 +44,13 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # Phase 4: the admin's Excel-export hook reads the filename out
+        # of ``Content-Disposition`` to drive the browser save dialog.
+        # That header is not on the CORS "simple response headers" list
+        # and so must be explicitly exposed; without this, browsers
+        # strip it from cross-origin responses and the filename
+        # round-trip silently degrades to the fallback "export.xlsx".
+        expose_headers=["Content-Disposition"],
     )
 
     @app.get("/healthz", tags=["system"])

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useExpenses, type ExpenseFilters } from '../api/hooks/useExpenses'
+import { useExpensesExcel } from '../api/hooks/useExpensesExcel'
 import { useJobs, useCategories } from '../api/hooks/useJobs'
 import { useSuppliers } from '../api/hooks/useSuppliers'
 import { AppShell } from '../components/AppShell'
@@ -19,6 +20,19 @@ export function Expenses() {
   const [from, setFrom] = useState<string>('')
   const [to, setTo] = useState<string>('')
 
+  // Phase 4 — Excel export filters are intentionally SEPARATE from the
+  // page's table filters: the page filters control what's visible in
+  // the table; the export filters control what's written to the
+  // workbook. The export uses its own inclusion rule (reviewed by
+  // default; pending only when include_pending=true; rejected always
+  // excluded) so a single shared status filter would be a category
+  // mismatch.
+  const [exportFrom, setExportFrom] = useState<string>('')
+  const [exportTo, setExportTo] = useState<string>('')
+  const [includePending, setIncludePending] = useState<boolean>(false)
+  const [exportError, setExportError] = useState<string | null>(null)
+  const [lastDownloaded, setLastDownloaded] = useState<string | null>(null)
+
   const filters: ExpenseFilters = useMemo(
     () => ({
       job_id: jobId || null,
@@ -34,6 +48,56 @@ export function Expenses() {
   const jobs = useJobs()
   const categories = useCategories()
   const suppliers = useSuppliers()
+  const download = useExpensesExcel()
+
+  // Preview count for the export panel: query the export's filter set
+  // without a status filter (the export decides status via its own
+  // inclusion rule, not the page's). Counted client-side after
+  // applying the inclusion rule. Best-effort accuracy for V1 row
+  // counts; pagination beyond the limit would under-count and the
+  // empty-state warning would over-fire — both acceptable failure
+  // modes for an advisory preview.
+  // Backend caps GET /expenses ``limit`` at 500. The preview pulls one
+  // page at that cap and counts client-side; for V1 row counts this is
+  // more than sufficient. If a future trial pushes past 500 expenses in
+  // a date window the count under-reports — that's a known minor risk
+  // (warning over-fires, not under-fires, on small overruns) flagged
+  // below for Batch 2 known risks.
+  const previewFilters: ExpenseFilters = useMemo(
+    () => ({
+      from: exportFrom || null,
+      to: exportTo || null,
+      limit: 500,
+    }),
+    [exportFrom, exportTo],
+  )
+  const previewQuery = useExpenses(previewFilters)
+  const previewCount = useMemo(() => {
+    const items = previewQuery.data?.items ?? []
+    return items.filter((e) => {
+      if (e.review_status === 'rejected') return false
+      if (e.review_status === 'pending' && !includePending) return false
+      return true
+    }).length
+  }, [previewQuery.data, includePending])
+
+  const previewIsZero =
+    !previewQuery.isLoading && previewQuery.data !== undefined && previewCount === 0
+
+  const handleDownload = async () => {
+    setExportError(null)
+    setLastDownloaded(null)
+    try {
+      const filename = await download.mutateAsync({
+        from_date: exportFrom || undefined,
+        to_date: exportTo || undefined,
+        include_pending: includePending,
+      })
+      setLastDownloaded(filename)
+    } catch (err) {
+      setExportError(extractErrorMessage(err))
+    }
+  }
 
   const jobMap = useMemo(() => {
     const m = new Map<string, string>()
@@ -85,6 +149,80 @@ export function Expenses() {
     <AppShell>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-semibold text-slate-900">{t('expenses.title')}</h1>
+      </div>
+
+      {/* Phase 4 — Excel export panel. Sits above the table filter bar so
+         the export is a deliberate, separate action; the user understands
+         that the workbook is generated server-side from its own inclusion
+         rule, not from the current table view. */}
+      <div className="bg-white rounded-lg border border-slate-200 p-4 mb-4">
+        <h2 className="text-sm font-semibold text-slate-700 mb-3">
+          {t('expenses.export_title')}
+        </h2>
+        <div className="flex flex-wrap gap-3 items-end">
+          <label className="text-xs font-medium text-slate-600">
+            <span className="block mb-1">{t('expenses.export_from')}</span>
+            <input
+              type="date"
+              value={exportFrom}
+              onChange={(e) => setExportFrom(e.target.value)}
+              className={inputClass}
+            />
+          </label>
+          <label className="text-xs font-medium text-slate-600">
+            <span className="block mb-1">{t('expenses.export_to')}</span>
+            <input
+              type="date"
+              value={exportTo}
+              onChange={(e) => setExportTo(e.target.value)}
+              className={inputClass}
+            />
+          </label>
+          <label className="text-xs font-medium text-slate-700 flex items-center gap-1.5 pb-2">
+            <input
+              type="checkbox"
+              checked={includePending}
+              onChange={(e) => setIncludePending(e.target.checked)}
+              className="accent-slate-900"
+            />
+            <span>{t('expenses.export_include_pending')}</span>
+          </label>
+          <button
+            type="button"
+            onClick={handleDownload}
+            disabled={download.isPending}
+            className="bg-slate-900 text-white rounded-md px-4 py-2 text-sm font-medium hover:bg-slate-800 disabled:opacity-50"
+          >
+            {download.isPending
+              ? t('common.loading')
+              : t('expenses.export_download')}
+          </button>
+        </div>
+        <p className="text-xs text-slate-500 mt-2">
+          {t('expenses.export_inclusion_hint')}
+        </p>
+        {/* Empty-state warning — fires when the preview query confirms
+           zero matching expenses for the current filter + inclusion
+           rule. Distinct visual style (amber) so the user notices
+           before clicking Download. */}
+        {previewIsZero && (
+          <p className="text-xs text-amber-700 mt-1 font-medium">
+            {t('expenses.export_empty_warning')}
+          </p>
+        )}
+        {/* Post-download success indicator — confirms the filename so
+           the user can locate the saved file, especially important when
+           CJK job names route through the RFC 5987 filename* form. */}
+        {lastDownloaded && (
+          <p className="text-xs text-emerald-700 mt-2">
+            {t('expenses.export_downloaded', { filename: lastDownloaded })}
+          </p>
+        )}
+        {exportError && (
+          <p className="text-xs text-red-600 mt-2">
+            {t('common.error')}: {exportError}
+          </p>
+        )}
       </div>
 
       <div className="bg-white rounded-lg border border-slate-200 p-4 mb-4 flex flex-wrap gap-3 items-end">

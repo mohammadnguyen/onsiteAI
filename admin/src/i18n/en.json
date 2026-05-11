@@ -86,7 +86,15 @@
     "receipt_expected_later": "Expected later",
     "empty": "No expenses match these filters.",
     "loading": "Loading expenses...",
-    "error": "Failed to load expenses"
+    "error": "Failed to load expenses",
+    "export_title": "Excel export (accountant handoff)",
+    "export_from": "From",
+    "export_to": "To",
+    "export_include_pending": "Include pending / unreviewed entries",
+    "export_download": "Download Excel",
+    "export_inclusion_hint": "Default: reviewed expenses only. Rejected expenses are always excluded. Use the checkbox above to also include pending (unreviewed) entries.",
+    "export_empty_warning": "No expenses match the current filters — the workbook will contain only headers and the inclusion-rule annotation.",
+    "export_downloaded": "Downloaded {{filename}}"
   },
   "expense": {
     "back": "Back to expenses",
