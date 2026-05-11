@@ -303,3 +303,46 @@ async def test_content_disposition_is_attachment(client, admin_token):
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert r.headers["content-disposition"].lower().startswith("attachment")
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 Batch 2 hardening — CORS exposure of Content-Disposition
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cors_exposes_content_disposition(client, admin_token):
+    """CORS must expose ``Content-Disposition`` to cross-origin JS.
+
+    Without ``Access-Control-Expose-Headers: Content-Disposition``
+    on the CORS response, browsers silently strip the header from
+    cross-origin responses and the admin's filename-parsing path
+    falls through to the hard-coded fallback ``sitetracker-export.xlsx``
+    — losing CJK job names and the date-stamp. Live E2E in Batch 2
+    surfaced this; this regression test guards the fix
+    (``expose_headers=["Content-Disposition"]`` in ``app/main.py``'s
+    CORS config) so it can't quietly regress.
+
+    We exercise the path by sending an ``Origin`` header on the GET
+    request, which is what triggers FastAPI's CORSMiddleware to emit
+    the CORS response headers.
+    """
+    r = await client.get(
+        "/reports/expenses-excel",
+        headers={
+            "Authorization": f"Bearer {admin_token}",
+            "Origin": "http://localhost:5173",
+        },
+    )
+    assert r.status_code == 200, r.text
+    # Both headers must be present.
+    expose = r.headers.get("access-control-expose-headers", "")
+    assert "Content-Disposition" in expose, (
+        f"CORS Access-Control-Expose-Headers missing Content-Disposition; "
+        f"got: {expose!r}"
+    )
+    # And the header itself still rides on the response.
+    cd = r.headers.get("content-disposition", "")
+    assert cd.lower().startswith("attachment"), (
+        f"Content-Disposition missing or not an attachment: {cd!r}"
+    )
