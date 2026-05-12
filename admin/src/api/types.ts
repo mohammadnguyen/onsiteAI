@@ -1071,6 +1071,8 @@ export interface components {
             effective_warning_amber_pct: string;
             /** Effective Warning Red Pct */
             effective_warning_red_pct: string;
+            /** Uncategorised Actual Ex Gst */
+            uncategorised_actual_ex_gst: string;
             /** Categories */
             categories: components["schemas"]["CategoryBudgetRow"][];
         };

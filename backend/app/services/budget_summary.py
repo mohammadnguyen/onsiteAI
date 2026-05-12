@@ -373,6 +373,23 @@ async def summarize_job(
         for r in (await db.execute(cat_actual_q)).all()
     }
 
+    # CHP-7: actual ex-GST for expenses on this job whose
+    # ``category_id IS NULL``. Surfaced as a separate top-level field
+    # on ``JobBudgetSummary`` so the per-category list stays strictly
+    # typed (every row has a real ``category_id``), while still letting
+    # the UI render an "Uncategorised: $X" line that makes the
+    # category totals reconcile with the job-level ``actual_ex_gst``.
+    uncategorised_q = select(
+        func.coalesce(func.sum(Expense.amount_ex_gst), _ZERO).label("uncategorised")
+    ).where(
+        Expense.job_id == job_id,
+        Expense.review_status.in_(_INCLUDED_STATUSES),
+        Expense.category_id.is_(None),
+    )
+    uncategorised_ex = Decimal(
+        (await db.execute(uncategorised_q)).scalar_one()
+    )
+
     # Per-category budgets. Eager-load the joined Category so we have
     # the name without a per-row lazy fetch.
     bud_q = (
@@ -450,5 +467,6 @@ async def summarize_job(
         budget_delta_vs_target_cost_ex_gst=budget_delta,
         effective_warning_amber_pct=job_summary.effective_warning_amber_pct,
         effective_warning_red_pct=job_summary.effective_warning_red_pct,
+        uncategorised_actual_ex_gst=_q(uncategorised_ex),
         categories=rows,
     )

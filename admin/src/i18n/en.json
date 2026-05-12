@@ -215,6 +215,8 @@
     "col_category": "Category",
     "empty_no_expenses": "No expenses on this job yet",
     "empty_no_budgets": "No category budgets set",
+    "uncategorised_label": "Uncategorised",
+    "uncategorised_hint": "Spend on this job not yet categorised. Counts toward the job total.",
     "plus_gst": "+ GST",
     "suffix_ex": "ex GST",
     "suffix_inc": "inc GST",

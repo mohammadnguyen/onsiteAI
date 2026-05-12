@@ -121,4 +121,15 @@ class JobBudgetSummary(BaseModel):
     # Phase 3 Lite+ — effective thresholds (always populated)
     effective_warning_amber_pct: Decimal
     effective_warning_red_pct: Decimal
+    # Capture Hardening Patch CHP-7 — actual ex-GST spend on this job
+    # whose ``expenses.category_id`` is NULL. The per-category list
+    # (``categories``) below intentionally omits these rows so they
+    # don't appear as zero-row clutter, but the job-level
+    # ``actual_ex_gst`` total INCLUDES them. This field closes the
+    # reconciliation gap by exposing the missing chunk explicitly
+    # (always present, may be zero). The invariant is:
+    #
+    #   actual_ex_gst == sum(categories[*].actual_ex_gst)
+    #                    + uncategorised_actual_ex_gst
+    uncategorised_actual_ex_gst: Decimal
     categories: list[CategoryBudgetRow]

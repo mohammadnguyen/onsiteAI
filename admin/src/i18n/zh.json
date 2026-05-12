@@ -215,6 +215,8 @@
     "col_category": "类别",
     "empty_no_expenses": "此项目暂无支出",
     "empty_no_budgets": "未设置类别预算",
+    "uncategorised_label": "未分类",
+    "uncategorised_hint": "此项目尚未分类的支出。计入项目总额。",
     "plus_gst": "+ GST",
     "suffix_ex": "不含GST",
     "suffix_inc": "含GST",

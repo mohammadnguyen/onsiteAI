@@ -635,13 +635,21 @@ function BudgetVsActual({ summary }: { summary: JobBudgetSummary }) {
   const sorted = useMemo(() => sortCategoryRows(summary.categories), [summary.categories])
   const hasAnyRow = sorted.length > 0
   const allBudgetless = sorted.every((r) => r.budget_ex_gst === null)
+  // CHP-7: actual-ex-GST spend on this job whose `category_id IS NULL`.
+  // The per-category list omits these rows by design; this field
+  // surfaces them so the table totals reconcile with the job-level
+  // `actual_ex_gst`. Always present (may be zero); rendered only when
+  // > 0 so the table stays uncluttered for jobs with everything
+  // properly categorised.
+  const uncategorised = Number(summary.uncategorised_actual_ex_gst ?? 0)
+  const hasUncategorised = uncategorised > 0
 
   return (
     <section className="bg-white rounded-lg border border-slate-200 p-6">
       <h2 className="text-lg font-semibold text-slate-900 mb-4">
         {t('budget.section_title')}
       </h2>
-      {!hasAnyRow && (
+      {!hasAnyRow && !hasUncategorised && (
         <p className="text-sm text-slate-600 mb-2">{t('budget.empty_no_expenses')}</p>
       )}
       {hasAnyRow && allBudgetless && (
@@ -698,8 +706,43 @@ function BudgetVsActual({ summary }: { summary: JobBudgetSummary }) {
                 </tr>
               )
             })}
+            {hasUncategorised && (
+              // CHP-7: italic + muted row so it reads as a footnote-level
+              // reconciliation line, not a peer of the budgeted
+              // categories. Title attribute carries the explanatory hint
+              // (kept off-screen by default; tooltip on hover) so the
+              // visual line stays minimal.
+              <tr
+                className="border-t border-slate-100"
+                title={t('budget.uncategorised_hint')}
+              >
+                <td className="py-1 italic text-slate-500">
+                  {t('budget.uncategorised_label')}
+                </td>
+                <td className="py-1 italic text-slate-500 text-right tabular-nums">
+                  {formatMoney(summary.uncategorised_actual_ex_gst)}
+                </td>
+                <td className="py-1 text-slate-400 text-right">—</td>
+                <td className="py-1 text-slate-400 text-right">—</td>
+                <td className="py-1 pl-4" />
+              </tr>
+            )}
           </tbody>
         </table>
+      )}
+      {/* When the only spend on the job is uncategorised, render the
+          line on its own (no table). Keeps the panel from looking
+          empty while still surfacing the reconciliation. */}
+      {!hasAnyRow && hasUncategorised && (
+        <p className="text-sm text-slate-600">
+          <span className="italic">{t('budget.uncategorised_label')}: </span>
+          <span className="tabular-nums">
+            {formatMoney(summary.uncategorised_actual_ex_gst)}
+          </span>
+          <span className="block text-xs text-slate-500 mt-1">
+            {t('budget.uncategorised_hint')}
+          </span>
+        </p>
       )}
     </section>
   )

@@ -1164,3 +1164,186 @@ async def test_check_constraints_present_on_table(db_session):
     }
     missing = expected - names
     assert not missing, f"missing CHECK constraints: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# CHP-7: uncategorised_actual_ex_gst surfaces NULL-category spend so
+# the per-category list reconciles with the job-level actual_ex_gst.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chp7_uncategorised_zero_when_all_categorised(
+    db_session, seeded_admin, seed_categories
+):
+    """All expenses have categories → ``uncategorised_actual_ex_gst == 0``."""
+    job = await _mk_job(db_session, seeded_admin, name="AllCategorisedJob")
+    plumbing = next(c for c in seed_categories if c.category_name == "Plumbing")
+    await _mk_expense(
+        db_session,
+        job=job,
+        admin=seeded_admin,
+        amount_inc_gst=Decimal("550"),
+        category_id=plumbing.category_id,
+    )
+    summary = await summarize_job(db_session, job.job_id)
+
+    assert summary.uncategorised_actual_ex_gst == Decimal("0.00")
+    # Reconciliation invariant: actual_ex_gst == sum(cat.actual_ex_gst) + uncategorised
+    cat_sum = sum(
+        (Decimal(c.actual_ex_gst) for c in summary.categories), start=Decimal("0")
+    )
+    assert summary.actual_ex_gst == cat_sum + summary.uncategorised_actual_ex_gst
+
+
+@pytest.mark.asyncio
+async def test_chp7_uncategorised_sums_null_category_expenses(
+    db_session, seeded_admin, seed_categories
+):
+    """One categorised + one NULL-category expense → uncategorised field
+    captures the NULL one exactly; categories list captures the other.
+
+    Reconciliation invariant must hold to the cent.
+    """
+    job = await _mk_job(db_session, seeded_admin, name="MixedJob")
+    plumbing = next(c for c in seed_categories if c.category_name == "Plumbing")
+    # Categorised: $1,100 inc / $1,000 ex
+    await _mk_expense(
+        db_session,
+        job=job,
+        admin=seeded_admin,
+        amount_inc_gst=Decimal("1100"),
+        category_id=plumbing.category_id,
+    )
+    # Uncategorised: $440 inc / $400 ex
+    await _mk_expense(
+        db_session,
+        job=job,
+        admin=seeded_admin,
+        amount_inc_gst=Decimal("440"),
+        category_id=None,
+    )
+    summary = await summarize_job(db_session, job.job_id)
+
+    # Uncategorised total reflects ONLY the null-category expense.
+    assert summary.uncategorised_actual_ex_gst == Decimal("400.00")
+    # Categories list contains exactly the Plumbing row; its actual is
+    # $1,000 ex (not inflated by the uncategorised row).
+    cat_rows = [c for c in summary.categories if c.category_name == "Plumbing"]
+    assert len(cat_rows) == 1
+    assert cat_rows[0].actual_ex_gst == Decimal("1000.00")
+    # Reconciliation: $1,000 + $400 = $1,400 == actual_ex_gst.
+    assert summary.actual_ex_gst == Decimal("1400.00")
+    cat_sum = sum(
+        (Decimal(c.actual_ex_gst) for c in summary.categories), start=Decimal("0")
+    )
+    assert summary.actual_ex_gst == cat_sum + summary.uncategorised_actual_ex_gst
+
+
+@pytest.mark.asyncio
+async def test_chp7_uncategorised_excludes_rejected(
+    db_session, seeded_admin, seed_categories
+):
+    """Rejected NULL-category expenses must NOT contribute to the
+    uncategorised total. Mirrors the existing job-level rejection-filter
+    contract (``review_status IN _INCLUDED_STATUSES``).
+    """
+    job = await _mk_job(db_session, seeded_admin, name="RejectedNullJob")
+    # Reviewed, uncategorised → counts.
+    await _mk_expense(
+        db_session,
+        job=job,
+        admin=seeded_admin,
+        amount_inc_gst=Decimal("220"),
+        category_id=None,
+    )
+    # Rejected, uncategorised → MUST NOT count.
+    await _mk_expense(
+        db_session,
+        job=job,
+        admin=seeded_admin,
+        amount_inc_gst=Decimal("99999"),
+        category_id=None,
+        review_status=ReviewStatus.rejected,
+    )
+    summary = await summarize_job(db_session, job.job_id)
+
+    # Only the $220 inc / $200 ex reviewed entry contributes.
+    assert summary.uncategorised_actual_ex_gst == Decimal("200.00")
+    assert summary.actual_ex_gst == Decimal("200.00")
+
+
+@pytest.mark.asyncio
+async def test_chp7_uncategorised_includes_pending(
+    db_session, seeded_admin, seed_categories
+):
+    """Pending NULL-category expenses contribute (matches dashboard rule)."""
+    job = await _mk_job(db_session, seeded_admin, name="PendingNullJob")
+    await _mk_expense(
+        db_session,
+        job=job,
+        admin=seeded_admin,
+        amount_inc_gst=Decimal("330"),
+        category_id=None,
+        review_status=ReviewStatus.pending,
+    )
+    summary = await summarize_job(db_session, job.job_id)
+
+    assert summary.uncategorised_actual_ex_gst == Decimal("300.00")
+
+
+@pytest.mark.asyncio
+async def test_chp7_categories_list_unchanged_when_no_uncategorised(
+    db_session, seeded_admin, seed_categories
+):
+    """Existing per-category list semantics are NOT regressed by CHP-7.
+    The list rule (omit zero-zero rows; include any row with a budget OR
+    a non-rejected expense) keeps working unchanged.
+    """
+    job = await _mk_job(db_session, seeded_admin, name="UnchangedCatsJob")
+    plumbing = next(c for c in seed_categories if c.category_name == "Plumbing")
+    concrete = next(c for c in seed_categories if c.category_name == "Concrete")
+
+    # Categorised expense + a budget for a DIFFERENT category with no
+    # actual spend. The list should contain both rows; uncategorised = 0.
+    await _mk_expense(
+        db_session,
+        job=job,
+        admin=seeded_admin,
+        amount_inc_gst=Decimal("550"),
+        category_id=plumbing.category_id,
+    )
+    await _mk_budget(
+        db_session,
+        job=job,
+        category_id=concrete.category_id,
+        budget_amount_ex_gst=Decimal("10000"),
+    )
+    summary = await summarize_job(db_session, job.job_id)
+
+    cat_names = {c.category_name for c in summary.categories}
+    assert cat_names == {"Plumbing", "Concrete"}
+    assert summary.uncategorised_actual_ex_gst == Decimal("0.00")
+
+
+@pytest.mark.asyncio
+async def test_chp7_uncategorised_only_no_category_rows(
+    db_session, seeded_admin, seed_categories
+):
+    """When ALL of the job's spend has ``category_id IS NULL``, the
+    categories list is empty but uncategorised_actual_ex_gst is
+    populated. Reconciliation still holds.
+    """
+    job = await _mk_job(db_session, seeded_admin, name="AllUncategorisedJob")
+    await _mk_expense(
+        db_session,
+        job=job,
+        admin=seeded_admin,
+        amount_inc_gst=Decimal("770"),
+        category_id=None,
+    )
+    summary = await summarize_job(db_session, job.job_id)
+
+    assert summary.categories == []
+    assert summary.uncategorised_actual_ex_gst == Decimal("700.00")
+    assert summary.actual_ex_gst == Decimal("700.00")
