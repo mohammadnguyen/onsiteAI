@@ -366,3 +366,199 @@ async def test_job_match_is_frozen():
     jm = JobMatch(job_id=None, confidence=0.0)
     with pytest.raises(FrozenInstanceError):
         jm.confidence = 1.0  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# CHP-1: multi-token contiguous job-name match
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def chp1_jobs(db_session, seeded_admin):
+    """Seed two multi-word English jobs + a multi-word CJK job for CHP-1 tests.
+
+    These names are deliberately multi-token so the existing single-token
+    name route doesn't match — only the new multi-token contiguous route
+    can resolve them.
+
+    Returned tuple: ``(smith_residence, brown_renovation, jingjing_jia)``.
+    """
+    smith = await _make_job(
+        db_session, seeded_admin, name="Smith Residence", code="SMITH-01"
+    )
+    brown = await _make_job(
+        db_session, seeded_admin, name="Brown Renovation", code="BROWN-03"
+    )
+    # Multi-token CJK name — exercises the route's NFKC + multi-token path
+    # for non-ASCII characters too.
+    jingjing = await _make_job(
+        db_session, seeded_admin, name="晶晶 家", code="JJ-02"
+    )
+    await db_session.flush()
+    return (smith, brown, jingjing)
+
+
+@pytest.mark.asyncio
+async def test_chp1_full_multi_word_name_resolves(db_session, chp1_jobs):
+    """Case A: ``"Smith Residence Bunnings $440 cement"`` resolves to Smith.
+
+    Multi-token contiguous concatenation ``smith`` + ``residence`` =
+    ``smithresidence`` exactly equals ``normalize_alias("Smith Residence")``.
+    Confidence is 0.95 (treated as exact-equality, not a fuzzy guess).
+    """
+    smith, _, _ = chp1_jobs
+    result = await match_job(
+        tokenize("Smith Residence Bunnings $440 cement"), db_session
+    )
+    assert result.job_id == smith.job_id
+    assert result.confidence == 0.95
+    assert result.matched_via == "multi_token_name"
+    assert result.ambiguous_matches == ()
+
+
+@pytest.mark.asyncio
+async def test_chp1_full_multi_word_lowercase_resolves(db_session, chp1_jobs):
+    """Case A lowercase: case-folding via ``normalize_alias`` still resolves."""
+    smith, _, _ = chp1_jobs
+    result = await match_job(tokenize("smith residence 100 concrete"), db_session)
+    assert result.job_id == smith.job_id
+    assert result.confidence == 0.95
+    assert result.matched_via == "multi_token_name"
+
+
+@pytest.mark.asyncio
+async def test_chp1_full_multi_word_punctuation_safe(db_session, chp1_jobs):
+    """Case A punctuation-safe: tokenizer splits on whitespace, ``normalize_alias``
+    strips punctuation. ``"Brown-Renovation $5400 stratco"`` works because the
+    tokenizer keeps ``"Brown-Renovation"`` as one token, normalised to
+    ``"brownrenovation"`` — which equals ``normalize_alias("Brown Renovation")``.
+    """
+    _, brown, _ = chp1_jobs
+    result = await match_job(tokenize("Brown-Renovation $5400 stratco"), db_session)
+    assert result.job_id == brown.job_id
+    assert result.confidence == 0.95
+    # Single-token route wins here because ``"Brown-Renovation"`` is one token
+    # whose normalised form already equals the job-name normal — the
+    # multi-token route is only consulted when no single token equals the name.
+    assert result.matched_via == "name"
+
+
+@pytest.mark.asyncio
+async def test_chp1_full_multi_word_cjk_resolves(db_session, chp1_jobs):
+    """Case A CJK: ``"晶晶 家 水泥 800"`` matches the multi-token CJK job name."""
+    _, _, jingjing = chp1_jobs
+    result = await match_job(tokenize("晶晶 家 水泥 800"), db_session)
+    assert result.job_id == jingjing.job_id
+    assert result.confidence == 0.95
+    assert result.matched_via == "multi_token_name"
+
+
+@pytest.mark.asyncio
+async def test_chp1_unique_shorthand_does_not_save(db_session, chp1_jobs):
+    """Case B: ``"smith"`` alone does NOT match — the parser returns no
+    match, so the SERVICE LAYER is responsible for the "Did you mean"
+    suggestion (covered by API-level tests). The matcher itself stays
+    strict: only an exact alias / code / single-token name / multi-token
+    contiguous concatenation match returns a job.
+
+    This locks in the contract: per the Capture Hardening Patch behaviour
+    table, a unique shorthand prefix must NOT save with ``job_uncertain``
+    — admin cannot subsequently correct ``job_id``.
+    """
+    result = await match_job(tokenize("Bunnings $440 cement smith"), db_session)
+    assert result.job_id is None
+    assert result.confidence == 0.0
+    assert result.matched_via is None
+    assert result.ambiguous_matches == ()
+
+
+@pytest.mark.asyncio
+async def test_chp1_alias_promotes_shorthand_to_save(db_session, seeded_admin):
+    """Case B-with-alias: if ``"smith"`` IS configured as a JobAlias, the
+    alias route resolves at 0.95 (existing behaviour) and the expense
+    saves cleanly.
+    """
+    smith = await _make_job(
+        db_session, seeded_admin, name="Smith Residence", code="SMITH-01"
+    )
+    db_session.add(
+        JobAlias(
+            job_id=smith.job_id,
+            alias_text="smith",
+            language_code=LanguageCode.en,
+        )
+    )
+    await db_session.flush()
+
+    result = await match_job(tokenize("Bunnings $440 cement smith"), db_session)
+    assert result.job_id == smith.job_id
+    assert result.confidence == 0.95
+    assert result.matched_via == "alias"
+
+
+@pytest.mark.asyncio
+async def test_chp1_ambiguous_two_codes_returns_both(db_session, chp1_jobs):
+    """Case C-style at the matcher level: input mentioning two valid codes
+    returns ``confidence=0.3`` with both UUIDs in ``ambiguous_matches``.
+    The service layer turns this into the actionable 422 (CHP-2).
+    """
+    smith, brown, _ = chp1_jobs
+    result = await match_job(
+        tokenize("SMITH-01 BROWN-03 plumbing 1100"), db_session
+    )
+    assert result.job_id is None
+    assert result.confidence == 0.3
+    assert result.matched_via is None
+    assert result.ambiguous_matches == tuple(sorted([smith.job_id, brown.job_id]))
+
+
+@pytest.mark.asyncio
+async def test_chp1_priority_alias_beats_multi_token_name(db_session, seeded_admin):
+    """If the same job matches via BOTH the alias route AND the multi-token
+    name route, ``matched_via`` reports the higher-priority route (alias).
+    """
+    job = await _make_job(
+        db_session, seeded_admin, name="Smith Residence", code="SMITH-01"
+    )
+    # Add an alias on a single token from the input that ALSO appears in
+    # the multi-token concatenation. Both routes will match the same job.
+    db_session.add(
+        JobAlias(
+            job_id=job.job_id,
+            alias_text="smith",
+            language_code=LanguageCode.en,
+        )
+    )
+    await db_session.flush()
+
+    # "smith residence" matches:
+    # - alias on "smith" → job
+    # - multi-token "smithresidence" → job (same UUID)
+    # Single unique match across all routes; matched_via must be alias.
+    result = await match_job(tokenize("smith residence 100"), db_session)
+    assert result.job_id == job.job_id
+    assert result.confidence == 0.95
+    assert result.matched_via == "alias"
+
+
+@pytest.mark.asyncio
+async def test_chp1_priority_name_beats_multi_token_name(db_session, seeded_admin):
+    """If a single-token name match AND a multi-token name match resolve to
+    the same job, ``matched_via`` reports the higher-priority route (name).
+
+    Concrete shape: a single-token job name ``"Renositesmith"`` (one token,
+    no spaces) plus an input containing both ``"renositesmith"`` and the
+    multi-token ``"smith residence"`` would be artificial. Use a simpler
+    setup: a job named ``"Smith"`` (single token) — input ``"smith
+    residence 100"`` matches via ``name`` (single token "smith" equals
+    job_name "Smith"). The multi-token route also tries
+    ``"smithresidence"`` against the same job_name "smith" — that does
+    NOT equal "smithresidence", so the multi-token route does not match
+    this job. The single-token name route wins cleanly.
+    """
+    job = await _make_job(db_session, seeded_admin, name="Smith")
+    await db_session.flush()
+    result = await match_job(tokenize("smith residence 100"), db_session)
+    assert result.job_id == job.job_id
+    assert result.confidence == 0.95
+    assert result.matched_via == "name"

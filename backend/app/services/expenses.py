@@ -47,6 +47,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.text import normalize_alias
 from app.models import (
     Category,
     Expense,
@@ -54,6 +55,7 @@ from app.models import (
     ExpenseReviewQueue,
     ExpenseType,
     Job,
+    JobStatus,
     PaymentMethod,
     ReceiptStatus,
     ReviewQueueStatus,
@@ -70,6 +72,7 @@ from app.schemas.expense import (
     ParsePreview,
 )
 from app.services.parser import LLMParser, ParseResult, parse
+from app.services.parser.tokens import tokenize
 
 # ---------------------------------------------------------------------------
 # Domain exceptions
@@ -122,6 +125,20 @@ class JobNotFoundForExpense(Exception):
 
 
 _MAX_PAST_YEARS = 5
+
+# CHP-4: hard upper bound on persisted amounts (matches the
+# `ExpenseCreate.amount_inc_gst` Pydantic field cap; restated here so
+# the raw_input_text path doesn't bypass it). $10M is well above any
+# legitimate residential-builder line item; anything bigger is a
+# fat-finger and should be rejected at the API edge before it pollutes
+# job rollups.
+_MAX_AMOUNT_INC_GST = Decimal("10000000")
+
+# CHP-5: tolerance for clock-skew between a contributor's phone and
+# the server. Today + this many days is the latest expense_date we
+# accept; anything beyond is a back-dated typo or a future-dated
+# entry-error and should be rejected.
+_FUTURE_DATE_TOLERANCE_DAYS = 1
 
 
 def _diagnostics_from_result(result: ParseResult) -> ParseDiagnostics:
@@ -228,6 +245,168 @@ def _compute_gst_split(
     return amount_ex, gst
 
 
+# ---------------------------------------------------------------------------
+# CHP-2: actionable error messages for ambiguous / shorthand / no-match
+# job-resolution failures on the parser-driven create path.
+#
+# Per the Capture Hardening Patch behaviour table, an expense is NEVER
+# saved with `job_uncertain` (because admin cannot mutate `expenses.job_id`
+# after creation — see `_AUDITABLE_FIELDS` and the `ExpenseUpdate` schema).
+# Anything less certain than an exact 0.95 parser match returns HTTP 422
+# at the contributor's screen with an actionable detail string. The three
+# helpers below construct those detail strings.
+# ---------------------------------------------------------------------------
+
+
+# Minimum token length to qualify as a "shorthand suggestion" candidate.
+# Avoids noise tokens like "a", "to", "is" producing false suggestions.
+_MIN_SUGGESTION_TOKEN_LEN = 3
+
+
+def _format_job_label(name: str, code: str | None) -> str:
+    """Format a single job for display in a 422 detail message.
+
+    ``"Smith Residence (SMITH-01)"`` if a code is present;
+    ``"Smith Residence"`` otherwise.
+    """
+    return f"{name} ({code})" if code else name
+
+
+def _join_or(items: list[str]) -> str:
+    """Join a non-empty list with ``", "``-and-``" or "`` for the last item."""
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} or {items[1]}"
+    return ", ".join(items[:-1]) + f", or {items[-1]}"
+
+
+async def _format_job_candidates(
+    db: AsyncSession, job_ids: list[uuid.UUID] | tuple[uuid.UUID, ...]
+) -> str:
+    """Build a human-readable candidate list (sorted by name) for an
+    ambiguous-job 422 detail message. Returns ``""`` for an empty input
+    so callers can fall back to a generic message.
+    """
+    if not job_ids:
+        return ""
+    rows = (
+        await db.execute(select(Job).where(Job.job_id.in_(list(job_ids))))
+    ).scalars().all()
+    if not rows:
+        return ""
+    rows_sorted = sorted(rows, key=lambda j: j.job_name.lower())
+    return _join_or([_format_job_label(j.job_name, j.job_code) for j in rows_sorted])
+
+
+async def _suggest_jobs_from_text(
+    db: AsyncSession, raw_text: str | None
+) -> list[Job]:
+    """Find active jobs whose normalised name STARTS WITH any input token.
+
+    Used by the CHP-2 "Did you mean ...?" suggestion path when the
+    parser found no exact match and no ambiguity. Returns the unique
+    list of matched jobs (could be 0, 1, or many).
+
+    Token filter rules:
+    * Skip currency / numeric-like tokens (jobs aren't named with $ or
+      bare digits).
+    * Require ``len(normalized) >= _MIN_SUGGESTION_TOKEN_LEN`` so noise
+      words don't generate false suggestions.
+    """
+    if not raw_text:
+        return []
+    tokens = tokenize(raw_text)
+    needles = {
+        tok.normalized
+        for tok in tokens
+        if not tok.is_currency_symbol
+        and not tok.is_numeric_like
+        and tok.normalized
+        and len(tok.normalized) >= _MIN_SUGGESTION_TOKEN_LEN
+    }
+    if not needles:
+        return []
+
+    # Pull all active jobs once, do prefix match in Python — same pattern
+    # the parser uses (small N in practice; avoids Postgres-side
+    # normalisation issues).
+    active_jobs = (
+        await db.execute(select(Job).where(Job.status == JobStatus.active))
+    ).scalars().all()
+
+    matches: list[Job] = []
+    seen: set[uuid.UUID] = set()
+    for job in active_jobs:
+        name_normal = normalize_alias(job.job_name)
+        if not name_normal:
+            continue
+        for needle in needles:
+            if name_normal.startswith(needle):
+                if job.job_id not in seen:
+                    matches.append(job)
+                    seen.add(job.job_id)
+                break
+    return matches
+
+
+async def _make_actionable_job_error(
+    db: AsyncSession,
+    *,
+    parse_result: ParseResult,
+    raw_text: str | None,
+) -> ExpenseValidationError:
+    """Build a CHP-2 actionable :class:`ExpenseValidationError` for the
+    create-with-raw-text path when the parser couldn't resolve a unique
+    job. Picks the most helpful message available:
+
+    1. If the parser returned ambiguous candidates (confidence 0.3,
+       multiple unique jobs hit) → "Job is ambiguous: A or B."
+    2. Else, fall back to the shorthand-suggestion path:
+       a. If exactly one active job's name starts with one of the input
+          tokens → "Did you mean Smith Residence (SMITH-01)? ..."
+       b. If multiple active jobs do → "Job is ambiguous: A or B ..."
+       c. If none → the no-match guidance.
+    """
+    # Path 1: parser detected true ambiguity at match time.
+    if parse_result.ambiguous_job_matches:
+        candidates = await _format_job_candidates(db, parse_result.ambiguous_job_matches)
+        if candidates:
+            return ExpenseValidationError(
+                f"Job is ambiguous: {candidates}. "
+                "Please retype using the job code or the full job name."
+            )
+
+    # Path 2: shorthand-suggestion fallback (parser found nothing).
+    suggestions = await _suggest_jobs_from_text(db, raw_text)
+    if len(suggestions) == 1:
+        job = suggestions[0]
+        return ExpenseValidationError(
+            f"Did you mean {_format_job_label(job.job_name, job.job_code)}? "
+            "Please retype using the job code or the full job name."
+        )
+    if len(suggestions) > 1:
+        # Surface the same shape as path 1 so the contributor's mental
+        # model is consistent: "ambiguous → name candidates".
+        suggestions_sorted = sorted(suggestions, key=lambda j: j.job_name.lower())
+        labelled = _join_or(
+            [_format_job_label(j.job_name, j.job_code) for j in suggestions_sorted]
+        )
+        return ExpenseValidationError(
+            f"Job is ambiguous: {labelled}. "
+            "Please retype using the job code or the full job name."
+        )
+
+    # Path 3: no ambiguity, no shorthand match — the parser truly found
+    # nothing job-shaped in the input.
+    return ExpenseValidationError(
+        "Couldn't identify a job — please mention a job code "
+        "(e.g. SMITH-01) or the full job name in your text."
+    )
+
+
 async def _get_expense_or_404(db: AsyncSession, expense_id: uuid.UUID) -> Expense:
     expense = await db.get(Expense, expense_id)
     if expense is None:
@@ -289,6 +468,15 @@ def _validate_save(
         raise ExpenseValidationError("Amount is required")
     if amount_inc_gst <= 0:
         raise ExpenseValidationError("Amount must be greater than zero")
+    # CHP-4: enforce the upper-bound on the parser-driven path too.
+    # The `ExpenseCreate.amount_inc_gst` Pydantic field already caps
+    # caller-supplied structured amounts at $10M, but a parser-derived
+    # amount comes via the merge dict and bypasses the field validator.
+    # Re-check it here so both paths agree.
+    if amount_inc_gst > _MAX_AMOUNT_INC_GST:
+        raise ExpenseValidationError(
+            f"Amount exceeds maximum (${_MAX_AMOUNT_INC_GST:,.0f})"
+        )
     if job_id is None:
         raise ExpenseValidationError("Job is required")
 
@@ -305,6 +493,14 @@ def _validate_save(
     cutoff = date.today() - timedelta(days=365 * _MAX_PAST_YEARS)
     if expense_date < cutoff:
         raise ExpenseValidationError("Expense date is more than 5 years in the past")
+    # CHP-5: reject future-dated expenses. The +1-day tolerance covers
+    # phone-clock skew and the NSW/UTC seam — a contributor in Sydney
+    # capturing at 11pm local on Mon 12 May submits with their local
+    # date; the server's UTC clock is already Tue 13 May. We accept
+    # that. Anything beyond +1 day is genuinely wrong.
+    future_cutoff = date.today() + timedelta(days=_FUTURE_DATE_TOLERANCE_DAYS)
+    if expense_date > future_cutoff:
+        raise ExpenseValidationError("Expense date is in the future")
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +551,22 @@ async def create_expense(
             "category_id": payload.category_id,
             "description": payload.description,
         }
+
+    # CHP-2: when the parser ran and couldn't resolve a job (and the
+    # caller didn't supply one structurally), produce an actionable
+    # 422 detail before falling through to the generic "Job is required"
+    # in `_validate_save`. This is the only place we have the
+    # parse_result + raw_text in scope to build the suggestion.
+    if (
+        parse_result is not None
+        and merged["job_id"] is None
+        and "job_id" not in caller_set
+    ):
+        raise await _make_actionable_job_error(
+            db,
+            parse_result=parse_result,
+            raw_text=payload.raw_input_text,
+        )
 
     # Finalise validation + FK pre-checks.
     _validate_save(

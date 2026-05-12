@@ -1,13 +1,21 @@
 """Phase 2 Task T-G: job matcher for the expense-string parser.
 
 Looks up the canonical :class:`~app.models.job.Job` for a parsed
-expense by running each non-currency / non-numeric token through three
+expense by running each non-currency / non-numeric token through four
 routes against the DB:
 
 1. :class:`~app.models.job.JobAlias` (normalised alias lookup — the
    primary / intended route)
 2. :class:`~app.models.job.Job` ``job_code`` (exact normalised match)
-3. :class:`~app.models.job.Job` ``job_name`` (exact normalised match)
+3. :class:`~app.models.job.Job` ``job_name`` (exact normalised match
+   against a single token)
+4. :class:`~app.models.job.Job` ``job_name`` (Capture Hardening Patch
+   CHP-1: exact normalised match against a CONTIGUOUS run of two or
+   more word-ish tokens — lets multi-word names like ``"Smith
+   Residence"`` match when the user types both words verbatim. The
+   match is exact-equality on the concatenated normalised form, so
+   short prefixes like ``"smith"`` alone never match — only the full
+   name does.)
 
 Only ``JobStatus.active`` jobs are ever returned. A completed job's
 aliases are ignored for parser purposes (Phase 2 spec).
@@ -27,9 +35,21 @@ for the full parser mutation contract):
    stream / routes — is returned as ``confidence=0.3`` with the sorted
    UUID tuple in ``ambiguous_matches``. The orchestrator / review
    queue decides how to render this.
-4. ``matched_via`` reflects the priority order ``alias > code > name``
-   for unique matches. It is ``None`` for the ambiguous and no-match
-   cases so callers can't accidentally misreport a route.
+4. ``matched_via`` reflects the priority order
+   ``alias > code > name > multi_token_name`` for unique matches.
+   It is ``None`` for the ambiguous and no-match cases so callers
+   can't accidentally misreport a route.
+
+Note on confidence (CHP-1)
+--------------------------
+All four routes return :data:`_CONF_UNIQUE` (``0.95``) on a unique
+match. The multi-token-name route is treated as equally certain as the
+single-token-name route because both are exact-equality matches against
+``normalize_alias(job_name)`` — the user typed the full job name and
+there's no fuzzy step. Per the Capture Hardening Patch behaviour table,
+**no expense is saved with ``job_uncertain``**: anything less certain
+than an exact match (e.g. a unique single-token shorthand prefix) is
+not handled here and the service returns HTTP 422 instead.
 """
 
 from __future__ import annotations
@@ -95,6 +115,40 @@ def _word_normals(tokens: list[Token]) -> list[str]:
     return out
 
 
+def _multi_token_normals(normals: list[str]) -> set[str]:
+    """Build the set of all contiguous-N-token concatenations (N>=2).
+
+    For a token stream ``["smith", "residence", "bunnings", "cement"]``
+    returns ``{"smithresidence", "residencebunnings", "bunningscement",
+    "smithresidencebunnings", "residencebunningscement",
+    "smithresidencebunningscement"}`` — every contiguous span of two or
+    more word-ish tokens, joined into a single normalised string.
+
+    Single tokens are NOT included here — the existing single-token
+    name route handles those separately at higher priority.
+
+    The resulting set is what we look up against
+    ``normalize_alias(job_name)`` for the multi-token name route.
+    Capped at a maximum span length so a runaway long input string
+    can't blow up: in practice job names rarely exceed 6 words, and
+    longer spans would be byte-noise anyway.
+    """
+    _MAX_SPAN = 8  # cap N-gram length; job names beyond this are unrealistic
+    n = len(normals)
+    out: set[str] = set()
+    for start in range(n):
+        # span of length L starting at `start`, where L >= 2.
+        max_len = min(_MAX_SPAN, n - start)
+        if max_len < 2:
+            continue
+        # Build progressively: smith → smithresidence → smithresidencebunnings...
+        accum = normals[start]
+        for length in range(2, max_len + 1):
+            accum = accum + normals[start + length - 1]
+            out.add(accum)
+    return out
+
+
 async def match_job(tokens: list[Token], db: AsyncSession) -> JobMatch:
     """Match the token stream against active jobs.
 
@@ -127,9 +181,19 @@ async def match_job(tokens: list[Token], db: AsyncSession) -> JobMatch:
         )
 
     normals_set = set(normals)
+    # CHP-1: contiguous N-token concatenations (N>=2) for multi-word
+    # job names. Built once here, looked up per-job in the same scan
+    # loop as the single-token name match.
+    multi_token_normals = _multi_token_normals(normals)
 
-    # Track which routes matched which jobs; priority alias > code > name.
-    by_route: dict[str, set[uuid.UUID]] = {"alias": set(), "code": set(), "name": set()}
+    # Track which routes matched which jobs; priority
+    # alias > code > name > multi_token_name.
+    by_route: dict[str, set[uuid.UUID]] = {
+        "alias": set(),
+        "code": set(),
+        "name": set(),
+        "multi_token_name": set(),
+    }
 
     # --- Route 1: alias lookup ---
     alias_stmt = (
@@ -142,7 +206,8 @@ async def match_job(tokens: list[Token], db: AsyncSession) -> JobMatch:
         if alias.job is not None and alias.job.status == JobStatus.active:
             by_route["alias"].add(alias.job_id)
 
-    # --- Routes 2 + 3: scan active jobs for code / name hits ---
+    # --- Routes 2 + 3 + 4: scan active jobs for code / single-token-name
+    # / multi-token-name hits.
     jobs_stmt = select(Job).where(Job.status == JobStatus.active)
     active_jobs = (await db.execute(jobs_stmt)).scalars().all()
     for job in active_jobs:
@@ -151,10 +216,25 @@ async def match_job(tokens: list[Token], db: AsyncSession) -> JobMatch:
             if code_normal and code_normal in normals_set:
                 by_route["code"].add(job.job_id)
         name_normal = normalize_alias(job.job_name)
-        if name_normal and name_normal in normals_set:
-            by_route["name"].add(job.job_id)
+        if name_normal:
+            if name_normal in normals_set:
+                # Single-token exact name match (existing behaviour).
+                by_route["name"].add(job.job_id)
+            elif name_normal in multi_token_normals:
+                # CHP-1 multi-token contiguous name match. Same exact-
+                # equality test, just against the joined N-gram set.
+                # This route ONLY fires if the single-token route did
+                # not already match (the single-token name normal is
+                # never in the multi-token set by construction, since
+                # multi_token_normals only contains spans of N>=2).
+                by_route["multi_token_name"].add(job.job_id)
 
-    all_matches = by_route["alias"] | by_route["code"] | by_route["name"]
+    all_matches = (
+        by_route["alias"]
+        | by_route["code"]
+        | by_route["name"]
+        | by_route["multi_token_name"]
+    )
 
     if not all_matches:
         return JobMatch(
@@ -173,9 +253,10 @@ async def match_job(tokens: list[Token], db: AsyncSession) -> JobMatch:
         )
 
     # Exactly one unique job across every route. Assign ``matched_via``
-    # with the documented priority: alias first, then code, then name.
+    # with the documented priority:
+    # alias > code > name > multi_token_name.
     (unique_id,) = all_matches
-    for route in ("alias", "code", "name"):
+    for route in ("alias", "code", "name", "multi_token_name"):
         if unique_id in by_route[route]:
             return JobMatch(
                 job_id=unique_id,
