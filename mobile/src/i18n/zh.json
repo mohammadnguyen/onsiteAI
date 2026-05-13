@@ -38,7 +38,8 @@
   },
   "common": {
     "error": "\u51fa\u73b0\u9519\u8bef\u3002",
-    "yes": "\u662f"
+    "yes": "\u662f",
+    "close": "\u5173\u95ed"
   },
   "capture": {
     "title": "\u65b0\u589e\u652f\u51fa",

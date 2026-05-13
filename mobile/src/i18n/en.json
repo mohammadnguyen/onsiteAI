@@ -38,7 +38,8 @@
   },
   "common": {
     "error": "Something went wrong.",
-    "yes": "Yes"
+    "yes": "Yes",
+    "close": "Close"
   },
   "capture": {
     "title": "New Expense",

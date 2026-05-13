@@ -9,7 +9,7 @@ import {
   Modal,
   ScrollView,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useJob, useJobs, type JobPublic } from '../../src/api/hooks/useJobs';
 
@@ -80,11 +80,24 @@ function JobDetailModal({
 }) {
   const { t } = useTranslation();
   const { data, isLoading, isError } = useJob(jobId);
+  // Mobile Smoke Patch 1: <Modal> on iOS renders in its own native window,
+  // so SafeAreaView inside it does NOT always pick up the device's top
+  // inset (status bar / Dynamic Island). Read the inset explicitly via
+  // useSafeAreaInsets and apply it as paddingTop on the header. The
+  // SafeAreaView below excludes the top edge so we don't double-pad.
+  const insets = useSafeAreaInsets();
   return (
     <Modal visible={!!jobId} animationType="slide" onRequestClose={onClose} transparent={false}>
-      <SafeAreaView style={s.safe}>
-        <View style={s.modalHeader}>
-          <TouchableOpacity onPress={onClose} accessibilityRole="button">
+      <SafeAreaView style={s.safe} edges={['left', 'right', 'bottom']}>
+        <View style={[s.modalHeader, { paddingTop: insets.top + 8 }]}>
+          <TouchableOpacity
+            onPress={onClose}
+            style={s.closeBtnTouch}
+            testID="job-detail-close"
+            accessibilityRole="button"
+            accessibilityLabel={t('common.close')}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
             <Text style={s.closeBtn}>{'\u00d7'}</Text>
           </TouchableOpacity>
         </View>
@@ -181,11 +194,21 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'flex-end',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingBottom: 8,
+    // paddingTop applied inline from useSafeAreaInsets — see JobDetailModal.
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
   },
-  closeBtn: { fontSize: 28, color: '#0f172a', lineHeight: 28 },
+  // Apple HIG: tappable target ≥ 44×44pt. Without this, the bare ×
+  // glyph is too small to reach with a thumb, especially in the corner.
+  closeBtnTouch: {
+    minWidth: 44,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  closeBtn: { fontSize: 30, lineHeight: 32, color: '#0f172a', fontWeight: '300' },
   detailWrap: { padding: 16 },
   detailTitle: { fontSize: 22, fontWeight: '600', marginBottom: 16, color: '#0f172a' },
   detailRow: { flexDirection: 'row', paddingVertical: 6 },

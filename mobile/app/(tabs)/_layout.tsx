@@ -8,6 +8,14 @@ export default function TabsLayout() {
       screenOptions={{
         tabBarActiveTintColor: '#1e293b',
         tabBarInactiveTintColor: '#64748b',
+        // Mobile Smoke Patch 1: suppress the default placeholder tab
+        // icons (small triangle / dot glyphs Expo Router falls back to
+        // when no `tabBarIcon` is supplied). Returning null collapses
+        // the icon slot so each tab renders label-only. No new
+        // dependency required; if/when we want real icons later, swap
+        // to @expo/vector-icons (bundled with Expo, still zero new
+        // deps) in a separate change.
+        tabBarIcon: () => null,
       }}
     >
       <Tabs.Screen name="expenses" options={{ title: t('tabs.expenses') }} />
