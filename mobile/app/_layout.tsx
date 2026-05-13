@@ -43,7 +43,7 @@ export default function RootLayout() {
     if (!accessToken && !inAuth) {
       router.replace('/(auth)/login');
     } else if (accessToken && (inAuth || first === undefined)) {
-      router.replace('/(tabs)/jobs');
+      router.replace('/(tabs)/expenses');
     }
   }, [ready, hydrated, accessToken, segments, router]);
 

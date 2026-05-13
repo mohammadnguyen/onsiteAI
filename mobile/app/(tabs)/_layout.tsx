@@ -10,8 +10,8 @@ export default function TabsLayout() {
         tabBarInactiveTintColor: '#64748b',
       }}
     >
-      <Tabs.Screen name="jobs" options={{ title: t('tabs.jobs') }} />
       <Tabs.Screen name="expenses" options={{ title: t('tabs.expenses') }} />
+      <Tabs.Screen name="jobs" options={{ title: t('tabs.jobs') }} />
       <Tabs.Screen name="dashboard" options={{ title: t('tabs.dashboard') }} />
       <Tabs.Screen name="labour" options={{ title: t('tabs.labour') }} />
       <Tabs.Screen name="settings" options={{ title: t('tabs.settings') }} />

@@ -32,7 +32,7 @@ export default function Login() {
     try {
       const r = await api.post<TokenPair>('/auth/login', { email, password });
       await setTokens(r.data.access_token, r.data.refresh_token);
-      router.replace('/(tabs)/jobs');
+      router.replace('/(tabs)/expenses');
     } catch (e: unknown) {
       const errObj = e as { response?: { data?: { detail?: string } } };
       setErr(errObj?.response?.data?.detail ?? t('login.error'));

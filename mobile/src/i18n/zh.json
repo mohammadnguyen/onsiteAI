@@ -37,6 +37,40 @@
     "coming_soon": "\u5373\u5c06\u63a8\u51fa"
   },
   "common": {
-    "error": "\u51fa\u73b0\u9519\u8bef\u3002"
+    "error": "\u51fa\u73b0\u9519\u8bef\u3002",
+    "yes": "\u662f"
+  },
+  "capture": {
+    "title": "\u65b0\u589e\u652f\u51fa",
+    "textarea_placeholder": "\u8f93\u5165\u6216\u7c98\u8d34\u652f\u51fa\u5185\u5bb9\uff0c\u4f8b\u5982\uff1aBunnings 250 Elizabeth Street \u6c34\u6ce5 \u6216 Bunnings $500 \u73b0\u91d1 \u6676\u6676\u5bb6\u3002",
+    "receipt_later": "\u7a0d\u540e\u8865\u53d1\u7968",
+    "payment_label": "\u4ed8\u6b3e\uff1a",
+    "payment_auto": "\u81ea\u52a8\u8bc6\u522b",
+    "payment_cash": "\u73b0\u91d1",
+    "payment_transfer": "\u94f6\u884c\u8f6c\u8d26",
+    "payment_unknown": "\u672a\u77e5",
+    "submit": "\u63d0\u4ea4",
+    "submitting": "\u63d0\u4ea4\u4e2d...",
+    "result_saved": "\u5df2\u4fdd\u5b58",
+    "result_pending_review": "\u5df2\u4fdd\u5b58 \u2014 \u5f85\u5ba1\u6838",
+    "new_expense": "\u65b0\u589e\u652f\u51fa",
+    "error_network": "\u7f51\u7edc\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u8fde\u63a5\u540e\u91cd\u8bd5\u3002"
+  },
+  "expense": {
+    "amount_inc_gst": "\u91d1\u989d\uff08\u542bGST\uff09",
+    "amount_ex_gst": "\u91d1\u989d\uff08\u4e0d\u542bGST\uff09",
+    "gst": "GST",
+    "payment": "\u652f\u4ed8\u65b9\u5f0f",
+    "date": "\u65e5\u671f",
+    "description": "\u63cf\u8ff0",
+    "duplicate_flag": "\u91cd\u590d\u6807\u8bb0"
+  },
+  "review_reason": {
+    "amount_uncertain": "\u91d1\u989d\u4e0d\u786e\u5b9a",
+    "unsupported_currency": "\u4e0d\u652f\u6301\u7684\u8d27\u5e01",
+    "job_uncertain": "\u9879\u76ee\u4e0d\u786e\u5b9a",
+    "supplier_uncertain": "\u4f9b\u5e94\u5546\u4e0d\u786e\u5b9a",
+    "category_uncertain": "\u5206\u7c7b\u4e0d\u786e\u5b9a",
+    "duplicate_suspected": "\u7591\u4f3c\u91cd\u590d"
   }
 }
