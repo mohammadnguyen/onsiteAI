@@ -55,7 +55,14 @@
     "result_saved": "\u5df2\u4fdd\u5b58",
     "result_pending_review": "\u5df2\u4fdd\u5b58 \u2014 \u5f85\u5ba1\u6838",
     "new_expense": "\u65b0\u589e\u652f\u51fa",
-    "error_network": "\u7f51\u7edc\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u8fde\u63a5\u540e\u91cd\u8bd5\u3002"
+    "error_network": "\u7f51\u7edc\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u8fde\u63a5\u540e\u91cd\u8bd5\u3002",
+    "recent": {
+      "title": "\u6211\u7684\u8bb0\u5f55",
+      "empty": "\u6682\u65e0\u8bb0\u5f55\u3002",
+      "error": "\u65e0\u6cd5\u52a0\u8f7d\u8bb0\u5f55\u3002",
+      "duplicate_flag": "\u91cd\u590d",
+      "receipt_later_flag": "\u7a0d\u540e\u8865\u53d1\u7968"
+    }
   },
   "expense": {
     "amount_inc_gst": "\u91d1\u989d\uff08\u542bGST\uff09",
@@ -64,7 +71,10 @@
     "payment": "\u652f\u4ed8\u65b9\u5f0f",
     "date": "\u65e5\u671f",
     "description": "\u63cf\u8ff0",
-    "duplicate_flag": "\u91cd\u590d\u6807\u8bb0"
+    "duplicate_flag": "\u91cd\u590d\u6807\u8bb0",
+    "status_pending": "\u5f85\u5ba1\u6838",
+    "status_reviewed": "\u5df2\u5ba1\u6838",
+    "status_rejected": "\u5df2\u62d2\u7edd"
   },
   "review_reason": {
     "amount_uncertain": "\u91d1\u989d\u4e0d\u786e\u5b9a",

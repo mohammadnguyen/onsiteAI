@@ -1,0 +1,199 @@
+import { useMemo } from 'react';
+import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
+import { useTranslation } from 'react-i18next';
+import type { UseQueryResult } from '@tanstack/react-query';
+import { useJobs } from '../api/hooks/useJobs';
+import type { ExpensePublic, ExpenseListResponse } from '../api/hooks/useExpenses';
+
+/**
+ * Mobile Capture v1 Sub-batch A: read-only "My Captures" list.
+ *
+ * Rendered below the capture form / result card on the Expenses
+ * tab. Honours the product rule that capture remains the primary
+ * action — this component is passive confirmation only. No tap-to-
+ * detail, no edit, no delete, no filters, no pagination.
+ *
+ * Row content is restricted to fields available on `ExpensePublic`
+ * (no nested supplier/category lookups). Job name is resolved
+ * opportunistically via the existing `useJobs()` cache; if jobs
+ * haven't loaded yet the row simply omits the job line — no
+ * blocking spinner, no error path of its own.
+ */
+
+type Props = {
+  query: UseQueryResult<ExpenseListResponse, unknown>;
+};
+
+const STATUS_COLORS = {
+  pending: { bg: '#fef3c7', fg: '#92400e' },
+  reviewed: { bg: '#dcfce7', fg: '#15803d' },
+  rejected: { bg: '#fee2e2', fg: '#991b1b' },
+} as const;
+
+const PREVIEW_MAX = 60;
+
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return s.slice(0, max).trimEnd() + '…';
+}
+
+export function RecentCapturesList({ query }: Props) {
+  const { t } = useTranslation();
+  const jobs = useJobs();
+
+  const jobMap = useMemo(() => {
+    const m = new Map<string, string>();
+    jobs.data?.forEach((j) => m.set(j.job_id, j.job_name));
+    return m;
+  }, [jobs.data]);
+
+  const items = query.data?.items ?? [];
+
+  return (
+    <View style={s.section} testID="recent-captures-section">
+      <Text style={s.heading}>{t('capture.recent.title')}</Text>
+
+      {query.isLoading ? (
+        <View style={s.state} testID="recent-loading">
+          <ActivityIndicator color="#1e293b" />
+        </View>
+      ) : query.isError ? (
+        <View style={s.state} testID="recent-error">
+          <Text style={s.errorText}>{t('capture.recent.error')}</Text>
+        </View>
+      ) : items.length === 0 ? (
+        <View style={s.state} testID="recent-empty">
+          <Text style={s.emptyText}>{t('capture.recent.empty')}</Text>
+        </View>
+      ) : (
+        <View testID="recent-list">
+          {items.map((e) => (
+            <ExpenseRow
+              key={e.expense_id}
+              expense={e}
+              jobName={jobMap.get(e.job_id)}
+            />
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function ExpenseRow({
+  expense,
+  jobName,
+}: {
+  expense: ExpensePublic;
+  jobName: string | undefined;
+}) {
+  const { t } = useTranslation();
+  const statusColor = STATUS_COLORS[expense.review_status];
+  const statusKey = `expense.status_${expense.review_status}`;
+  const previewSource = expense.raw_input_text || expense.description || '';
+  const preview = truncate(previewSource, PREVIEW_MAX);
+
+  return (
+    <View style={s.row} testID={`recent-row-${expense.expense_id}`}>
+      <View style={s.rowTop}>
+        <Text style={s.amount}>{expense.amount_inc_gst}</Text>
+        <View style={[s.pill, { backgroundColor: statusColor.bg }]}>
+          <Text style={[s.pillText, { color: statusColor.fg }]}>
+            {t(statusKey)}
+          </Text>
+        </View>
+      </View>
+
+      <View style={s.rowMid}>
+        <Text style={s.date}>{expense.expense_date}</Text>
+        {jobName ? <Text style={s.dot}> · </Text> : null}
+        {jobName ? (
+          <Text style={s.job} numberOfLines={1}>
+            {jobName}
+          </Text>
+        ) : null}
+      </View>
+
+      <Text
+        style={preview ? s.preview : s.previewMuted}
+        numberOfLines={1}
+        testID={`recent-row-${expense.expense_id}-preview`}
+      >
+        {preview || '—'}
+      </Text>
+
+      {(expense.duplicate_flag || expense.receipt_status === 'expected_later') && (
+        <View style={s.rowFlags}>
+          {expense.duplicate_flag ? (
+            <View
+              style={[s.flagPill, s.flagDuplicate]}
+              testID={`recent-row-${expense.expense_id}-duplicate`}
+            >
+              <Text style={s.flagText}>{t('capture.recent.duplicate_flag')}</Text>
+            </View>
+          ) : null}
+          {expense.receipt_status === 'expected_later' ? (
+            <View
+              style={[s.flagPill, s.flagReceipt]}
+              testID={`recent-row-${expense.expense_id}-receipt`}
+            >
+              <Text style={s.flagText}>{t('capture.recent.receipt_later_flag')}</Text>
+            </View>
+          ) : null}
+        </View>
+      )}
+    </View>
+  );
+}
+
+const s = StyleSheet.create({
+  section: { marginTop: 24 },
+  heading: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#0f172a',
+    marginBottom: 4,
+  },
+  state: { paddingVertical: 24, alignItems: 'center' },
+  emptyText: { color: '#64748b', fontSize: 14 },
+  errorText: { color: '#b91c1c', fontSize: 14 },
+  row: {
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  rowTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  amount: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#0f172a',
+    fontVariant: ['tabular-nums'],
+  },
+  pill: {
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  pillText: { fontSize: 11, fontWeight: '600' },
+  rowMid: { flexDirection: 'row', marginTop: 4, alignItems: 'center' },
+  date: { color: '#64748b', fontSize: 13 },
+  dot: { color: '#94a3b8', fontSize: 13 },
+  job: { color: '#64748b', fontSize: 13, flexShrink: 1 },
+  preview: { color: '#334155', fontSize: 13, marginTop: 4 },
+  previewMuted: { color: '#94a3b8', fontSize: 13, marginTop: 4 },
+  rowFlags: { flexDirection: 'row', marginTop: 6 },
+  flagPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+    marginRight: 6,
+  },
+  flagDuplicate: { backgroundColor: '#fef3c7' },
+  flagReceipt: { backgroundColor: '#e0e7ff' },
+  flagText: { fontSize: 10, fontWeight: '600', color: '#1e293b' },
+});

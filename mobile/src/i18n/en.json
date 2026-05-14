@@ -55,7 +55,14 @@
     "result_saved": "Saved",
     "result_pending_review": "Saved — pending review",
     "new_expense": "New Expense",
-    "error_network": "Network error. Check your connection and try again."
+    "error_network": "Network error. Check your connection and try again.",
+    "recent": {
+      "title": "My Captures",
+      "empty": "No captures yet.",
+      "error": "Could not load captures.",
+      "duplicate_flag": "Duplicate",
+      "receipt_later_flag": "Receipt later"
+    }
   },
   "expense": {
     "amount_inc_gst": "Amount (inc GST)",
@@ -64,7 +71,10 @@
     "payment": "Payment method",
     "date": "Date",
     "description": "Description",
-    "duplicate_flag": "Duplicate flag"
+    "duplicate_flag": "Duplicate flag",
+    "status_pending": "Pending",
+    "status_reviewed": "Reviewed",
+    "status_rejected": "Rejected"
   },
   "review_reason": {
     "amount_uncertain": "Amount uncertain",

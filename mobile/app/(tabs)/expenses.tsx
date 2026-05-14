@@ -10,18 +10,21 @@ import {
   Platform,
   ScrollView,
   Keyboard,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
 import {
   useCreateExpense,
+  useMyRecentExpenses,
   type ExpenseCreateInput,
   type ExpenseCreateResponse,
   type PaymentMethod,
   type ReceiptStatus,
 } from '../../src/api/hooks/useExpenses';
 import { CaptureResultCard } from '../../src/components/CaptureResultCard';
+import { RecentCapturesList } from '../../src/components/RecentCapturesList';
 
 /**
  * Mobile Capture v0: natural-language expense capture screen.
@@ -60,6 +63,13 @@ function extractErrorMessage(error: unknown, fallback: string): string {
 export default function ExpensesScreen() {
   const { t } = useTranslation();
   const createExpense = useCreateExpense();
+  // Mobile Capture v1 Sub-batch A: "My Captures" list query lives on
+  // the parent screen so the same RefreshControl can drive pull-to-
+  // refresh from anywhere in the scrollable area (form region or
+  // list region). `useCreateExpense` already invalidates the
+  // ['expenses'] root, so a successful capture auto-refetches this
+  // query without extra wiring.
+  const recentExpenses = useMyRecentExpenses(20);
   const textareaRef = useRef<TextInput>(null);
 
   const [rawInputText, setRawInputText] = useState('');
@@ -67,6 +77,17 @@ export default function ExpensesScreen() {
   const [receiptLater, setReceiptLater] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [result, setResult] = useState<ExpenseCreateResponse | null>(null);
+
+  // RefreshControl reads `isRefetching` (not `isFetching`) so the
+  // spinner only shows on manual pull-to-refresh, not on initial
+  // load — initial load is covered by the list's own loading state.
+  const refreshControl = (
+    <RefreshControl
+      refreshing={recentExpenses.isRefetching}
+      onRefresh={() => void recentExpenses.refetch()}
+      tintColor="#1e293b"
+    />
+  );
 
   const onSubmit = async () => {
     if (createExpense.isPending) return;
@@ -110,9 +131,14 @@ export default function ExpensesScreen() {
   if (result) {
     return (
       <SafeAreaView style={s.safe} edges={['bottom', 'left', 'right']}>
-        <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
+        <ScrollView
+          contentContainerStyle={s.scroll}
+          keyboardShouldPersistTaps="handled"
+          refreshControl={refreshControl}
+        >
           <Text style={s.title}>{t('capture.title')}</Text>
           <CaptureResultCard result={result} onReset={onReset} />
+          <RecentCapturesList query={recentExpenses} />
         </ScrollView>
       </SafeAreaView>
     );
@@ -129,6 +155,7 @@ export default function ExpensesScreen() {
         <ScrollView
           contentContainerStyle={s.scroll}
           keyboardShouldPersistTaps="handled"
+          refreshControl={refreshControl}
         >
           <Text style={s.title}>{t('capture.title')}</Text>
 
