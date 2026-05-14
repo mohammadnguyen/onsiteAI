@@ -282,6 +282,24 @@ Do not pretend something was verified if it was not.
 
 ---
 
+# Response Packet Rule
+
+Every response must end with exactly one fenced markdown block labelled REVIEW_PACKET.
+
+The full 15-section template lives in docs/patterns/response-packet-pattern.md.
+
+This is an output-format rule only.
+
+It does not override:
+- CLAUDE.md
+- docs/adr/
+- docs/patterns/
+- approved phase plans
+- accepted product decisions
+- safety and data-integrity rules
+
+---
+
 # ADR Rule
 
 Major architectural decisions must be recorded as ADRs.
