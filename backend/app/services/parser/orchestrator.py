@@ -56,6 +56,7 @@ from app.models import (
 )
 from app.services.parser import amount as _amount
 from app.services.parser import categories as _categories
+from app.services.parser import cjk_amounts as _cjk_amounts
 from app.services.parser import duplicates as _duplicates
 from app.services.parser import jobs as _jobs
 from app.services.parser import payment as _payment
@@ -166,6 +167,15 @@ async def parse(
     """
     # Step 1: tokenize.
     tokens = _tokens.tokenize(raw_text)
+
+    # Step 1.5: Capture Parser v1 — CJK amount normalization. Rewrites
+    # Simplified Chinese numeral tokens (五百五, 一千二, 五百块, …)
+    # into the existing Token shape with is_numeric_like=True so the
+    # downstream amount extractor sees them as ordinary numeric
+    # candidates. Pure function; preserves source spans; no DB. See
+    # :mod:`app.services.parser.cjk_amounts` module docstring for the
+    # supported forms, safety gates, and confidence semantics.
+    tokens = _cjk_amounts.normalize_cjk_amount_tokens(tokens)
 
     # Step 2: amount (pure).
     amt = _amount.extract_amount(tokens)

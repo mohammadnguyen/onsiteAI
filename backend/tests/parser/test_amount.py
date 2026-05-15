@@ -18,6 +18,7 @@ from decimal import Decimal
 import pytest
 
 from app.services.parser.amount import AmountMatch, extract_amount
+from app.services.parser.cjk_amounts import normalize_cjk_amount_tokens
 from app.services.parser.tokens import Token, tokenize
 
 # ---------------------------------------------------------------------------
@@ -225,6 +226,83 @@ def test_unsupported_flag_cleared_when_dollar_wins() -> None:
     assert result.value == Decimal("50")
     assert result.confidence == 0.9
     assert result.unsupported_currency is False
+
+
+# ---------------------------------------------------------------------------
+# Capture Parser v1: CJK amount end-to-end via the full pre-extraction chain.
+#
+# The orchestrator inserts ``normalize_cjk_amount_tokens`` between
+# ``tokenize`` and ``extract_amount``; these tests exercise that same
+# chain explicitly so the extractor is verified against CJK-rewritten
+# token lists in isolation from the rest of the parser pipeline.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw_text", "expected_value", "expected_conf", "expected_unsupported", "expected_ambiguous"),
+    [
+        # --- CJK positive: bare numerals (bare-integer tier 0.5) ---
+        ("Bunnings 五百五 Smith Residence", Decimal(550), 0.5, False, False),
+        ("Reece 一千二 晶晶家", Decimal(1200), 0.5, False, False),
+        ("水泥 两千三 JJ-01", Decimal(2300), 0.5, False, False),
+        ("材料 三万二 Smith Residence", Decimal(32000), 0.5, False, False),
+        ("Bunnings 一千二百三十 Smith Residence", Decimal(1230), 0.5, False, False),
+        # --- CJK positive: money suffix → AUD-integer tier 0.9
+        # via synthetic ``$`` predecessor ---
+        ("Bunnings 五百块 Smith Residence", Decimal(500), 0.9, False, False),
+        ("Bunnings 八百澳币 Smith Residence", Decimal(800), 0.9, False, False),
+        ("Bunnings 五百元 Smith", Decimal(500), 0.9, False, False),
+        # --- CJK negative: no amount extracted ---
+        # Date words, site words, and single bare digits all leave the
+        # token unchanged, yielding zero numeric candidates.
+        ("五月五号 Bunnings Smith Residence", None, 0.0, False, False),
+        ("五月 Bunnings Smith Residence", None, 0.0, False, False),
+        ("工地一 Bunnings", None, 0.0, False, False),
+        ("五 Bunnings", None, 0.0, False, False),
+        ("九 Reece", None, 0.0, False, False),
+        # --- Regression: existing Arabic paths unchanged through the
+        # CJK normalization step ---
+        ("$550 cement", Decimal(550), 0.9, False, False),
+        ("15 Sun St", Decimal(15), 0.5, False, False),
+        ("JJ-01", None, 0.0, False, False),
+        # --- Mixed Arabic + CJK in same input ---
+        # $550 (AUD 0.9) cleanly beats bare CJK 五百五 (bare 0.5).
+        ("$550 五百五 Smith", Decimal(550), 0.9, False, False),
+        # $305 (AUD 0.9) ties with 五百块 (AUD 0.9 via synthetic $).
+        # Tied → ambiguous=True, confidence=0.0, value=first ($305).
+        ("$305 五百块 Smith", Decimal(305), 0.0, False, True),
+        # Bare Arabic 305 ties with bare CJK 五百 (both 0.5) → ambiguous.
+        ("305 五百", Decimal(305), 0.0, False, True),
+        # Phone-number-shaped Arabic input (existing behaviour): three
+        # bare-integer candidates tie → ambiguous, value = first.
+        # ``Decimal("0400") == Decimal("400")`` numerically.
+        ("0400 123 456", Decimal(400), 0.0, False, True),
+    ],
+)
+def test_extract_amount_with_cjk_normalization(
+    raw_text: str,
+    expected_value: Decimal | None,
+    expected_conf: float,
+    expected_unsupported: bool,
+    expected_ambiguous: bool,
+) -> None:
+    """End-to-end: tokenize → normalize_cjk_amount_tokens → extract_amount.
+
+    Mirrors the orchestrator's step-1 / step-1.5 / step-2 sequence so
+    CJK rewriting is exercised against the real extractor without
+    spinning up the DB-backed pipeline.
+    """
+    tokens = tokenize(raw_text)
+    tokens = normalize_cjk_amount_tokens(tokens)
+    result = extract_amount(tokens)
+    assert result.value == expected_value, f"value mismatch for {raw_text!r}"
+    assert result.confidence == expected_conf, f"confidence mismatch for {raw_text!r}"
+    assert result.unsupported_currency == expected_unsupported, (
+        f"unsupported flag mismatch for {raw_text!r}"
+    )
+    assert result.ambiguous == expected_ambiguous, (
+        f"ambiguous flag mismatch for {raw_text!r}"
+    )
 
 
 def test_token_list_directly_constructed() -> None:
