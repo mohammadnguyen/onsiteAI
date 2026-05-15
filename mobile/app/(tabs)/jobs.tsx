@@ -12,11 +12,18 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useJob, useJobs, type JobPublic } from '../../src/api/hooks/useJobs';
+import { NewJobModal } from '../../src/components/NewJobModal';
 
 export default function JobsScreen() {
   const { t } = useTranslation();
   const { data, isLoading, isError } = useJobs();
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Mobile Job Management Lite — admin-only "+ New Job" modal flag.
+  // The detail modal and the new-job modal are mutually exclusive by
+  // user gesture (no UI path opens both); both are top-level <Modal>s
+  // and React Native renders them at the OS level, so even concurrent
+  // visible state would be visually layered, not crash-y.
+  const [showNewJob, setShowNewJob] = useState(false);
 
   const jobs = useMemo(() => data ?? [], [data]);
 
@@ -24,6 +31,15 @@ export default function JobsScreen() {
     <SafeAreaView style={s.safe} edges={['bottom', 'left', 'right']}>
       <View style={s.header}>
         <Text style={s.title}>{t('jobs.title')}</Text>
+        <TouchableOpacity
+          onPress={() => setShowNewJob(true)}
+          style={s.newBtn}
+          testID="job-new-btn"
+          accessibilityRole="button"
+          accessibilityLabel={t('jobs.new')}
+        >
+          <Text style={s.newBtnText}>{t('jobs.new')}</Text>
+        </TouchableOpacity>
       </View>
       {isLoading ? (
         <View style={s.center}>
@@ -52,6 +68,10 @@ export default function JobsScreen() {
       <JobDetailModal
         jobId={selectedId}
         onClose={() => setSelectedId(null)}
+      />
+      <NewJobModal
+        visible={showNewJob}
+        onClose={() => setShowNewJob(false)}
       />
     </SafeAreaView>
   );
@@ -162,8 +182,24 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#ffffff' },
-  header: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8 },
+  header: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   title: { fontSize: 22, fontWeight: '600', color: '#0f172a' },
+  newBtn: {
+    backgroundColor: '#1e293b',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 6,
+    minHeight: 36,
+    justifyContent: 'center',
+  },
+  newBtnText: { color: '#ffffff', fontSize: 14, fontWeight: '600' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   loadingText: { marginTop: 12, color: '#64748b' },
   emptyText: { color: '#64748b', fontSize: 16 },

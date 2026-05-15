@@ -65,20 +65,42 @@ async def create_job_endpoint(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> Job:
-    """Create a job (admin only)."""
-    return await create_job(
-        db,
-        created_by=admin,
-        job_name=body.job_name,
-        job_code=body.job_code,
-        site_address=body.site_address,
-        contract_value_ex_gst=body.contract_value_ex_gst,
-        total_budget_ex_gst=body.total_budget_ex_gst,
-        target_profit_ratio_pct=body.target_profit_ratio_pct,
-        warning_amber_pct=body.warning_amber_pct,
-        warning_red_pct=body.warning_red_pct,
-        status=body.status,
-    )
+    """Create a job (admin only).
+
+    Mobile Job Management Lite hardening: a duplicate ``job_code`` (the
+    only UNIQUE constraint reachable on this endpoint today) used to
+    surface as SQLAlchemy's default 500. We now translate it to a 409
+    with a friendly detail so the mobile UI can render an actionable
+    error. Other ``IntegrityError`` causes (e.g. cross-field CHECK
+    constraint violations that Pydantic doesn't catch) fall through to
+    a 422 mirroring the PATCH route's pattern, so we never return 500
+    on a constraint violation.
+    """
+    try:
+        return await create_job(
+            db,
+            created_by=admin,
+            job_name=body.job_name,
+            job_code=body.job_code,
+            site_address=body.site_address,
+            contract_value_ex_gst=body.contract_value_ex_gst,
+            total_budget_ex_gst=body.total_budget_ex_gst,
+            target_profit_ratio_pct=body.target_profit_ratio_pct,
+            warning_amber_pct=body.warning_amber_pct,
+            warning_red_pct=body.warning_red_pct,
+            status=body.status,
+        )
+    except IntegrityError as exc:
+        err_text = str(exc.orig).lower()
+        if "unique" in err_text or "duplicate key" in err_text:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Job code already exists",
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Database constraint violated: {exc.orig}",
+        ) from exc
 
 
 @router.get(

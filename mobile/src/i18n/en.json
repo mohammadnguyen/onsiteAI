@@ -16,7 +16,17 @@
   "jobs": {
     "title": "Jobs",
     "empty": "No jobs yet.",
-    "loading": "Loading jobs..."
+    "loading": "Loading jobs...",
+    "new": "+ New Job",
+    "new_modal_title": "Create Job",
+    "field_name": "Job name",
+    "field_code": "Job code (optional)",
+    "field_address": "Site address (optional)",
+    "field_aliases": "Aliases (optional, one per line)",
+    "field_aliases_hint": "Used to match captures to this job",
+    "create_error_duplicate_code": "Job code already exists",
+    "create_error_generic": "Could not create job",
+    "create_alias_partial": "Job created. These aliases failed: {{names}}"
   },
   "job": {
     "code": "Code",
@@ -39,7 +49,9 @@
   "common": {
     "error": "Something went wrong.",
     "yes": "Yes",
-    "close": "Close"
+    "close": "Close",
+    "save": "Save",
+    "cancel": "Cancel"
   },
   "capture": {
     "title": "New Expense",

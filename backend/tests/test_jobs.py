@@ -66,6 +66,35 @@ async def test_create_job_requires_auth(client):
 
 
 @pytest.mark.asyncio
+async def test_create_job_duplicate_code_returns_409(client, admin_token):
+    """Mobile Job Management Lite hardening: a second POST /jobs with the
+    same ``job_code`` must surface as a 409 with a friendly detail
+    rather than SQLAlchemy's default 500.
+
+    The unique-violation translation lives in the route handler itself
+    (`app/api/jobs.py::create_job_endpoint`) and only converts UNIQUE
+    constraint failures — other IntegrityError causes still fall
+    through to a 422 (mirroring the PATCH route).
+    """
+    # First POST creates the row with a code.
+    first = await client.post(
+        "/jobs",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"job_name": "First Job", "job_code": "DUP-001"},
+    )
+    assert first.status_code == 201, first.text
+
+    # Second POST with the same code (different name) must be 409.
+    second = await client.post(
+        "/jobs",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"job_name": "Second Job", "job_code": "DUP-001"},
+    )
+    assert second.status_code == 409, second.text
+    assert second.json()["detail"] == "Job code already exists"
+
+
+@pytest.mark.asyncio
 async def test_list_jobs_both_roles(
     client, admin_token, contributor_token, seeded_contributor
 ):

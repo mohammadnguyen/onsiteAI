@@ -16,7 +16,17 @@
   "jobs": {
     "title": "\u9879\u76ee",
     "empty": "\u6682\u65e0\u9879\u76ee\u3002",
-    "loading": "\u52a0\u8f7d\u4e2d..."
+    "loading": "\u52a0\u8f7d\u4e2d...",
+    "new": "+ \u65b0\u5efa\u9879\u76ee",
+    "new_modal_title": "\u521b\u5efa\u9879\u76ee",
+    "field_name": "\u9879\u76ee\u540d\u79f0",
+    "field_code": "\u9879\u76ee\u7f16\u53f7\uff08\u53ef\u9009\uff09",
+    "field_address": "\u5de5\u5730\u5730\u5740\uff08\u53ef\u9009\uff09",
+    "field_aliases": "\u522b\u540d\uff08\u53ef\u9009\uff0c\u6bcf\u884c\u4e00\u4e2a\uff09",
+    "field_aliases_hint": "\u7528\u4e8e\u5c06\u8bb0\u5f55\u5339\u914d\u5230\u6b64\u9879\u76ee",
+    "create_error_duplicate_code": "\u9879\u76ee\u7f16\u53f7\u5df2\u5b58\u5728",
+    "create_error_generic": "\u65e0\u6cd5\u521b\u5efa\u9879\u76ee",
+    "create_alias_partial": "\u9879\u76ee\u5df2\u521b\u5efa\u3002\u4ee5\u4e0b\u522b\u540d\u5931\u8d25\uff1a{{names}}"
   },
   "job": {
     "code": "\u7f16\u53f7",
@@ -39,7 +49,9 @@
   "common": {
     "error": "\u51fa\u73b0\u9519\u8bef\u3002",
     "yes": "\u662f",
-    "close": "\u5173\u95ed"
+    "close": "\u5173\u95ed",
+    "save": "\u4fdd\u5b58",
+    "cancel": "\u53d6\u6d88"
   },
   "capture": {
     "title": "\u65b0\u589e\u652f\u51fa",
