@@ -15,6 +15,7 @@ from app.models.expense import (
     ReviewStatus,
 )
 from app.models.job import Job, JobAlias, JobCategoryBudget, JobStatus
+from app.models.job_audit_log import JobAuditLog
 from app.models.review_queue import (
     ExpenseAuditLog,
     ExpenseReviewQueue,
@@ -33,6 +34,7 @@ __all__ = [
     "ExpenseType",
     "Job",
     "JobAlias",
+    "JobAuditLog",
     "JobCategoryBudget",
     "JobStatus",
     "LanguageCode",

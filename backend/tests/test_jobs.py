@@ -575,3 +575,272 @@ async def test_add_budget_404_on_missing_category(client, admin_token):
         },
     )
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Job Lifecycle v1A-1: Edit Job Details + Audit Foundation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_patch_job_name_writes_audit_row_with_pre_edit_snapshot(
+    client, admin_token
+):
+    """PATCH job_name writes one job_audit_log row with action='edit'
+    and pre-edit job_name_snapshot."""
+    job = await _create_job(client, admin_token, name="Smith Reisdence")
+    job_id = job["job_id"]
+
+    r = await client.patch(
+        f"/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"job_name": "Smith Residence"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["job_name"] == "Smith Residence"
+
+    audit = await client.get(
+        f"/jobs/{job_id}/audit",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert audit.status_code == 200
+    rows = audit.json()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["action"] == "edit"
+    # Pre-edit snapshot must hold the OLD name, the diff says what it became.
+    assert row["job_name_snapshot"] == "Smith Reisdence"
+    assert row["changed_fields"] == {
+        "job_name": {"old": "Smith Reisdence", "new": "Smith Residence"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_patch_job_code_duplicate_returns_409(client, admin_token):
+    """Two jobs cannot share a job_code; PATCH that collides returns 409
+    with the friendly detail mirroring the POST hardening."""
+    await _create_job(client, admin_token, name="A", job_code="SMITH01")
+    target = await _create_job(client, admin_token, name="B", job_code="SMITH02")
+
+    r = await client.patch(
+        f"/jobs/{target['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"job_code": "SMITH01"},
+    )
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == "Job code already exists"
+
+    # And no audit row was written for the failed attempt.
+    audit = await client.get(
+        f"/jobs/{target['job_id']}/audit",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert audit.status_code == 200
+    assert audit.json() == []
+
+
+@pytest.mark.asyncio
+async def test_patch_job_address_writes_audit_row(client, admin_token):
+    """PATCH site_address records the change in changed_fields."""
+    job = await _create_job(client, admin_token, name="Site Address Job")
+    r = await client.patch(
+        f"/jobs/{job['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"site_address": "15 Sun St, Sydney NSW 2000"},
+    )
+    assert r.status_code == 200
+
+    audit = await client.get(
+        f"/jobs/{job['job_id']}/audit",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    rows = audit.json()
+    assert len(rows) == 1
+    assert rows[0]["action"] == "edit"
+    assert rows[0]["changed_fields"] == {
+        "site_address": {"old": None, "new": "15 Sun St, Sydney NSW 2000"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_patch_job_multi_field_change_writes_one_audit_row(
+    client, admin_token
+):
+    """One PATCH touching multiple auditable fields writes one row whose
+    changed_fields dict carries every diff."""
+    job = await _create_job(client, admin_token, name="Original Name")
+    r = await client.patch(
+        f"/jobs/{job['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "job_name": "New Name",
+            "job_code": "NEW01",
+            "site_address": "1 Main St",
+        },
+    )
+    assert r.status_code == 200
+
+    audit = await client.get(
+        f"/jobs/{job['job_id']}/audit",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    rows = audit.json()
+    assert len(rows) == 1, "expected exactly one audit row per PATCH"
+    row = rows[0]
+    assert row["action"] == "edit"
+    # All three field diffs in a single audit row's changed_fields.
+    assert set(row["changed_fields"].keys()) == {
+        "job_name",
+        "job_code",
+        "site_address",
+    }
+
+
+@pytest.mark.asyncio
+async def test_patch_job_no_op_writes_no_audit_row(client, admin_token):
+    """PATCH that touches only non-auditable fields (budgets) writes no
+    row. PATCH that re-sends the same auditable value writes no row."""
+    job = await _create_job(
+        client, admin_token, name="No Op Job", job_code="NOOP01"
+    )
+
+    # Touch only a non-auditable field — no audit row.
+    r = await client.patch(
+        f"/jobs/{job['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"contract_value_ex_gst": "100.00"},
+    )
+    assert r.status_code == 200
+
+    # Re-send the SAME job_name — still no audit row.
+    r = await client.patch(
+        f"/jobs/{job['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"job_name": "No Op Job"},
+    )
+    assert r.status_code == 200
+
+    audit = await client.get(
+        f"/jobs/{job['job_id']}/audit",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert audit.status_code == 200
+    assert audit.json() == []
+
+
+@pytest.mark.asyncio
+async def test_patch_job_status_via_api_writes_audit_row_with_archive_action(
+    client, admin_token
+):
+    """No archive UI yet (v1A-2), but the audit infrastructure must
+    already produce an 'archive' action when status flips to completed
+    via the existing PATCH endpoint."""
+    job = await _create_job(client, admin_token, name="Status Audit Job")
+    r = await client.patch(
+        f"/jobs/{job['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"status": "completed"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "completed"
+
+    audit = await client.get(
+        f"/jobs/{job['job_id']}/audit",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    rows = audit.json()
+    assert len(rows) == 1
+    assert rows[0]["action"] == "archive"
+    assert rows[0]["changed_fields"] == {
+        "status": {"old": "active", "new": "completed"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_job_audit_admin_only_403_for_contributor(
+    client, admin_token, contributor_token
+):
+    """Audit endpoint rejects contributors with 403 (admin-only gate)."""
+    job = await _create_job(client, admin_token, name="Audit RBAC Job")
+    r = await client.get(
+        f"/jobs/{job['job_id']}/audit",
+        headers={"Authorization": f"Bearer {contributor_token}"},
+    )
+    assert r.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_get_job_audit_404_on_missing_job(client, admin_token):
+    """Audit endpoint returns 404 when the parent job does not exist
+    (v1A-1 only looks up by live job_id; v1A-3 will extend this)."""
+    r = await client.get(
+        f"/jobs/{uuid.uuid4()}/audit",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_job_audit_returns_rows_newest_first(client, admin_token):
+    """Audit trail is ordered created_at DESC; multiple events surface
+    in reverse chronological order."""
+    job = await _create_job(client, admin_token, name="Ordering Job")
+    # Three sequential auditable edits.
+    await client.patch(
+        f"/jobs/{job['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"job_name": "Ordering Job v2"},
+    )
+    await client.patch(
+        f"/jobs/{job['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"site_address": "Site B"},
+    )
+    await client.patch(
+        f"/jobs/{job['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"status": "completed"},
+    )
+
+    audit = await client.get(
+        f"/jobs/{job['job_id']}/audit",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    rows = audit.json()
+    assert len(rows) == 3
+    # Newest first → the status change is row 0.
+    assert rows[0]["action"] == "archive"
+    assert "status" in rows[0]["changed_fields"]
+    # Then the address edit.
+    assert rows[1]["action"] == "edit"
+    assert "site_address" in rows[1]["changed_fields"]
+    # Then the rename.
+    assert rows[2]["action"] == "edit"
+    assert "job_name" in rows[2]["changed_fields"]
+
+
+@pytest.mark.asyncio
+async def test_job_audit_log_jsonb_round_trip(client, admin_token):
+    """The JSONB ``changed_fields`` payload round-trips cleanly: PATCH
+    in, GET /audit out → the dict equals the input shape (string old
+    and new values, no Python-only types leaking through)."""
+    job = await _create_job(client, admin_token, name="JSONB Job")
+    r = await client.patch(
+        f"/jobs/{job['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"job_name": "Renamed JSONB Job", "site_address": "Addr 1"},
+    )
+    assert r.status_code == 200
+
+    audit = await client.get(
+        f"/jobs/{job['job_id']}/audit",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    rows = audit.json()
+    assert len(rows) == 1
+    cf = rows[0]["changed_fields"]
+    # Every leaf value is a string or null — no Python-only types.
+    for field_diff in cf.values():
+        assert set(field_diff.keys()) == {"old", "new"}
+        for v in field_diff.values():
+            assert v is None or isinstance(v, (str, int, float, bool))

@@ -31,6 +31,7 @@ from app.schemas.budget_summary import JobBudgetSummary
 from app.schemas.job import (
     JobAliasCreate,
     JobAliasPublic,
+    JobAuditRow,
     JobCategoryBudgetCreate,
     JobCategoryBudgetPublic,
     JobCreate,
@@ -43,11 +44,13 @@ from app.services.jobs import (
     CategoryNotFound,
     DuplicateAlias,
     DuplicateBudget,
+    DuplicateJobCode,
     JobNotFound,
     add_alias,
     add_category_budget,
     create_job,
     get_job,
+    list_job_audit,
     list_jobs,
     update_job,
 )
@@ -183,7 +186,7 @@ async def get_job_budget_summary_endpoint(
 async def update_job_endpoint(
     job_id: uuid.UUID,
     body: JobUpdate,
-    _admin: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> Job:
     """Partially update a job (admin only).
@@ -199,32 +202,77 @@ async def update_job_endpoint(
     Pydantic tracks which fields the caller actually included in the
     request body, separately from the field defaults.
 
-    Cross-field DB CHECK violations that Pydantic can't see (e.g.
-    PATCHing only ``warning_amber_pct`` to a value that's no longer
-    strictly less than the stored ``warning_red_pct``) come back from
-    SQLAlchemy as ``IntegrityError`` and are translated to a 422 here
-    so the client gets a validation error rather than a 500.
+    Constraint-violation mapping:
+
+    * Duplicate ``job_code`` (the ``jobs_job_code_key`` UNIQUE index) →
+      409 with friendly detail ``"Job code already exists"`` (Job
+      Lifecycle v1A-1; mirrors the POST /jobs hardening at d364abc).
+    * Other ``IntegrityError`` causes (e.g. cross-field DB CHECK
+      violations Pydantic can't see, like patching ``warning_amber_pct``
+      to a value that's no longer strictly less than the stored
+      ``warning_red_pct``) → 422 with the raw error detail.
+
+    Job Lifecycle v1A-1: the admin's :class:`User` is forwarded as
+    ``actor`` so the service can write a ``job_audit_log`` row when
+    any of the auditable fields (``job_name``, ``job_code``,
+    ``site_address``, ``status``) actually changes.
     """
     set_fields = body.model_dump(exclude_unset=True)
     try:
-        return await update_job(db, job_id, **set_fields)
+        return await update_job(db, job_id, actor=admin, **set_fields)
     except JobNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
         ) from exc
+    except DuplicateJobCode as exc:
+        # v1A-1: pre-checked in the service so we never reach an
+        # IntegrityError-during-flush state. Friendly 409 with the
+        # same detail string as the POST hardening at d364abc.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Job code already exists",
+        ) from exc
     except IntegrityError as exc:
-        # Cross-field DB CHECK violation. ``exc.orig`` is the asyncpg
-        # error and includes the constraint name so the UI can map it
-        # to a friendly message. We deliberately do NOT call
-        # ``db.rollback()`` here — SQLAlchemy auto-rolls back the
-        # session on close (which FastAPI's request lifecycle handles
-        # via the ``get_db`` dependency). Calling rollback explicitly
-        # collides with the test fixture's outer transaction wrapper
-        # and surfaces a confusing SAWarning.
+        # Cross-field DB CHECK violation (e.g. ``warning_amber_pct``
+        # vs ``warning_red_pct``). Pydantic can't see this; the DB
+        # surfaces it as IntegrityError; we translate to 422. We
+        # deliberately do NOT call ``db.rollback()`` here — SQLAlchemy
+        # auto-rolls back the session on close (FastAPI's request
+        # lifecycle handles via ``get_db``). Calling rollback
+        # explicitly collides with the test fixture's outer transaction
+        # wrapper and surfaces a confusing SAWarning.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Database constraint violated: {exc.orig}",
         ) from exc
+
+
+@router.get(
+    "/{job_id}/audit",
+    response_model=list[JobAuditRow],
+    status_code=status.HTTP_200_OK,
+)
+async def get_job_audit_endpoint(
+    job_id: uuid.UUID,
+    _admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Audit trail for a job, newest first (admin only).
+
+    Job Lifecycle v1A-1. Returns rows from ``job_audit_log`` matching
+    the supplied job_id, ordered by ``created_at`` DESC. Hard-deleted
+    jobs (v1A-3) leave audit rows with ``job_id=NULL`` via FK SET NULL
+    cascade; v1A-1 surfaces audit rows for live jobs only — the
+    snapshot-based historical lookup pathway is left for v1A-3 to
+    wire up.
+    """
+    try:
+        rows = await list_job_audit(db, job_id)
+    except JobNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+        ) from exc
+    return rows
 
 
 @router.post(

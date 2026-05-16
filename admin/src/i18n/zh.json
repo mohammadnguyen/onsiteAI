@@ -33,7 +33,22 @@
     "settings_saved": "设置已保存。",
     "status": "状态",
     "status_active": "进行中",
-    "status_completed": "已完成"
+    "status_completed": "已完成",
+    "edit_details_heading": "项目详情",
+    "field_name_label": "项目名称",
+    "field_code_label": "项目编号",
+    "field_address_label": "工地地址",
+    "field_reason_label_optional": "修改原因(可选)",
+    "field_reason_placeholder": "例如:修正拼写错误",
+    "save_changes": "保存修改",
+    "saved": "已保存。",
+    "audit_trail_heading": "变更记录",
+    "audit_trail_empty": "暂无变更记录。",
+    "audit_row_renamed": "重命名:\"{{old}}\" → \"{{new}}\"",
+    "audit_row_status_change": "状态变更:{{old}} → {{new}}",
+    "audit_row_field_change": "{{field}} 已修改",
+    "audit_row_multi_field_change": "已修改:{{fields}}",
+    "audit_row_deleted": "已删除"
   },
   "job": {
     "back": "返回项目列表",

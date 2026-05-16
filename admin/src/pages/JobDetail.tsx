@@ -12,6 +12,8 @@ import {
 import { useJobBudgetSummary } from '../api/hooks/useBudgetSummary'
 import { AppShell } from '../components/AppShell'
 import { GstAmountInput } from '../components/GstAmountInput'
+import { JobAuditTrail } from '../components/JobAuditTrail'
+import { JobDetailsForm } from '../components/JobDetailsForm'
 import { TotalBudgetField, type TotalBudgetMode } from '../components/TotalBudgetField'
 import { extractErrorMessage } from '../api/client'
 import type { components } from '../api/types'
@@ -100,6 +102,14 @@ export function JobDetail() {
           {summary.data && <KpiHeader summary={summary.data} />}
           {summary.data && <BudgetVsActual summary={summary.data} />}
           {summary.data && <TargetMarginPanel summary={summary.data} />}
+
+          {/* Job Lifecycle v1A-1 — Edit Job Details (job_name / job_code /
+              site_address). Sits above the financial JobSettingsForm so
+              the most common corrections (typo in name/code/address) are
+              the most prominent edit affordance. */}
+          <section className="bg-white rounded-lg border border-slate-200 p-6">
+            <JobDetailsForm job={job.data} />
+          </section>
 
           <JobSettingsForm job={job.data} />
 
@@ -218,6 +228,14 @@ export function JobDetail() {
                 {budgetError}
               </div>
             )}
+          </section>
+
+          {/* Job Lifecycle v1A-1 — Activity strip. Renders the audit
+              trail from GET /jobs/{id}/audit, newest first. Refreshes
+              automatically after a successful PATCH via the
+              ['jobs', jobId, 'audit'] query invalidation. */}
+          <section className="bg-white rounded-lg border border-slate-200 p-6">
+            <JobAuditTrail jobId={job.data.job_id} />
           </section>
         </div>
       )}

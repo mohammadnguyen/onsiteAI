@@ -33,7 +33,22 @@
     "settings_saved": "Settings saved.",
     "status": "Status",
     "status_active": "Active",
-    "status_completed": "Completed"
+    "status_completed": "Completed",
+    "edit_details_heading": "Job details",
+    "field_name_label": "Job name",
+    "field_code_label": "Job code",
+    "field_address_label": "Site address",
+    "field_reason_label_optional": "Reason for change (optional)",
+    "field_reason_placeholder": "e.g. fixed typo",
+    "save_changes": "Save changes",
+    "saved": "Saved.",
+    "audit_trail_heading": "Activity",
+    "audit_trail_empty": "No changes recorded yet.",
+    "audit_row_renamed": "Renamed: \"{{old}}\" → \"{{new}}\"",
+    "audit_row_status_change": "Status changed: {{old}} → {{new}}",
+    "audit_row_field_change": "{{field}} changed",
+    "audit_row_multi_field_change": "Changed: {{fields}}",
+    "audit_row_deleted": "Deleted"
   },
   "job": {
     "back": "Back to jobs",

@@ -16,6 +16,7 @@ round-trip values they don't want to touch (same convention as Task 6's
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -178,3 +179,24 @@ class JobWithDetailPublic(JobPublic):
 
     aliases: list[JobAliasPublic] = []
     category_budgets: list[JobCategoryBudgetPublic] = []
+
+
+class JobAuditRow(BaseModel):
+    """Serialised view of a :class:`~app.models.job_audit_log.JobAuditLog` row.
+
+    Returned by ``GET /jobs/{job_id}/audit`` (admin only). Pre-edit
+    snapshots (``job_name_snapshot``, ``job_code_snapshot``) keep the
+    row readable after the parent job is gone (v1A-3 hard delete).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    audit_id: uuid.UUID
+    tenant_id: uuid.UUID
+    job_id: uuid.UUID | None
+    job_name_snapshot: str
+    job_code_snapshot: str | None
+    actor_user_id: uuid.UUID
+    action: str
+    changed_fields: dict
+    created_at: datetime

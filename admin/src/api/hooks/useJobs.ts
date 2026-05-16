@@ -12,6 +12,23 @@ type JobCategoryBudgetCreate = components['schemas']['JobCategoryBudgetCreate']
 type JobCategoryBudgetPublic = components['schemas']['JobCategoryBudgetPublic']
 type CategoryPublic = components['schemas']['CategoryPublic']
 
+// Job Lifecycle v1A-1: hand-written type for the new audit endpoint.
+// Kept inline (rather than regenerating openapi types) to keep the
+// change surface for this batch small. When the openapi types are
+// next regenerated, this can be replaced with
+// `components['schemas']['JobAuditRow']` and the export removed.
+export type JobAuditRow = {
+  audit_id: string
+  tenant_id: string
+  job_id: string | null
+  job_name_snapshot: string
+  job_code_snapshot: string | null
+  actor_user_id: string
+  action: 'edit' | 'archive' | 'reopen' | 'delete' | string
+  changed_fields: Record<string, { old: unknown; new: unknown }>
+  created_at: string
+}
+
 export function useJobs() {
   return useQuery({
     queryKey: ['jobs'],
@@ -67,7 +84,28 @@ export function useUpdateJob(jobId: string | undefined) {
       if (jobId) {
         void qc.invalidateQueries({ queryKey: ['jobs', jobId] })
         void qc.invalidateQueries({ queryKey: ['jobs', jobId, 'budget-summary'] })
+        // v1A-1: refresh the audit-trail strip after any PATCH so the
+        // user sees the new row land without a manual refresh.
+        void qc.invalidateQueries({ queryKey: ['jobs', jobId, 'audit'] })
       }
+    },
+  })
+}
+
+/**
+ * Job Lifecycle v1A-1: GET /jobs/{id}/audit.
+ *
+ * Returns the audit trail for a single job (admin only). Used by the
+ * Activity strip on JobDetail. Cache is invalidated by `useUpdateJob`
+ * so any successful PATCH refreshes the visible audit list.
+ */
+export function useJobAuditTrail(jobId: string | undefined) {
+  return useQuery({
+    queryKey: ['jobs', jobId, 'audit'],
+    enabled: !!jobId,
+    queryFn: async (): Promise<JobAuditRow[]> => {
+      const { data } = await api.get<JobAuditRow[]>(`/jobs/${jobId}/audit`)
+      return data
     },
   })
 }

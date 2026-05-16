@@ -16,8 +16,10 @@ the real backstop for the race window.
 
 from __future__ import annotations
 
+import enum
 import uuid
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +27,8 @@ from sqlalchemy.orm import selectinload
 
 from app.core.text import normalize_alias
 from app.models.category import Category
-from app.models.job import Job, JobAlias, JobCategoryBudget
+from app.models.job import Job, JobAlias, JobCategoryBudget, JobStatus
+from app.models.job_audit_log import JobAuditLog
 from app.models.user import LanguageCode, User
 
 
@@ -62,6 +65,21 @@ class DuplicateBudget(Exception):
         super().__init__(
             f"Budget for job {job_id} + category {category_id} already exists"
         )
+
+
+class DuplicateJobCode(Exception):
+    """Raised when PATCH /jobs/{id} would set ``job_code`` to a value
+    that is already in use by a different job.
+
+    Job Lifecycle v1A-1: pre-checked in :func:`update_job` so we never
+    rely on the DB's UNIQUE constraint to raise an ``IntegrityError``
+    inside the test fixture's outer transaction (which would poison
+    the session for any subsequent request in the same test).
+    """
+
+    def __init__(self, job_code: str):
+        self.job_code = job_code
+        super().__init__(f"Job code {job_code!r} already exists")
 
 
 async def create_job(
@@ -152,10 +170,71 @@ async def get_job(db: AsyncSession, job_id: uuid.UUID) -> Job:
 _UNSET: object = object()
 
 
+# ---------------------------------------------------------------------------
+# Job Lifecycle v1A-1 — Edit + Audit Foundation
+# ---------------------------------------------------------------------------
+
+# Columns whose changes are recorded in ``job_audit_log``. Status is
+# included even though v1A-1 ships no archive/reopen UI; this means
+# any PATCH that flips status (curl, future v1A-2 UI, automation)
+# automatically produces an audit row with the right ``action``
+# without further code changes.
+_AUDITABLE_JOB_FIELDS: tuple[str, ...] = (
+    "job_name",
+    "job_code",
+    "site_address",
+    "status",
+)
+
+
+def _coerce_job_audit_value(value: Any) -> Any:
+    """Convert a value into a JSON-serialisable form for the JSONB diff.
+
+    Intentionally NOT imported from :mod:`app.services.expenses` —
+    that module's ``_coerce_audit_value`` is a private helper and the
+    code-quality contract for v1A-1 says we keep job-side coercion
+    local to avoid a cross-module dependency on a private symbol.
+    The duplication is small (a few isinstance checks) and limited to
+    the value types the auditable job fields can take (``str``,
+    :class:`~app.models.job.JobStatus`, ``None``).
+    """
+    if value is None:
+        return None
+    if isinstance(value, enum.Enum):
+        return value.value
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    return value
+
+
+def _derive_audit_action(changed_fields: dict[str, dict[str, Any]]) -> str:
+    """Map a non-empty ``changed_fields`` dict to the canonical action.
+
+    Priority: status transitions outrank plain field edits because
+    archive/reopen are lifecycle events. Order of precedence:
+
+    * status → ``JobStatus.completed`` → ``"archive"``
+    * status → ``JobStatus.active``    → ``"reopen"``
+    * any other field changed          → ``"edit"``
+
+    Callers are expected to call this only when ``changed_fields`` is
+    non-empty; the no-op short-circuit in :func:`update_job` skips the
+    audit-row write entirely when nothing changed.
+    """
+    if "status" in changed_fields:
+        new_value = changed_fields["status"]["new"]
+        if new_value == JobStatus.completed.value:
+            return "archive"
+        if new_value == JobStatus.active.value:
+            return "reopen"
+    return "edit"
+
+
 async def update_job(
     db: AsyncSession,
     job_id: uuid.UUID,
     *,
+    actor: User | None = None,
     job_name: str | object = _UNSET,
     job_code: str | None | object = _UNSET,
     site_address: str | None | object = _UNSET,
@@ -188,8 +267,53 @@ async def update_job(
     The new semantics align with how the Pydantic ``JobUpdate`` body
     is typed (``T | None``) and how the front-end form already
     submitted ``null`` for cleared inputs.
+
+    Job Lifecycle v1A-1 — audit foundation
+    --------------------------------------
+    When ``actor`` is supplied AND at least one of the
+    :data:`_AUDITABLE_JOB_FIELDS` (``job_name``, ``job_code``,
+    ``site_address``, ``status``) actually changes value, a single
+    :class:`~app.models.job_audit_log.JobAuditLog` row is written in
+    the same transaction recording the pre/post diff. No-op PATCHes
+    (everything unchanged, or only non-auditable fields like budgets
+    changed) produce no audit row. ``actor=None`` skips the audit
+    write entirely — a deliberate escape hatch for internal callers
+    (tests, scripts, future automation) that legitimately do not have
+    a user context.
     """
     job = await get_job(db, job_id)
+
+    # Snapshot the pre-edit values of every auditable field BEFORE we
+    # apply the patch, so we can compute the diff after.
+    pre_audit: dict[str, Any] = {
+        f: getattr(job, f) for f in _AUDITABLE_JOB_FIELDS
+    }
+    # Pre-edit snapshots for the audit row's denormalized identifier
+    # columns (kept stable across renames + post-delete queries).
+    pre_name_snapshot = job.job_name
+    pre_code_snapshot = job.job_code
+
+    # Job Lifecycle v1A-1: pre-check uniqueness of ``job_code`` before
+    # the row write so we can raise a clean :class:`DuplicateJobCode`
+    # exception instead of letting the DB UNIQUE constraint surface as
+    # an ``IntegrityError`` mid-flush (which would leave the test
+    # fixture's session in pending-rollback state and block any
+    # subsequent request in the same test). Same pre-INSERT-check
+    # pattern as :func:`add_alias`.
+    if job_code is not _UNSET and job_code is not None:
+        new_code = str(job_code)
+        if new_code != job.job_code:
+            existing = (
+                await db.execute(
+                    select(Job).where(
+                        Job.job_code == new_code,
+                        Job.job_id != job_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                raise DuplicateJobCode(new_code)
+
     candidates = {
         "job_name": job_name,
         "job_code": job_code,
@@ -206,8 +330,55 @@ async def update_job(
             continue
         setattr(job, k, v)
     await db.flush()
+
+    # Compute the diff. Only fields that actually changed value land
+    # in changed_fields; this implements the no-op short-circuit (no
+    # row written when nothing changed) per v1A-1 spec.
+    if actor is not None:
+        changed_fields: dict[str, dict[str, Any]] = {}
+        for f in _AUDITABLE_JOB_FIELDS:
+            old = pre_audit[f]
+            new = getattr(job, f)
+            if old != new:
+                changed_fields[f] = {
+                    "old": _coerce_job_audit_value(old),
+                    "new": _coerce_job_audit_value(new),
+                }
+        if changed_fields:
+            audit_row = JobAuditLog(
+                audit_id=uuid.uuid4(),
+                job_id=job.job_id,
+                job_name_snapshot=pre_name_snapshot,
+                job_code_snapshot=pre_code_snapshot,
+                actor_user_id=actor.user_id,
+                action=_derive_audit_action(changed_fields),
+                changed_fields=changed_fields,
+            )
+            db.add(audit_row)
+            await db.flush()
+
     await db.refresh(job, ["aliases", "category_budgets"])
     return job
+
+
+async def list_job_audit(
+    db: AsyncSession,
+    job_id: uuid.UUID,
+) -> list[JobAuditLog]:
+    """Return audit-log rows for a job, newest first.
+
+    Raises :class:`JobNotFound` if the live job_id does not resolve.
+    Does NOT yet surface audit rows for hard-deleted jobs by their
+    historical id — that pathway lands in v1A-3 when the
+    ``snapshot``-based lookup is wired up.
+    """
+    _ = await get_job(db, job_id)
+    q = (
+        select(JobAuditLog)
+        .where(JobAuditLog.job_id == job_id)
+        .order_by(JobAuditLog.created_at.desc())
+    )
+    return list((await db.execute(q)).scalars().all())
 
 
 async def add_alias(
