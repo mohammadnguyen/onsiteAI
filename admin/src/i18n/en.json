@@ -48,7 +48,16 @@
     "audit_row_status_change": "Status changed: {{old}} → {{new}}",
     "audit_row_field_change": "{{field}} changed",
     "audit_row_multi_field_change": "Changed: {{fields}}",
-    "audit_row_deleted": "Deleted"
+    "audit_row_deleted": "Deleted",
+    "archive": "Archive",
+    "reopen": "Reopen",
+    "archive_confirm_title": "Archive this job?",
+    "archive_confirm_body": "Archiving marks this job as completed. New expense captures will no longer match this job. Existing expenses remain visible. You can reopen any time.",
+    "reopen_confirm_title": "Reopen this job?",
+    "reopen_confirm_body": "Reopening marks this job as active again. New expense captures can match it.",
+    "show_archived": "Show archived",
+    "archived_hidden_count": "{{count}} archived hidden",
+    "none_active": "No active jobs."
   },
   "job": {
     "back": "Back to jobs",

@@ -26,6 +26,11 @@ export function Jobs() {
   const createJob = useCreateJob()
 
   const [open, setOpen] = useState(false)
+  // Job Lifecycle v1A-2: client-side filter toggle. Default OFF — the
+  // common case is browsing active jobs only. Toggling ON reveals
+  // completed/archived rows. State is intentionally not persisted
+  // across page reload in v1A-2 (polish item for a later batch).
+  const [showArchived, setShowArchived] = useState(false)
   const [jobName, setJobName] = useState('')
   const [jobCode, setJobCode] = useState('')
   const [siteAddress, setSiteAddress] = useState('')
@@ -71,17 +76,44 @@ export function Jobs() {
     }
   }
 
+  // Job Lifecycle v1A-2: filter rows by status based on the toggle.
+  // OFF (default) → active rows only. ON → all rows including
+  // completed/archived. Done client-side; the API returns all
+  // statuses and admin filters in the UI.
+  const visibleJobs = useMemo(() => {
+    if (!jobs.data) return []
+    if (showArchived) return jobs.data
+    return jobs.data.filter((j) => j.status === 'active')
+  }, [jobs.data, showArchived])
+  const archivedHiddenCount = useMemo(() => {
+    if (!jobs.data) return 0
+    if (showArchived) return 0
+    return jobs.data.filter((j) => j.status === 'completed').length
+  }, [jobs.data, showArchived])
+
   return (
     <AppShell>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-semibold text-slate-900">{t('jobs.title')}</h1>
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          className="bg-slate-900 text-white rounded-md px-4 py-2 text-sm font-medium hover:bg-slate-800"
-        >
-          {t('jobs.new')}
-        </button>
+        <div className="flex items-center gap-4">
+          {/* Job Lifecycle v1A-2 — Show archived toggle. */}
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={showArchived}
+              onChange={(e) => setShowArchived(e.target.checked)}
+              className="accent-slate-900"
+            />
+            {t('jobs.show_archived')}
+          </label>
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="bg-slate-900 text-white rounded-md px-4 py-2 text-sm font-medium hover:bg-slate-800"
+          >
+            {t('jobs.new')}
+          </button>
+        </div>
       </div>
 
       {jobs.isLoading && <p className="text-sm text-slate-600">{t('common.loading')}</p>}
@@ -90,10 +122,19 @@ export function Jobs() {
           {t('common.error')}: {extractErrorMessage(jobs.error)}
         </p>
       )}
-      {jobs.data && jobs.data.length === 0 && (
-        <p className="text-sm text-slate-600">{t('jobs.none')}</p>
+      {jobs.data && visibleJobs.length === 0 && (
+        <p className="text-sm text-slate-600">
+          {jobs.data.length === 0
+            ? t('jobs.none')
+            : t('jobs.none_active')}
+        </p>
       )}
-      {jobs.data && jobs.data.length > 0 && <JobsTable jobs={jobs.data} />}
+      {jobs.data && visibleJobs.length > 0 && <JobsTable jobs={visibleJobs} />}
+      {archivedHiddenCount > 0 && (
+        <p className="text-xs text-slate-500 mt-2 italic">
+          {t('jobs.archived_hidden_count', { count: archivedHiddenCount })}
+        </p>
+      )}
 
       <Modal open={open} onClose={() => setOpen(false)} title={t('jobs.new')}>
         <form onSubmit={onSubmit} className="space-y-3">

@@ -48,7 +48,16 @@
     "audit_row_status_change": "状态变更:{{old}} → {{new}}",
     "audit_row_field_change": "{{field}} 已修改",
     "audit_row_multi_field_change": "已修改:{{fields}}",
-    "audit_row_deleted": "已删除"
+    "audit_row_deleted": "已删除",
+    "archive": "归档",
+    "reopen": "重新打开",
+    "archive_confirm_title": "归档此项目?",
+    "archive_confirm_body": "归档会将此项目标记为已完成。新支出记录将不再匹配此项目。已有支出仍可见。你可以随时重新打开。",
+    "reopen_confirm_title": "重新打开此项目?",
+    "reopen_confirm_body": "重新打开会将此项目标记为进行中。新支出记录可以再次匹配它。",
+    "show_archived": "显示已归档",
+    "archived_hidden_count": "{{count}} 个已归档项目被隐藏",
+    "none_active": "暂无进行中的项目。"
   },
   "job": {
     "back": "返回项目列表",

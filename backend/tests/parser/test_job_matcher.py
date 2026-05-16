@@ -562,3 +562,83 @@ async def test_chp1_priority_name_beats_multi_token_name(db_session, seeded_admi
     assert result.job_id == job.job_id
     assert result.confidence == 0.95
     assert result.matched_via == "name"
+
+
+# ---------------------------------------------------------------------------
+# Job Lifecycle v1A-2: archive transition is honored by parser
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_archived_job_excluded_from_parser_match(
+    db_session, seeded_admin
+):
+    """Regression for v1A-2: when a previously-active job is archived
+    via a status transition mid-session (active → completed), the
+    parser must immediately stop returning it on subsequent calls.
+
+    The seeded_jobs fixture already covers the static "completed job
+    is ignored at seed time" case via test_completed_job_not_matched
+    and test_completed_job_code_and_name_not_matched. This test adds
+    the dynamic-transition angle that v1A-2's UI exposes: the user
+    creates an active job, the parser matches it; the user archives
+    via PATCH (which the admin web's new JobLifecycleActions button
+    drives); the parser stops matching it on the next call. No
+    caching to invalidate; the parser re-reads every call (see
+    services/parser/jobs.py).
+    """
+    # 1. Create an active job with a distinctive single-token name +
+    #    code so the matcher has clean routes to test.
+    job = await _make_job(
+        db_session,
+        seeded_admin,
+        name="ArchiveLifecycleJob",
+        code="ALJ-01",
+    )
+    await db_session.flush()
+
+    # 2. Confirm both routes match while active.
+    by_name = await match_job(
+        tokenize("ArchiveLifecycleJob 100"), db_session
+    )
+    assert by_name.job_id == job.job_id, "name route should match active job"
+    assert by_name.matched_via == "name"
+
+    by_code = await match_job(tokenize("ALJ-01 cement"), db_session)
+    assert by_code.job_id == job.job_id, "code route should match active job"
+    assert by_code.matched_via == "code"
+
+    # 3. Archive the job (simulates the v1A-2 Archive button +
+    #    backend PATCH /jobs/{id} {"status": "completed"}).
+    job.status = JobStatus.completed
+    await db_session.flush()
+
+    # 4. Both routes must now return no match.
+    by_name_after = await match_job(
+        tokenize("ArchiveLifecycleJob 100"), db_session
+    )
+    assert by_name_after.job_id is None, (
+        "archived job must not match by name"
+    )
+    assert by_name_after.confidence == 0.0
+    assert by_name_after.matched_via is None
+
+    by_code_after = await match_job(tokenize("ALJ-01 cement"), db_session)
+    assert by_code_after.job_id is None, (
+        "archived job must not match by code"
+    )
+    assert by_code_after.confidence == 0.0
+    assert by_code_after.matched_via is None
+
+    # 5. Reopen (simulates v1A-2 Reopen button) and confirm matches
+    #    return — closes the loop on both transition directions.
+    job.status = JobStatus.active
+    await db_session.flush()
+
+    by_name_reopened = await match_job(
+        tokenize("ArchiveLifecycleJob 100"), db_session
+    )
+    assert by_name_reopened.job_id == job.job_id, (
+        "reopened job should match again"
+    )
+    assert by_name_reopened.matched_via == "name"

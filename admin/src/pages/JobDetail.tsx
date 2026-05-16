@@ -14,6 +14,7 @@ import { AppShell } from '../components/AppShell'
 import { GstAmountInput } from '../components/GstAmountInput'
 import { JobAuditTrail } from '../components/JobAuditTrail'
 import { JobDetailsForm } from '../components/JobDetailsForm'
+import { JobLifecycleActions } from '../components/JobLifecycleActions'
 import { TotalBudgetField, type TotalBudgetMode } from '../components/TotalBudgetField'
 import { extractErrorMessage } from '../api/client'
 import type { components } from '../api/types'
@@ -98,6 +99,13 @@ export function JobDetail() {
       {job.data && (
         <div className="mt-4 space-y-6">
           <JobHeader job={job.data} summary={summary.data ?? null} />
+
+          {/* Job Lifecycle v1A-2 — Archive / Reopen UI. Uses existing
+              PATCH /jobs/{id} via useUpdateJob; v1A-1 audit already
+              records the status flip with action="archive"/"reopen". */}
+          <section className="bg-white rounded-lg border border-slate-200 p-4 flex items-center justify-end">
+            <JobLifecycleActions job={job.data} />
+          </section>
 
           {summary.data && <KpiHeader summary={summary.data} />}
           {summary.data && <BudgetVsActual summary={summary.data} />}
