@@ -562,6 +562,159 @@ async def test_get_admin_any_200(client, db_session, world, admin_token):
     assert body["supplier"]["supplier_name"] == "Bunnings"
     # ``category`` is always present (may be null if unset).
     assert "category" in body
+    # Mobile Expense Detail (v1): the detail wire shape always carries a
+    # ``review_reasons`` array (possibly empty); same for the duplicate
+    # flag fields. The remaining assertions in this block are regression
+    # guards against accidental wire-shape contraction.
+    assert "review_reasons" in body
+    assert body["review_reasons"] == []
+    assert "duplicate_flag" in body
+    assert "duplicate_of_expense_id" in body
+
+
+# ---------------------------------------------------------------------------
+# Mobile Expense Detail (v1): review_reasons surfacing on GET /expenses/{id}
+#
+# Semantics under test: review_reasons mirrors the *current* row in
+# expense_review_queue for this expense (regardless of queue status:
+# open / resolved / rejected). Returns [] when no queue row exists.
+# This is NOT a historical audit trail.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_queue_row(
+    db_session,
+    *,
+    expense_id: uuid.UUID,
+    reasons: list[ReviewReasonCode],
+    status: ReviewQueueStatus = ReviewQueueStatus.open,
+) -> ExpenseReviewQueue:
+    row = ExpenseReviewQueue(
+        review_id=uuid.uuid4(),
+        expense_id=expense_id,
+        review_reasons=list(reasons),
+        status=status,
+    )
+    db_session.add(row)
+    await db_session.flush()
+    return row
+
+
+@pytest.mark.asyncio
+async def test_get_includes_review_reasons_when_open_queue_row_exists(
+    client, db_session, world, admin_token
+):
+    """GET /expenses/{id} surfaces the open queue row's reasons in order."""
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        review_status=ReviewStatus.pending,
+    )
+    await _seed_queue_row(
+        db_session,
+        expense_id=exp.expense_id,
+        reasons=[ReviewReasonCode.amount_uncertain, ReviewReasonCode.supplier_uncertain],
+        status=ReviewQueueStatus.open,
+    )
+
+    r = await client.get(f"/expenses/{exp.expense_id}", headers=_auth(admin_token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["review_reasons"] == ["amount_uncertain", "supplier_uncertain"]
+
+
+@pytest.mark.asyncio
+async def test_get_returns_empty_reasons_when_no_queue_row(
+    client, db_session, world, admin_token
+):
+    """Reviewed expense with no queue row → review_reasons == []."""
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        review_status=ReviewStatus.reviewed,
+    )
+
+    r = await client.get(f"/expenses/{exp.expense_id}", headers=_auth(admin_token))
+    assert r.status_code == 200, r.text
+    assert r.json()["review_reasons"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_returns_reasons_for_rejected_queue_row(
+    client, db_session, world, admin_token
+):
+    """Rejected queue row still surfaces its reasons (current row, any status)."""
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        review_status=ReviewStatus.rejected,
+    )
+    await _seed_queue_row(
+        db_session,
+        expense_id=exp.expense_id,
+        reasons=[ReviewReasonCode.duplicate_suspected],
+        status=ReviewQueueStatus.rejected,
+    )
+
+    r = await client.get(f"/expenses/{exp.expense_id}", headers=_auth(admin_token))
+    assert r.status_code == 200, r.text
+    assert r.json()["review_reasons"] == ["duplicate_suspected"]
+
+
+@pytest.mark.asyncio
+async def test_get_returns_reasons_for_resolved_queue_row(
+    client, db_session, world, admin_token
+):
+    """Resolved queue row still surfaces its reasons (current row, any status)."""
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        review_status=ReviewStatus.reviewed,
+    )
+    await _seed_queue_row(
+        db_session,
+        expense_id=exp.expense_id,
+        reasons=[ReviewReasonCode.category_uncertain],
+        status=ReviewQueueStatus.resolved,
+    )
+
+    r = await client.get(f"/expenses/{exp.expense_id}", headers=_auth(admin_token))
+    assert r.status_code == 200, r.text
+    assert r.json()["review_reasons"] == ["category_uncertain"]
+
+
+@pytest.mark.asyncio
+async def test_get_contributor_own_includes_review_reasons(
+    client, db_session, world, seeded_contributor, contributor_token
+):
+    """Contributor reading their own pending expense gets review_reasons (RBAC unchanged)."""
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=seeded_contributor.user_id,
+        review_status=ReviewStatus.pending,
+    )
+    await _seed_queue_row(
+        db_session,
+        expense_id=exp.expense_id,
+        reasons=[ReviewReasonCode.supplier_uncertain],
+        status=ReviewQueueStatus.open,
+    )
+
+    r = await client.get(f"/expenses/{exp.expense_id}", headers=_auth(contributor_token))
+    assert r.status_code == 200, r.text
+    assert r.json()["review_reasons"] == ["supplier_uncertain"]
+
+
+@pytest.mark.asyncio
+async def test_get_missing_expense_returns_404(client, admin_token):
+    """Unknown expense_id → 404, never accidentally surfaces another expense's reasons."""
+    r = await client.get(f"/expenses/{uuid.uuid4()}", headers=_auth(admin_token))
+    assert r.status_code == 404
 
 
 # ---------------------------------------------------------------------------

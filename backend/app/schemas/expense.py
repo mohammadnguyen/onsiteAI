@@ -39,6 +39,11 @@ from app.models import (
     ReviewReasonCode,
     ReviewStatus,
 )
+
+# Note: ReviewReasonCode is imported above and used by both
+# ParseDiagnostics.review_reasons and the new
+# ExpenseDetailPublic.review_reasons field added for the mobile detail
+# screen.
 from app.schemas.category import CategoryPublic
 from app.schemas.supplier import SupplierPublic
 
@@ -177,10 +182,18 @@ class ExpenseCreateResponse(BaseModel):
 
 
 class ExpenseDetailPublic(ExpensePublic):
-    """Body of ``GET /expenses/{id}`` — adds nested supplier + category."""
+    """Body of ``GET /expenses/{id}`` — adds nested supplier + category.
+
+    ``review_reasons`` reflects the *current* row in
+    ``expense_review_queue`` for this expense (any status: ``open``,
+    ``resolved`` or ``rejected``) and is ``[]`` when no queue row
+    exists. It is NOT a historical audit trail — for that, admins use
+    ``GET /expenses/{id}/audit``.
+    """
 
     supplier: SupplierPublic | None
     category: CategoryPublic | None
+    review_reasons: list[ReviewReasonCode] = Field(default_factory=list)
 
 
 class ExpenseListResponse(BaseModel):

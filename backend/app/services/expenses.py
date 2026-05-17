@@ -780,6 +780,37 @@ async def get_expense(
     return expense
 
 
+async def get_expense_with_reasons(
+    db: AsyncSession,
+    *,
+    current_user: User,
+    expense_id: uuid.UUID,
+) -> tuple[Expense, list[ReviewReasonCode]]:
+    """Fetch one expense + the reasons on its review-queue row, if any.
+
+    Delegates RBAC + 404 to :func:`get_expense` so contributor-ownership
+    enforcement is identical.
+
+    ``review_reasons`` semantics — important: the returned list reflects
+    the *current* ``expense_review_queue`` row for this expense
+    (regardless of its ``status``: ``open``, ``resolved`` or
+    ``rejected``). It is NOT a historical audit trail. When no queue
+    row exists, the list is empty.
+
+    The unique constraint on ``expense_review_queue.expense_id``
+    guarantees at most one row per expense, so ``scalar_one_or_none``
+    is safe here.
+    """
+    expense = await get_expense(db, current_user=current_user, expense_id=expense_id)
+
+    reasons_stmt = select(ExpenseReviewQueue.review_reasons).where(
+        ExpenseReviewQueue.expense_id == expense_id
+    )
+    row = (await db.execute(reasons_stmt)).scalar_one_or_none()
+    reasons: list[ReviewReasonCode] = list(row) if row is not None else []
+    return expense, reasons
+
+
 # ---------------------------------------------------------------------------
 # Update
 # ---------------------------------------------------------------------------

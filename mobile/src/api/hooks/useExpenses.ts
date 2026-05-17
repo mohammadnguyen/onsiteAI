@@ -7,6 +7,7 @@ export type ExpenseCreateInput = components['schemas']['ExpenseCreate-Input'];
 export type ExpenseCreateResponse = components['schemas']['ExpenseCreateResponse'];
 export type ExpenseListResponse = components['schemas']['ExpenseListResponse'];
 export type ExpensePublic = components['schemas']['ExpensePublic'];
+export type ExpenseDetailPublic = components['schemas']['ExpenseDetailPublic'];
 export type ParseDiagnostics = components['schemas']['ParseDiagnostics'];
 export type ReviewReasonCode = components['schemas']['ReviewReasonCode'];
 export type ReviewStatus = components['schemas']['ReviewStatus'];
@@ -65,6 +66,35 @@ export function useMyRecentExpenses(limit: number = 20) {
       return data;
     },
     enabled: !!accessToken,
+    staleTime: 0,
+    retry: false,
+  });
+}
+
+/**
+ * Mobile Expense Detail (v1): single-expense fetch for the read-only
+ * detail screen at `app/expenses/[id].tsx`.
+ *
+ * Mirrors the admin hook shape (`admin/src/api/hooks/useExpenses.ts:useExpense`).
+ * Returns `ExpenseDetailPublic`, which now carries an optional
+ * `review_reasons` array (the consumer uses `?? []`).
+ *
+ * The 404 path (deleted-out-from-under-you / unknown id) is surfaced
+ * via `query.isError` + the axios error; the detail screen renders a
+ * dedicated NotFound state. The 403 path (contributor reading
+ * someone else's expense — defence in depth; should not happen for
+ * rows that surfaced in the user's own captures list) is treated
+ * identically to 404 at the UI layer.
+ */
+export function useExpense(expenseId: string | undefined) {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  return useQuery<ExpenseDetailPublic>({
+    queryKey: ['expenses', expenseId],
+    queryFn: async () => {
+      const { data } = await api.get<ExpenseDetailPublic>(`/expenses/${expenseId}`);
+      return data;
+    },
+    enabled: !!accessToken && !!expenseId,
     staleTime: 0,
     retry: false,
   });

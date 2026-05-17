@@ -151,16 +151,27 @@ async def get_expense_endpoint(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ExpenseDetailPublic:
-    """Fetch a single expense with nested supplier + category."""
+    """Fetch a single expense with nested supplier + category + current review reasons.
+
+    ``review_reasons`` reflects the current ``expense_review_queue``
+    row's reasons array, regardless of queue status (``open``,
+    ``resolved`` or ``rejected``). Returns ``[]`` if no queue row
+    exists. This is NOT a historical audit trail — see
+    ``GET /expenses/{id}/audit`` for that.
+    """
     try:
-        expense = await svc.get_expense(db, current_user=current_user, expense_id=expense_id)
+        expense, reasons = await svc.get_expense_with_reasons(
+            db, current_user=current_user, expense_id=expense_id
+        )
     except svc.ExpenseNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Expense not found"
         ) from exc
     except svc.EditForbidden as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.detail) from exc
-    return ExpenseDetailPublic.model_validate(expense)
+    return ExpenseDetailPublic.model_validate(expense).model_copy(
+        update={"review_reasons": reasons}
+    )
 
 
 @router.patch(

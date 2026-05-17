@@ -51,7 +51,9 @@
     "yes": "Yes",
     "close": "Close",
     "save": "Save",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "loading": "Loading…",
+    "retry": "Retry"
   },
   "capture": {
     "title": "New Expense",
@@ -86,7 +88,22 @@
     "duplicate_flag": "Duplicate flag",
     "status_pending": "Pending",
     "status_reviewed": "Reviewed",
-    "status_rejected": "Rejected"
+    "status_rejected": "Rejected",
+    "title": "Expense",
+    "supplier": "Supplier",
+    "category": "Category",
+    "job": "Job",
+    "notes": "Notes",
+    "raw_input": "Raw input",
+    "review_status": "Status",
+    "receipt_status": "Receipt",
+    "receipt_no_receipt": "No receipt",
+    "receipt_expected_later": "Expected later",
+    "duplicate_of": "Duplicate of",
+    "review_reasons_heading": "Why this needs review",
+    "back": "Back",
+    "not_found": "Expense not found.",
+    "detail_error": "Could not load expense."
   },
   "review_reason": {
     "amount_uncertain": "Amount uncertain",

@@ -51,7 +51,9 @@
     "yes": "\u662f",
     "close": "\u5173\u95ed",
     "save": "\u4fdd\u5b58",
-    "cancel": "\u53d6\u6d88"
+    "cancel": "\u53d6\u6d88",
+    "loading": "\u52a0\u8f7d\u4e2d\u2026",
+    "retry": "\u91cd\u8bd5"
   },
   "capture": {
     "title": "\u65b0\u589e\u652f\u51fa",
@@ -86,7 +88,22 @@
     "duplicate_flag": "\u91cd\u590d\u6807\u8bb0",
     "status_pending": "\u5f85\u5ba1\u6838",
     "status_reviewed": "\u5df2\u5ba1\u6838",
-    "status_rejected": "\u5df2\u62d2\u7edd"
+    "status_rejected": "\u5df2\u62d2\u7edd",
+    "title": "\u652f\u51fa",
+    "supplier": "\u4f9b\u5e94\u5546",
+    "category": "\u7c7b\u522b",
+    "job": "\u9879\u76ee",
+    "notes": "\u5907\u6ce8",
+    "raw_input": "\u539f\u59cb\u8f93\u5165",
+    "review_status": "\u72b6\u6001",
+    "receipt_status": "\u53d1\u7968",
+    "receipt_no_receipt": "\u65e0\u53d1\u7968",
+    "receipt_expected_later": "\u7a0d\u540e\u8865",
+    "duplicate_of": "\u91cd\u590d\u4e8e",
+    "review_reasons_heading": "\u4e3a\u4f55\u9700\u8981\u590d\u6838",
+    "back": "\u8fd4\u56de",
+    "not_found": "\u627e\u4e0d\u5230\u6b64\u652f\u51fa\u3002",
+    "detail_error": "\u65e0\u6cd5\u52a0\u8f7d\u652f\u51fa\u3002"
   },
   "review_reason": {
     "amount_uncertain": "\u91d1\u989d\u4e0d\u786e\u5b9a",

@@ -874,6 +874,19 @@ export interface components {
             notes: string | null;
             supplier: components["schemas"]["SupplierPublic"] | null;
             category: components["schemas"]["CategoryPublic"] | null;
+            /**
+             * Review Reasons
+             *
+             * Mobile Expense Detail (v1): hand-added to match the
+             * additive Pydantic field added in backend/app/schemas/expense.py
+             * for the same batch. This file is hand-maintained today
+             * (carried-forward drift risk recorded in ADR 0001) — when
+             * OpenAPI type regeneration is introduced this entry will
+             * disappear automatically. Optional in the TS shape so an
+             * older backend response (without the field) does not crash
+             * the mobile consumer; the consumer uses `?? []` defensively.
+             */
+            review_reasons?: components["schemas"]["ReviewReasonCode"][];
         };
         /**
          * ExpenseListResponse
