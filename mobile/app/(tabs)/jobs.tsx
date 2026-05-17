@@ -11,8 +11,29 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { useJob, useJobs, type JobPublic } from '../../src/api/hooks/useJobs';
 import { NewJobModal } from '../../src/components/NewJobModal';
+import { localizeCategoryName } from '../../src/util/category';
+
+/**
+ * Mobile Polish slice (Half A): map the backend's job-status enum
+ * ("active" / "completed") to a translated label. Unknown / future
+ * statuses fall back to the raw value rather than rendering a raw
+ * i18n key string ("job.status_xyz"), so a backend schema addition
+ * never produces a broken UI surface — just a temporarily English
+ * label until the i18n table is extended.
+ */
+function localizeJobStatus(status: string, t: TFunction): string {
+  switch (status) {
+    case 'active':
+      return t('job.status_active');
+    case 'completed':
+      return t('job.status_completed');
+    default:
+      return status;
+  }
+}
 
 export default function JobsScreen() {
   const { t } = useTranslation();
@@ -78,6 +99,7 @@ export default function JobsScreen() {
 }
 
 function JobRow({ job, onPress }: { job: JobPublic; onPress: () => void }) {
+  const { t } = useTranslation();
   return (
     <TouchableOpacity onPress={onPress} style={s.row} testID={`job-row-${job.job_id}`}>
       <View style={s.rowMain}>
@@ -85,7 +107,7 @@ function JobRow({ job, onPress }: { job: JobPublic; onPress: () => void }) {
         {job.job_code ? <Text style={s.rowCode}>{job.job_code}</Text> : null}
       </View>
       <Text style={[s.badge, job.status === 'active' ? s.badgeActive : s.badgeCompleted]}>
-        {job.status}
+        {localizeJobStatus(job.status, t)}
       </Text>
     </TouchableOpacity>
   );
@@ -133,7 +155,7 @@ function JobDetailModal({
           <ScrollView contentContainerStyle={s.detailWrap}>
             <Text style={s.detailTitle}>{data.job_name}</Text>
             <DetailRow label={t('job.code')} value={data.job_code ?? '-'} />
-            <DetailRow label={t('job.status')} value={data.status} />
+            <DetailRow label={t('job.status')} value={localizeJobStatus(data.status, t)} />
             <DetailRow
               label={t('job.contract')}
               value={data.contract_value_ex_gst ?? '-'}
@@ -159,7 +181,9 @@ function JobDetailModal({
             ) : (
               data.category_budgets.map((b) => (
                 <View key={b.budget_id} style={s.budgetRow}>
-                  <Text style={s.budgetName}>{b.category.category_name}</Text>
+                  <Text style={s.budgetName}>
+                    {localizeCategoryName(b.category.category_name, t)}
+                  </Text>
                   <Text style={s.budgetAmount}>{b.budget_amount_ex_gst}</Text>
                 </View>
               ))

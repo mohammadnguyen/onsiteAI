@@ -35,7 +35,9 @@
     "budget": "Total budget (ex GST)",
     "address": "Site address",
     "aliases": "Aliases",
-    "budgets": "Category budgets"
+    "budgets": "Category budgets",
+    "status_active": "Active",
+    "status_completed": "Archived"
   },
   "settings": {
     "title": "Settings",
@@ -53,7 +55,8 @@
     "save": "Save",
     "cancel": "Cancel",
     "loading": "Loading…",
-    "retry": "Retry"
+    "retry": "Retry",
+    "unavailable_in_this_version": "This feature isn't available in the current version. For now, please use Expenses and Jobs."
   },
   "capture": {
     "title": "New Expense",
@@ -70,6 +73,7 @@
     "result_pending_review": "Saved — pending review",
     "new_expense": "New Expense",
     "error_network": "Network error. Check your connection and try again.",
+    "continue_capture": "Capture another",
     "recent": {
       "title": "My Captures",
       "empty": "No captures yet.",
@@ -103,7 +107,9 @@
     "review_reasons_heading": "Why this needs review",
     "back": "Back",
     "not_found": "Expense not found.",
-    "detail_error": "Could not load expense."
+    "detail_error": "Could not load expense.",
+    "review_status_help_pending": "Waiting for admin to review.",
+    "review_status_help_rejected": "This entry was rejected by an admin."
   },
   "review_reason": {
     "amount_uncertain": "Amount uncertain",
@@ -112,5 +118,30 @@
     "supplier_uncertain": "Supplier uncertain",
     "category_uncertain": "Category uncertain",
     "duplicate_suspected": "Duplicate suspected"
+  },
+  "category_label": {
+    "Demolition": "Demolition",
+    "Earthworks": "Earthworks",
+    "Concrete": "Concrete",
+    "Brickwork": "Brickwork",
+    "Carpentry": "Carpentry",
+    "Roofing": "Roofing",
+    "Cladding": "Cladding",
+    "Waterproofing": "Waterproofing",
+    "Plumbing": "Plumbing",
+    "Electrical": "Electrical",
+    "Gyprock": "Gyprock",
+    "Painting": "Painting",
+    "Flooring": "Flooring",
+    "Tiling": "Tiling",
+    "Joinery": "Joinery",
+    "Windows & Doors": "Windows & Doors",
+    "Structural Steel": "Structural Steel",
+    "Labour": "Labour",
+    "Preliminaries": "Preliminaries",
+    "Equipment Hire": "Equipment Hire",
+    "Waste / Skip Bin": "Waste / Skip Bin",
+    "Delivery": "Delivery",
+    "Miscellaneous": "Miscellaneous"
   }
 }

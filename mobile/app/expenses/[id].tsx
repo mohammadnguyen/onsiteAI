@@ -18,6 +18,8 @@ import type {
   ExpenseDetailPublic,
   ReviewReasonCode,
 } from '../../src/api/hooks/useExpenses';
+import { formatMoney } from '../../src/util/format';
+import { localizeCategoryName } from '../../src/util/category';
 
 /**
  * Mobile Expense Detail (v1) — read-only.
@@ -169,14 +171,14 @@ function DetailBody({
       : t('expense.receipt_no_receipt');
 
   const supplierName = data.supplier?.supplier_name ?? '—';
-  const categoryName = data.category?.category_name ?? '—';
+  const categoryName = localizeCategoryName(data.category?.category_name, t);
   const jobDisplay = jobName ?? data.job_id.slice(0, 8);
 
   return (
     <>
       <View style={s.hero}>
         <Text style={s.heroAmount} testID="detail-amount">
-          {data.amount_inc_gst}
+          {formatMoney(data.amount_inc_gst)}
         </Text>
         <View style={[s.pill, { backgroundColor: statusColor.bg }]}>
           <Text style={[s.pillText, { color: statusColor.fg }]}>
@@ -186,8 +188,8 @@ function DetailBody({
       </View>
 
       <View style={s.grid}>
-        <Field label={t('expense.amount_ex_gst')} value={data.amount_ex_gst} />
-        <Field label={t('expense.gst')} value={data.gst_amount} />
+        <Field label={t('expense.amount_ex_gst')} value={formatMoney(data.amount_ex_gst)} />
+        <Field label={t('expense.gst')} value={formatMoney(data.gst_amount)} />
         <Field label={t('expense.date')} value={data.expense_date} />
         <Field label={t('expense.payment')} value={paymentLabel} />
         <Field label={t('expense.supplier')} value={supplierName} />
@@ -199,6 +201,17 @@ function DetailBody({
       {showReasons && (
         <View style={s.section} testID="detail-reasons">
           <Text style={s.sectionHeading}>{t('expense.review_reasons_heading')}</Text>
+          {/* Mobile Polish slice: one-line plain-language nudge below
+              the heading so a contributor scanning the detail screen
+              gets an explanation of what's expected to happen next.
+              Pending = waiting on admin; rejected = already-rejected.
+              The reasons chips below still carry the parser's
+              uncertainty signal. */}
+          <Text style={s.reasonHelp}>
+            {data.review_status === 'rejected'
+              ? t('expense.review_status_help_rejected')
+              : t('expense.review_status_help_pending')}
+          </Text>
           <View style={s.chipsRow}>
             {reasons.map((code) => {
               const color = REASON_COLORS[code];
@@ -332,6 +345,7 @@ const s = StyleSheet.create({
   chipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   chip: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
   chipText: { fontSize: 12, fontWeight: '600' },
+  reasonHelp: { color: '#475569', fontSize: 14, lineHeight: 20 },
   dupBanner: {
     backgroundColor: '#fef3c7',
     borderColor: '#fde68a',

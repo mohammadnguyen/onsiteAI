@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import type { UseQueryResult } from '@tanstack/react-query';
 import { useJobs } from '../api/hooks/useJobs';
 import type { ExpensePublic, ExpenseListResponse } from '../api/hooks/useExpenses';
+import { formatMoney } from '../util/format';
 
 /**
  * Mobile Capture v1 Sub-batch A: read-only "My Captures" list.
@@ -122,7 +123,7 @@ function ExpenseRow({
         style={({ pressed }) => [s.row, pressed && s.rowPressed]}
       >
         <View style={s.rowTop}>
-          <Text style={s.amount}>{expense.amount_inc_gst}</Text>
+          <Text style={s.amount}>{formatMoney(expense.amount_inc_gst)}</Text>
           <View style={[s.pill, { backgroundColor: statusColor.bg }]}>
             <Text style={[s.pillText, { color: statusColor.fg }]}>
               {t(statusKey)}

@@ -4,6 +4,7 @@ import type {
   ExpenseCreateResponse,
   ReviewReasonCode,
 } from '../api/hooks/useExpenses';
+import { formatMoney } from '../util/format';
 
 /**
  * Mobile Capture v0: post-submit result card.
@@ -31,15 +32,10 @@ const REASON_COLORS: Record<ReviewReasonCode, { bg: string; fg: string }> = {
   duplicate_suspected: { bg: '#fee2e2', fg: '#991b1b' },
 };
 
-function formatMoney(value: string | null | undefined): string {
-  if (value === null || value === undefined || value === '') return '—';
-  const n = Number(value);
-  if (Number.isNaN(n)) return String(value);
-  return `$${n.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
+// formatMoney moved to mobile/src/util/format.ts and imported above so
+// the same helper is used on RecentCapturesList + Expense Detail; the
+// shared helper also tightens the non-numeric path to return "—"
+// rather than leaking the raw string into the UI.
 
 export function CaptureResultCard({
   result,
@@ -108,7 +104,10 @@ export function CaptureResultCard({
         testID="capture-reset"
         accessibilityRole="button"
       >
-        <Text style={s.resetBtnText}>{t('capture.new_expense')}</Text>
+        {/* Mobile Polish slice: post-save button reads "Capture another"
+            (新增 → 继续新增) so the action verb matches the intent of
+            starting a fresh entry from the result card. */}
+        <Text style={s.resetBtnText}>{t('capture.continue_capture')}</Text>
       </TouchableOpacity>
     </View>
   );
