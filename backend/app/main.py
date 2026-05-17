@@ -1,10 +1,14 @@
 """FastAPI application factory and module-level ``app`` instance."""
 
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
-from app.config import get_settings
+from app.config import get_settings, resolved_env_file_path
+
+logger = logging.getLogger("app.startup")
 
 
 def create_app() -> FastAPI:
@@ -17,6 +21,19 @@ def create_app() -> FastAPI:
     Phase 1 URLs are unprefixed (no ``/api/v1`` yet).
     """
     settings = get_settings()
+
+    # Prod-readiness Slice 1 / ADR 0002: emit a single startup line that
+    # confirms the resolved environment + booleans only. NEVER log a
+    # secret value, hash, prefix, or any value-derived fingerprint.
+    logger.info(
+        "settings_loaded app_env=%s env_file_loaded=%s "
+        "jwt_secret_present=%s jwt_secret_valid=%s cors_origin_count=%d",
+        settings.app_env,
+        resolved_env_file_path(),
+        bool(settings.jwt_secret),
+        settings.jwt_secret_is_valid,
+        len(settings.cors_allowed_origins),
+    )
 
     app = FastAPI(
         title="SiteTracker API",
@@ -40,7 +57,13 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"] if settings.environment == "development" else [],
+        # Prod-readiness Slice 1 / ADR 0002: the allow-origins list is now
+        # config-driven (comma-separated CORS_ALLOWED_ORIGINS). The
+        # non-dev validator in app.config refuses to start the process if
+        # this list is empty or contains "*" outside development, so by
+        # the time we get here the value is guaranteed safe for the
+        # current environment.
+        allow_origins=settings.cors_allowed_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

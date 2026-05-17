@@ -7,6 +7,12 @@ services:
     container_name: sitetracker-db
     environment:
       POSTGRES_USER: sitetracker
+      # DEV-ONLY: this password protects the local Docker Postgres
+      # container; production / staging will use a managed Postgres
+      # provided by the hosting provider with its own credentials. The
+      # value here is intentionally inline (no env_file) because the
+      # local DB has no other source of truth and is recreated freely
+      # via docker volume rm. See docs/operations/env-and-secrets.md.
       POSTGRES_PASSWORD: sitetracker
       POSTGRES_DB: sitetracker
     ports:
@@ -29,10 +35,19 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Prod-readiness Slice 1 / ADR 0002: secrets and environment vars
+    # are loaded from backend/.env.development, which is gitignored and
+    # created via: cp backend/.env.development.example backend/.env.development
+    # If the file is missing, compose will exit with a clear error —
+    # that's the documented setup step in docs/operations/env-and-secrets.md.
+    env_file:
+      - ./backend/.env.development
     environment:
+      # Override only the DATABASE_URL: inside the compose network the
+      # backend reaches Postgres at the internal hostname db:5432, not
+      # the host-side mapping of localhost:5433. Everything else
+      # (APP_ENV, JWT_SECRET, CORS_ALLOWED_ORIGINS) comes from env_file.
       DATABASE_URL: postgresql+asyncpg://sitetracker:sitetracker@db:5432/sitetracker
-      JWT_SECRET: change-me-in-prod
-      ENVIRONMENT: development
     ports:
       - "8000:8000"
     volumes:

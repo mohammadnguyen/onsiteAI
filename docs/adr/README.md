@@ -73,3 +73,4 @@ adding a new test, fixing a bug, renaming a variable.
 | Number | Title | Status |
 |---|---|---|
 | [0001](./0001-current-architecture.md) | Current Architecture | Accepted |
+| [0002](./0002-environment-and-secrets-strategy.md) | Environment and Secrets Strategy | Accepted |

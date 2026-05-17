@@ -16,12 +16,26 @@ import os
 
 # Settings must have values before ``app.main`` (which imports ``app.config``)
 # is loaded, so we set defaults here before the ``app.main`` import below.
+#
+# Prod-readiness Slice 1 (ADR 0002): the env-aware loader treats ``test``
+# as non-development, so the same fail-fast gates that protect production
+# also fire during pytest. To keep the suite green we pre-seed:
+#   * APP_ENV=test            — selects ``.env.test`` if present, else env vars only
+#   * (pop ENVIRONMENT)       — avoid the APP_ENV/ENVIRONMENT conflict validator if
+#                               a developer's shell has ENVIRONMENT set
+#   * JWT_SECRET              — 51-char non-placeholder secret (length silences
+#                               pyjwt's InsecureKeyLengthWarning and passes the
+#                               non-dev length gate)
+#   * CORS_ALLOWED_ORIGINS    — non-empty, non-wildcard; satisfies the non-dev
+#                               origins gate without exposing real origins
+os.environ.pop("ENVIRONMENT", None)
+os.environ.setdefault("APP_ENV", "test")
 os.environ.setdefault(
     "DATABASE_URL",
     "postgresql+asyncpg://sitetracker:sitetracker@localhost:5433/sitetracker_test",
 )
-# 32+ bytes silences pyjwt's InsecureKeyLengthWarning (HMAC-SHA256 wants >= 32).
 os.environ.setdefault("JWT_SECRET", "test-secret-for-sitetracker-phase1-never-production")
+os.environ.setdefault("CORS_ALLOWED_ORIGINS", "https://localhost.test")
 
 import uuid  # noqa: E402
 
