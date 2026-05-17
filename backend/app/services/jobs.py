@@ -21,14 +21,16 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.text import normalize_alias
 from app.models.category import Category
+from app.models.expense import Expense
 from app.models.job import Job, JobAlias, JobCategoryBudget, JobStatus
 from app.models.job_audit_log import JobAuditLog
+from app.models.review_queue import ExpenseReviewQueue
 from app.models.user import LanguageCode, User
 
 
@@ -80,6 +82,25 @@ class DuplicateJobCode(Exception):
     def __init__(self, job_code: str):
         self.job_code = job_code
         super().__init__(f"Job code {job_code!r} already exists")
+
+
+class JobHasDependencies(Exception):
+    """Raised when :func:`delete_empty_job` is called on a job that
+    has dependencies which would make hard delete unsafe.
+
+    Job Lifecycle v1A-3: only truly empty jobs (zero expenses + zero
+    review-queue rows) may be deleted. Jobs with any dependency must
+    be archived (PATCH status=completed) instead. The HTTP layer maps
+    this to a 409 with the carried ``detail`` string verbatim.
+
+    ``detail`` is a user-facing message that the admin web renders
+    inside the confirm dialog (e.g.
+    "Job has 3 expenses and cannot be deleted. Archive it instead.")
+    """
+
+    def __init__(self, detail: str):
+        self.detail = detail
+        super().__init__(detail)
 
 
 async def create_job(
@@ -463,3 +484,118 @@ async def add_category_budget(
     # ``CategoryPublic`` without an extra query outside the session scope.
     await db.refresh(budget, ["category"])
     return budget
+
+
+# ---------------------------------------------------------------------------
+# Job Lifecycle v1A-3 — Delete Empty Job
+# ---------------------------------------------------------------------------
+
+
+async def delete_empty_job(
+    db: AsyncSession,
+    *,
+    admin: User,
+    job_id: uuid.UUID,
+) -> None:
+    """Hard-delete a job that has no expenses and no review-queue rows.
+
+    Raises :class:`JobNotFound` if the id does not resolve, or
+    :class:`JobHasDependencies` if the job has any dependency that
+    makes hard delete unsafe. The HTTP layer maps these to 404 and
+    409 respectively.
+
+    Dependency checks (both run; the queue check is defence-in-depth
+    because ``expense_review_queue`` rows already CASCADE-delete from
+    ``expenses``, so if the expense count is zero the queue count is
+    necessarily zero too — but explicitly checking both means a
+    future schema change that breaks the cascade is caught here):
+
+    * ``SELECT COUNT(*) FROM expenses WHERE job_id = $1`` must be 0.
+    * ``SELECT COUNT(*) FROM expense_review_queue erq
+        JOIN expenses e ON erq.expense_id = e.expense_id
+        WHERE e.job_id = $1`` must be 0.
+
+    Audit row is written BEFORE the SQL DELETE so the trail survives
+    via ``ON DELETE SET NULL`` on ``job_audit_log.job_id`` (v1A-1
+    design). Snapshot columns (``job_name_snapshot``,
+    ``job_code_snapshot``) preserve the human-meaningful identifier
+    after the parent row is gone. ``action="delete"`` for quick
+    filtering.
+
+    Aliases (``ondelete="CASCADE"`` on ``JobAlias.job_id``) and
+    per-category budgets (``ondelete="CASCADE"`` on
+    ``JobCategoryBudget.job_id``) cascade-delete with the parent
+    via existing model FK config (no application-side cleanup).
+
+    No ``reason`` parameter: v1A-3 chose R1=Option B (no reason
+    input anywhere) because the audit table has no ``reason``
+    column. When a ``reason`` column lands in a future schema
+    change, both this signature and the HTTP endpoint can be
+    extended in the same batch.
+    """
+    job = await get_job(db, job_id)  # raises JobNotFound
+
+    # Dependency check 1: expenses.
+    expense_count = int(
+        (
+            await db.execute(
+                select(func.count()).where(Expense.job_id == job_id)
+            )
+        ).scalar()
+        or 0
+    )
+    if expense_count > 0:
+        noun = "expense" if expense_count == 1 else "expenses"
+        raise JobHasDependencies(
+            f"Job has {expense_count} {noun} and cannot be deleted. "
+            "Archive it instead."
+        )
+
+    # Dependency check 2: review-queue rows (defence-in-depth).
+    queue_count = int(
+        (
+            await db.execute(
+                select(func.count())
+                .select_from(ExpenseReviewQueue)
+                .join(
+                    Expense,
+                    ExpenseReviewQueue.expense_id == Expense.expense_id,
+                )
+                .where(Expense.job_id == job_id)
+            )
+        ).scalar()
+        or 0
+    )
+    if queue_count > 0:
+        noun = "row" if queue_count == 1 else "rows"
+        raise JobHasDependencies(
+            f"Job has {queue_count} review queue {noun} and cannot be "
+            "deleted. Archive it instead."
+        )
+
+    # Pre-delete audit row. Snapshots reflect the pre-delete state of
+    # the job (the only state available before the DELETE). action=
+    # "delete" lets the audit-trail UI render a dedicated label
+    # without parsing changed_fields.
+    audit = JobAuditLog(
+        audit_id=uuid.uuid4(),
+        job_id=job.job_id,
+        job_name_snapshot=job.job_name,
+        job_code_snapshot=job.job_code,
+        actor_user_id=admin.user_id,
+        action="delete",
+        changed_fields={
+            "_lifecycle": {
+                "old": _coerce_job_audit_value(job.status),
+                "new": "deleted",
+            }
+        },
+    )
+    db.add(audit)
+    await db.flush()
+
+    # The actual delete. Aliases + category budgets cascade via
+    # existing ondelete="CASCADE". Audit row's job_id is set to NULL
+    # by its own ondelete="SET NULL" FK so the row remains queryable.
+    await db.delete(job)
+    await db.flush()

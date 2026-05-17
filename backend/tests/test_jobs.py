@@ -844,3 +844,267 @@ async def test_job_audit_log_jsonb_round_trip(client, admin_token):
         assert set(field_diff.keys()) == {"old", "new"}
         for v in field_diff.values():
             assert v is None or isinstance(v, (str, int, float, bool))
+
+
+# ---------------------------------------------------------------------------
+# Job Lifecycle v1A-3: Delete Empty Job
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_empty_job_succeeds_writes_audit_and_cascades(
+    client, admin_token, db_session
+):
+    """v1A-3 happy path: an empty job (zero expenses, zero queue rows)
+    can be deleted. The DELETE returns 204; the job row is gone;
+    aliases and category budgets cascade via existing model FK
+    config; and one new audit row is written with action='delete'.
+    """
+    from sqlalchemy import select
+    from app.models import JobAlias, JobAuditLog, JobCategoryBudget
+
+    job = await _create_job(
+        client, admin_token, name="DeleteMe", job_code="DEL-EMPTY-01"
+    )
+    job_id = job["job_id"]
+
+    # Add an alias so we can verify it cascades on delete.
+    r = await client.post(
+        f"/jobs/{job_id}/aliases",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"alias_text": "DeleteMeAlias"},
+    )
+    assert r.status_code == 201
+
+    # DELETE
+    r = await client.delete(
+        f"/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 204, r.text
+    assert r.text == ""
+
+    # Job is gone — follow-up GET returns 404.
+    r = await client.get(
+        f"/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 404
+
+    # Alias rows cascaded.
+    alias_rows = list(
+        (
+            await db_session.execute(
+                select(JobAlias).where(JobAlias.job_id == uuid.UUID(job_id))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert alias_rows == [], "alias should cascade-delete with the job"
+
+    # Budget rows cascaded (we didn't add any, but the query path
+    # confirms the model relationship is wired correctly).
+    budget_rows = list(
+        (
+            await db_session.execute(
+                select(JobCategoryBudget).where(
+                    JobCategoryBudget.job_id == uuid.UUID(job_id)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert budget_rows == []
+
+    # Audit row written with action='delete'. Looked up by snapshot
+    # because job_id is NULL post-delete (see next test).
+    audit_rows = list(
+        (
+            await db_session.execute(
+                select(JobAuditLog).where(
+                    JobAuditLog.job_name_snapshot == "DeleteMe"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    delete_rows = [r for r in audit_rows if r.action == "delete"]
+    assert len(delete_rows) == 1, "expected exactly one delete audit row"
+    row = delete_rows[0]
+    assert row.action == "delete"
+    assert row.job_name_snapshot == "DeleteMe"
+    assert row.job_code_snapshot == "DEL-EMPTY-01"
+    assert "_lifecycle" in row.changed_fields
+    assert row.changed_fields["_lifecycle"]["new"] == "deleted"
+
+
+@pytest.mark.asyncio
+async def test_delete_empty_job_audit_row_survives_with_job_id_null(
+    client, admin_token, db_session
+):
+    """v1A-3 + v1A-1: the SET NULL FK on job_audit_log.job_id keeps
+    the audit row queryable after the parent job is gone — the row's
+    job_id column is NULL, and the snapshot columns retain the
+    human-meaningful identifier."""
+    from sqlalchemy import select
+    from app.models import JobAuditLog
+
+    job = await _create_job(
+        client, admin_token, name="SurvivorJob", job_code="SURV-01"
+    )
+    job_id = job["job_id"]
+
+    r = await client.delete(
+        f"/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 204
+
+    # Query by snapshot name (job_id is NULL post-delete).
+    rows = list(
+        (
+            await db_session.execute(
+                select(JobAuditLog).where(
+                    JobAuditLog.job_name_snapshot == "SurvivorJob",
+                    JobAuditLog.action == "delete",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    # job_id is NULL by FK SET NULL cascade.
+    assert row.job_id is None, (
+        "audit row's job_id should be NULL after SET NULL cascade"
+    )
+    # Snapshot columns preserve the identifier.
+    assert row.job_name_snapshot == "SurvivorJob"
+    assert row.job_code_snapshot == "SURV-01"
+
+
+@pytest.mark.asyncio
+async def test_delete_job_blocked_by_existing_expense_returns_409(
+    client, admin_token, db_session, seeded_admin
+):
+    """v1A-3: a job with at least one expense cannot be hard-deleted.
+    The DELETE returns 409 with the friendly 'Archive it instead'
+    detail; the job row remains; no audit row is written.
+
+    The user's spec also calls for a defence-in-depth review-queue
+    check. The queue row's FK to expenses cascades on delete, so any
+    queue row implies an expense row — meaning the expense count
+    fires first. The review-queue branch in the service is covered
+    by code review + the structural FK relationship; an independent
+    runtime test would require manually inserting a queue row
+    without an expense, which violates the FK. We document this
+    here rather than write a contrived test.
+    """
+    import uuid as _uuid
+    from decimal import Decimal
+    from datetime import date
+    from sqlalchemy import select
+    from app.models import (
+        Expense,
+        ExpenseType,
+        JobAuditLog,
+        PaymentMethod,
+        ReceiptStatus,
+        ReviewStatus,
+    )
+
+    job = await _create_job(
+        client, admin_token, name="HasExpense", job_code="HAS-EXP-01"
+    )
+    job_id_str = job["job_id"]
+    job_id = _uuid.UUID(job_id_str)
+
+    # Directly insert an Expense referencing this job. Bypassing the
+    # parser/validator keeps the test isolated from those concerns.
+    expense = Expense(
+        expense_id=_uuid.uuid4(),
+        job_id=job_id,
+        entered_by_user_id=seeded_admin.user_id,
+        expense_type=ExpenseType.supplier_expense,
+        raw_input_text="manual seed for delete-blocked test",
+        amount_inc_gst=Decimal("100.00"),
+        amount_ex_gst=Decimal("90.91"),
+        gst_amount=Decimal("9.09"),
+        payment_method=PaymentMethod.transfer,
+        expense_date=date(2026, 5, 17),
+        review_status=ReviewStatus.reviewed,
+        receipt_status=ReceiptStatus.no_receipt,
+        duplicate_flag=False,
+    )
+    db_session.add(expense)
+    await db_session.flush()
+
+    # Try DELETE — must be blocked.
+    r = await client.delete(
+        f"/jobs/{job_id_str}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert "1 expense" in detail
+    assert "Archive it instead" in detail
+
+    # Job row remains.
+    r = await client.get(
+        f"/jobs/{job_id_str}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 200
+
+    # No delete-action audit row was written.
+    rows = list(
+        (
+            await db_session.execute(
+                select(JobAuditLog).where(
+                    JobAuditLog.job_name_snapshot == "HasExpense",
+                    JobAuditLog.action == "delete",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert rows == [], "blocked delete must not write an audit row"
+
+
+@pytest.mark.asyncio
+async def test_delete_nonexistent_job_returns_404(client, admin_token):
+    """v1A-3: DELETE on a job_id that does not resolve → 404."""
+    r = await client.delete(
+        f"/jobs/{uuid.uuid4()}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Job not found"
+
+
+@pytest.mark.asyncio
+async def test_delete_job_non_admin_returns_403(
+    client, admin_token, contributor_token
+):
+    """v1A-3: contributor role is rejected at the require_admin gate;
+    no service-layer work is performed."""
+    job = await _create_job(
+        client, admin_token, name="ContributorCantTouch", job_code="RBAC-01"
+    )
+    r = await client.delete(
+        f"/jobs/{job['job_id']}",
+        headers={"Authorization": f"Bearer {contributor_token}"},
+    )
+    assert r.status_code == 403
+
+    # Job row still exists after the rejected attempt.
+    r = await client.get(
+        f"/jobs/{job['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 200

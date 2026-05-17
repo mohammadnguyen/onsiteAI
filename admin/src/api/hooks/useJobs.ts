@@ -110,6 +110,34 @@ export function useJobAuditTrail(jobId: string | undefined) {
   })
 }
 
+/**
+ * Job Lifecycle v1A-3: DELETE /jobs/{id}.
+ *
+ * Hard-deletes an EMPTY job (zero expenses + zero queue rows). The
+ * backend pre-checks dependencies and returns 409 with a friendly
+ * "Archive it instead" detail when blocked; the consuming component
+ * renders the detail string verbatim in the confirm dialog.
+ *
+ * On success (204), invalidates the jobs list cache. The caller is
+ * responsible for navigating away from JobDetail (the page no
+ * longer has a target after delete).
+ */
+export function useDeleteEmptyJob(jobId: string | undefined) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (
+      params: { reason?: string } = {},
+    ): Promise<void> => {
+      await api.delete(`/jobs/${jobId}`, {
+        params: params.reason ? { reason: params.reason } : undefined,
+      })
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['jobs'] })
+    },
+  })
+}
+
 export function useAddAlias(jobId: string | undefined) {
   const qc = useQueryClient()
   return useMutation({

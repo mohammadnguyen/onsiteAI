@@ -57,7 +57,11 @@
     "reopen_confirm_body": "Reopening marks this job as active again. New expense captures can match it.",
     "show_archived": "Show archived",
     "archived_hidden_count": "{{count}} archived hidden",
-    "none_active": "No active jobs."
+    "none_active": "No active jobs.",
+    "delete_empty": "Delete (only if empty)",
+    "delete_confirm_title": "Delete this job?",
+    "delete_confirm_body": "This permanently removes the job and all its aliases and budgets. Only allowed when the job has no expenses.",
+    "delete_blocked_prefix": "Cannot delete: "
   },
   "job": {
     "back": "Back to jobs",

@@ -1,6 +1,7 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { useUpdateJob } from '../api/hooks/useJobs'
+import { useDeleteEmptyJob, useUpdateJob } from '../api/hooks/useJobs'
 import { extractErrorMessage } from '../api/client'
 import { Modal } from './Modal'
 import type { components } from '../api/types'
@@ -25,11 +26,17 @@ type JobWithDetailPublic = components['schemas']['JobWithDetailPublic']
  */
 export function JobLifecycleActions({ job }: { job: JobWithDetailPublic }) {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   const updateJob = useUpdateJob(job.job_id)
+  const deleteJob = useDeleteEmptyJob(job.job_id)
 
   const isCompleted = job.status === 'completed'
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Job Lifecycle v1A-3 — Delete Empty Job. Separate dialog state so
+  // the archive/reopen dialog and the delete dialog never overlap.
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const submit = async () => {
     setError(null)
@@ -40,6 +47,22 @@ export function JobLifecycleActions({ job }: { job: JobWithDetailPublic }) {
       setConfirmOpen(false)
     } catch (err) {
       setError(extractErrorMessage(err))
+    }
+  }
+
+  const submitDelete = async () => {
+    setDeleteError(null)
+    try {
+      await deleteJob.mutateAsync({})
+      // Success — close dialog and bounce back to the jobs list,
+      // since this detail page has nothing to render anymore.
+      setDeleteConfirmOpen(false)
+      navigate('/jobs')
+    } catch (err) {
+      // Backend's 409 detail string is the user-facing message
+      // ("Job has N expenses and cannot be deleted. Archive it
+      // instead."). Render verbatim with a localised prefix.
+      setDeleteError(extractErrorMessage(err))
     }
   }
 
@@ -69,6 +92,22 @@ export function JobLifecycleActions({ job }: { job: JobWithDetailPublic }) {
         }
       >
         {isCompleted ? t('jobs.reopen') : t('jobs.archive')}
+      </button>
+
+      {/* Job Lifecycle v1A-3 — Delete (only if empty). Always
+          rendered; backend pre-check returns 409 if not allowed and
+          the dialog displays the friendly "Archive it instead"
+          message verbatim. No reason input field (R1=B, same as
+          archive/reopen). */}
+      <button
+        type="button"
+        onClick={() => {
+          setDeleteError(null)
+          setDeleteConfirmOpen(true)
+        }}
+        className="bg-red-50 text-red-700 rounded-md px-3 py-1.5 text-sm font-medium hover:bg-red-100"
+      >
+        {t('jobs.delete_empty')}
       </button>
 
       <Modal
@@ -110,6 +149,47 @@ export function JobLifecycleActions({ job }: { job: JobWithDetailPublic }) {
               : isCompleted
                 ? t('jobs.reopen')
                 : t('jobs.archive')}
+          </button>
+        </div>
+      </Modal>
+
+      {/* v1A-3 — Delete confirm dialog. Separate Modal so it can be
+          shown independently of the archive/reopen dialog. The error
+          row renders the backend's 409 detail string verbatim with a
+          localised prefix ("Cannot delete: Job has N expenses and
+          cannot be deleted. Archive it instead."). */}
+      <Modal
+        open={deleteConfirmOpen}
+        onClose={() => setDeleteConfirmOpen(false)}
+        title={t('jobs.delete_confirm_title')}
+      >
+        <p className="text-sm text-slate-700 mb-4">
+          {t('jobs.delete_confirm_body')}
+        </p>
+        {deleteError && (
+          <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-md p-2 mb-3">
+            {t('jobs.delete_blocked_prefix')}
+            {deleteError}
+          </div>
+        )}
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setDeleteConfirmOpen(false)}
+            className="bg-slate-100 text-slate-700 rounded-md px-4 py-2 text-sm font-medium hover:bg-slate-200"
+            disabled={deleteJob.isPending}
+          >
+            {t('common.cancel')}
+          </button>
+          <button
+            type="button"
+            onClick={submitDelete}
+            className="bg-red-600 text-white rounded-md px-4 py-2 text-sm font-medium hover:bg-red-700 disabled:opacity-50"
+            disabled={deleteJob.isPending}
+          >
+            {deleteJob.isPending
+              ? t('common.loading')
+              : t('jobs.delete_empty')}
           </button>
         </div>
       </Modal>

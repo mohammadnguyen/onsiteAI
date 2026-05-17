@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,10 +45,12 @@ from app.services.jobs import (
     DuplicateAlias,
     DuplicateBudget,
     DuplicateJobCode,
+    JobHasDependencies,
     JobNotFound,
     add_alias,
     add_category_budget,
     create_job,
+    delete_empty_job,
     get_job,
     list_job_audit,
     list_jobs,
@@ -245,6 +247,56 @@ async def update_job_endpoint(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Database constraint violated: {exc.orig}",
         ) from exc
+
+
+@router.delete(
+    "/{job_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_job_endpoint(
+    job_id: uuid.UUID,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Hard-delete an EMPTY job (admin only).
+
+    Job Lifecycle v1A-3. Allowed only when the job has zero expenses
+    and zero review-queue rows. Aliases + per-category budgets cascade-
+    delete via the existing model FK config; the audit row written
+    just before the SQL DELETE survives via ``SET NULL`` on
+    ``job_audit_log.job_id`` (v1A-1 design).
+
+    No ``reason`` query param is accepted: v1A-3 chose R1=Option B
+    (no reason input anywhere) because the audit table has no
+    ``reason`` column. Accepting a value the system silently dropped
+    would mislead callers. When a ``reason`` column lands in a
+    future schema change, this endpoint + the service signature can
+    be extended in the same batch.
+
+    Status codes:
+
+    * **204** — deleted; aliases + budgets cascaded; audit row
+      persisted (queryable via direct DB inspection only — the
+      ``GET /jobs/{id}/audit`` endpoint still returns 404 for the
+      removed id in v1A-3; the snapshot-based historical lookup
+      pathway is intentionally deferred per the v1A-3 R2 decision).
+    * **409** — blocked by a dependency (carries the
+      ``JobHasDependencies.detail`` verbatim, e.g.
+      "Job has 3 expenses and cannot be deleted. Archive it
+      instead.").
+    * **404** — job_id does not resolve.
+    """
+    try:
+        await delete_empty_job(db, admin=admin, job_id=job_id)
+    except JobNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+        ) from exc
+    except JobHasDependencies as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=exc.detail
+        ) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(
