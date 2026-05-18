@@ -194,6 +194,70 @@ slice), the path from dev change to deployed config is:
 The same flow applies to staging; the only difference is which
 `.env.<env>` file you edit and which host you restart.
 
+## Hosting-provider secret injection (Fly.io)
+
+Per [ADR 0003](../adr/0003-staging-deployment-strategy.md), Fly.io is
+the chosen staging hosting provider. Secret injection on Fly uses
+`flyctl secrets set`, never `.env.*` files on the Fly host. Concrete
+`.env.staging` / `.env.production` files NEVER ship to Fly; they exist
+only for local-dev simulation of those environments.
+
+The full runbook with operator approval gates lives in
+[`docs/operations/staging-deploy.md`](./staging-deploy.md) (Gates D-4
+and D-5). The summary below is the secret-handling subset.
+
+Setting all required staging secrets in one command:
+
+```
+flyctl secrets set \
+  APP_ENV=staging \
+  JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(64))')" \
+  CORS_ALLOWED_ORIGINS="https://<staging-admin-host>" \
+  --app sitetracker-backend-staging
+```
+
+Listing secrets (values are NEVER printed — only names):
+
+```
+flyctl secrets list --app sitetracker-backend-staging
+```
+
+Rotating a secret (atomic; the app restarts with the new value):
+
+```
+flyctl secrets set JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(64))')" \
+  --app sitetracker-backend-staging
+```
+
+Removing a secret:
+
+```
+flyctl secrets unset SOME_SECRET --app sitetracker-backend-staging
+```
+
+`DATABASE_URL` is auto-injected by `flyctl postgres attach` and must
+NOT be set manually:
+
+```
+flyctl postgres attach sitetracker-pg-staging --app sitetracker-backend-staging
+```
+
+After this command, `DATABASE_URL` appears in `flyctl secrets list`
+automatically.
+
+Notes:
+
+- `JWT_SECRET` is generated inline via `python -c` so the literal
+  value never appears in the operator's shell history.
+- The Slice 1 fail-fast validator catches placeholder / short
+  `JWT_SECRET`, empty / wildcard `CORS_ALLOWED_ORIGINS`, and
+  `APP_ENV` / `ENVIRONMENT` conflicts — these errors surface on the
+  next deploy if secrets are misconfigured.
+- The startup log emits `jwt_secret_present` and `jwt_secret_valid`
+  booleans only; no secret value, hash, or prefix appears anywhere.
+- DO NOT paste secret values into chat, commit messages, or
+  documentation.
+
 ## Out of scope for Slice 1
 
 Each of the following is a separate future slice with its own plan
