@@ -1,167 +1,292 @@
 # Response packet pattern
 
+PACKET_SCHEMA_VERSION: 1.0
+RULESET_VERSION: 2026-05-18-r22
+
 Output-reporting pattern. Every Claude response in this repository ends
 with a single fenced markdown block called REVIEW_PACKET that the user
-can paste directly into another tool for technical review without
-needing repository, terminal, screenshot, or prior-message access.
+can paste into another tool for technical review without needing
+repository, terminal, screenshot, or prior-message access.
 
-This is NOT about expense review-queue logic — for that, see
-`review-workflow-pattern.md`. This pattern controls Claude's response
-shape only.
+This file is the canonical source for packet format. Future packets
+reference it by version (`PACKET_SCHEMA_VERSION` + `RULESET_VERSION`
+above); changes to the format flow through this file, not through
+inline conversation.
 
 ## Purpose
 
-Make every Claude response machine-readable and copy-paste-friendly
-for downstream review (e.g. paste into GPT for a second-opinion read)
-without requiring the reviewer to ask follow-up questions about repo
-state, what was tested, or what risks were skipped.
+Make every Claude response machine-readable and copy-paste-friendly for
+downstream review (paste into a peer model or a human reviewer) without
+requiring follow-up questions about repo state, what was tested, or
+what risks were skipped.
 
-## When To Use
+## When to use
 
-Every response. No exceptions. The only variation is depth:
+Every response. Variation is in compression depth, not presence:
 
-- Implementation / build / database / multi-step work → use the full
-  15-section format with full sentences per section.
+- Implementation / build / DB / deploy work → full sections.
 - Small no-code answers (clarifications, planning-only replies,
-  read-only audits, single-question answers) → use the same 15
-  headings but write concise one-line entries per section.
-- Conversational acknowledgements (e.g. "ok") → still required, kept
-  to one line per section where the section is genuinely empty.
+  read-only audits) → same 15 headings, concise one-line entries.
+- Conversational acknowledgements ("ok", "approved") → still required;
+  omit-able sections marked `N/A` in one line.
 
-If the work is planning-only, write "Planning only — no
-implementation." in section 4. If the work is read-only, write
-"Read-only audit — no code/data changes." If no code changed, write
-"No code changed."
+Sections scale with operational significance. Material risks, state
+changes, DB writes, service changes, commits, migrations, and rollback
+implications are never compressed away.
 
-## Standard Structure
+## Section structure
 
-Exactly one fenced markdown block at the END of the response,
-labelled REVIEW_PACKET, containing the 15 sections below in order.
-Section numbering and headings are fixed — do not rename, reorder, or
-collapse them.
+One fenced markdown block at the END of the response, labelled
+REVIEW_PACKET. Two header lines (`PACKET_SCHEMA_VERSION` +
+`RULESET_VERSION`) appear immediately after the fence open. Then the 15
+numbered sections, in order, headings unchanged:
 
 1. TASK RECEIVED
-   - Brief restatement of the requested task.
-
 2. PROJECT CONTEXT
-   - Current module/feature affected.
-   - Relevant workflow affected.
-   - Phase/scope assumptions.
-
-3. STARTING STATE
-   - Repo/project, branch, HEAD before work, working-tree status
-     before work, existing behaviour, relevant files inspected,
-     important assumptions.
-
+3. STARTING STATE — task-relevant inputs only
 4. WORK COMPLETED
-   - List each change made. If none: "No code changed." /
-     "Planning only — no implementation." / "Read-only audit — no
-     code/data changes."
-
 5. FILES CHANGED
-   - Per file: Path, Change summary, Reason, Risk level
-     (Low / Medium / High). If none: "None."
-
 6. IMPLEMENTATION DETAILS
-   - Actual logic changed, key functions/routes/components touched,
-     parser implications, review-queue implications, persistence
-     implications, mobile UX implications, export implications,
-     architectural tradeoffs.
-
 7. COMMANDS / TOOLS USED
-   - Per command/tool: name, purpose, result, important output or
-     errors.
-
 8. TESTING
-   - Tests run, results, manual testing performed, untested areas,
-     why untested.
-
 9. ERRORS / BLOCKERS
-   - Exact error text if applicable, current blocker status,
-     temporary workarounds.
-
 10. RISKS / REVIEW FOCUS
-    - Possible bugs, edge cases, tenant-isolation concerns,
-      auditability concerns, mobile UX concerns, parser/review
-      correctness concerns, export correctness concerns, technical
-      debt introduced, areas the downstream reviewer should focus on.
-
 11. PRODUCT BEHAVIOUR AFTER CHANGE
-    - Current user-visible behaviour, operational impact, changed
-      workflows, anything intentionally unsupported.
-
 12. PHASE / SCOPE COMPLIANCE
-    - Confirm whether the work stayed within approved scope, avoided
-      speculative features, avoided overengineering, avoided hidden
-      AI behaviour, preserved deterministic review behaviour,
-      preserved tenant isolation, preserved auditability, avoided
-      live DB mutation unless explicitly approved.
-
-13. CURRENT STATE
-    - HEAD after work, working-tree status after work, running
-      services, test DB state, live DB state, untracked files,
-      anything left running or needing cleanup.
-
+13. CURRENT STATE — single authoritative runtime snapshot
 14. NEXT RECOMMENDED STEP
-    - Single recommended next action. State whether approval is
-      required. Do not start it without explicit approval.
-
 15. COPYABLE GPT REVIEW SUMMARY
-    - One concise paragraph summarising what changed, what was
-      tested, major risks, operational concerns, recommended next
-      step.
 
-## Rules
+Optional sub-sections (e.g. `12a INVARIANT TRACKING`) attach to their
+parent number with a letter suffix.
 
-- Exactly one fenced markdown block per response. The REVIEW_PACKET
-  is that block.
-- The REVIEW_PACKET MUST be the last thing in the response. Nothing
-  may appear after the closing fence.
-- No other fenced markdown blocks anywhere in the response. Code
-  snippets, commands, diffs, logs, and examples must be either
-  described in plain prose outside the packet or included as plain
-  text inside the packet.
-- Do not split the packet across multiple fenced blocks.
-- Do not omit blockers. If there is a blocker, name it in section 9
-  AND in section 15.
-- Do not bury uncertainty. State assumptions in section 3 and risks
-  in section 10.
-- Do not claim something was tested if it was not actually tested.
-  Section 8 must distinguish "tests run" from "untested areas + why".
-- If the working tree is claimed clean, verify with
-  `git status --porcelain` in the same turn.
-- If the live DB is claimed unchanged, verify it in the same turn or
-  write "Live DB not touched / not freshly verified."
-- If a response is planning-only, say so in section 4.
-- If a response is a read-only audit, say so in section 4.
-- If implementation quality is uncertain, say so in section 10 or 15.
+## The 22 consolidated rules
 
-## Anti-Patterns
+Numbered for stable cross-reference from future packets. Some rules are
+listed together (`a/b`) where a later rule refines an earlier one;
+treat each pair as one coherent rule.
 
-- Multiple fenced blocks in one response (e.g. one for code + one for
-  the packet). Anything not the REVIEW_PACKET must be plain text.
-- Code snippets in their own fenced blocks. Embed inside the packet
-  as plain text or describe in prose.
-- Splitting a single REVIEW_PACKET across two fenced blocks.
-- Trailing text or commentary after the closing packet fence.
-- Empty placeholder sections like "section 8: TBD" or "see above".
-  If a section is genuinely empty, write a single one-liner that
-  says so explicitly (e.g. "None.").
-- Claiming "tests pass" or "build clean" without listing the
-  command, the result, and the timestamp/turn it was actually run.
-- Claiming "working tree clean" when `git status --porcelain` was
-  not run in the same turn.
-- Claiming "live DB unchanged" when no read-only verification was
-  performed in the same turn.
-- Repeating the entire packet in section 15. The summary is one
-  paragraph, not a re-quote.
+### State & verification
 
-## Testing Expectations
+1. **Verification state.** Every state claim labelled
+   `VERIFIED_THIS_TURN`, `CARRIED_FORWARD_NOT_REVERIFIED`, `ASSUMED`,
+   or `PLANNED_ONLY`. Vague words ("carried", "still", "unchanged")
+   appear only paired with one of those labels.
 
-- Conformance is human-verified per response. There is no automated
-  check (and adding one would itself need its own ADR + plan).
-- The downstream reviewer (GPT or human) is expected to spot-check
-  that the packet is well-formed, sections are filled honestly, and
-  blockers/risks/uncertainty are not buried.
-- Authoring rule: see CLAUDE.md "Response Packet Rule" for the
-  always-loaded contract. This file is the long-form template.
+9. **State snapshot split.** §3 = task-relevant inputs only. §13 =
+   single authoritative runtime snapshot. Do not duplicate §3 content
+   into §13 unless the state changed mid-turn.
+
+### Decisions, plans, uncertainty
+
+2/11/20. **Decision and plan classification.** Architecture /
+operational statements tagged `FACT`, `ASSUMPTION`, `RECOMMENDATION`,
+`DECISION_ALREADY_APPROVED`, or `OPEN_DECISION`. Open items use
+exactly one of `OPEN_DECISION` (explicit approval required),
+`OPEN_QUESTION` (clarification useful but not blocking), or
+`OBSERVATION` (informational only). Report `PLAN_STATUS` and
+`EXECUTION_STATUS` as two separate fields, never combined.
+
+10. **Uncertainty classification.** Estimates and operational judgements
+    tagged `HIGH_CONFIDENCE`, `MEDIUM_CONFIDENCE`, or `LOW_CONFIDENCE`.
+    Apply to: migration safety, rollback safety, LOC/time estimates,
+    infra reliability assumptions.
+
+### Tools, scope, autonomy
+
+3. **Tool usage enumeration.** When no operational actions occurred,
+   explicitly enumerate: no filesystem reads / writes / shell / git /
+   DB / network / provider. Never summarise as "reasoning only".
+
+14. **Internal mechanics hidden.** No references to model-control
+    primitives or tool-routing detail. Report externally meaningful
+    actions only.
+
+5. **Scope expansion declaration.** Explicitly declare new
+   infrastructure / operational / deployment / CI-CD / monitoring /
+   secret-management requirements introduced. If none, state "No
+   hidden scope expansion introduced."
+
+13/19. **Autonomy boundary.** Every future step labelled
+    `SAFE_FOR_AUTONOMOUS_EXECUTION` OR `HUMAN_OPERATOR_REQUIRED`, plus
+    one of `REQUIRES_INFRA_ACCESS` / `REQUIRES_PRODUCTION_ACCESS` /
+    `LOCAL_ONLY_OPERATION`. `SAFE_FOR_AUTONOMOUS_EXECUTION` requires
+    ALL eight conditions: fully reversible via git; no external /
+    provider side effects; no secrets exposure; no live DB writes; no
+    irreversible migrations; no production traffic impact; no infra
+    provisioning; no remote deployment actions.
+
+4. **Rollback classification.** Every infra / config / deployment
+   change labelled `Reversible via git only`, `Reversible via manual
+   operator action`, `Requires provider action`, or `Potentially
+   irreversible`.
+
+### Risks, invariants, change impact
+
+7/12. **Risk format.** Each meaningful risk = Category + Likelihood +
+    Impact + Trigger + Owner + Mitigation. Categories: Product /
+    Operational / Infrastructure / Data-integrity / Developer-workflow.
+    Workflow inconveniences (e.g. "packets get longer") are not risks.
+
+18. **Invariant tracking.** Turns touching system behaviour classify
+    SiteTracker invariants as `PRESERVED` / `MODIFIED` /
+    `NOT_EVALUATED`. "Not touched" ≠ "verified preserved". Canonical
+    invariants: tenant isolation, audit append-only behaviour,
+    deterministic review routing, no silent auto-assignment, immutable
+    expense history, snapshot-consistent exports, bilingual command
+    compatibility.
+
+15. **Change impact classification.** Implementation turns explicitly
+    classify: Runtime / Schema / Operational workflow / Mobile UX /
+    Deployment / Rollback complexity. Separate from risks.
+
+### Acceptance, planning, governance
+
+6. **Acceptance criteria enumeration.** Do not summarise ("matches
+   user list", "verbatim"). Enumerate criteria literally or reference
+   numbered source items.
+
+8/16. **Planning-only & planning purity.** Planning turns state "no
+    runtime change", "no deployable artefact produced", and whether
+    future steps require human operator execution. Planning language
+    strictly distinguishes `proposed` / `approved` / `implemented` /
+    `verified`. Do not imply infra/resources were provisioned.
+
+17. **Schema version headers.** Every packet declares
+    `PACKET_SCHEMA_VERSION` and `RULESET_VERSION` immediately after the
+    fence open. Format: `PACKET_SCHEMA_VERSION: <semver>` and
+    `RULESET_VERSION: <YYYY-MM-DD>-r<count>`.
+
+22. **Governance freeze.** No inline rule additions in execution
+    packets. Further governance changes flow through this pattern doc,
+    an ADR, or a schema version bump. Refuse inline rule adoption;
+    surface as `OPEN_DECISION` for a separate doc batch.
+
+## Section compression guidance
+
+Doctrine: sections scale with operational significance.
+
+Bias toward fuller packets for: live DB writes, code commits, schema
+migrations, service starts/stops, new infrastructure, deploys (any
+environment), rollbacks, security-relevant changes.
+
+Bias toward compression for: meta acknowledgements, doc-only typo
+fixes, trivial copy edits, hold/wait turns, planning-only audits
+without inspection.
+
+Never compress away (regardless of perceived significance): material
+risks, state changes (HEAD, working tree, DB, services), commits,
+migrations, rollback implications, secrets exposure, live-data impact.
+
+## Required state checklist per packet
+
+Every packet, regardless of compression, must report or label:
+
+1. HEAD on each worktree (verified or carried-forward).
+2. Working tree state (clean or list non-trivial entries).
+3. DB touch (none / read-only / write — with rollback reference).
+4. Service state (which started / stopped / unchanged).
+5. Files changed (committed-bound + ignored local edits).
+6. Tests run (yes/no, command, result).
+7. Live-data impact (none / read-only / write with audit reference).
+8. Next approval gate (the specific user instruction expected).
+
+Omitting any of these in a packet that touched corresponding state is
+an audit failure.
+
+## Examples
+
+### Implementation packet (full sections)
+
+Use for: feature batches, refactors, deploy turns, schema migrations.
+Distinctive sections:
+- §5 enumerates every file with change summary + risk level.
+- §10 uses the full risk table (Category + Likelihood + Impact +
+  Trigger + Owner + Mitigation).
+- §12a `INVARIANT TRACKING` explicitly evaluates each touched
+  invariant.
+- §15 includes a `CHANGE IMPACT` block.
+
+### Git-only packet (fast-forward / rebase / branch ops)
+
+Use for: pure git pointer moves, fast-forwards, branch deletions.
+Distinctive:
+- §6 `IMPLEMENTATION DETAILS` = "N/A — git pointer move only".
+- §10 single-row risk table at most.
+- Rollback classification: `Reversible via git only`.
+- Invariants: `NOT_EVALUATED` (no code / DB change).
+
+### Live DB cleanup packet
+
+Use for: data hygiene, ad-hoc admin actions, anything writing the live
+DB outside the normal app flow.
+Distinctive:
+- Mandatory pre-write backup section.
+- §14 sequential approval gates (Gate 0 backup / Gate N action / Gate
+  close-out).
+- Per-step verification (HTTP code → GET → counts → audit row).
+- §12a explicit; audit-append-only must remain `PRESERVED`.
+- Live-data impact: write — with rollback reference to backup file
+  path.
+
+### Low-significance meta packet
+
+Use for: rule acknowledgements, status confirmations, hold/wait turns.
+Distinctive:
+- Most sections compressed to one line or `N/A`.
+- §7 still enumerates the 7 NOs explicitly.
+- §10 risk table omitted or single row.
+- §13 mostly `CARRIED_FORWARD_NOT_REVERIFIED`.
+
+## Anti-patterns
+
+- Multiple fenced blocks in one response.
+- Code snippets in their own fenced blocks (must be plain text inside
+  the packet or in prose outside it).
+- Trailing prose after the closing fence.
+- Empty placeholder sections ("TBD", "see above"). Use a one-liner
+  instead.
+- Bloated packets for trivial turns.
+- Compressed packets for risky operations (DB writes, deploys, schema
+  changes).
+- Adding rules inline after the governance freeze (rule 22).
+- Saying "done" without state verification.
+- Hiding DB / service / file changes by omission.
+- Using `OPEN_DECISION` for non-blocking observations.
+- Presenting recommendations as facts (violates rule 2).
+- Exposing internal orchestration primitives (violates rule 14).
+- Claiming "tests pass" or "working tree clean" without running the
+  command this turn (violates rule 1's `VERIFIED_THIS_TURN`
+  requirement).
+- Inflating `SAFE_FOR_AUTONOMOUS_EXECUTION` beyond the eight
+  conditions in rule 13/19.
+
+## Relationship to other repository docs
+
+- **CLAUDE.md** is the always-on contract. Its "Response Packet Rule"
+  section names this file as the format authority. The rules here do
+  not override CLAUDE.md product / safety / architecture rules.
+- **docs/adr/** holds architectural decision records. New ADRs trigger
+  packets that exercise these rules (especially rules 4 rollback,
+  13/19 autonomy, 18 invariants).
+- **docs/operations/** holds runbooks and procedural docs
+  (env-and-secrets; future staging-deploy; future rollback). Packets
+  for operational turns reference these docs as the source of truth
+  for the procedure; the packet records the execution + verification,
+  not the procedure itself.
+- This file is the canonical source for packet format. Future
+  governance changes (additions or revisions of rules 1-22) flow
+  through a pattern-doc edit (PR / commit visible in git history) and
+  a `RULESET_VERSION` bump. Inline rule additions in execution packets
+  are forbidden by rule 22.
+
+## Versioning policy
+
+- `PACKET_SCHEMA_VERSION` bumps when the 15-section structure itself
+  changes (sections added, removed, renumbered, or renamed).
+- `RULESET_VERSION` bumps when the 22 rules change (any rule added,
+  removed, materially reworded, or superseder relationship resolved).
+  Format: `YYYY-MM-DD-r<count>` (date of bump + total active rule
+  count).
+- Old packets in git history remain valid under their declared
+  versions; do not retroactively edit closed packets.
