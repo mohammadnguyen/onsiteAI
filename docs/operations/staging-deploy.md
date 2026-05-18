@@ -41,18 +41,49 @@ Creates app metadata in Fly; no billable resources yet.
 **Post-step verification.** `flyctl apps list` shows
 `sitetracker-backend-staging`.
 
-## Gate D-2: Set primary region
+## Gate D-2: Region placement (deprecated as an active gate)
 
-**APPROVAL REQUIRED** before running the command.
+**No action required under modern Fly Machines.** This gate was
+originally documented to run:
 
 ```
 flyctl regions set syd --app sitetracker-backend-staging
 ```
 
+That command is **deprecated by Fly** (`fly regions set` returns
+"This command is no longer supported; use fly scale count to scale
+the number of Machines in a region"). Region placement is now
+governed by:
+
+```
+backend/fly.toml: primary_region = "syd"
+```
+
+`flyctl deploy` (Gate D-6) reads `primary_region` and places the new
+machine(s) accordingly. No separate `regions set` step exists or is
+required.
+
+**Verification.** Region placement is verified AFTER Gate D-6 deploy
+via `fly status --app sitetracker-backend-staging`. The output's
+`Region` column for each machine must read `syd`.
+
+**Corrective action (separate approved gate, NOT bundled with D-2 or
+D-6).** If a deployed machine lands outside `syd`, the operator may
+execute:
+
+```
+fly scale count 1 --region syd --app sitetracker-backend-staging
+```
+
+as its own separately-approved corrective gate. Bundling this
+corrective into D-2 or D-6 would violate the single-gate governance
+model. It is a recovery action only, triggered by a post-D-6
+verification failure.
+
 Per ADR 0003: Sydney is primary. If `syd` is unavailable for Fly
-compute or Postgres at execution time (capacity-constrained or marked
-preview), STOP — fall back per ADR 0003's Render Singapore alternative
-and amend ADR 0003 in a separate batch.
+compute or Postgres at the next D-3 / D-6 attempt (capacity-
+constrained or marked preview), STOP — fall back per ADR 0003's
+Render Singapore alternative and amend ADR 0003 in a separate batch.
 
 ## Gate D-3: Create managed Postgres
 
