@@ -108,16 +108,80 @@ workflow, not high availability, replica sync, or DB scaling.
   and the alembic migrations developed against local dev).
 - Cluster has no public network exposure — reachable only via Fly's
   internal network or `fly mpg connect` / `fly mpg proxy`.
+- No connection string, password, or pooled-endpoint URL printed by
+  `fly mpg create` enters chat, commit messages, documentation, or
+  any non-quarantined file.
 
 ### Expected side effects
 
 - One new managed Postgres cluster appears in the operator's Fly
   organization, billed at the selected plan tier from creation onward.
 - A cluster ID is printed once on success — operator records this ID
-  for Gate D-4 (attach).
+  for Gate D-4 (attach) and cross-checks it via `fly mpg list --org
+  personal`.
 - No app changes; no secrets set on the backend app yet.
 - Fly may provision provider-managed backups automatically depending
   on the chosen plan tier (operator verifies via post-step).
+- `fly mpg create` prints a working `postgresql://...` connection
+  string with the cluster's `fly-user` pooled-endpoint password to
+  stdout. Apply the Credential safety pattern below BEFORE running
+  the command.
+
+### Credential safety
+
+`fly mpg create` prints a usable `postgresql://fly-user:<password>@...`
+connection string to stdout on success. Once that string lands in a
+shell history, a chat transcript, a CI log, or a screenshot, the
+cluster's pooled-endpoint user is considered compromised.
+
+Required at execution time:
+
+1. **Redirect raw output to a non-repo file.** The redirect target
+   lives under the operator's home directory (e.g.
+   `$env:USERPROFILE\Documents\sitetracker_backups\fly_mpg_create_<ts>.txt`).
+   It does NOT live in the repository working tree.
+2. **Never paste raw create output into chat, commit messages, or
+   documentation.** Treat the redirect file as a one-time capture,
+   not a long-term artefact.
+3. **Report only enumerated safe fields**: cluster ID, name,
+   organization, region, status, plan tier, attached apps (must be
+   empty post-create), allocated disk size, replica count, Postgres
+   major version. Do NOT report: connection string, pooled-endpoint
+   host, password, direct IP.
+4. **Do NOT inspect or report password-bearing lines from the sink
+   file.** Verify cluster state through `fly mpg list` / `fly mpg
+   status` / `flyctl secrets list`, not by pasting sink output. The
+   cluster ID is the only field that may be extracted from the sink
+   file, and even that must be cross-checked against `fly mpg list
+   --org personal`. In practice, reading the cluster ID directly
+   from `fly mpg list --org personal` avoids opening the sink file
+   at all.
+5. **Delete or quarantine the local sink file after extracting the
+   cluster ID; do not rely on file deletion as credential rotation.**
+   Windows OneDrive, SSD wear-levelling, backup snapshots, and shell
+   history may all retain copies of the captured output regardless
+   of local file deletion. If the credential reached anywhere
+   outside the local terminal session, treat the cluster as
+   compromised regardless of whether the sink file is deleted.
+
+### Contamination rule
+
+If a connection string or password reaches chat, the transcript, the
+repository, or any non-quarantined file:
+
+- The cluster is **compromised** until its pooled-endpoint user is
+  rotated.
+- If the cluster has zero application data, zero schema, zero
+  secrets on the attached app, and zero attached apps, the cleanest
+  remediation is **destroy and redo**: open a separate D-3R destroy
+  gate, await async teardown completion (cluster fully absent from
+  `fly mpg list --org personal`), then re-open D-3 with a fresh
+  attempt under the Credential safety pattern above.
+- If the cluster has data, schema, secrets, or attached apps, stop
+  and open a separate credential-rotation remediation plan before
+  proceeding. Destroy-and-redo is too expensive once application
+  state exists; the remediation path requires its own planning
+  round and is out of scope for D-3 prose.
 
 ### Rollback
 
@@ -127,27 +191,55 @@ proceeding to D-4. Do not attach a wrongly-provisioned cluster. The
 destroy command is `fly mpg destroy <CLUSTER_ID>` and requires its
 own APPROVAL REQUIRED gate (not bundled with D-3 or D-4).
 
-### Verification (post-step)
+### Verification (pre-create)
 
-- The staging Postgres cluster appears in the org's MPG cluster list,
-  in region `syd`.
-- The cluster's status query reports it up and accepting connections.
-- The reported Postgres major version is 16.
+Before issuing the create command, confirm a clean slate:
+
+- `fly mpg list --org personal` shows no cluster named
+  `sitetracker-pg-staging` in any status. If a prior aborted attempt
+  left the name in `deleting` status, wait for full async teardown
+  before re-creating (Fly may take a few minutes; the empty-org
+  sentinel `"No managed postgres clusters found in organization
+  personal"` is the green signal).
+- `flyctl secrets list --app sitetracker-backend-staging` shows no
+  `DATABASE_URL` secret. The backend app must be in attach-ready
+  state — not already wired to a different DB from a prior attach
+  attempt.
+
+### Verification (post-create)
+
+- `fly mpg list --org personal` shows the new cluster with status
+  `ready`, in region `syd`, on the agreed plan tier, and with
+  `<no attached apps>`.
+- `fly mpg status <CLUSTER_ID>` reports the cluster up; replica
+  count is 1 (single-node confirmed); allocated disk matches the
+  `--volume-size` flag from the create command; Postgres major
+  version is 16.
+- `flyctl secrets list --app sitetracker-backend-staging` still
+  shows no `DATABASE_URL` (D-4 attach has not been performed; that
+  is a separate gate).
 
 ### Example command (Fly CLI as of 2026-05-19 — confirm `fly mpg create --help` before use)
 
 Per ADR 0003's Runbook Authoring Principles, the block below is
 illustrative. The operator re-runs `fly mpg create --help` immediately
 before execution and aborts this gate if the flag surface has drifted.
+Output is redirected to a non-repo sink per the Credential safety
+section above.
 
 ```
-fly mpg create \
-  --org <org-slug> \
-  --region syd \
-  --name sitetracker-pg-staging \
-  --volume-size 10 \
-  --pg-major-version 16 \
-  --plan <LOWEST_AVAILABLE_TIER>
+$ts = Get-Date -Format "yyyyMMdd_HHmmss"
+$sink = "$env:USERPROFILE\Documents\sitetracker_backups\fly_mpg_create_$ts.txt"
+$null = New-Item -ItemType Directory -Force -Path (Split-Path $sink)
+
+fly mpg create `
+  --org <org-slug> `
+  --region syd `
+  --name sitetracker-pg-staging `
+  --volume-size 10 `
+  --pg-major-version 16 `
+  --plan <LOWEST_AVAILABLE_TIER> `
+  *> $sink
 ```
 
 `<org-slug>` is the operator's Fly organization (typically `personal`
@@ -157,9 +249,18 @@ printed by `fly mpg create --help` at execution time. Per ADR 0003,
 the lowest non-HA, single-node tier is the staging baseline; do not
 select a performance or HA tier without amending the ADR.
 
+After the command completes:
+
+1. Read the new cluster's ID from `fly mpg list --org personal`.
+   This is the only field D-4 attach requires.
+2. Confirm cluster health via `fly mpg status <CLUSTER_ID>`.
+3. Delete or quarantine the local sink file. Treat that step as a
+   hygiene measure, NOT as credential rotation — see Credential
+   safety rule 5.
+
 ### References
 
-- ADR 0003 (staging deployment strategy)
+- ADR 0003 (staging deployment strategy, Runbook Authoring Principles)
 - Fly Managed Postgres: https://fly.io/docs/mpg/
 
 ## Gate D-4: Attach the staging PostgreSQL cluster to the backend app
