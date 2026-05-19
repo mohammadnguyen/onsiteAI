@@ -235,15 +235,21 @@ Removing a secret:
 flyctl secrets unset SOME_SECRET --app sitetracker-backend-staging
 ```
 
-`DATABASE_URL` is auto-injected by `flyctl postgres attach` and must
-NOT be set manually:
+`DATABASE_URL` is auto-injected by `fly mpg attach <CLUSTER_ID>` and
+must NOT be set manually:
 
 ```
-flyctl postgres attach sitetracker-pg-staging --app sitetracker-backend-staging
+fly mpg attach <CLUSTER_ID> --app sitetracker-backend-staging
 ```
 
 After this command, `DATABASE_URL` appears in `flyctl secrets list`
-automatically.
+automatically. Attach also triggers an app restart so the injected
+env var takes effect on the next process boot. The example command
+above is illustrative as of 2026-05-19; per ADR 0003's Runbook
+Authoring Principles, confirm `fly mpg attach --help` before
+execution. `<CLUSTER_ID>` is captured from the preceding
+`fly mpg create` output (see `docs/operations/staging-deploy.md`
+Gate D-3).
 
 Notes:
 
