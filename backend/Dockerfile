@@ -10,10 +10,11 @@ WORKDIR /app
 
 # Install dependencies first (cached layer) based on the lockfile.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --no-install-project
 
 # Then copy source. Rebuilds skip the dep-install layer on code-only changes.
 COPY . .
+RUN uv sync --frozen --no-dev
 
 ENV PATH="/app/.venv/bin:$PATH"
 
