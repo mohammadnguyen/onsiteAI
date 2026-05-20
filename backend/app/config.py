@@ -182,6 +182,22 @@ class Settings(BaseSettings):
             return v.strip().lower()
         return v
 
+    @field_validator("database_url", mode="after")
+    @classmethod
+    def _ensure_asyncpg_driver(cls, v: str) -> str:
+        """Coerce bare ``postgresql://`` to ``postgresql+asyncpg://``.
+
+        Fly Managed Postgres' ``fly mpg attach`` injects ``DATABASE_URL``
+        as ``postgresql://...`` (no driver suffix). SQLAlchemy then
+        defaults to the sync ``psycopg2`` dialect, which this project
+        does not ship (asyncpg is the chosen async driver). The
+        coercion is one-way: a URL that already starts with the
+        explicit asyncpg suffix is returned unchanged.
+        """
+        if v.startswith("postgresql://"):
+            return "postgresql+asyncpg://" + v[len("postgresql://"):]
+        return v
+
     @field_validator("cors_allowed_origins", mode="before")
     @classmethod
     def _split_origins(cls, v: object) -> object:
