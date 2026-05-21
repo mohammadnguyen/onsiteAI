@@ -42,7 +42,7 @@ primary_region = "syd"
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "256mb"
+  memory = "512mb"
 
 # Deliberately omitted in V1 (per ADR 0003):
 #   - [deploy] release_command  → alembic is manual for V1 so the
