@@ -6,6 +6,7 @@ import type { UseQueryResult } from '@tanstack/react-query';
 import { useJobs } from '../api/hooks/useJobs';
 import type { ExpensePublic, ExpenseListResponse } from '../api/hooks/useExpenses';
 import { formatMoney } from '../util/format';
+import { formatDateAU } from '../util/dates';
 
 /**
  * Mobile Capture v1 Sub-batch A: read-only "My Captures" list.
@@ -132,7 +133,7 @@ function ExpenseRow({
         </View>
 
         <View style={s.rowMid}>
-          <Text style={s.date}>{expense.expense_date}</Text>
+          <Text style={s.date}>{formatDateAU(expense.expense_date)}</Text>
           {jobName ? <Text style={s.dot}> · </Text> : null}
           {jobName ? (
             <Text style={s.job} numberOfLines={1}>

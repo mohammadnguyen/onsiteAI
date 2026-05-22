@@ -5,6 +5,7 @@ import type {
   ReviewReasonCode,
 } from '../api/hooks/useExpenses';
 import { formatMoney } from '../util/format';
+import { formatDateAU } from '../util/dates';
 
 /**
  * Mobile Capture v0: post-submit result card.
@@ -86,7 +87,7 @@ export function CaptureResultCard({
         <FieldRow label={t('expense.amount_ex_gst')} value={formatMoney(expense.amount_ex_gst)} />
         <FieldRow label={t('expense.gst')} value={formatMoney(expense.gst_amount)} />
         <FieldRow label={t('expense.payment')} value={t(`capture.payment_${expense.payment_method}`, { defaultValue: expense.payment_method })} />
-        <FieldRow label={t('expense.date')} value={expense.expense_date} />
+        <FieldRow label={t('expense.date')} value={formatDateAU(expense.expense_date)} />
         {expense.description ? (
           <FieldRow label={t('expense.description')} value={expense.description} />
         ) : null}

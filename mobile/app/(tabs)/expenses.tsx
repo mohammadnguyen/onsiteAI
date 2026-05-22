@@ -25,6 +25,8 @@ import {
 } from '../../src/api/hooks/useExpenses';
 import { CaptureResultCard } from '../../src/components/CaptureResultCard';
 import { RecentCapturesList } from '../../src/components/RecentCapturesList';
+import { DatePills } from '../../src/components/DatePills';
+import { todayISO } from '../../src/util/dates';
 
 /**
  * Mobile Capture v0: natural-language expense capture screen.
@@ -75,6 +77,11 @@ export default function ExpensesScreen() {
   const [rawInputText, setRawInputText] = useState('');
   const [paymentSel, setPaymentSel] = useState<PaymentSel>('auto');
   const [receiptLater, setReceiptLater] = useState(false);
+  // P3: expense_date is always set client-side (defaults to today's
+  // local ISO) and always sent in the body, so the backend never has
+  // to fall back to its own date.today() default for mobile captures.
+  // DatePills enforces that this only holds a valid ISO YYYY-MM-DD.
+  const [expenseDate, setExpenseDate] = useState<string>(() => todayISO());
   const [formError, setFormError] = useState<string | null>(null);
   const [result, setResult] = useState<ExpenseCreateResponse | null>(null);
 
@@ -108,6 +115,11 @@ export default function ExpensesScreen() {
       raw_input_text: trimmed,
       expense_type: 'supplier_expense',
       receipt_status: (receiptLater ? 'expected_later' : 'no_receipt') as ReceiptStatus,
+      // P3: always send expense_date as ISO YYYY-MM-DD. The DatePills
+      // component guarantees the state is a valid ISO string; the
+      // backend BeforeValidator re-normalizes anyway, so this is
+      // belt-and-braces correct.
+      expense_date: expenseDate,
     };
     if (paymentSel !== 'auto') body.payment_method = paymentSel as PaymentMethod;
 
@@ -123,6 +135,9 @@ export default function ExpensesScreen() {
     setRawInputText('');
     setPaymentSel('auto');
     setReceiptLater(false);
+    // P3: reset the date back to today on a fresh capture — anchoring
+    // the form on "now" matches the iOS-first on-site flow.
+    setExpenseDate(todayISO());
     setFormError(null);
     setResult(null);
     setTimeout(() => textareaRef.current?.focus(), 0);
@@ -171,6 +186,12 @@ export default function ExpensesScreen() {
             style={s.textarea}
             testID="capture-textarea"
             accessibilityLabel={t('capture.title')}
+          />
+
+          <DatePills
+            value={expenseDate}
+            onChange={setExpenseDate}
+            disabled={createExpense.isPending}
           />
 
           <View style={s.paymentRow}>

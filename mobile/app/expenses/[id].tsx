@@ -19,6 +19,7 @@ import type {
   ReviewReasonCode,
 } from '../../src/api/hooks/useExpenses';
 import { formatMoney } from '../../src/util/format';
+import { formatDateAU } from '../../src/util/dates';
 import { localizeCategoryName } from '../../src/util/category';
 
 /**
@@ -177,9 +178,18 @@ function DetailBody({
   return (
     <>
       <View style={s.hero}>
-        <Text style={s.heroAmount} testID="detail-amount">
-          {formatMoney(data.amount_inc_gst)}
-        </Text>
+        <View style={s.heroLeft}>
+          <Text style={s.heroAmount} testID="detail-amount">
+            {formatMoney(data.amount_inc_gst)}
+          </Text>
+          {/* P3: expense_date is promoted out of the grid into the
+              hero so the date the expense applies to is the second
+              thing the eye lands on, after the amount. Uses the AU
+              DD/MM/YYYY display form per the i18n contract. */}
+          <Text style={s.heroDate} testID="detail-date">
+            {formatDateAU(data.expense_date)}
+          </Text>
+        </View>
         <View style={[s.pill, { backgroundColor: statusColor.bg }]}>
           <Text style={[s.pillText, { color: statusColor.fg }]}>
             {t(`expense.status_${data.review_status}`)}
@@ -190,7 +200,6 @@ function DetailBody({
       <View style={s.grid}>
         <Field label={t('expense.amount_ex_gst')} value={formatMoney(data.amount_ex_gst)} />
         <Field label={t('expense.gst')} value={formatMoney(data.gst_amount)} />
-        <Field label={t('expense.date')} value={data.expense_date} />
         <Field label={t('expense.payment')} value={paymentLabel} />
         <Field label={t('expense.supplier')} value={supplierName} />
         <Field label={t('expense.category')} value={categoryName} />
@@ -317,10 +326,16 @@ const s = StyleSheet.create({
   linkBtnText: { color: '#1e293b', fontSize: 15, fontWeight: '600' },
   scroll: { padding: 16, gap: 20 },
   hero: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  heroLeft: { flex: 1, gap: 4, paddingRight: 12 },
   heroAmount: {
     fontSize: 32,
     fontWeight: '700',
     color: '#0f172a',
+    fontVariant: ['tabular-nums'],
+  },
+  heroDate: {
+    fontSize: 15,
+    color: '#475569',
     fontVariant: ['tabular-nums'],
   },
   pill: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 14 },
