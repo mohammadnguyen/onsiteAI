@@ -29,8 +29,9 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
 from app.models import (
     ExpenseType,
@@ -46,6 +47,36 @@ from app.models import (
 # screen.
 from app.schemas.category import CategoryPublic
 from app.schemas.supplier import SupplierPublic
+from app.services.parser.dates import parse_loose_date
+
+
+def _normalize_loose_expense_date(v: object) -> date | None:
+    """Pydantic ``mode='before'`` hook for the ``expense_date`` field.
+
+    Lets the field accept loose user-typed formats (``22/05``,
+    ``22-05``, ``22.05``, ``22/05/26``, etc.) in addition to canonical
+    ISO ``YYYY-MM-DD``. ``None`` and pre-parsed :class:`~datetime.date`
+    instances pass through unchanged. Strings route through
+    :func:`app.services.parser.dates.parse_loose_date`. Anything else
+    raises so Pydantic surfaces a clean 422.
+
+    Backend-owned per the P3 design: mobile/admin SHOULD send ISO,
+    but the backend is the single source of truth for date parsing
+    so the system stays correct for non-client callers (curl, future
+    bulk import, parser-extracted dates, etc.).
+    """
+    if v is None or isinstance(v, date):
+        return v
+    if isinstance(v, str):
+        return parse_loose_date(v)
+    raise ValueError(
+        f"expense_date must be a date or string, got {type(v).__name__}"
+    )
+
+
+ExpenseDateField = Annotated[
+    date | None, BeforeValidator(_normalize_loose_expense_date)
+]
 
 
 class ExpenseCreate(BaseModel):
@@ -74,7 +105,7 @@ class ExpenseCreate(BaseModel):
     gst_amount: Decimal | None = Field(default=None, ge=0)
     payment_method: PaymentMethod = PaymentMethod.unknown
     # Defaults to today in the service when unset.
-    expense_date: date | None = None
+    expense_date: ExpenseDateField = None
     category_id: uuid.UUID | None = None
     description: str | None = Field(default=None, max_length=500)
     notes: str | None = None
@@ -94,7 +125,7 @@ class ExpenseUpdate(BaseModel):
     amount_ex_gst: Decimal | None = Field(default=None, ge=0)
     gst_amount: Decimal | None = Field(default=None, ge=0)
     payment_method: PaymentMethod | None = None
-    expense_date: date | None = None
+    expense_date: ExpenseDateField = None
     category_id: uuid.UUID | None = None
     description: str | None = Field(default=None, max_length=500)
     notes: str | None = None
@@ -113,7 +144,7 @@ class ParsePreviewRequest(BaseModel):
     """
 
     raw_input_text: str = Field(min_length=1, max_length=2000)
-    expense_date: date | None = None
+    expense_date: ExpenseDateField = None
     expense_type: ExpenseType = ExpenseType.supplier_expense
 
 
