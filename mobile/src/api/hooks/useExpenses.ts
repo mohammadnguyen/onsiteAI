@@ -8,6 +8,7 @@ export type ExpenseCreateResponse = components['schemas']['ExpenseCreateResponse
 export type ExpenseListResponse = components['schemas']['ExpenseListResponse'];
 export type ExpensePublic = components['schemas']['ExpensePublic'];
 export type ExpenseDetailPublic = components['schemas']['ExpenseDetailPublic'];
+export type ExpenseUpdateInput = components['schemas']['ExpenseUpdate'];
 export type ParseDiagnostics = components['schemas']['ParseDiagnostics'];
 export type ReviewReasonCode = components['schemas']['ReviewReasonCode'];
 export type ReviewStatus = components['schemas']['ReviewStatus'];
@@ -97,5 +98,38 @@ export function useExpense(expenseId: string | undefined) {
     enabled: !!accessToken && !!expenseId,
     staleTime: 0,
     retry: false,
+  });
+}
+
+/**
+ * P4: PATCH /expenses/{id} mutation for the mobile edit screen.
+ *
+ * Mirrors the admin `useUpdateExpense` shape (admin/src/api/hooks/useExpenses.ts).
+ * Sends only the caller-supplied fields — the edit screen builds a
+ * conditional-spread body so unchanged fields are omitted entirely
+ * (NOT sent as null), avoiding the Pydantic `model_fields_set` 422 trap
+ * that would clobber existing values on the backend.
+ *
+ * Backend role semantics (handled server-side, not in this hook):
+ *   - contributor: edit own row while review_status='pending'
+ *   - admin:       any row; edits on reviewed rows require `reason`
+ *                  (mobile UI does NOT surface `reason` in P4 — admin
+ *                   reviewed-row edits stay on admin web until P4.5)
+ *   - job_id is IMMUTABLE post-create (any attempt → 422)
+ *
+ * Cache invalidation: hits the `['expenses']` root so both the detail
+ * cache (`['expenses', id]`) and the My-Captures list cache
+ * (`['expenses', { mine: 1, limit }]`) refetch after a successful PATCH.
+ */
+export function useUpdateExpense(expenseId: string) {
+  const qc = useQueryClient();
+  return useMutation<ExpensePublic, unknown, ExpenseUpdateInput>({
+    mutationFn: async (body) => {
+      const { data } = await api.patch<ExpensePublic>(`/expenses/${expenseId}`, body);
+      return data;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['expenses'] });
+    },
   });
 }

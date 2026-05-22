@@ -116,7 +116,15 @@
     "not_found": "\u627e\u4e0d\u5230\u6b64\u652f\u51fa\u3002",
     "detail_error": "\u65e0\u6cd5\u52a0\u8f7d\u652f\u51fa\u3002",
     "review_status_help_pending": "\u7b49\u5f85\u7ba1\u7406\u5458\u5ba1\u6838\u3002",
-    "review_status_help_rejected": "\u6b64\u6761\u76ee\u5df2\u88ab\u7ba1\u7406\u5458\u62d2\u7edd\u3002"
+    "review_status_help_rejected": "\u6b64\u6761\u76ee\u5df2\u88ab\u7ba1\u7406\u5458\u62d2\u7edd\u3002",
+    "edit": "\u7f16\u8f91"
+  },
+  "edit": {
+    "title": "\u7f16\u8f91\u652f\u51fa",
+    "cancel": "\u53d6\u6d88",
+    "save": "\u4fdd\u5b58",
+    "amount_invalid": "\u91d1\u989d\u5fc5\u987b\u5728 0.01 \u5230 10,000,000 \u4e4b\u95f4\u3002",
+    "error_network": "\u7f51\u7edc\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u8fde\u63a5\u540e\u91cd\u8bd5\u3002"
   },
   "review_reason": {
     "amount_uncertain": "\u91d1\u989d\u4e0d\u786e\u5b9a",

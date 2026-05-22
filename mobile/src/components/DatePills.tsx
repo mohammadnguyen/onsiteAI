@@ -49,11 +49,32 @@ export type DatePillsProps = {
   value: string;
   /** Called with a fresh ISO ``YYYY-MM-DD`` whenever the user picks a valid date. */
   onChange: (iso: string) => void;
+  /**
+   * Optional validity callback fired whenever the input state's validity
+   * changes. The component is considered:
+   *   - VALID when mode is Today/Yesterday (always have a date), OR
+   *   - VALID when mode is Custom AND the input parses cleanly (customError
+   *     is null) AND the input is non-empty.
+   *   - INVALID otherwise (custom mode with a parse error or with empty input).
+   *
+   * Used by the edit screen (PD-7=B) to hard-disable Save when the user is
+   * looking at an invalid Other date, so a "last valid date" cannot be
+   * silently committed while a wrong-looking string is on screen. The
+   * Capture screen does NOT wire this callback — capture intentionally
+   * keeps the "fall back to last valid" affordance for low-friction
+   * one-handed entry.
+   */
+  onValidityChange?: (valid: boolean) => void;
   /** When true the pills + input are visually muted and not pressable. */
   disabled?: boolean;
 };
 
-export function DatePills({ value, onChange, disabled = false }: DatePillsProps) {
+export function DatePills({
+  value,
+  onChange,
+  onValidityChange,
+  disabled = false,
+}: DatePillsProps) {
   const { t } = useTranslation();
 
   const today = todayISO();
@@ -72,6 +93,25 @@ export function DatePills({ value, onChange, disabled = false }: DatePillsProps)
   const [customError, setCustomError] = useState<string | null>(null);
 
   const customInputRef = useRef<TextInput>(null);
+
+  // Validity model (see prop docs above). The edit screen (PD-7=B) gates
+  // Save on this. Today/Yesterday are always valid; Custom is valid only
+  // when there is text AND it parsed cleanly.
+  const isValid = useMemo<boolean>(() => {
+    if (mode !== 'custom') return true;
+    if (customError !== null) return false;
+    return customText.trim().length > 0;
+  }, [mode, customError, customText]);
+
+  // Emit validity changes. Kept in a separate effect so consumers that
+  // don't pass onValidityChange (e.g. the Capture screen) pay nothing.
+  // The eslint-disable below is intentional: re-firing on `onValidityChange`
+  // identity changes would create noise for parents that pass inline
+  // closures.
+  useEffect(() => {
+    onValidityChange?.(isValid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isValid]);
 
   // Reflect external value changes (e.g. parent reset) into our local
   // mode + text state. We deliberately do NOT auto-flip into custom on
