@@ -37,7 +37,15 @@
     "aliases": "Aliases",
     "budgets": "Category budgets",
     "status_active": "Active",
-    "status_completed": "Archived"
+    "status_completed": "Archived",
+    "budgets_and_spending": "Budgets & Spending",
+    "total_spent": "Total spent (ex GST)",
+    "remaining": "Remaining (ex GST)",
+    "no_budget_set": "No budget set",
+    "no_budget": "(no budget)",
+    "by_category": "By category",
+    "spending_loading": "Loading spending…",
+    "spending_load_error": "Couldn't load spending."
   },
   "settings": {
     "title": "Settings",

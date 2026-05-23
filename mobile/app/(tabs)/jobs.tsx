@@ -12,9 +12,18 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { useJob, useJobs, type JobPublic } from '../../src/api/hooks/useJobs';
+import axios from 'axios';
+import {
+  useJob,
+  useJobs,
+  useJobBudgetSummary,
+  type JobPublic,
+  type JobBudgetSummary,
+  type CategoryBudgetRow,
+} from '../../src/api/hooks/useJobs';
 import { NewJobModal } from '../../src/components/NewJobModal';
 import { localizeCategoryName } from '../../src/util/category';
+import { formatMoney } from '../../src/util/format';
 
 /**
  * Mobile Polish slice (Half A): map the backend's job-status enum
@@ -122,6 +131,11 @@ function JobDetailModal({
 }) {
   const { t } = useTranslation();
   const { data, isLoading, isError } = useJob(jobId);
+  // Per-job spend + budget. Parallel fetch to useJob — both fire when
+  // jobId is set, so spending is usually ready by the time the user has
+  // scanned identity rows. Endpoint is admin-only; contributors get 403
+  // and the section hides silently (see SpendingSection below).
+  const summary = useJobBudgetSummary(jobId);
   // Mobile Smoke Patch 1: <Modal> on iOS renders in its own native window,
   // so SafeAreaView inside it does NOT always pick up the device's top
   // inset (status bar / Dynamic Island). Read the inset explicitly via
@@ -175,19 +189,7 @@ function JobDetailModal({
                 </Text>
               ))
             )}
-            <Text style={s.sectionHeader}>{t('job.budgets')}</Text>
-            {data.category_budgets.length === 0 ? (
-              <Text style={s.muted}>-</Text>
-            ) : (
-              data.category_budgets.map((b) => (
-                <View key={b.budget_id} style={s.budgetRow}>
-                  <Text style={s.budgetName}>
-                    {localizeCategoryName(b.category.category_name, t)}
-                  </Text>
-                  <Text style={s.budgetAmount}>{b.budget_amount_ex_gst}</Text>
-                </View>
-              ))
-            )}
+            <SpendingSection summary={summary} />
           </ScrollView>
         )}
       </SafeAreaView>
@@ -200,6 +202,128 @@ function DetailRow({ label, value }: { label: string; value: string }) {
     <View style={s.detailRow}>
       <Text style={s.detailLabel}>{label}</Text>
       <Text style={s.detailValue}>{value}</Text>
+    </View>
+  );
+}
+
+/**
+ * Per-job spend + budget visibility inside the job detail modal.
+ *
+ * Scope is deliberately narrow (per the correction-centric framing
+ * from dogfood feedback): show total spent / budget / remaining +
+ * per-category breakdown. No recent expenses, no margin fields, no
+ * thresholds beyond overspend-red. Helps the correction loop by
+ * surfacing "what does this expense do to the budget" inline with
+ * job identity, NOT a full job dashboard.
+ *
+ * Error semantics (per operator guardrail):
+ *   - 403 (admin-only endpoint, contributor caller) -> hide silently
+ *   - any other failure -> small non-blocking "couldn't load"
+ *     message so dogfooding still captures the signal
+ *   - loading state -> small inline indicator; does NOT block the
+ *     rest of the modal (aliases / identity rows above are already
+ *     rendered)
+ */
+function SpendingSection({
+  summary,
+}: {
+  summary: ReturnType<typeof useJobBudgetSummary>;
+}) {
+  const { t } = useTranslation();
+  const is403 =
+    axios.isAxiosError(summary.error) &&
+    summary.error.response?.status === 403;
+
+  // Silent hide: contributor opened an admin-only endpoint. Expected
+  // shape; no banner, no error chip, no section header.
+  if (is403) return null;
+
+  return (
+    <>
+      <Text style={s.sectionHeader}>{t('job.budgets_and_spending')}</Text>
+      {summary.isLoading ? (
+        <View style={s.spendingLoading} testID="job-spending-loading">
+          <ActivityIndicator size="small" color="#64748b" />
+          <Text style={s.spendingLoadingText}>
+            {t('job.spending_loading')}
+          </Text>
+        </View>
+      ) : summary.isError ? (
+        <Text style={s.spendingError} testID="job-spending-error">
+          {t('job.spending_load_error')}
+        </Text>
+      ) : summary.data ? (
+        <SpendingBody data={summary.data} />
+      ) : null}
+    </>
+  );
+}
+
+function SpendingBody({ data }: { data: JobBudgetSummary }) {
+  const { t } = useTranslation();
+  const budget = data.total_budget_ex_gst;
+  const remaining = data.remaining_ex_gst;
+
+  return (
+    <View testID="job-spending-body">
+      <DetailRow
+        label={t('job.total_spent')}
+        value={formatMoney(data.actual_ex_gst)}
+      />
+      <DetailRow
+        label={t('job.budget')}
+        value={budget != null ? formatMoney(budget) : t('job.no_budget_set')}
+      />
+      <View style={s.detailRow}>
+        <Text style={s.detailLabel}>{t('job.remaining')}</Text>
+        <Text
+          style={[s.detailValue, data.overspend ? s.overspendValue : null]}
+        >
+          {remaining != null ? formatMoney(remaining) : '—'}
+        </Text>
+      </View>
+
+      {data.categories.length > 0 ? (
+        <>
+          <Text style={s.subSectionHeader}>{t('job.by_category')}</Text>
+          {data.categories.map((c) => (
+            <CategorySpendingRow key={c.category_id} row={c} />
+          ))}
+        </>
+      ) : null}
+    </View>
+  );
+}
+
+function CategorySpendingRow({ row }: { row: CategoryBudgetRow }) {
+  const { t } = useTranslation();
+  const hasBudget = row.budget_ex_gst != null;
+  return (
+    <View
+      style={s.categoryRow}
+      testID={`job-spending-category-${row.category_id}`}
+    >
+      <Text style={s.categoryName} numberOfLines={1}>
+        {localizeCategoryName(row.category_name, t)}
+      </Text>
+      <View style={s.categoryAmounts}>
+        <Text style={s.categorySpent}>{formatMoney(row.actual_ex_gst)}</Text>
+        <Text style={s.categoryBudget}>
+          {hasBudget
+            ? `/ ${formatMoney(row.budget_ex_gst)}`
+            : t('job.no_budget')}
+        </Text>
+        {row.remaining_ex_gst != null ? (
+          <Text
+            style={[
+              s.categoryRemaining,
+              row.overspend ? s.overspendValue : null,
+            ]}
+          >
+            {formatMoney(row.remaining_ex_gst)}
+          </Text>
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -280,4 +404,54 @@ const s = StyleSheet.create({
   budgetRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
   budgetName: { color: '#0f172a' },
   budgetAmount: { color: '#0f172a', fontVariant: ['tabular-nums'] },
+  // Spending section (new — per-job actual vs budget)
+  subSectionHeader: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#475569',
+    marginTop: 12,
+    marginBottom: 4,
+    textTransform: 'uppercase',
+  },
+  spendingLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    gap: 8,
+  },
+  spendingLoadingText: { color: '#64748b', fontSize: 13 },
+  spendingError: {
+    color: '#b91c1c',
+    fontSize: 13,
+    paddingVertical: 6,
+  },
+  overspendValue: { color: '#b91c1c', fontWeight: '600' },
+  categoryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  categoryName: { flex: 1, color: '#0f172a', paddingRight: 8 },
+  categoryAmounts: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  categorySpent: {
+    color: '#0f172a',
+    fontVariant: ['tabular-nums'],
+    fontWeight: '500',
+  },
+  categoryBudget: {
+    color: '#64748b',
+    fontSize: 13,
+    fontVariant: ['tabular-nums'],
+  },
+  categoryRemaining: {
+    color: '#475569',
+    fontSize: 13,
+    fontVariant: ['tabular-nums'],
+    marginLeft: 4,
+  },
 });

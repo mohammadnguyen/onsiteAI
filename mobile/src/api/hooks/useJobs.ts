@@ -8,6 +8,8 @@ export type JobWithDetailPublic = components['schemas']['JobWithDetailPublic'];
 export type JobCreateInput = components['schemas']['JobCreate'];
 export type JobAliasCreateInput = components['schemas']['JobAliasCreate'];
 export type JobAliasPublic = components['schemas']['JobAliasPublic'];
+export type JobBudgetSummary = components['schemas']['JobBudgetSummary'];
+export type CategoryBudgetRow = components['schemas']['CategoryBudgetRow'];
 
 export function useJobs() {
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -28,6 +30,35 @@ export function useJob(jobId: string | null) {
     queryKey: ['jobs', jobId],
     queryFn: async () => {
       const r = await api.get<JobWithDetailPublic>(`/jobs/${jobId}`);
+      return r.data;
+    },
+    enabled: !!accessToken && !!jobId,
+    retry: false,
+  });
+}
+
+/**
+ * Per-job spend + budget summary for the mobile job detail modal.
+ *
+ * Endpoint is admin-only on the backend. Contributors will receive 403,
+ * which the caller (jobs.tsx detail modal) detects and uses to HIDE the
+ * spending section silently — no error banner for an expected
+ * permission shape. Other errors (network, 500) are surfaced as a
+ * non-blocking "couldn't load spending" message so dogfooding doesn't
+ * lose the failure signal.
+ *
+ * Query is parallel to ``useJob``: both fire when the modal opens, so
+ * the spending data is often ready by the time the user has scanned
+ * the identity rows.
+ */
+export function useJobBudgetSummary(jobId: string | null) {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  return useQuery<JobBudgetSummary>({
+    queryKey: ['jobs', jobId, 'budget-summary'],
+    queryFn: async () => {
+      const r = await api.get<JobBudgetSummary>(
+        `/jobs/${jobId}/budget-summary`,
+      );
       return r.data;
     },
     enabled: !!accessToken && !!jobId,
