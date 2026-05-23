@@ -71,7 +71,14 @@ export default function ExpensesScreen() {
   // list region). `useCreateExpense` already invalidates the
   // ['expenses'] root, so a successful capture auto-refetches this
   // query without extra wiring.
-  const recentExpenses = useMyRecentExpenses(20);
+  //
+  // Limit 5 (was 20): operator dogfood signal — on the Capture screen,
+  // "My Captures" functions as a quick-access shortcut to recently
+  // captured items for correction, not a comprehensive list. 5 is
+  // enough for "what did I just enter". Per-job expense list in the
+  // Job detail modal stays at 20 (different context: comprehensive
+  // per-job view).
+  const recentExpenses = useMyRecentExpenses(5);
   const textareaRef = useRef<TextInput>(null);
 
   const [rawInputText, setRawInputText] = useState('');
