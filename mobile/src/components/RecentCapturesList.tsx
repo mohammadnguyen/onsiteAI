@@ -63,7 +63,17 @@ export function RecentCapturesList({ query, heading }: Props) {
     return m;
   }, [jobs.data]);
 
-  const items = query.data?.items ?? [];
+  // Operator dogfood signal: after Delete, the soft-deleted row was
+  // still appearing in mobile lists with a "Rejected" pill — which
+  // doesn't match the mental model of "delete = gone from active
+  // workflow". Filter rejected rows out of the default list view.
+  // The row still exists in the backend (audit-preserved) and remains
+  // visible on admin web, but mobile correctly treats it as gone.
+  // Applies to BOTH callers of this component: My Captures on the
+  // Capture screen + per-job expense list in the Job detail modal.
+  const items = (query.data?.items ?? []).filter(
+    (e) => e.review_status !== 'rejected',
+  );
 
   return (
     <View style={s.section} testID="recent-captures-section">
