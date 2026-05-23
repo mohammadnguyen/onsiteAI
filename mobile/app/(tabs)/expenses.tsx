@@ -252,6 +252,16 @@ export default function ExpensesScreen() {
               <Text style={s.submitBtnText}>{t('capture.submit')}</Text>
             )}
           </TouchableOpacity>
+
+          {/* Correction-loop fix: render My Captures below the form even
+              in the pre-submit (empty form) state. Previously this list
+              only appeared after a successful capture, which meant the
+              user had no way to navigate to a past expense detail
+              without first capturing a new one. With the list always
+              visible, the path "I want to fix something I captured
+              earlier" -> scroll -> tap row -> detail -> Edit expense
+              is one tap from the default state of the Capture tab. */}
+          <RecentCapturesList query={recentExpenses} />
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
