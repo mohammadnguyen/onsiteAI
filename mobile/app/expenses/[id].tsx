@@ -6,13 +6,14 @@ import {
   ActivityIndicator,
   Pressable,
   StyleSheet,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, type Href } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
 
-import { useExpense } from '../../src/api/hooks/useExpenses';
+import { useExpense, useDeleteExpense } from '../../src/api/hooks/useExpenses';
 import { useJobs } from '../../src/api/hooks/useJobs';
 import type {
   ExpenseDetailPublic,
@@ -77,6 +78,7 @@ export default function ExpenseDetailScreen() {
   const { t } = useTranslation();
   const expense = useExpense(id);
   const jobs = useJobs();
+  const deleteMutation = useDeleteExpense(id ?? '');
 
   const jobName = useMemo(() => {
     if (!expense.data) return undefined;
@@ -107,6 +109,53 @@ export default function ExpenseDetailScreen() {
   // affordances clean and predictable.
   const editEnabled =
     !!expense.data && expense.data.review_status !== 'rejected';
+  // Delete visibility: same rule (rejected rows are already
+  // soft-deleted; backend would 403). Admin-only on the backend;
+  // contributors who somehow see the button get a clear "only admins"
+  // alert when they tap.
+  const deleteEnabled =
+    !!expense.data && expense.data.review_status !== 'rejected';
+
+  const onDelete = () => {
+    if (!id) return;
+    Alert.alert(
+      t('expense.delete_confirm_title'),
+      t('expense.delete_confirm_message'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('expense.delete_cta'),
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteMutation.mutateAsync();
+              // Cache invalidation in onSuccess refreshes all
+              // affected lists; navigate back to whichever screen
+              // brought the user here.
+              onBack();
+            } catch (err) {
+              const status = axios.isAxiosError(err)
+                ? err.response?.status
+                : undefined;
+              let message: string;
+              if (status === 403) {
+                message = t('expense.delete_forbidden');
+              } else {
+                const detail = axios.isAxiosError(err)
+                  ? err.response?.data?.detail
+                  : undefined;
+                message =
+                  typeof detail === 'string'
+                    ? detail
+                    : t('expense.delete_error');
+              }
+              Alert.alert(t('common.error'), message);
+            }
+          },
+        },
+      ],
+    );
+  };
 
   return (
     <SafeAreaView style={s.safe} edges={['top', 'left', 'right']}>
@@ -176,6 +225,8 @@ export default function ExpenseDetailScreen() {
             jobName={jobName}
             onEdit={onEdit}
             editEnabled={editEnabled}
+            onDelete={onDelete}
+            deleteEnabled={deleteEnabled}
           />
         </ScrollView>
       ) : null}
@@ -188,11 +239,15 @@ function DetailBody({
   jobName,
   onEdit,
   editEnabled,
+  onDelete,
+  deleteEnabled,
 }: {
   data: ExpenseDetailPublic;
   jobName: string | undefined;
   onEdit: () => void;
   editEnabled: boolean;
+  onDelete: () => void;
+  deleteEnabled: boolean;
 }) {
   const { t } = useTranslation();
   const statusColor = STATUS_COLORS[data.review_status];
@@ -337,6 +392,26 @@ function DetailBody({
           </ScrollView>
         </View>
       ) : null}
+
+      {/* Delete (soft-delete via DELETE /expenses/{id}; backend sets
+          review_status='rejected' + writes audit). Visually
+          subordinate to the prominent Edit CTA at the top: red text
+          link at the very end of the detail body, far from primary
+          actions to prevent fat-fingering. Confirmation dialog
+          explicitly explains the soft-delete + audit-retention
+          semantic so the user understands they're not destroying
+          historical data. */}
+      {deleteEnabled ? (
+        <Pressable
+          onPress={onDelete}
+          testID="detail-delete"
+          accessibilityRole="button"
+          accessibilityLabel={t('expense.delete_cta')}
+          style={({ pressed }) => [s.deleteBtn, pressed && s.deleteBtnPressed]}
+        >
+          <Text style={s.deleteBtnText}>{t('expense.delete_cta')}</Text>
+        </Pressable>
+      ) : null}
     </>
   );
 }
@@ -403,6 +478,21 @@ const s = StyleSheet.create({
   },
   editCTAPressed: { opacity: 0.6 },
   editCTAText: { color: '#ffffff', fontSize: 16, fontWeight: '600' },
+  // Delete (soft-delete) — visually subordinate to Edit CTA. Red text
+  // on a white background with a subtle red border so it reads as
+  // destructive but doesn't shout. Sits at the bottom of the scroll
+  // content, well below all data fields.
+  deleteBtn: {
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    backgroundColor: '#ffffff',
+    paddingVertical: 12,
+    borderRadius: 6,
+    alignItems: 'center',
+    marginTop: 24,
+  },
+  deleteBtnPressed: { opacity: 0.5, backgroundColor: '#fef2f2' },
+  deleteBtnText: { color: '#b91c1c', fontSize: 15, fontWeight: '600' },
   state: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 12 },
   stateText: { color: '#64748b', fontSize: 15 },
   errorText: { color: '#b91c1c' },

@@ -125,7 +125,12 @@
     "review_status_help_pending": "Waiting for admin to review.",
     "review_status_help_rejected": "This entry was rejected by an admin.",
     "edit": "Edit",
-    "edit_cta": "Edit expense"
+    "edit_cta": "Edit expense",
+    "delete_cta": "Delete expense",
+    "delete_confirm_title": "Delete expense?",
+    "delete_confirm_message": "This removes the expense from active lists and marks it as rejected. It remains in the audit history.",
+    "delete_forbidden": "Only admins can delete expenses.",
+    "delete_error": "Couldn't delete expense."
   },
   "edit": {
     "title": "Edit Expense",

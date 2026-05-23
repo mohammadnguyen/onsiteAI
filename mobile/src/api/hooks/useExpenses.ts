@@ -130,6 +130,36 @@ export function useExpense(expenseId: string | undefined) {
 }
 
 /**
+ * Soft-delete mutation for the mobile expense detail screen.
+ *
+ * Backend: DELETE /expenses/{id}
+ *   - admin-only (require_admin); contributors get 403
+ *   - returns 204 on success
+ *   - semantics: sets review_status='rejected' + writes audit log
+ *     (the row stays in the DB; it's removed from active lists)
+ *
+ * Cache invalidation: BOTH `['expenses']` and `['jobs']` roots,
+ * because a delete affects (a) every expense list query — My
+ * Captures, per-job expense list, expense detail — and (b) the
+ * job's budget summary totals when the deleted row had a job_id.
+ * The job query keys are `['jobs', jobId, 'budget-summary']` and
+ * `['jobs', jobId]`; invalidating the `['jobs']` prefix catches
+ * both transitively.
+ */
+export function useDeleteExpense(expenseId: string) {
+  const qc = useQueryClient();
+  return useMutation<void, unknown, void>({
+    mutationFn: async () => {
+      await api.delete(`/expenses/${expenseId}`);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['expenses'] });
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
+    },
+  });
+}
+
+/**
  * P4: PATCH /expenses/{id} mutation for the mobile edit screen.
  *
  * Mirrors the admin `useUpdateExpense` shape (admin/src/api/hooks/useExpenses.ts).
