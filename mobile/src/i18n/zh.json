@@ -44,6 +44,7 @@
     "remaining": "\u5269\u4f59\uff08\u4e0d\u542bGST\uff09",
     "no_budget_set": "\u672a\u8bbe\u9884\u7b97",
     "no_budget": "\uff08\u65e0\u9884\u7b97\uff09",
+    "uncategorized": "\u672a\u5206\u7c7b",
     "by_category": "\u6309\u5206\u7c7b",
     "spending_loading": "\u52a0\u8f7d\u652f\u51fa\u4e2d\u2026",
     "spending_load_error": "\u65e0\u6cd5\u52a0\u8f7d\u652f\u51fa\u3002"

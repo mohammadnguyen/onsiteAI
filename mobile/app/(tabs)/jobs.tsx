@@ -281,6 +281,25 @@ function SpendingBody({ data }: { data: JobBudgetSummary }) {
   const budget = data.total_budget_ex_gst;
   const remaining = data.remaining_ex_gst;
 
+  // Compute the uncategorized portion: total spent minus the sum of
+  // categorized spend. Captures whose parser couldn't classify into a
+  // category contribute to actual_ex_gst at the job level but not to
+  // any CategoryBudgetRow on the backend response — that's documented
+  // backend semantics, but it leaves the per-category breakdown
+  // looking unreconciled (operator dogfood observation:
+  // "Eric家 lintel $100000" -> total goes up, no category row appears).
+  // Render a synthetic "Uncategorized" row at the END of the breakdown
+  // so the numbers reconcile visually without backend changes.
+  const totalActual = Number(data.actual_ex_gst);
+  const sumCategorized = data.categories.reduce(
+    (acc, c) => acc + Number(c.actual_ex_gst),
+    0,
+  );
+  const uncategorizedAmount = totalActual - sumCategorized;
+  // Tolerance: 0.005 (half a cent) so float-rounding never produces a
+  // ghost "$0.00 Uncategorized" row when the math actually reconciles.
+  const showUncategorized = uncategorizedAmount > 0.005;
+
   return (
     <View testID="job-spending-body">
       <DetailRow
@@ -300,14 +319,39 @@ function SpendingBody({ data }: { data: JobBudgetSummary }) {
         </Text>
       </View>
 
-      {data.categories.length > 0 ? (
+      {data.categories.length > 0 || showUncategorized ? (
         <>
           <Text style={s.subSectionHeader}>{t('job.by_category')}</Text>
           {data.categories.map((c) => (
             <CategorySpendingRow key={c.category_id} row={c} />
           ))}
+          {showUncategorized ? (
+            <UncategorizedRow amount={uncategorizedAmount} />
+          ) : null}
         </>
       ) : null}
+    </View>
+  );
+}
+
+/**
+ * Synthetic per-category row for the residual "Uncategorized" spend.
+ * Renders only when total spent exceeds the sum of categorized spend
+ * by more than half a cent. Mirrors CategorySpendingRow visually but
+ * always displays "(no budget)" in the budget slot — uncategorized
+ * spend by definition has no per-category budget allocated.
+ */
+function UncategorizedRow({ amount }: { amount: number }) {
+  const { t } = useTranslation();
+  return (
+    <View style={s.categoryRow} testID="job-spending-uncategorized">
+      <Text style={s.categoryName} numberOfLines={1}>
+        {t('job.uncategorized')}
+      </Text>
+      <View style={s.categoryAmounts}>
+        <Text style={s.categorySpent}>{formatMoney(amount)}</Text>
+        <Text style={s.categoryBudget}>{t('job.no_budget')}</Text>
+      </View>
     </View>
   );
 }
