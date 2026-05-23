@@ -181,7 +181,12 @@ async def parse(
     amt = _amount.extract_amount(tokens)
 
     # Steps 3–5: DB-backed matchers.
-    job = await _jobs.match_job(tokens, db)
+    # Pass amt.source_span to the job matcher so the token consumed as
+    # the amount is excluded from job lookup — prevents a bare numeric
+    # amount from silently assigning the expense to a job whose code
+    # happens to equal that number. Operator guardrail; see
+    # _word_normals in jobs.py.
+    job = await _jobs.match_job(tokens, db, excluded_span=amt.source_span)
     sup = await _suppliers.match_supplier(tokens, db)
     cat = await _categories.match_category(tokens, db)
 

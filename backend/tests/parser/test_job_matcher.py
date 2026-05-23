@@ -265,14 +265,148 @@ async def test_completed_job_code_and_name_not_matched(db_session, seeded_jobs):
 
 
 @pytest.mark.asyncio
-async def test_currency_and_numeric_tokens_skipped(db_session, seeded_jobs):
-    """Pure currency + numeric inputs never match a job."""
+async def test_unmatched_currency_and_numeric_tokens_yield_no_job(
+    db_session, seeded_jobs
+):
+    """Currency + numeric tokens that don't match any seeded code /
+    alias / name yield no match.
+
+    Note: this is a weaker invariant than the pre-fix behaviour.
+    Numeric tokens are no longer filtered out of the candidate set
+    (real data uses numeric codes / aliases / names — e.g. ``"001"``,
+    ``"003"``, ``"1"``), so a numeric token CAN match a job if a job
+    is configured with that exact value. The ``seeded_jobs`` fixture
+    uses alphanumeric codes (``KH-01``, ``SR-02``, ``OLD-09``) so
+    ``305`` and ``163`` happen not to match — see the dedicated
+    digit-only positive tests below.
+    """
     result = await match_job(tokenize("$305 163"), db_session)
 
     assert result.job_id is None
     assert result.confidence == 0.0
     assert result.ambiguous_matches == ()
     assert result.matched_via is None
+
+
+# ---------------------------------------------------------------------------
+# Digit-only code / alias / name routes (operator-reported gap)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_digit_only_job_code_matches(db_session, seeded_admin):
+    """A digit-only ``job_code`` like ``"001"`` matches via the code route.
+
+    Regression: pre-fix the matcher filtered numeric tokens before
+    DB lookup, so ``"001 plumbing $100"`` could never match the
+    ``晶晶家`` job whose code was ``001``. This test pins the
+    post-fix behaviour.
+    """
+    job = await _make_job(db_session, seeded_admin, name="晶晶家", code="001")
+
+    result = await match_job(tokenize("001 plumbing $100"), db_session)
+
+    assert result.job_id == job.job_id
+    assert result.confidence == 0.95
+    assert result.matched_via == "code"
+
+
+@pytest.mark.asyncio
+async def test_digit_only_alias_matches(db_session, seeded_admin):
+    """A digit-only ``JobAlias.alias_text`` like ``"003"`` matches via the alias route."""
+    job = await _make_job(db_session, seeded_admin, name="31API")
+    db_session.add(
+        JobAlias(
+            job_id=job.job_id,
+            alias_text="003",
+            language_code=LanguageCode.en,
+        )
+    )
+    await db_session.flush()
+
+    result = await match_job(tokenize("003 cement $50"), db_session)
+
+    assert result.job_id == job.job_id
+    assert result.confidence == 0.95
+    assert result.matched_via == "alias"
+
+
+@pytest.mark.asyncio
+async def test_digit_only_job_name_matches(db_session, seeded_admin):
+    """A digit-only ``job_name`` like ``"1"`` matches via the name route."""
+    job = await _make_job(db_session, seeded_admin, name="1")
+
+    result = await match_job(tokenize("1 plumbing $250"), db_session)
+
+    assert result.job_id == job.job_id
+    assert result.confidence == 0.95
+    assert result.matched_via == "name"
+
+
+# ---------------------------------------------------------------------------
+# Amount-token exclusion guardrail
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_amount_source_token_excluded_from_job_match(
+    db_session, seeded_admin
+):
+    """A token consumed as the amount must not silently match a job.
+
+    Operator guardrail against silent financial mis-allocation. If a
+    job is configured with code ``"100"`` and the user captures
+    ``"plumbing 100"``, the bare ``100`` is interpreted as the
+    amount; passing the amount's ``source_span`` as
+    ``excluded_span`` to ``match_job`` MUST drop that token from the
+    job candidate set so the expense is NOT silently assigned to
+    the job with code ``"100"``.
+    """
+    from app.services.parser.amount import extract_amount
+
+    await _make_job(db_session, seeded_admin, name="JobOneHundred", code="100")
+
+    tokens = tokenize("plumbing 100")
+    amt = extract_amount(tokens)
+    # Sanity: the amount stage consumed the "100" token.
+    assert amt.value is not None
+    assert amt.source_span is not None
+
+    result = await match_job(tokens, db_session, excluded_span=amt.source_span)
+
+    # The amount token was excluded; no other token matches code/alias/name.
+    assert result.job_id is None
+    assert result.confidence == 0.0
+    assert result.matched_via is None
+
+
+@pytest.mark.asyncio
+async def test_excluded_span_does_not_block_unrelated_numeric_token(
+    db_session, seeded_admin
+):
+    """Excluding the amount token must NOT block other numeric tokens
+    from matching jobs.
+
+    Captures like ``"001 plumbing $100"`` need the ``001`` token to
+    match the job code while ``$100`` is independently consumed as
+    the amount. The amount's ``source_span`` covers the ``100``
+    portion of ``$100``; the standalone ``001`` token has a
+    different span and must still flow through to the job matcher.
+    """
+    from app.services.parser.amount import extract_amount
+
+    job = await _make_job(db_session, seeded_admin, name="晶晶家", code="001")
+
+    tokens = tokenize("001 plumbing $100")
+    amt = extract_amount(tokens)
+    assert amt.value is not None
+    assert amt.source_span is not None
+
+    result = await match_job(tokens, db_session, excluded_span=amt.source_span)
+
+    assert result.job_id == job.job_id
+    assert result.confidence == 0.95
+    assert result.matched_via == "code"
 
 
 # ---------------------------------------------------------------------------

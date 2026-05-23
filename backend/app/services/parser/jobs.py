@@ -1,8 +1,10 @@
 """Phase 2 Task T-G: job matcher for the expense-string parser.
 
 Looks up the canonical :class:`~app.models.job.Job` for a parsed
-expense by running each non-currency / non-numeric token through four
-routes against the DB:
+expense by running each non-currency-symbol token through four
+routes against the DB (numeric tokens ARE included — real-world
+job codes / aliases / names include bare digits like ``"001"``,
+``"003"``, ``"1"``):
 
 1. :class:`~app.models.job.JobAlias` (normalised alias lookup — the
    primary / intended route)
@@ -96,18 +98,36 @@ class JobMatch:
     matched_via: str | None = None
 
 
-def _word_normals(tokens: list[Token]) -> list[str]:
-    """Extract the normalised form of every word-ish token.
+def _word_normals(
+    tokens: list[Token],
+    excluded_span: tuple[int, int] | None = None,
+) -> list[str]:
+    """Extract the normalised form of every lookup-candidate token.
 
-    Currency symbols and numeric-like tokens are skipped — jobs are
-    never named with bare digits or ``$``. Empty normalised strings
-    (defensive) are also filtered. Returns a list so the caller can
-    both use it as a set (for the alias IN-clause) and as an ordered
-    stream (for route-priority tie-breaks on the first hit).
+    Currency-symbol tokens (``$ ¥ € £ ₩ ₹``) are skipped — no job is
+    named with a bare currency glyph. Numeric tokens ARE kept (they
+    can legitimately be a job code, alias, or name in real data —
+    e.g. code ``"001"``, alias ``"003"``, name ``"1"``). Empty
+    normalised strings (defensive) are also filtered.
+
+    Amount-source exclusion (operator guardrail against silent
+    financial mis-allocation): if ``excluded_span`` is supplied (the
+    ``source_span`` of the winning amount token from the amount
+    stage), any token whose ``span`` matches is dropped from the
+    candidate set. This prevents a token that was consumed as the
+    amount from being matched as a job — without this, a bare
+    numeric amount like "100" could silently assign the expense to
+    a job whose code happens to be "100".
+
+    Returns a list so the caller can both use it as a set (for the
+    alias IN-clause) and as an ordered stream (for route-priority
+    tie-breaks on the first hit).
     """
     out: list[str] = []
     for tok in tokens:
-        if tok.is_currency_symbol or tok.is_numeric_like:
+        if tok.is_currency_symbol:
+            continue
+        if excluded_span is not None and tok.span == excluded_span:
             continue
         if not tok.normalized:
             continue
@@ -149,12 +169,23 @@ def _multi_token_normals(normals: list[str]) -> set[str]:
     return out
 
 
-async def match_job(tokens: list[Token], db: AsyncSession) -> JobMatch:
+async def match_job(
+    tokens: list[Token],
+    db: AsyncSession,
+    excluded_span: tuple[int, int] | None = None,
+) -> JobMatch:
     """Match the token stream against active jobs.
 
     Pure w.r.t. inputs: ``tokens`` is consumed read-only and the
     ``AsyncSession`` is used only for ``SELECT``. Returns a
     :class:`JobMatch`; never constructs a ``ParsePartial``.
+
+    ``excluded_span``: optional ``(start, end)`` offsets of the token
+    consumed by the amount stage. When supplied, that token is
+    dropped from the lookup-candidate set so it can't silently
+    become a job match. Wired through by the orchestrator from
+    :attr:`AmountMatch.source_span`. See ``_word_normals`` for the
+    operator guardrail rationale.
 
     Strategy (two queries, Phase 2 simplicity):
 
@@ -171,7 +202,7 @@ async def match_job(tokens: list[Token], db: AsyncSession) -> JobMatch:
     name) that each match came through so we can report
     ``matched_via`` with the documented priority.
     """
-    normals = _word_normals(tokens)
+    normals = _word_normals(tokens, excluded_span=excluded_span)
     if not normals:
         return JobMatch(
             job_id=None,
