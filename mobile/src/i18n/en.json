@@ -43,9 +43,6 @@
     "total_spent": "Total spent (ex GST)",
     "remaining": "Remaining (ex GST)",
     "no_budget_set": "No budget set",
-    "no_budget": "(no budget)",
-    "uncategorized": "Uncategorized",
-    "by_category": "By category",
     "spending_loading": "Loading spending…",
     "spending_load_error": "Couldn't load spending."
   },

@@ -19,12 +19,10 @@ import {
   useJobBudgetSummary,
   type JobPublic,
   type JobBudgetSummary,
-  type CategoryBudgetRow,
 } from '../../src/api/hooks/useJobs';
 import { useJobExpenses } from '../../src/api/hooks/useExpenses';
 import { NewJobModal } from '../../src/components/NewJobModal';
 import { RecentCapturesList } from '../../src/components/RecentCapturesList';
-import { localizeCategoryName } from '../../src/util/category';
 import { formatMoney } from '../../src/util/format';
 
 /**
@@ -281,25 +279,11 @@ function SpendingBody({ data }: { data: JobBudgetSummary }) {
   const budget = data.total_budget_ex_gst;
   const remaining = data.remaining_ex_gst;
 
-  // Compute the uncategorized portion: total spent minus the sum of
-  // categorized spend. Captures whose parser couldn't classify into a
-  // category contribute to actual_ex_gst at the job level but not to
-  // any CategoryBudgetRow on the backend response — that's documented
-  // backend semantics, but it leaves the per-category breakdown
-  // looking unreconciled (operator dogfood observation:
-  // "Eric家 lintel $100000" -> total goes up, no category row appears).
-  // Render a synthetic "Uncategorized" row at the END of the breakdown
-  // so the numbers reconcile visually without backend changes.
-  const totalActual = Number(data.actual_ex_gst);
-  const sumCategorized = data.categories.reduce(
-    (acc, c) => acc + Number(c.actual_ex_gst),
-    0,
-  );
-  const uncategorizedAmount = totalActual - sumCategorized;
-  // Tolerance: 0.005 (half a cent) so float-rounding never produces a
-  // ghost "$0.00 Uncategorized" row when the math actually reconciles.
-  const showUncategorized = uncategorizedAmount > 0.005;
-
+  // Operator dogfood signal: the per-category breakdown adds visual
+  // noise on mobile and is redundant with the per-expense list shown
+  // below this section (支出明细 / Expenses). Stay top-level only:
+  // total spent, budget, remaining. For per-category analysis the
+  // admin web's budget summary remains the canonical surface.
   return (
     <View testID="job-spending-body">
       <DetailRow
@@ -317,73 +301,6 @@ function SpendingBody({ data }: { data: JobBudgetSummary }) {
         >
           {remaining != null ? formatMoney(remaining) : '—'}
         </Text>
-      </View>
-
-      {data.categories.length > 0 || showUncategorized ? (
-        <>
-          <Text style={s.subSectionHeader}>{t('job.by_category')}</Text>
-          {data.categories.map((c) => (
-            <CategorySpendingRow key={c.category_id} row={c} />
-          ))}
-          {showUncategorized ? (
-            <UncategorizedRow amount={uncategorizedAmount} />
-          ) : null}
-        </>
-      ) : null}
-    </View>
-  );
-}
-
-/**
- * Synthetic per-category row for the residual "Uncategorized" spend.
- * Renders only when total spent exceeds the sum of categorized spend
- * by more than half a cent. Mirrors CategorySpendingRow visually but
- * always displays "(no budget)" in the budget slot — uncategorized
- * spend by definition has no per-category budget allocated.
- */
-function UncategorizedRow({ amount }: { amount: number }) {
-  const { t } = useTranslation();
-  return (
-    <View style={s.categoryRow} testID="job-spending-uncategorized">
-      <Text style={s.categoryName} numberOfLines={1}>
-        {t('job.uncategorized')}
-      </Text>
-      <View style={s.categoryAmounts}>
-        <Text style={s.categorySpent}>{formatMoney(amount)}</Text>
-        <Text style={s.categoryBudget}>{t('job.no_budget')}</Text>
-      </View>
-    </View>
-  );
-}
-
-function CategorySpendingRow({ row }: { row: CategoryBudgetRow }) {
-  const { t } = useTranslation();
-  const hasBudget = row.budget_ex_gst != null;
-  return (
-    <View
-      style={s.categoryRow}
-      testID={`job-spending-category-${row.category_id}`}
-    >
-      <Text style={s.categoryName} numberOfLines={1}>
-        {localizeCategoryName(row.category_name, t)}
-      </Text>
-      <View style={s.categoryAmounts}>
-        <Text style={s.categorySpent}>{formatMoney(row.actual_ex_gst)}</Text>
-        <Text style={s.categoryBudget}>
-          {hasBudget
-            ? `/ ${formatMoney(row.budget_ex_gst)}`
-            : t('job.no_budget')}
-        </Text>
-        {row.remaining_ex_gst != null ? (
-          <Text
-            style={[
-              s.categoryRemaining,
-              row.overspend ? s.overspendValue : null,
-            ]}
-          >
-            {formatMoney(row.remaining_ex_gst)}
-          </Text>
-        ) : null}
       </View>
     </View>
   );
@@ -465,15 +382,9 @@ const s = StyleSheet.create({
   budgetRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
   budgetName: { color: '#0f172a' },
   budgetAmount: { color: '#0f172a', fontVariant: ['tabular-nums'] },
-  // Spending section (new — per-job actual vs budget)
-  subSectionHeader: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#475569',
-    marginTop: 12,
-    marginBottom: 4,
-    textTransform: 'uppercase',
-  },
+  // Spending section: top-level summary only (total spent / budget /
+  // remaining). Per-category breakdown removed per operator dogfood
+  // signal — redundant with the per-expense list shown below.
   spendingLoading: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -487,32 +398,4 @@ const s = StyleSheet.create({
     paddingVertical: 6,
   },
   overspendValue: { color: '#b91c1c', fontWeight: '600' },
-  categoryRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 6,
-  },
-  categoryName: { flex: 1, color: '#0f172a', paddingRight: 8 },
-  categoryAmounts: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  categorySpent: {
-    color: '#0f172a',
-    fontVariant: ['tabular-nums'],
-    fontWeight: '500',
-  },
-  categoryBudget: {
-    color: '#64748b',
-    fontSize: 13,
-    fontVariant: ['tabular-nums'],
-  },
-  categoryRemaining: {
-    color: '#475569',
-    fontSize: 13,
-    fontVariant: ['tabular-nums'],
-    marginLeft: 4,
-  },
 });
