@@ -91,7 +91,7 @@
     "error_network": "Network error. Check your connection and try again.",
     "continue_capture": "Capture another",
     "recent": {
-      "title": "My Captures",
+      "title": "Last 5 expenses",
       "empty": "No captures yet.",
       "error": "Could not load captures.",
       "duplicate_flag": "Duplicate",
