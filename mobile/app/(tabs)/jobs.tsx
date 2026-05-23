@@ -21,7 +21,9 @@ import {
   type JobBudgetSummary,
   type CategoryBudgetRow,
 } from '../../src/api/hooks/useJobs';
+import { useJobExpenses } from '../../src/api/hooks/useExpenses';
 import { NewJobModal } from '../../src/components/NewJobModal';
+import { RecentCapturesList } from '../../src/components/RecentCapturesList';
 import { localizeCategoryName } from '../../src/util/category';
 import { formatMoney } from '../../src/util/format';
 
@@ -136,6 +138,11 @@ function JobDetailModal({
   // scanned identity rows. Endpoint is admin-only; contributors get 403
   // and the section hides silently (see SpendingSection below).
   const summary = useJobBudgetSummary(jobId);
+  // Per-job expense list (correction-loop slice). Same modal, below
+  // spending. Limit 20 — operator-approved scope; extend later only
+  // if 20 turns out not to be enough during dogfooding. Reuses the
+  // existing RecentCapturesList row + navigation chrome.
+  const jobExpenses = useJobExpenses(jobId, 20);
   // Mobile Smoke Patch 1: <Modal> on iOS renders in its own native window,
   // so SafeAreaView inside it does NOT always pick up the device's top
   // inset (status bar / Dynamic Island). Read the inset explicitly via
@@ -190,6 +197,16 @@ function JobDetailModal({
               ))
             )}
             <SpendingSection summary={summary} />
+            {/* Per-job expense list (correction-loop slice): show
+                the recent expenses for this job below spending, so
+                admins can drill into individual rows to correct
+                miscategorisations / wrong amounts directly from
+                the job context. Reuses RecentCapturesList — tap row
+                navigates to expense detail -> Edit expense CTA. */}
+            <RecentCapturesList
+              query={jobExpenses}
+              heading={t('job.expenses')}
+            />
           </ScrollView>
         )}
       </SafeAreaView>

@@ -39,6 +39,7 @@
     "status_active": "Active",
     "status_completed": "Archived",
     "budgets_and_spending": "Budgets & Spending",
+    "expenses": "Expenses",
     "total_spent": "Total spent (ex GST)",
     "remaining": "Remaining (ex GST)",
     "no_budget_set": "No budget set",

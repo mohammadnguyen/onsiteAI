@@ -39,6 +39,7 @@
     "status_active": "\u8fdb\u884c\u4e2d",
     "status_completed": "\u5df2\u5f52\u6863",
     "budgets_and_spending": "\u9884\u7b97\u4e0e\u652f\u51fa",
+    "expenses": "\u652f\u51fa\u660e\u7ec6",
     "total_spent": "\u5df2\u652f\u51fa\uff08\u4e0d\u542bGST\uff09",
     "remaining": "\u5269\u4f59\uff08\u4e0d\u542bGST\uff09",
     "no_budget_set": "\u672a\u8bbe\u9884\u7b97",

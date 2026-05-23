@@ -31,6 +31,13 @@ import { formatDateAU } from '../util/dates';
 
 type Props = {
   query: UseQueryResult<ExpenseListResponse, unknown>;
+  /**
+   * Optional heading text override. When set, replaces the default
+   * "My Captures" label. Used by the job detail modal to render the
+   * same row list under an "Expenses" label without forking the
+   * component. Pass an already-translated string.
+   */
+  heading?: string;
 };
 
 const STATUS_COLORS = {
@@ -46,7 +53,7 @@ function truncate(s: string, max: number): string {
   return s.slice(0, max).trimEnd() + '…';
 }
 
-export function RecentCapturesList({ query }: Props) {
+export function RecentCapturesList({ query, heading }: Props) {
   const { t } = useTranslation();
   const jobs = useJobs();
 
@@ -60,7 +67,7 @@ export function RecentCapturesList({ query }: Props) {
 
   return (
     <View style={s.section} testID="recent-captures-section">
-      <Text style={s.heading}>{t('capture.recent.title')}</Text>
+      <Text style={s.heading}>{heading ?? t('capture.recent.title')}</Text>
 
       {query.isLoading ? (
         <View style={s.state} testID="recent-loading">

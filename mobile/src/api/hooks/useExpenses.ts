@@ -73,6 +73,34 @@ export function useMyRecentExpenses(limit: number = 20) {
 }
 
 /**
+ * Per-job expenses list for the mobile job detail modal.
+ *
+ * Reuses GET /expenses?job_id=X&limit=N. Backend already supports
+ * the job_id filter (no new endpoint needed). Returns the same
+ * ExpenseListResponse shape as useMyRecentExpenses, so the same
+ * RecentCapturesList component can render either source.
+ *
+ * Note: this query does NOT pass mine=1 — admin viewing a job sees
+ * ALL expenses on that job (not just their own captures), which is
+ * the right semantic for correction-driven workflows.
+ */
+export function useJobExpenses(jobId: string | null, limit: number = 20) {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  return useQuery<ExpenseListResponse>({
+    queryKey: ['expenses', { job_id: jobId, limit }],
+    queryFn: async () => {
+      const { data } = await api.get<ExpenseListResponse>('/expenses', {
+        params: { job_id: jobId, limit },
+      });
+      return data;
+    },
+    enabled: !!accessToken && !!jobId,
+    staleTime: 0,
+    retry: false,
+  });
+}
+
+/**
  * Mobile Expense Detail (v1): single-expense fetch for the read-only
  * detail screen at `app/expenses/[id].tsx`.
  *
