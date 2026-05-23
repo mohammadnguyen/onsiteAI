@@ -125,7 +125,8 @@
     "detail_error": "\u65e0\u6cd5\u52a0\u8f7d\u652f\u51fa\u3002",
     "review_status_help_pending": "\u7b49\u5f85\u7ba1\u7406\u5458\u5ba1\u6838\u3002",
     "review_status_help_rejected": "\u6b64\u6761\u76ee\u5df2\u88ab\u7ba1\u7406\u5458\u62d2\u7edd\u3002",
-    "edit": "\u7f16\u8f91"
+    "edit": "\u7f16\u8f91",
+    "edit_cta": "\u7f16\u8f91\u652f\u51fa"
   },
   "edit": {
     "title": "\u7f16\u8f91\u652f\u51fa",

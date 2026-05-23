@@ -171,7 +171,12 @@ export default function ExpenseDetailScreen() {
         </View>
       ) : expense.data ? (
         <ScrollView contentContainerStyle={s.scroll} testID="detail-content">
-          <DetailBody data={expense.data} jobName={jobName} />
+          <DetailBody
+            data={expense.data}
+            jobName={jobName}
+            onEdit={onEdit}
+            editEnabled={editEnabled}
+          />
         </ScrollView>
       ) : null}
     </SafeAreaView>
@@ -181,9 +186,13 @@ export default function ExpenseDetailScreen() {
 function DetailBody({
   data,
   jobName,
+  onEdit,
+  editEnabled,
 }: {
   data: ExpenseDetailPublic;
   jobName: string | undefined;
+  onEdit: () => void;
+  editEnabled: boolean;
 }) {
   const { t } = useTranslation();
   const statusColor = STATUS_COLORS[data.review_status];
@@ -229,6 +238,26 @@ function DetailBody({
           </Text>
         </View>
       </View>
+
+      {/* Edit-discoverability slice: dogfooding showed the header
+          'Edit' button wasn't naturally found at the moment users
+          notice something wrong. For a correction-centric workflow,
+          the edit affordance must be obvious — not just present.
+          This body-level CTA sits immediately under the hero so the
+          eye lands on it right after reading the status pill.
+          Same visibility rule as the header button (hidden on
+          rejected); both routes navigate to the same edit screen. */}
+      {editEnabled ? (
+        <Pressable
+          onPress={onEdit}
+          testID="detail-edit-cta"
+          accessibilityRole="button"
+          accessibilityLabel={t('expense.edit_cta')}
+          style={({ pressed }) => [s.editCTA, pressed && s.editCTAPressed]}
+        >
+          <Text style={s.editCTAText}>{t('expense.edit_cta')}</Text>
+        </Pressable>
+      ) : null}
 
       <View style={s.grid}>
         <Field label={t('expense.amount_ex_gst')} value={formatMoney(data.amount_ex_gst)} />
@@ -361,6 +390,19 @@ const s = StyleSheet.create({
   },
   editBtnPressed: { opacity: 0.5 },
   editLabel: { fontSize: 16, color: '#1e293b', fontWeight: '600' },
+  // Body-level Edit CTA: prominent primary button right under the hero.
+  // Matches the dark-slate visual weight of the Save button on the edit
+  // screen so the path from "I notice a wrong value" -> "edit it" is
+  // visually consistent.
+  editCTA: {
+    backgroundColor: '#1e293b',
+    paddingVertical: 12,
+    borderRadius: 6,
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  editCTAPressed: { opacity: 0.6 },
+  editCTAText: { color: '#ffffff', fontSize: 16, fontWeight: '600' },
   state: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 12 },
   stateText: { color: '#64748b', fontSize: 15 },
   errorText: { color: '#b91c1c' },

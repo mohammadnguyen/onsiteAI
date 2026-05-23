@@ -125,7 +125,8 @@
     "detail_error": "Could not load expense.",
     "review_status_help_pending": "Waiting for admin to review.",
     "review_status_help_rejected": "This entry was rejected by an admin.",
-    "edit": "Edit"
+    "edit": "Edit",
+    "edit_cta": "Edit expense"
   },
   "edit": {
     "title": "Edit Expense",
