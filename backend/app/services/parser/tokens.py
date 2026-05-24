@@ -97,13 +97,33 @@ def _build_token(text: str, start: int, end: int) -> Token:
 
 
 def _peel_currency(chunk: str, start: int) -> list[Token]:
-    """Peel a leading currency symbol off a whitespace-separated chunk.
+    """Split a whitespace-separated chunk around every currency symbol.
 
-    If ``chunk`` starts with a recognised currency symbol AND has more
-    characters after it, emit the currency symbol as its own token and
-    recurse on the remainder (to handle the degenerate ``"$$305"`` case
-    symmetrically). A bare currency symbol with no trailing amount
-    becomes a single currency-symbol token.
+    Currency symbols (``$ ¥ € £ ₩ ₹``) act as token boundaries even
+    when they appear mid-chunk with no surrounding whitespace, so:
+
+    - ``"$305"``              -> ``["$", "305"]`` (leading)
+    - ``"305$"``              -> ``["305", "$"]`` (trailing)
+    - ``"电工$100"``            -> ``["电工", "$", "100"]`` (mid-chunk —
+      operator-reported gap: CJK words concatenated to a $-prefixed
+      number with no space used to tokenize as one weird chunk and
+      bypassed both the amount and job matchers entirely)
+    - ``"$$305"``             -> ``["$", "$", "305"]`` (degenerate)
+
+    Spans are computed from the original ``start`` offset so downstream
+    diagnostics + the amount-source-span exclusion in the job matcher
+    still point at the right slice of ``raw_text``.
+
+    Known limitation (acceptable per scope): only currency symbols
+    are token boundaries. A digit/letter boundary inside a chunk does
+    NOT split, so ``"电工$100水工$200"`` (two amounts concatenated in
+    one chunk with no whitespace) tokenises as
+    ``["电工", "$", "100水工", "$", "200"]``. The "100水工" token is
+    not amount-like (mixed letters) so the second amount wins. This
+    is rare in practice because the operator workflow uses newlines
+    between items, which whitespace-split first. Adding a
+    digit/letter split would also break legitimate alphanumeric job
+    codes like ``"KH-01"`` and is deliberately avoided.
 
     Empty input is unreachable by construction — callers split on
     whitespace runs and filter empties — but we still return ``[]``
@@ -112,13 +132,35 @@ def _peel_currency(chunk: str, start: int) -> list[Token]:
     if not chunk:
         return []
 
-    first = chunk[0]
-    if first in _CURRENCY_SYMBOLS and len(chunk) > 1:
-        sym_token = _build_token(first, start, start + 1)
-        rest = chunk[1:]
-        return [sym_token, *_peel_currency(rest, start + 1)]
+    tokens: list[Token] = []
+    buffer: list[str] = []
+    buffer_start = start
 
-    return [_build_token(chunk, start, start + len(chunk))]
+    for offset, ch in enumerate(chunk):
+        absolute = start + offset
+        if ch in _CURRENCY_SYMBOLS:
+            # Flush any accumulated non-currency characters as one token.
+            if buffer:
+                segment = "".join(buffer)
+                tokens.append(
+                    _build_token(segment, buffer_start, buffer_start + len(segment))
+                )
+                buffer = []
+            # Emit the currency symbol as its own single-character token.
+            tokens.append(_build_token(ch, absolute, absolute + 1))
+            buffer_start = absolute + 1
+        else:
+            if not buffer:
+                buffer_start = absolute
+            buffer.append(ch)
+
+    if buffer:
+        segment = "".join(buffer)
+        tokens.append(
+            _build_token(segment, buffer_start, buffer_start + len(segment))
+        )
+
+    return tokens
 
 
 def tokenize(raw_text: str) -> list[Token]:

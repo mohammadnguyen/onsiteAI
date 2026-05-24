@@ -275,11 +275,92 @@ def test_decimal_only_no_leading_digit_is_not_numeric():
     assert tokens[0].is_numeric_like is False
 
 
-def test_currency_symbol_not_peeled_mid_token():
-    """``"abc$305"`` — the ``$`` is NOT peeled because it's not a prefix."""
+def test_currency_symbol_peeled_mid_token_ascii():
+    """``"abc$305"`` — the ``$`` IS now split out, even mid-chunk.
+
+    Pre-fix behaviour: one weird token ``"abc$305"`` that neither the
+    amount nor job matcher could handle. Post-fix: three clean tokens
+    (word + currency + number) so downstream stages parse correctly.
+    """
     tokens = tokenize("abc$305")
+    assert [tok.text for tok in tokens] == ["abc", "$", "305"]
+    assert [tok.is_currency_symbol for tok in tokens] == [False, True, False]
+    assert [tok.is_numeric_like for tok in tokens] == [False, False, True]
+    # Spans into the original "abc$305" string.
+    assert [tok.span for tok in tokens] == [(0, 3), (3, 4), (4, 7)]
+
+
+def test_currency_symbol_peeled_mid_token_cjk():
+    """``"电工$100"`` — operator-reported gap. Mid-chunk ``$`` splits cleanly.
+
+    Without this, the operator's natural typing pattern (CJK word
+    immediately followed by a $-prefixed amount, no space between
+    them) lost the amount entirely — amount stage saw no numeric-like
+    candidate and the expense save returned "Amount is required".
+    """
+    tokens = tokenize("电工$100")
+    assert [tok.text for tok in tokens] == ["电工", "$", "100"]
+    assert [tok.is_currency_symbol for tok in tokens] == [False, True, False]
+    assert [tok.is_numeric_like for tok in tokens] == [False, False, True]
+    assert [tok.span for tok in tokens] == [(0, 2), (2, 3), (3, 6)]
+
+
+def test_currency_symbol_peeled_trailing():
+    """``"305$"`` — trailing ``$`` becomes its own token after the number."""
+    tokens = tokenize("305$")
+    assert [tok.text for tok in tokens] == ["305", "$"]
+    assert [tok.is_currency_symbol for tok in tokens] == [False, True]
+    assert [tok.is_numeric_like for tok in tokens] == [True, False]
+    assert [tok.span for tok in tokens] == [(0, 3), (3, 4)]
+
+
+def test_currency_symbol_peeled_multiple_in_chunk_limitation():
+    """``"电工$100水工$200"`` — currency-only split (documented limitation).
+
+    Only currency symbols are token boundaries; digit/letter
+    boundaries inside a chunk do NOT split. So the middle "100水工"
+    fragment stays as ONE token (mixed digits + CJK, NOT
+    numeric_like). This means the SECOND amount wins (last numeric
+    candidate) and the first $100 is effectively lost from amount
+    extraction.
+
+    This is acceptable because: (a) operator's multi-item workflow
+    uses newlines between items (whitespace splits first), so this
+    edge case doesn't fire in practice; (b) adding a digit/letter
+    split would also break legitimate alphanumeric job codes like
+    ``"KH-01"``. Test pins the limitation so a future "improvement"
+    that breaks job codes is caught immediately.
+    """
+    tokens = tokenize("电工$100水工$200")
+    assert [tok.text for tok in tokens] == [
+        "电工",
+        "$",
+        "100水工",
+        "$",
+        "200",
+    ]
+    # "100水工" is NOT numeric_like (mixed letters), so amount stage
+    # treats only the trailing "200" as a candidate.
+    assert [tok.is_numeric_like for tok in tokens] == [
+        False,
+        False,
+        False,
+        False,
+        True,
+    ]
+
+
+def test_alphanumeric_job_code_not_split_by_letter_digit_boundary():
+    """Job codes like ``"KH-01"`` must stay as a single token.
+
+    Pins the negative of the limitation above: we deliberately do
+    NOT split on digit/letter boundaries. ``"KH-01"`` is a single
+    word-ish token that the job matcher will resolve via the code
+    route (not chopped into ``["KH", "-", "01"]`` or similar).
+    """
+    tokens = tokenize("KH-01")
     assert len(tokens) == 1
-    assert tokens[0].text == "abc$305"
+    assert tokens[0].text == "KH-01"
     assert tokens[0].is_currency_symbol is False
     assert tokens[0].is_numeric_like is False
 
