@@ -44,7 +44,8 @@
     "remaining": "Remaining (ex GST)",
     "no_budget_set": "No budget set",
     "spending_loading": "Loading spending…",
-    "spending_load_error": "Couldn't load spending."
+    "spending_load_error": "Couldn't load spending.",
+    "edit": "Edit"
   },
   "settings": {
     "title": "Settings",
@@ -151,6 +152,21 @@
     "save": "Save",
     "amount_invalid": "Amount must be between 0.01 and 10,000,000.",
     "error_network": "Network error. Check your connection and try again."
+  },
+  "jobs_edit": {
+    "title": "Edit Job",
+    "cancel": "Cancel",
+    "save": "Save",
+    "error_network": "Network error. Check your connection and try again.",
+    "not_found": "Job not found.",
+    "load_error": "Couldn't load job.",
+    "numeric_blank_hint": "Leave blank to clear",
+    "amount_invalid": "Amount must be between 0 and 10,000,000.",
+    "aliases_read_only_hint": "Existing aliases can't be removed from mobile. Add new ones below.",
+    "alias_add_placeholder": "Add an alias…",
+    "alias_add": "Add",
+    "alias_duplicate": "That alias already exists.",
+    "alias_error": "Couldn't add alias."
   },
   "review_reason": {
     "amount_uncertain": "Amount uncertain",

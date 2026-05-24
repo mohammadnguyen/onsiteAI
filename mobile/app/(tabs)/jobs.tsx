@@ -20,6 +20,7 @@ import {
   type JobPublic,
   type JobBudgetSummary,
 } from '../../src/api/hooks/useJobs';
+import { useRouter, type Href } from 'expo-router';
 import { useJobExpenses } from '../../src/api/hooks/useExpenses';
 import { NewJobModal } from '../../src/components/NewJobModal';
 import { RecentCapturesList } from '../../src/components/RecentCapturesList';
@@ -136,12 +137,22 @@ function JobDetailModal({
   onClose: () => void;
 }) {
   const { t } = useTranslation();
+  const router = useRouter();
   const { data, isLoading, isError } = useJob(jobId);
   // Per-job spend + budget. Parallel fetch to useJob — both fire when
   // jobId is set, so spending is usually ready by the time the user has
   // scanned identity rows. Endpoint is admin-only; contributors get 403
   // and the section hides silently (see SpendingSection below).
   const summary = useJobBudgetSummary(jobId);
+
+  // Tier 1B: navigate to the job edit screen. selectedJobId stays in
+  // the store, so when the user returns via router.back() the modal
+  // re-opens at the same job and shows refetched data.
+  const onEdit = () => {
+    if (!jobId) return;
+    const editHref = `/jobs/${jobId}/edit` as unknown as Href;
+    router.push(editHref);
+  };
   // Per-job expense list (correction-loop slice). Same modal, below
   // spending. Limit 20 — operator-approved scope; extend later only
   // if 20 turns out not to be enough during dogfooding. Reuses the
@@ -167,6 +178,22 @@ function JobDetailModal({
           >
             <Text style={s.closeBtn}>{'\u00d7'}</Text>
           </TouchableOpacity>
+          {/* Tier 1B: Edit button. Only meaningful when a job has
+              actually loaded (else there's nothing to edit). Admin-
+              only on the backend; contributor will get 403 inline
+              on save attempt. */}
+          {data ? (
+            <TouchableOpacity
+              onPress={onEdit}
+              style={s.editBtnTouch}
+              testID="job-detail-edit"
+              accessibilityRole="button"
+              accessibilityLabel={t('job.edit')}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={s.editBtnText}>{t('job.edit')}</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
         {isLoading ? (
           <View style={s.center}>
@@ -361,7 +388,11 @@ const s = StyleSheet.create({
   sep: { height: 1, backgroundColor: '#e2e8f0' },
   modalHeader: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
+    // Close on the left, Edit on the right. justifyContent
+    // space-between keeps them at the edges. iOS HIG-style: dismiss
+    // on the leading edge, primary action on the trailing edge.
+    justifyContent: 'space-between',
+    alignItems: 'center',
     paddingHorizontal: 16,
     paddingBottom: 8,
     // paddingTop applied inline from useSafeAreaInsets — see JobDetailModal.
@@ -378,6 +409,15 @@ const s = StyleSheet.create({
     justifyContent: 'center',
   },
   closeBtn: { fontSize: 30, lineHeight: 32, color: '#0f172a', fontWeight: '300' },
+  // Tier 1B: Edit button in the job detail modal header.
+  editBtnTouch: {
+    minWidth: 44,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editBtnText: { fontSize: 16, color: '#1e293b', fontWeight: '600' },
   detailWrap: { padding: 16 },
   detailTitle: { fontSize: 22, fontWeight: '600', marginBottom: 16, color: '#0f172a' },
   detailRow: { flexDirection: 'row', paddingVertical: 6 },

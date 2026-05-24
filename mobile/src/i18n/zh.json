@@ -44,7 +44,8 @@
     "remaining": "\u5269\u4f59\uff08\u4e0d\u542bGST\uff09",
     "no_budget_set": "\u672a\u8bbe\u9884\u7b97",
     "spending_loading": "\u52a0\u8f7d\u652f\u51fa\u4e2d\u2026",
-    "spending_load_error": "\u65e0\u6cd5\u52a0\u8f7d\u652f\u51fa\u3002"
+    "spending_load_error": "\u65e0\u6cd5\u52a0\u8f7d\u652f\u51fa\u3002",
+    "edit": "\u7f16\u8f91"
   },
   "settings": {
     "title": "\u8bbe\u7f6e",
@@ -151,6 +152,21 @@
     "save": "\u4fdd\u5b58",
     "amount_invalid": "\u91d1\u989d\u5fc5\u987b\u5728 0.01 \u5230 10,000,000 \u4e4b\u95f4\u3002",
     "error_network": "\u7f51\u7edc\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u8fde\u63a5\u540e\u91cd\u8bd5\u3002"
+  },
+  "jobs_edit": {
+    "title": "\u7f16\u8f91\u9879\u76ee",
+    "cancel": "\u53d6\u6d88",
+    "save": "\u4fdd\u5b58",
+    "error_network": "\u7f51\u7edc\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u8fde\u63a5\u540e\u91cd\u8bd5\u3002",
+    "not_found": "\u627e\u4e0d\u5230\u6b64\u9879\u76ee\u3002",
+    "load_error": "\u65e0\u6cd5\u52a0\u8f7d\u9879\u76ee\u3002",
+    "numeric_blank_hint": "\u7559\u7a7a\u5373\u53ef\u6e05\u9664",
+    "amount_invalid": "\u91d1\u989d\u5fc5\u987b\u5728 0 \u5230 10,000,000 \u4e4b\u95f4\u3002",
+    "aliases_read_only_hint": "\u73b0\u6709\u522b\u540d\u6682\u4e0d\u53ef\u5728\u79fb\u52a8\u7aef\u5220\u9664\u3002\u53ef\u5728\u4e0b\u65b9\u65b0\u589e\u3002",
+    "alias_add_placeholder": "\u65b0\u589e\u522b\u540d\u2026\u2026",
+    "alias_add": "\u6dfb\u52a0",
+    "alias_duplicate": "\u8be5\u522b\u540d\u5df2\u5b58\u5728\u3002",
+    "alias_error": "\u65e0\u6cd5\u6dfb\u52a0\u522b\u540d\u3002"
   },
   "review_reason": {
     "amount_uncertain": "\u91d1\u989d\u4e0d\u786e\u5b9a",

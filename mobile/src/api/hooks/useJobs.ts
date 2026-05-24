@@ -6,10 +6,12 @@ import type { components } from '../types';
 export type JobPublic = components['schemas']['JobPublic'];
 export type JobWithDetailPublic = components['schemas']['JobWithDetailPublic'];
 export type JobCreateInput = components['schemas']['JobCreate'];
+export type JobUpdateInput = components['schemas']['JobUpdate'];
 export type JobAliasCreateInput = components['schemas']['JobAliasCreate'];
 export type JobAliasPublic = components['schemas']['JobAliasPublic'];
 export type JobBudgetSummary = components['schemas']['JobBudgetSummary'];
 export type CategoryBudgetRow = components['schemas']['CategoryBudgetRow'];
+export type JobStatus = components['schemas']['JobStatus'];
 
 export function useJobs() {
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -63,6 +65,35 @@ export function useJobBudgetSummary(jobId: string | null) {
     },
     enabled: !!accessToken && !!jobId,
     retry: false,
+  });
+}
+
+/**
+ * Tier 1B: PATCH /jobs/{id} mutation for the mobile job edit screen.
+ *
+ * Admin-only on the backend; contributors get 403. Sends only the
+ * caller-supplied fields (conditional-spread body builder lives in
+ * the edit screen). Numeric blanks must be sent as explicit null to
+ * clear the value — NEVER as 0 (operator guardrail; 0 is a real
+ * value that means "the contract is worth zero", which is a
+ * different intent from "no contract value set").
+ *
+ * Cache invalidation: `['jobs']` root → covers the jobs list, the
+ * job detail (used by the modal), the per-job budget summary, AND
+ * any per-job queries derived from the jobs root prefix. Mirrors
+ * the broad-by-design pattern used in useDeleteExpense /
+ * useUpdateExpense — favour correctness over micro-optimisation.
+ */
+export function useUpdateJob(jobId: string) {
+  const qc = useQueryClient();
+  return useMutation<JobPublic, unknown, JobUpdateInput>({
+    mutationFn: async (body) => {
+      const { data } = await api.patch<JobPublic>(`/jobs/${jobId}`, body);
+      return data;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
+    },
   });
 }
 
