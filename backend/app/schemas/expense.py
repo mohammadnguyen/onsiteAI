@@ -220,11 +220,24 @@ class ExpenseDetailPublic(ExpensePublic):
     ``resolved`` or ``rejected``) and is ``[]`` when no queue row
     exists. It is NOT a historical audit trail — for that, admins use
     ``GET /expenses/{id}/audit``.
+
+    ``pending_review_queue_id`` is the ``review_id`` of the
+    *currently actionable* ``expense_review_queue`` row — i.e. one
+    whose ``status == open``. It is ``None`` when there is no
+    actionable queue row, which includes:
+      * no queue row ever existed,
+      * the queue row was resolved (expense is reviewed), OR
+      * the queue row was rejected.
+    Mobile clients gate Approve / Reject buttons on this field's
+    presence — never on ``review_status`` alone, because a
+    historical resolved/rejected row would otherwise leak as a
+    callable queue action. Stale queue rows MUST NOT surface here.
     """
 
     supplier: SupplierPublic | None
     category: CategoryPublic | None
     review_reasons: list[ReviewReasonCode] = Field(default_factory=list)
+    pending_review_queue_id: uuid.UUID | None = None
 
 
 class ExpenseListResponse(BaseModel):

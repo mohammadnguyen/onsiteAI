@@ -158,9 +158,15 @@ async def get_expense_endpoint(
     ``resolved`` or ``rejected``). Returns ``[]`` if no queue row
     exists. This is NOT a historical audit trail — see
     ``GET /expenses/{id}/audit`` for that.
+
+    ``pending_review_queue_id`` is the ``review_id`` of the
+    currently-actionable queue row IFF its status is ``open``. It is
+    ``None`` for resolved / rejected / absent queue rows. Mobile uses
+    this as the sole visibility gate for Approve / Reject buttons so
+    stale resolved/rejected rows never expose those actions.
     """
     try:
-        expense, reasons = await svc.get_expense_with_reasons(
+        expense, reasons, pending_review_queue_id = await svc.get_expense_with_reasons(
             db, current_user=current_user, expense_id=expense_id
         )
     except svc.ExpenseNotFound as exc:
@@ -170,7 +176,10 @@ async def get_expense_endpoint(
     except svc.EditForbidden as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.detail) from exc
     return ExpenseDetailPublic.model_validate(expense).model_copy(
-        update={"review_reasons": reasons}
+        update={
+            "review_reasons": reasons,
+            "pending_review_queue_id": pending_review_queue_id,
+        }
     )
 
 

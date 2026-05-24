@@ -718,6 +718,139 @@ async def test_get_missing_expense_returns_404(client, admin_token):
 
 
 # ---------------------------------------------------------------------------
+# pending_review_queue_id surfacing (3-button workflow precondition)
+#
+# Mobile gates Approve / Reject visibility on this field — NEVER on
+# review_status alone — so the field MUST only surface a currently
+# actionable (status=open) queue row's review_id. Stale resolved /
+# rejected queue rows MUST NOT leak through as callable workflow
+# actions. Each of the five cases below is required by the operator
+# guardrail spec for the slice.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pending_review_queue_id_surfaces_for_open_queue_row(
+    client, db_session, world, admin_token
+):
+    """Case 1: pending expense with open queue row → field is the review_id."""
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        review_status=ReviewStatus.pending,
+    )
+    queue_row = await _seed_queue_row(
+        db_session,
+        expense_id=exp.expense_id,
+        reasons=[ReviewReasonCode.amount_uncertain],
+        status=ReviewQueueStatus.open,
+    )
+
+    r = await client.get(f"/expenses/{exp.expense_id}", headers=_auth(admin_token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["pending_review_queue_id"] == str(queue_row.review_id)
+
+
+@pytest.mark.asyncio
+async def test_pending_review_queue_id_null_for_reviewed_expense(
+    client, db_session, world, admin_token
+):
+    """Case 2: reviewed expense (no queue row) → field is null."""
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        review_status=ReviewStatus.reviewed,
+    )
+
+    r = await client.get(f"/expenses/{exp.expense_id}", headers=_auth(admin_token))
+    assert r.status_code == 200, r.text
+    assert r.json()["pending_review_queue_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_pending_review_queue_id_null_for_rejected_expense(
+    client, db_session, world, admin_token
+):
+    """Case 3: rejected expense (queue row also rejected) → field is null.
+
+    Guard: stale rejected queue row's review_id must NOT surface.
+    Without this, mobile could (incorrectly) show an Approve button
+    on an already-rejected item and call POST /review-queue/{id}/resolve
+    on a non-open row, surfacing a backend 4xx as a workflow bug.
+    """
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        review_status=ReviewStatus.rejected,
+    )
+    await _seed_queue_row(
+        db_session,
+        expense_id=exp.expense_id,
+        reasons=[ReviewReasonCode.duplicate_suspected],
+        status=ReviewQueueStatus.rejected,
+    )
+
+    r = await client.get(f"/expenses/{exp.expense_id}", headers=_auth(admin_token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # review_reasons still surface (existing semantics) — but the
+    # actionable id does not.
+    assert body["review_reasons"] == ["duplicate_suspected"]
+    assert body["pending_review_queue_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_pending_review_queue_id_null_for_resolved_queue_row(
+    client, db_session, world, admin_token
+):
+    """Case 4: reviewed expense with historical resolved queue row → field is null.
+
+    Same guard as the rejected case: the resolved queue row is a
+    historical record, not a callable action. Mobile must not see it
+    as approve-able.
+    """
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        review_status=ReviewStatus.reviewed,
+    )
+    await _seed_queue_row(
+        db_session,
+        expense_id=exp.expense_id,
+        reasons=[ReviewReasonCode.category_uncertain],
+        status=ReviewQueueStatus.resolved,
+    )
+
+    r = await client.get(f"/expenses/{exp.expense_id}", headers=_auth(admin_token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["review_reasons"] == ["category_uncertain"]
+    assert body["pending_review_queue_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_pending_review_queue_id_null_when_no_queue_row(
+    client, db_session, world, admin_token
+):
+    """Case 5: no queue row ever → field is null."""
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        review_status=ReviewStatus.reviewed,
+    )
+
+    r = await client.get(f"/expenses/{exp.expense_id}", headers=_auth(admin_token))
+    assert r.status_code == 200, r.text
+    assert r.json()["pending_review_queue_id"] is None
+
+
+# ---------------------------------------------------------------------------
 # PATCH edit rules + audit
 # ---------------------------------------------------------------------------
 

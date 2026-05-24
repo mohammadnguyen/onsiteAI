@@ -785,30 +785,43 @@ async def get_expense_with_reasons(
     *,
     current_user: User,
     expense_id: uuid.UUID,
-) -> tuple[Expense, list[ReviewReasonCode]]:
-    """Fetch one expense + the reasons on its review-queue row, if any.
+) -> tuple[Expense, list[ReviewReasonCode], uuid.UUID | None]:
+    """Fetch one expense + queue context for the detail endpoint.
 
-    Delegates RBAC + 404 to :func:`get_expense` so contributor-ownership
-    enforcement is identical.
-
-    ``review_reasons`` semantics — important: the returned list reflects
-    the *current* ``expense_review_queue`` row for this expense
-    (regardless of its ``status``: ``open``, ``resolved`` or
-    ``rejected``). It is NOT a historical audit trail. When no queue
-    row exists, the list is empty.
+    Returns a three-tuple:
+      * ``expense`` — the :class:`Expense` row (RBAC-checked via
+        :func:`get_expense` — contributor ownership enforced).
+      * ``reasons`` — the current queue row's ``review_reasons`` list
+        (any status). NOT a historical audit trail. ``[]`` when no
+        queue row exists.
+      * ``pending_review_queue_id`` — the ``review_id`` of the queue
+        row IFF its status is :attr:`ReviewQueueStatus.open` (i.e.
+        currently actionable). ``None`` for resolved / rejected /
+        absent queue rows. Mobile gates Approve / Reject button
+        visibility on this — stale resolved/rejected queue rows must
+        NOT surface as actionable.
 
     The unique constraint on ``expense_review_queue.expense_id``
-    guarantees at most one row per expense, so ``scalar_one_or_none``
-    is safe here.
+    guarantees at most one row per expense, so a single SELECT
+    returning ``(review_id, status, reasons)`` is sufficient and
+    avoids a second round-trip.
     """
     expense = await get_expense(db, current_user=current_user, expense_id=expense_id)
 
-    reasons_stmt = select(ExpenseReviewQueue.review_reasons).where(
-        ExpenseReviewQueue.expense_id == expense_id
+    queue_stmt = select(
+        ExpenseReviewQueue.review_id,
+        ExpenseReviewQueue.status,
+        ExpenseReviewQueue.review_reasons,
+    ).where(ExpenseReviewQueue.expense_id == expense_id)
+    row = (await db.execute(queue_stmt)).first()
+    if row is None:
+        return expense, [], None
+    review_id, queue_status, reasons_array = row
+    reasons: list[ReviewReasonCode] = list(reasons_array)
+    pending_review_queue_id = (
+        review_id if queue_status == ReviewQueueStatus.open else None
     )
-    row = (await db.execute(reasons_stmt)).scalar_one_or_none()
-    reasons: list[ReviewReasonCode] = list(row) if row is not None else []
-    return expense, reasons
+    return expense, reasons, pending_review_queue_id
 
 
 # ---------------------------------------------------------------------------
