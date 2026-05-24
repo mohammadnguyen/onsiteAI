@@ -220,8 +220,14 @@ export default function JobEditScreen() {
   ]);
 
   const onBack = () => {
-    if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)/jobs');
+    // Always land back on the Jobs tab explicitly. router.back() pops
+    // the root stack and lands on whichever tab expo-router treats as
+    // the default (currently /(tabs)/expenses per app/_layout.tsx's
+    // post-login redirect), losing the user's job context. Replacing
+    // to /(tabs)/jobs guarantees they return to the right tab; the
+    // useFocusEffect in JobsScreen then re-presents the native Modal
+    // at the same selectedJobId (preserved in zustand store).
+    router.replace('/(tabs)/jobs');
   };
 
   const onSave = async () => {

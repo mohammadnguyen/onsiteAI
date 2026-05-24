@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -20,7 +20,7 @@ import {
   type JobPublic,
   type JobBudgetSummary,
 } from '../../src/api/hooks/useJobs';
-import { useRouter, type Href } from 'expo-router';
+import { useFocusEffect, useRouter, type Href } from 'expo-router';
 import { useJobExpenses } from '../../src/api/hooks/useExpenses';
 import { NewJobModal } from '../../src/components/NewJobModal';
 import { RecentCapturesList } from '../../src/components/RecentCapturesList';
@@ -61,6 +61,31 @@ export default function JobsScreen() {
   // and React Native renders them at the OS level, so even concurrent
   // visible state would be visually layered, not crash-y.
   const [showNewJob, setShowNewJob] = useState(false);
+
+  // Tier 1B follow-up: native <Modal> overlay re-present on tab refocus.
+  // When the user pushes /jobs/[id]/edit (or any sub-route outside the
+  // tabs group), iOS dismisses the <Modal> implicitly even though
+  // `visible={!!selectedJobId}` remains true. On return, React sees no
+  // state change and never triggers a fresh present, so the user lands
+  // on the bare Jobs list. Forcing JobDetailModal to remount via a
+  // bumped `key` re-triggers the native present. The first-focus guard
+  // skips the very first mount (the modal renders correctly without
+  // intervention there); zustand `getState()` reads the live store
+  // value without making `selectedJobId` a callback dependency, which
+  // would cause spurious remounts on row-tap.
+  const [modalEpoch, setModalEpoch] = useState(0);
+  const firstFocusRef = useRef(true);
+  useFocusEffect(
+    useCallback(() => {
+      if (firstFocusRef.current) {
+        firstFocusRef.current = false;
+        return;
+      }
+      if (useSelectedJobStore.getState().selectedJobId != null) {
+        setModalEpoch((e) => e + 1);
+      }
+    }, []),
+  );
 
   const jobs = useMemo(() => data ?? [], [data]);
 
@@ -103,6 +128,7 @@ export default function JobsScreen() {
         />
       )}
       <JobDetailModal
+        key={modalEpoch}
         jobId={selectedId}
         onClose={() => setSelectedId(null)}
       />
