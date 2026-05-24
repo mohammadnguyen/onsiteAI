@@ -23,6 +23,7 @@ import {
 import { useJobExpenses } from '../../src/api/hooks/useExpenses';
 import { NewJobModal } from '../../src/components/NewJobModal';
 import { RecentCapturesList } from '../../src/components/RecentCapturesList';
+import { useSelectedJobStore } from '../../src/store/selectedJob';
 import { formatMoney } from '../../src/util/format';
 
 /**
@@ -47,7 +48,12 @@ function localizeJobStatus(status: string, t: TFunction): string {
 export default function JobsScreen() {
   const { t } = useTranslation();
   const { data, isLoading, isError } = useJobs();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Persist the selected job id across React mount/unmount cycles via
+  // the global store. Local useState was lost when JobsScreen unmounted
+  // during navigation to /expenses/{id}, which made multi-delete loops
+  // dump the user on the Capture screen on return.
+  const selectedId = useSelectedJobStore((s) => s.selectedJobId);
+  const setSelectedId = useSelectedJobStore((s) => s.setSelectedJobId);
   // Mobile Job Management Lite — admin-only "+ New Job" modal flag.
   // The detail modal and the new-job modal are mutually exclusive by
   // user gesture (no UI path opens both); both are top-level <Modal>s
@@ -204,6 +210,7 @@ function JobDetailModal({
             <RecentCapturesList
               query={jobExpenses}
               heading={t('job.expenses')}
+              fromJobId={jobId ?? undefined}
             />
           </ScrollView>
         )}

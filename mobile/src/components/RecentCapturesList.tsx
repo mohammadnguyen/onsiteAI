@@ -38,6 +38,16 @@ type Props = {
    * component. Pass an already-translated string.
    */
   heading?: string;
+  /**
+   * Optional navigation-context source. When set, row taps include
+   * `?from=job&jobId=<id>` on the expense-detail href so the detail
+   * screen knows to return to the Jobs tab modal (rather than the
+   * Capture screen) after back/delete actions. Capture-screen
+   * callers leave this unset; their Links stay context-free and
+   * the detail screen falls back to its current router.back()
+   * behaviour.
+   */
+  fromJobId?: string;
 };
 
 const STATUS_COLORS = {
@@ -53,7 +63,7 @@ function truncate(s: string, max: number): string {
   return s.slice(0, max).trimEnd() + '…';
 }
 
-export function RecentCapturesList({ query, heading }: Props) {
+export function RecentCapturesList({ query, heading, fromJobId }: Props) {
   const { t } = useTranslation();
   const jobs = useJobs();
 
@@ -98,6 +108,7 @@ export function RecentCapturesList({ query, heading }: Props) {
               key={e.expense_id}
               expense={e}
               jobName={jobMap.get(e.job_id)}
+              fromJobId={fromJobId}
             />
           ))}
         </View>
@@ -109,9 +120,11 @@ export function RecentCapturesList({ query, heading }: Props) {
 function ExpenseRow({
   expense,
   jobName,
+  fromJobId,
 }: {
   expense: ExpensePublic;
   jobName: string | undefined;
+  fromJobId?: string;
 }) {
   const { t } = useTranslation();
   const statusColor = STATUS_COLORS[expense.review_status];
@@ -130,7 +143,15 @@ function ExpenseRow({
   // the next dev-server start would otherwise reject the path string.
   // Runtime behaviour is unchanged. After the next Metro run the cast
   // can be removed (the path will be in the generated union).
-  const detailHref = `/expenses/${expense.expense_id}` as unknown as Href;
+  // When the row is rendered inside a job-context list (per-job
+  // expenses in the Job detail modal), append `from=job&jobId=...`
+  // so the expense detail screen knows to return to the Jobs tab
+  // modal rather than the Capture screen on back/delete.
+  const detailHref = (
+    fromJobId
+      ? `/expenses/${expense.expense_id}?from=job&jobId=${fromJobId}`
+      : `/expenses/${expense.expense_id}`
+  ) as unknown as Href;
   return (
     <Link href={detailHref} asChild>
       <Pressable

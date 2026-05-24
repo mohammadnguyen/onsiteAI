@@ -15,6 +15,7 @@ import axios from 'axios';
 
 import { useExpense, useDeleteExpense } from '../../src/api/hooks/useExpenses';
 import { useJobs } from '../../src/api/hooks/useJobs';
+import { useSelectedJobStore } from '../../src/store/selectedJob';
 import type {
   ExpenseDetailPublic,
   ReviewReasonCode,
@@ -73,12 +74,17 @@ function isMissing(error: unknown): boolean {
 }
 
 export default function ExpenseDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, from, jobId } = useLocalSearchParams<{
+    id: string;
+    from?: string;
+    jobId?: string;
+  }>();
   const router = useRouter();
   const { t } = useTranslation();
   const expense = useExpense(id);
   const jobs = useJobs();
   const deleteMutation = useDeleteExpense(id ?? '');
+  const setSelectedJobId = useSelectedJobStore((s) => s.setSelectedJobId);
 
   const jobName = useMemo(() => {
     if (!expense.data) return undefined;
@@ -86,6 +92,20 @@ export default function ExpenseDetailScreen() {
   }, [expense.data, jobs.data]);
 
   const onBack = () => {
+    // Job-modal return path: ONLY triggered when the URL explicitly
+    // carries from=job&jobId=... (operator guardrail — don't infer
+    // job-return behaviour from the global store alone, since the
+    // store may hold a stale modal id from a different workflow).
+    // We set the store so JobsScreen re-opens the modal on mount,
+    // then replace to /(tabs)/jobs so the user lands back in the
+    // job context they came from. This unblocks the multi-delete
+    // loop: Job modal → expense → Delete → Job modal (same job) →
+    // tap next expense → repeat.
+    if (from === 'job' && jobId) {
+      setSelectedJobId(jobId);
+      router.replace('/(tabs)/jobs');
+      return;
+    }
     if (router.canGoBack()) router.back();
     else router.replace('/(tabs)/expenses');
   };
