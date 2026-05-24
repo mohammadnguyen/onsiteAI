@@ -88,6 +88,10 @@
     "new_expense": "New Expense",
     "error_network": "Network error. Check your connection and try again.",
     "continue_capture": "Capture another",
+    "multi_no_items": "First line looks like a shared context (no amount). Add at least one item line below it.",
+    "multi_result_summary": "{{saved}} of {{total}} expenses saved",
+    "multi_result_total": "Total: {{amount}}",
+    "multi_preamble_label": "Shared: {{preamble}}",
     "recent": {
       "title": "Last 5 expenses",
       "empty": "No captures yet.",

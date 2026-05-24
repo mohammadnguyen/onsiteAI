@@ -44,6 +44,30 @@ import { todayISO } from '../../src/util/dates';
 
 type PaymentSel = 'auto' | 'cash' | 'transfer';
 
+/**
+ * Aggregated result of a multi-item capture submission.
+ *
+ * Path A (mobile-only) approach: mobile splits raw_input_text on
+ * newlines, treats the first line as a shared preamble when it has
+ * no `$` (e.g. just a job ref like `003`), prepends it to each item
+ * line, and fires N POST /expenses calls in parallel. Each item's
+ * settled state (saved or error) is captured here so the result card
+ * can render per-row status. Backend untouched — every item goes
+ * through the existing single-expense pipeline.
+ */
+type MultiCaptureItem = {
+  text: string;
+  success: boolean;
+  expense?: ExpenseCreateResponse['expense'];
+  reviewPending?: boolean;
+  error?: string;
+};
+
+type MultiCaptureResult = {
+  items: MultiCaptureItem[];
+  preamble: string | null;
+};
+
 function extractErrorMessage(error: unknown, fallback: string): string {
   if (axios.isAxiosError(error)) {
     const detail = error.response?.data?.detail;
@@ -91,6 +115,15 @@ export default function ExpensesScreen() {
   const [expenseDate, setExpenseDate] = useState<string>(() => todayISO());
   const [formError, setFormError] = useState<string | null>(null);
   const [result, setResult] = useState<ExpenseCreateResponse | null>(null);
+  // Multi-item capture (Path A — mobile-only, N parallel API calls).
+  // When the user types multi-line input, mobile splits on newlines,
+  // treats the first line as a shared preamble if it has no $, then
+  // POSTs one expense per item line in parallel. Aggregated result
+  // replaces the single-item result card. Backend untouched.
+  const [multiResult, setMultiResult] = useState<MultiCaptureResult | null>(
+    null,
+  );
+  const [multiPending, setMultiPending] = useState(false);
 
   // RefreshControl reads `isRefetching` (not `isFetching`) so the
   // spinner only shows on manual pull-to-refresh, not on initial
@@ -103,38 +136,102 @@ export default function ExpensesScreen() {
     />
   );
 
+  // Conditional-spread body builder: only fields the user actually
+  // set are included. Sending explicit `null` would mark them as
+  // caller-set in the backend's `model_fields_set` and cause a 422.
+  // See `admin/src/pages/Capture.tsx:98-106` for the canonical
+  // version. Shared by single + multi paths.
+  type CaptureBody = Omit<ExpenseCreateInput, 'payment_method'> & {
+    payment_method?: PaymentMethod;
+  };
+  const buildBody = (rawText: string): CaptureBody => {
+    const body: CaptureBody = {
+      raw_input_text: rawText,
+      expense_type: 'supplier_expense',
+      receipt_status: (receiptLater
+        ? 'expected_later'
+        : 'no_receipt') as ReceiptStatus,
+      expense_date: expenseDate,
+    };
+    if (paymentSel !== 'auto') body.payment_method = paymentSel as PaymentMethod;
+    return body;
+  };
+
   const onSubmit = async () => {
-    if (createExpense.isPending) return;
+    if (createExpense.isPending || multiPending) return;
     const trimmed = rawInputText.trim();
     if (trimmed.length === 0) return;
     setFormError(null);
     Keyboard.dismiss();
 
-    // Conditional-spread body builder: only fields the user actually
-    // set are included. Sending explicit `null` would mark them as
-    // caller-set in the backend's `model_fields_set` and cause a 422.
-    // See `admin/src/pages/Capture.tsx:98-106` for the canonical
-    // version.
-    type CaptureBody = Omit<ExpenseCreateInput, 'payment_method'> & {
-      payment_method?: PaymentMethod;
-    };
-    const body: CaptureBody = {
-      raw_input_text: trimmed,
-      expense_type: 'supplier_expense',
-      receipt_status: (receiptLater ? 'expected_later' : 'no_receipt') as ReceiptStatus,
-      // P3: always send expense_date as ISO YYYY-MM-DD. The DatePills
-      // component guarantees the state is a valid ISO string; the
-      // backend BeforeValidator re-normalizes anyway, so this is
-      // belt-and-braces correct.
-      expense_date: expenseDate,
-    };
-    if (paymentSel !== 'auto') body.payment_method = paymentSel as PaymentMethod;
+    // Multi-item detection: split on newlines, filter empty lines.
+    const lines = trimmed
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
 
+    if (lines.length <= 1) {
+      // Single-item path — unchanged behaviour.
+      const body = buildBody(trimmed);
+      try {
+        const resp = await createExpense.mutateAsync(body as ExpenseCreateInput);
+        setResult(resp);
+      } catch (err) {
+        setFormError(extractErrorMessage(err, t('capture.error_network')));
+      }
+      return;
+    }
+
+    // Multi-item path. First-line preamble detection: a line is a
+    // preamble if it has no `$` (operator's pattern is a bare job
+    // ref like `003` on line 1). The preamble is prepended to each
+    // subsequent item line so the backend parser still receives a
+    // complete single-item string with the job context attached.
+    // If the first line itself contains `$`, every line is treated
+    // as an independent complete item.
+    const firstLine = lines[0];
+    const hasPreamble = !firstLine.includes('$');
+    const itemLines = hasPreamble ? lines.slice(1) : lines;
+    const preamble = hasPreamble ? firstLine : null;
+
+    if (itemLines.length === 0) {
+      // Preamble-only input — nothing to submit.
+      setFormError(t('capture.multi_no_items'));
+      return;
+    }
+
+    const itemTexts = itemLines.map((line) =>
+      preamble ? `${preamble} ${line}` : line,
+    );
+
+    setMultiPending(true);
     try {
-      const resp = await createExpense.mutateAsync(body as ExpenseCreateInput);
-      setResult(resp);
-    } catch (err) {
-      setFormError(extractErrorMessage(err, t('capture.error_network')));
+      // Parallel POSTs. Promise.allSettled-equivalent via per-item
+      // try/catch so one failure doesn't drop the entire batch.
+      const results = await Promise.all(
+        itemTexts.map(async (text): Promise<MultiCaptureItem> => {
+          try {
+            const resp = await createExpense.mutateAsync(
+              buildBody(text) as ExpenseCreateInput,
+            );
+            return {
+              text,
+              success: true,
+              expense: resp.expense,
+              reviewPending: resp.expense.review_status === 'pending',
+            };
+          } catch (err) {
+            return {
+              text,
+              success: false,
+              error: extractErrorMessage(err, t('capture.error_network')),
+            };
+          }
+        }),
+      );
+      setMultiResult({ items: results, preamble });
+    } finally {
+      setMultiPending(false);
     }
   };
 
@@ -147,8 +244,28 @@ export default function ExpensesScreen() {
     setExpenseDate(todayISO());
     setFormError(null);
     setResult(null);
+    setMultiResult(null);
     setTimeout(() => textareaRef.current?.focus(), 0);
   };
+
+  if (multiResult) {
+    return (
+      <SafeAreaView style={s.safe} edges={['bottom', 'left', 'right']}>
+        <ScrollView
+          contentContainerStyle={s.scroll}
+          keyboardShouldPersistTaps="handled"
+          refreshControl={refreshControl}
+        >
+          <Text style={s.title}>{t('capture.title')}</Text>
+          <MultiCaptureResultCard
+            result={multiResult}
+            onReset={onReset}
+          />
+          <RecentCapturesList query={recentExpenses} />
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
 
   if (result) {
     return (
@@ -166,7 +283,12 @@ export default function ExpensesScreen() {
     );
   }
 
-  const submitDisabled = createExpense.isPending || rawInputText.trim().length === 0;
+  // Unified in-flight flag: blocks form interaction during BOTH the
+  // single-item mutation (createExpense.isPending) and the multi-item
+  // parallel batch (multiPending). Used by the submit button + every
+  // form input below.
+  const inFlight = createExpense.isPending || multiPending;
+  const submitDisabled = inFlight || rawInputText.trim().length === 0;
 
   return (
     <SafeAreaView style={s.safe} edges={['bottom', 'left', 'right']}>
@@ -189,7 +311,7 @@ export default function ExpensesScreen() {
             placeholderTextColor="#94a3b8"
             multiline
             autoFocus
-            editable={!createExpense.isPending}
+            editable={!inFlight}
             style={s.textarea}
             testID="capture-textarea"
             accessibilityLabel={t('capture.title')}
@@ -198,7 +320,7 @@ export default function ExpensesScreen() {
           <DatePills
             value={expenseDate}
             onChange={setExpenseDate}
-            disabled={createExpense.isPending}
+            disabled={inFlight}
           />
 
           <View style={s.paymentRow}>
@@ -206,21 +328,21 @@ export default function ExpensesScreen() {
             <PaymentOption
               label={t('capture.payment_auto')}
               active={paymentSel === 'auto'}
-              disabled={createExpense.isPending}
+              disabled={inFlight}
               onPress={() => setPaymentSel('auto')}
               testID="payment-auto"
             />
             <PaymentOption
               label={t('capture.payment_cash')}
               active={paymentSel === 'cash'}
-              disabled={createExpense.isPending}
+              disabled={inFlight}
               onPress={() => setPaymentSel('cash')}
               testID="payment-cash"
             />
             <PaymentOption
               label={t('capture.payment_transfer')}
               active={paymentSel === 'transfer'}
-              disabled={createExpense.isPending}
+              disabled={inFlight}
               onPress={() => setPaymentSel('transfer')}
               testID="payment-transfer"
             />
@@ -228,8 +350,8 @@ export default function ExpensesScreen() {
 
           <TouchableOpacity
             style={s.checkboxRow}
-            onPress={() => !createExpense.isPending && setReceiptLater((v) => !v)}
-            disabled={createExpense.isPending}
+            onPress={() => !inFlight && setReceiptLater((v) => !v)}
+            disabled={inFlight}
             testID="receipt-later"
             accessibilityRole="checkbox"
             accessibilityState={{ checked: receiptLater }}
@@ -253,7 +375,7 @@ export default function ExpensesScreen() {
             testID="capture-submit"
             accessibilityRole="button"
           >
-            {createExpense.isPending ? (
+            {inFlight ? (
               <ActivityIndicator color="#fff" />
             ) : (
               <Text style={s.submitBtnText}>{t('capture.submit')}</Text>
@@ -301,6 +423,105 @@ function PaymentOption({
         {label}
       </Text>
     </TouchableOpacity>
+  );
+}
+
+/**
+ * Result card for a multi-item capture submission.
+ *
+ * Renders aggregated counts (saved / total / total $) + a per-row
+ * list with success / review-pending / failure status. Each row
+ * shows the literal input text the parser received (preamble +
+ * item line concatenation) so the user can spot what went wrong on
+ * a failed item without having to remember what they typed.
+ *
+ * Reset returns the user to the empty capture form.
+ */
+function MultiCaptureResultCard({
+  result,
+  onReset,
+}: {
+  result: MultiCaptureResult;
+  onReset: () => void;
+}) {
+  const { t } = useTranslation();
+  const total = result.items.length;
+  const saved = result.items.filter((i) => i.success).length;
+  const totalSpend = result.items.reduce((acc, i) => {
+    if (i.success && i.expense) return acc + Number(i.expense.amount_inc_gst);
+    return acc;
+  }, 0);
+  const anyFailed = saved < total;
+  return (
+    <View style={s.multiCard} testID="multi-capture-result-card">
+      <View
+        style={[
+          s.multiBanner,
+          anyFailed ? s.multiBannerMixed : s.multiBannerOk,
+        ]}
+      >
+        <Text
+          style={[
+            s.multiBannerText,
+            anyFailed ? s.multiBannerTextMixed : s.multiBannerTextOk,
+          ]}
+        >
+          {t('capture.multi_result_summary', { saved, total })}
+        </Text>
+        <Text style={s.multiBannerSubtle}>
+          {t('capture.multi_result_total', {
+            amount: `$${totalSpend.toFixed(2)}`,
+          })}
+        </Text>
+      </View>
+      {result.preamble ? (
+        <Text style={s.multiPreamble}>
+          {t('capture.multi_preamble_label', { preamble: result.preamble })}
+        </Text>
+      ) : null}
+      <View style={s.multiItems}>
+        {result.items.map((item, idx) => (
+          <View
+            key={idx}
+            style={s.multiItemRow}
+            testID={`multi-item-${idx}`}
+          >
+            <Text
+              style={[
+                s.multiItemMark,
+                item.success ? s.multiItemMarkOk : s.multiItemMarkFail,
+              ]}
+            >
+              {item.success ? '✓' : '✗'}
+            </Text>
+            <View style={s.multiItemBody}>
+              <Text style={s.multiItemText} numberOfLines={2}>
+                {item.text}
+              </Text>
+              {item.success && item.expense ? (
+                <Text style={s.multiItemMeta}>
+                  ${Number(item.expense.amount_inc_gst).toFixed(2)}
+                  {item.reviewPending
+                    ? ` · ${t('capture.result_pending_review')}`
+                    : ''}
+                </Text>
+              ) : null}
+              {!item.success && item.error ? (
+                <Text style={s.multiItemError}>{item.error}</Text>
+              ) : null}
+            </View>
+          </View>
+        ))}
+      </View>
+      <TouchableOpacity
+        onPress={onReset}
+        style={s.resetBtn}
+        testID="multi-capture-reset"
+        accessibilityRole="button"
+      >
+        <Text style={s.resetBtnText}>{t('capture.continue_capture')}</Text>
+      </TouchableOpacity>
+    </View>
   );
 }
 
@@ -382,4 +603,63 @@ const s = StyleSheet.create({
   },
   submitBtnDisabled: { opacity: 0.4 },
   submitBtnText: { color: '#ffffff', fontWeight: '600', fontSize: 16 },
+  // Multi-item capture result card
+  multiCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    padding: 16,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  multiBanner: {
+    borderRadius: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+  },
+  multiBannerOk: {
+    backgroundColor: '#ecfdf5',
+    borderColor: '#a7f3d0',
+  },
+  multiBannerMixed: {
+    backgroundColor: '#fffbeb',
+    borderColor: '#fde68a',
+  },
+  multiBannerText: { fontSize: 16, fontWeight: '600' },
+  multiBannerTextOk: { color: '#065f46' },
+  multiBannerTextMixed: { color: '#92400e' },
+  multiBannerSubtle: { color: '#475569', fontSize: 13, marginTop: 4 },
+  multiPreamble: { color: '#475569', fontSize: 13 },
+  multiItems: {
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    paddingTop: 8,
+    gap: 10,
+  },
+  multiItemRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  multiItemMark: { fontSize: 16, fontWeight: '700', width: 16 },
+  multiItemMarkOk: { color: '#15803d' },
+  multiItemMarkFail: { color: '#b91c1c' },
+  multiItemBody: { flex: 1 },
+  multiItemText: { color: '#0f172a', fontSize: 14 },
+  multiItemMeta: {
+    color: '#64748b',
+    fontSize: 13,
+    marginTop: 2,
+    fontVariant: ['tabular-nums'],
+  },
+  multiItemError: { color: '#b91c1c', fontSize: 13, marginTop: 2 },
+  resetBtn: {
+    marginTop: 4,
+    backgroundColor: '#1e293b',
+    paddingVertical: 12,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  resetBtnText: { color: '#ffffff', fontWeight: '600', fontSize: 16 },
 });
