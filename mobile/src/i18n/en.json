@@ -134,7 +134,16 @@
     "delete_confirm_title": "Delete expense?",
     "delete_confirm_message": "This removes the expense from active lists and marks it as rejected. It remains in the audit history.",
     "delete_forbidden": "Only admins can delete expenses.",
-    "delete_error": "Couldn't delete expense."
+    "delete_error": "Couldn't delete expense.",
+    "approve_cta": "Approve",
+    "approve_confirm_title": "Approve expense?",
+    "approve_confirm_message": "Mark this expense as reviewed and remove it from the review queue.",
+    "approve_error": "Couldn't approve expense.",
+    "reject_cta": "Reject",
+    "reject_confirm_title": "Reject expense?",
+    "reject_confirm_message": "Reject and remove from active lists. Remains in the audit history.",
+    "reject_error": "Couldn't reject expense.",
+    "review_forbidden": "Only admins can approve or reject expenses."
   },
   "edit": {
     "title": "Edit Expense",

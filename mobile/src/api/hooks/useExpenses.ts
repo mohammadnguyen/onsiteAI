@@ -130,6 +130,65 @@ export function useExpense(expenseId: string | undefined) {
 }
 
 /**
+ * Resolve (approve) a pending review-queue item.
+ *
+ * Backend: POST /review-queue/{review_id}/resolve
+ *   - admin-only (require_admin); 403 for contributors
+ *   - returns 204 on success
+ *   - flips queue row to `resolved` + expense.review_status to `reviewed`
+ *   - writes audit log
+ *
+ * Mobile usage: gated on `ExpenseDetailPublic.pending_review_queue_id`
+ * presence — never on `review_status` alone, so a historical
+ * resolved/rejected queue row can't leak as a callable action.
+ *
+ * Body: empty object in v1 (operator brief: no reason input).
+ * Backend's `ResolveRequest` accepts optional `notes` and
+ * `expense_patch`; we send neither.
+ *
+ * Cache invalidation: `['expenses']` AND `['jobs']` roots (mirrors
+ * useDeleteExpense; covers My Captures, expense detail, per-job
+ * expense list, per-job budget summary, jobs list).
+ */
+export function useResolveQueueItem(reviewId: string) {
+  const qc = useQueryClient();
+  return useMutation<void, unknown, void>({
+    mutationFn: async () => {
+      await api.post(`/review-queue/${reviewId}/resolve`, {});
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['expenses'] });
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
+    },
+  });
+}
+
+/**
+ * Reject a pending review-queue item.
+ *
+ * Backend: POST /review-queue/{review_id}/reject
+ *   - admin-only; 403 for contributors
+ *   - returns 204 on success
+ *   - flips queue row to `rejected` + expense.review_status to `rejected`
+ *   - writes audit log
+ *
+ * Same gating + cache-invalidation pattern as useResolveQueueItem.
+ * Body: empty (notes deferred to a future slice if dogfood warrants).
+ */
+export function useRejectQueueItem(reviewId: string) {
+  const qc = useQueryClient();
+  return useMutation<void, unknown, void>({
+    mutationFn: async () => {
+      await api.post(`/review-queue/${reviewId}/reject`, {});
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['expenses'] });
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
+    },
+  });
+}
+
+/**
  * Soft-delete mutation for the mobile expense detail screen.
  *
  * Backend: DELETE /expenses/{id}

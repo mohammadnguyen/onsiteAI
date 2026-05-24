@@ -13,7 +13,12 @@ import { useLocalSearchParams, useRouter, type Href } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
 
-import { useExpense, useDeleteExpense } from '../../src/api/hooks/useExpenses';
+import {
+  useExpense,
+  useDeleteExpense,
+  useResolveQueueItem,
+  useRejectQueueItem,
+} from '../../src/api/hooks/useExpenses';
 import { useJobs } from '../../src/api/hooks/useJobs';
 import { useSelectedJobStore } from '../../src/store/selectedJob';
 import type {
@@ -84,6 +89,9 @@ export default function ExpenseDetailScreen() {
   const expense = useExpense(id);
   const jobs = useJobs();
   const deleteMutation = useDeleteExpense(id ?? '');
+  const reviewId = expense.data?.pending_review_queue_id ?? '';
+  const resolveMutation = useResolveQueueItem(reviewId);
+  const rejectMutation = useRejectQueueItem(reviewId);
   const setSelectedJobId = useSelectedJobStore((s) => s.setSelectedJobId);
 
   const jobName = useMemo(() => {
@@ -135,6 +143,72 @@ export default function ExpenseDetailScreen() {
   // alert when they tap.
   const deleteEnabled =
     !!expense.data && expense.data.review_status !== 'rejected';
+  // Approve / Reject visibility: gated STRICTLY on the presence of
+  // pending_review_queue_id (the slice-1A.1 backend field). Never
+  // gate on review_status alone — a historical resolved/rejected
+  // queue row would otherwise leak as a callable workflow action,
+  // and the backend would return 4xx when mobile tried to POST
+  // /review-queue/{id}/resolve on a non-open row.
+  const approveRejectEnabled = !!expense.data?.pending_review_queue_id;
+
+  const handleReviewError = (err: unknown, fallbackKey: string) => {
+    const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+    let message: string;
+    if (status === 403) {
+      message = t('expense.review_forbidden');
+    } else {
+      const detail = axios.isAxiosError(err)
+        ? err.response?.data?.detail
+        : undefined;
+      message = typeof detail === 'string' ? detail : t(fallbackKey);
+    }
+    Alert.alert(t('common.error'), message);
+  };
+
+  const onApprove = () => {
+    if (!approveRejectEnabled) return;
+    Alert.alert(
+      t('expense.approve_confirm_title'),
+      t('expense.approve_confirm_message'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('expense.approve_cta'),
+          onPress: async () => {
+            try {
+              await resolveMutation.mutateAsync();
+              onBack();
+            } catch (err) {
+              handleReviewError(err, 'expense.approve_error');
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const onReject = () => {
+    if (!approveRejectEnabled) return;
+    Alert.alert(
+      t('expense.reject_confirm_title'),
+      t('expense.reject_confirm_message'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('expense.reject_cta'),
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await rejectMutation.mutateAsync();
+              onBack();
+            } catch (err) {
+              handleReviewError(err, 'expense.reject_error');
+            }
+          },
+        },
+      ],
+    );
+  };
 
   const onDelete = () => {
     if (!id) return;
@@ -247,6 +321,9 @@ export default function ExpenseDetailScreen() {
             editEnabled={editEnabled}
             onDelete={onDelete}
             deleteEnabled={deleteEnabled}
+            onApprove={onApprove}
+            onReject={onReject}
+            approveRejectEnabled={approveRejectEnabled}
           />
         </ScrollView>
       ) : null}
@@ -261,6 +338,9 @@ function DetailBody({
   editEnabled,
   onDelete,
   deleteEnabled,
+  onApprove,
+  onReject,
+  approveRejectEnabled,
 }: {
   data: ExpenseDetailPublic;
   jobName: string | undefined;
@@ -268,6 +348,9 @@ function DetailBody({
   editEnabled: boolean;
   onDelete: () => void;
   deleteEnabled: boolean;
+  onApprove: () => void;
+  onReject: () => void;
+  approveRejectEnabled: boolean;
 }) {
   const { t } = useTranslation();
   const statusColor = STATUS_COLORS[data.review_status];
@@ -332,6 +415,43 @@ function DetailBody({
         >
           <Text style={s.editCTAText}>{t('expense.edit_cta')}</Text>
         </Pressable>
+      ) : null}
+
+      {/* Slice 1A.2: Approve / Reject workflow actions, visible only
+          when the expense has an actionable open review queue row
+          (pending_review_queue_id present). Side-by-side layout
+          places Approve as the positive primary-ish action (green
+          fill) and Reject as the destructive outlined action (red
+          border, red text). Delete remains visually separate at the
+          bottom of the screen — these workflow actions don't replace
+          the destructive escape valve. */}
+      {approveRejectEnabled ? (
+        <View style={s.reviewActions}>
+          <Pressable
+            onPress={onApprove}
+            testID="detail-approve-cta"
+            accessibilityRole="button"
+            accessibilityLabel={t('expense.approve_cta')}
+            style={({ pressed }) => [
+              s.approveBtn,
+              pressed && s.approveBtnPressed,
+            ]}
+          >
+            <Text style={s.approveBtnText}>{t('expense.approve_cta')}</Text>
+          </Pressable>
+          <Pressable
+            onPress={onReject}
+            testID="detail-reject-cta"
+            accessibilityRole="button"
+            accessibilityLabel={t('expense.reject_cta')}
+            style={({ pressed }) => [
+              s.rejectBtn,
+              pressed && s.rejectBtnPressed,
+            ]}
+          >
+            <Text style={s.rejectBtnText}>{t('expense.reject_cta')}</Text>
+          </Pressable>
+        </View>
       ) : null}
 
       <View style={s.grid}>
@@ -498,6 +618,32 @@ const s = StyleSheet.create({
   },
   editCTAPressed: { opacity: 0.6 },
   editCTAText: { color: '#ffffff', fontSize: 16, fontWeight: '600' },
+  // Slice 1A.2: Approve / Reject workflow actions row.
+  reviewActions: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+  },
+  approveBtn: {
+    flex: 1,
+    backgroundColor: '#15803d',
+    paddingVertical: 12,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  approveBtnPressed: { opacity: 0.6 },
+  approveBtnText: { color: '#ffffff', fontSize: 16, fontWeight: '600' },
+  rejectBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#dc2626',
+    backgroundColor: '#ffffff',
+    paddingVertical: 12,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  rejectBtnPressed: { opacity: 0.5, backgroundColor: '#fef2f2' },
+  rejectBtnText: { color: '#b91c1c', fontSize: 16, fontWeight: '600' },
   // Delete (soft-delete) — visually subordinate to Edit CTA. Red text
   // on a white background with a subtle red border so it reads as
   // destructive but doesn't shout. Sits at the bottom of the scroll

@@ -206,7 +206,19 @@ export interface paths {
         };
         /**
          * Get Expense Endpoint
-         * @description Fetch a single expense with nested supplier + category.
+         * @description Fetch a single expense with nested supplier + category + current review reasons.
+         *
+         *     ``review_reasons`` reflects the current ``expense_review_queue``
+         *     row's reasons array, regardless of queue status (``open``,
+         *     ``resolved`` or ``rejected``). Returns ``[]`` if no queue row
+         *     exists. This is NOT a historical audit trail — see
+         *     ``GET /expenses/{id}/audit`` for that.
+         *
+         *     ``pending_review_queue_id`` is the ``review_id`` of the
+         *     currently-actionable queue row IFF its status is ``open``. It is
+         *     ``None`` for resolved / rejected / absent queue rows. Mobile uses
+         *     this as the sole visibility gate for Approve / Reject buttons so
+         *     stale resolved/rejected rows never expose those actions.
          */
         get: operations["get_expense_endpoint_expenses__expense_id__get"];
         put?: never;
@@ -269,6 +281,15 @@ export interface paths {
         /**
          * Create Job Endpoint
          * @description Create a job (admin only).
+         *
+         *     Mobile Job Management Lite hardening: a duplicate ``job_code`` (the
+         *     only UNIQUE constraint reachable on this endpoint today) used to
+         *     surface as SQLAlchemy's default 500. We now translate it to a 409
+         *     with a friendly detail so the mobile UI can render an actionable
+         *     error. Other ``IntegrityError`` causes (e.g. cross-field CHECK
+         *     constraint violations that Pydantic doesn't catch) fall through to
+         *     a 422 mirroring the PATCH route's pattern, so we never return 500
+         *     on a constraint violation.
          */
         post: operations["create_job_endpoint_jobs_post"];
         delete?: never;
@@ -291,12 +312,68 @@ export interface paths {
         get: operations["get_job_endpoint_jobs__job_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Job Endpoint
+         * @description Hard-delete an EMPTY job (admin only).
+         *
+         *     Job Lifecycle v1A-3. Allowed only when the job has zero expenses
+         *     and zero review-queue rows. Aliases + per-category budgets cascade-
+         *     delete via the existing model FK config; the audit row written
+         *     just before the SQL DELETE survives via ``SET NULL`` on
+         *     ``job_audit_log.job_id`` (v1A-1 design).
+         *
+         *     No ``reason`` query param is accepted: v1A-3 chose R1=Option B
+         *     (no reason input anywhere) because the audit table has no
+         *     ``reason`` column. Accepting a value the system silently dropped
+         *     would mislead callers. When a ``reason`` column lands in a
+         *     future schema change, this endpoint + the service signature can
+         *     be extended in the same batch.
+         *
+         *     Status codes:
+         *
+         *     * **204** — deleted; aliases + budgets cascaded; audit row
+         *       persisted (queryable via direct DB inspection only — the
+         *       ``GET /jobs/{id}/audit`` endpoint still returns 404 for the
+         *       removed id in v1A-3; the snapshot-based historical lookup
+         *       pathway is intentionally deferred per the v1A-3 R2 decision).
+         *     * **409** — blocked by a dependency (carries the
+         *       ``JobHasDependencies.detail`` verbatim, e.g.
+         *       "Job has 3 expenses and cannot be deleted. Archive it
+         *       instead.").
+         *     * **404** — job_id does not resolve.
+         */
+        delete: operations["delete_job_endpoint_jobs__job_id__delete"];
         options?: never;
         head?: never;
         /**
          * Update Job Endpoint
          * @description Partially update a job (admin only).
+         *
+         *     PATCH semantics (Phase 3 Lite+ correction):
+         *
+         *     * Field omitted from JSON → no change to the column.
+         *     * Field present with explicit ``null`` → clear the column to NULL
+         *       (only valid for nullable columns; the DB CHECK / NOT NULL
+         *       constraints are the backstop for misuse).
+         *
+         *     The differentiation is done by ``model_dump(exclude_unset=True)`` —
+         *     Pydantic tracks which fields the caller actually included in the
+         *     request body, separately from the field defaults.
+         *
+         *     Constraint-violation mapping:
+         *
+         *     * Duplicate ``job_code`` (the ``jobs_job_code_key`` UNIQUE index) →
+         *       409 with friendly detail ``"Job code already exists"`` (Job
+         *       Lifecycle v1A-1; mirrors the POST /jobs hardening at d364abc).
+         *     * Other ``IntegrityError`` causes (e.g. cross-field DB CHECK
+         *       violations Pydantic can't see, like patching ``warning_amber_pct``
+         *       to a value that's no longer strictly less than the stored
+         *       ``warning_red_pct``) → 422 with the raw error detail.
+         *
+         *     Job Lifecycle v1A-1: the admin's :class:`User` is forwarded as
+         *     ``actor`` so the service can write a ``job_audit_log`` row when
+         *     any of the auditable fields (``job_name``, ``job_code``,
+         *     ``site_address``, ``status``) actually changes.
          */
         patch: operations["update_job_endpoint_jobs__job_id__patch"];
         trace?: never;
@@ -317,6 +394,33 @@ export interface paths {
          *     job; categories with neither are omitted.
          */
         get: operations["get_job_budget_summary_endpoint_jobs__job_id__budget_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/jobs/{job_id}/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Job Audit Endpoint
+         * @description Audit trail for a job, newest first (admin only).
+         *
+         *     Job Lifecycle v1A-1. Returns rows from ``job_audit_log`` matching
+         *     the supplied job_id, ordered by ``created_at`` DESC. Hard-deleted
+         *     jobs (v1A-3) leave audit rows with ``job_id=NULL`` via FK SET NULL
+         *     cascade; v1A-1 surfaces audit rows for live jobs only — the
+         *     snapshot-based historical lookup pathway is left for v1A-3 to
+         *     wire up.
+         */
+        get: operations["get_job_audit_endpoint_jobs__job_id__audit_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -365,6 +469,34 @@ export interface paths {
          *     duplicate ``(job_id, category_id)`` pair.
          */
         post: operations["add_category_budget_endpoint_jobs__job_id__category_budgets_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reports/expenses-excel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Expenses Excel Endpoint
+         * @description Stream the accountant Excel workbook.
+         *
+         *     Default inclusion rule is reviewed-only. Rejected always excluded.
+         *     Pending requires explicit ``include_pending=true`` opt-in — the
+         *     dashboard's "worst case" view is intentionally NOT shipped to the
+         *     accountant by default.
+         *
+         *     Date range and ``job_id`` filters apply on top of the inclusion
+         *     rule. See ``docs/phase-4-plan.md`` for the frozen contract.
+         */
+        get: operations["get_expenses_excel_endpoint_reports_expenses_excel_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -824,6 +956,24 @@ export interface components {
         /**
          * ExpenseDetailPublic
          * @description Body of ``GET /expenses/{id}`` — adds nested supplier + category.
+         *
+         *     ``review_reasons`` reflects the *current* row in
+         *     ``expense_review_queue`` for this expense (any status: ``open``,
+         *     ``resolved`` or ``rejected``) and is ``[]`` when no queue row
+         *     exists. It is NOT a historical audit trail — for that, admins use
+         *     ``GET /expenses/{id}/audit``.
+         *
+         *     ``pending_review_queue_id`` is the ``review_id`` of the
+         *     *currently actionable* ``expense_review_queue`` row — i.e. one
+         *     whose ``status == open``. It is ``None`` when there is no
+         *     actionable queue row, which includes:
+         *       * no queue row ever existed,
+         *       * the queue row was resolved (expense is reviewed), OR
+         *       * the queue row was rejected.
+         *     Mobile clients gate Approve / Reject buttons on this field's
+         *     presence — never on ``review_status`` alone, because a
+         *     historical resolved/rejected row would otherwise leak as a
+         *     callable queue action. Stale queue rows MUST NOT surface here.
          */
         ExpenseDetailPublic: {
             /**
@@ -874,19 +1024,10 @@ export interface components {
             notes: string | null;
             supplier: components["schemas"]["SupplierPublic"] | null;
             category: components["schemas"]["CategoryPublic"] | null;
-            /**
-             * Review Reasons
-             *
-             * Mobile Expense Detail (v1): hand-added to match the
-             * additive Pydantic field added in backend/app/schemas/expense.py
-             * for the same batch. This file is hand-maintained today
-             * (carried-forward drift risk recorded in ADR 0001) — when
-             * OpenAPI type regeneration is introduced this entry will
-             * disappear automatically. Optional in the TS shape so an
-             * older backend response (without the field) does not crash
-             * the mobile consumer; the consumer uses `?? []` defensively.
-             */
+            /** Review Reasons */
             review_reasons?: components["schemas"]["ReviewReasonCode"][];
+            /** Pending Review Queue Id */
+            pending_review_queue_id?: string | null;
         };
         /**
          * ExpenseListResponse
@@ -1023,6 +1164,48 @@ export interface components {
             language_code: components["schemas"]["LanguageCode"] | null;
         };
         /**
+         * JobAuditRow
+         * @description Serialised view of a :class:`~app.models.job_audit_log.JobAuditLog` row.
+         *
+         *     Returned by ``GET /jobs/{job_id}/audit`` (admin only). Pre-edit
+         *     snapshots (``job_name_snapshot``, ``job_code_snapshot``) keep the
+         *     row readable after the parent job is gone (v1A-3 hard delete).
+         */
+        JobAuditRow: {
+            /**
+             * Audit Id
+             * Format: uuid
+             */
+            audit_id: string;
+            /**
+             * Tenant Id
+             * Format: uuid
+             */
+            tenant_id: string;
+            /** Job Id */
+            job_id: string | null;
+            /** Job Name Snapshot */
+            job_name_snapshot: string;
+            /** Job Code Snapshot */
+            job_code_snapshot: string | null;
+            /**
+             * Actor User Id
+             * Format: uuid
+             */
+            actor_user_id: string;
+            /** Action */
+            action: string;
+            /** Changed Fields */
+            changed_fields: {
+                [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /**
          * JobBudgetSummary
          * @description Full envelope for ``GET /jobs/{job_id}/budget-summary`` (admin-only).
          *
@@ -1084,6 +1267,8 @@ export interface components {
             effective_warning_amber_pct: string;
             /** Effective Warning Red Pct */
             effective_warning_red_pct: string;
+            /** Uncategorised Actual Ex Gst */
+            uncategorised_actual_ex_gst: string;
             /** Categories */
             categories: components["schemas"]["CategoryBudgetRow"][];
         };
@@ -2266,6 +2451,35 @@ export interface operations {
             };
         };
     };
+    delete_job_endpoint_jobs__job_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     update_job_endpoint_jobs__job_id__patch: {
         parameters: {
             query?: never;
@@ -2319,6 +2533,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobBudgetSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_job_audit_endpoint_jobs__job_id__audit_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobAuditRow"][];
                 };
             };
             /** @description Validation Error */
@@ -2389,6 +2634,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobCategoryBudgetPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_expenses_excel_endpoint_reports_expenses_excel_get: {
+        parameters: {
+            query?: {
+                from_date?: string | null;
+                to_date?: string | null;
+                job_id?: string | null;
+                include_pending?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
