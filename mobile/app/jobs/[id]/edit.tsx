@@ -22,9 +22,17 @@ import {
   useJob,
   useUpdateJob,
   useCreateJobAlias,
+  useCreateJobCategoryBudget,
+  useUpdateJobCategoryBudget,
+  useDeleteJobCategoryBudget,
   type JobUpdateInput,
   type JobStatus,
+  type JobCategoryBudgetPublic,
 } from '../../../src/api/hooks/useJobs';
+import {
+  useCategories,
+  type CategoryPublic,
+} from '../../../src/api/hooks/useCategories';
 
 /**
  * Tier 1B: Mobile Job Edit screen.
@@ -137,6 +145,11 @@ export default function JobEditScreen() {
   const job = useJob(id ?? null);
   const update = useUpdateJob(id ?? '');
   const addAlias = useCreateJobAlias();
+  // Slice B (Tier 1C) — category budgets editing.
+  const categories = useCategories();
+  const createBudget = useCreateJobCategoryBudget(id ?? '');
+  const updateBudget = useUpdateJobCategoryBudget(id ?? '');
+  const deleteBudget = useDeleteJobCategoryBudget(id ?? '');
 
   // Form state. Seeded once from job.data via the initialized flag so
   // a background refetch doesn't stomp user edits.
@@ -160,6 +173,25 @@ export default function JobEditScreen() {
     contractText: string;
     budgetText: string;
   } | null>(null);
+
+  // Slice B (Tier 1C) — category budgets editing state.
+  // budgetEdits[budgetId] = text the user has typed; absent ⇒ row is
+  // unchanged from the server value. Survives data refetches so the
+  // user's in-progress typing isn't lost when ['jobs'] invalidates.
+  const [budgetEdits, setBudgetEdits] = useState<Record<string, string>>({});
+  // Per-row "in flight" flags so we can disable buttons on the
+  // specific row whose mutation is running (the React Query hook's
+  // ``isPending`` is shared across all rows using the same hook).
+  const [savingBudgetId, setSavingBudgetId] = useState<string | null>(null);
+  const [deletingBudgetId, setDeletingBudgetId] = useState<string | null>(
+    null,
+  );
+  // Add-row state: which category the user selected from the chips +
+  // their typed amount text. Reset after a successful POST.
+  const [newBudgetCategoryId, setNewBudgetCategoryId] = useState<
+    string | null
+  >(null);
+  const [newBudgetAmount, setNewBudgetAmount] = useState<string>('');
 
   useEffect(() => {
     if (!job.data || initialized) return;
@@ -268,6 +300,154 @@ export default function JobEditScreen() {
       Alert.alert(t('common.error'), message);
     }
   };
+
+  // Categories available for ADD: active AND not already budgeted on
+  // this job. Client-side de-dup so the user can't accidentally hit
+  // the backend's 409 on duplicate (job_id, category_id). Backend
+  // remains the source of truth — race-window duplicates still
+  // surface a 409 alert from the catch branch.
+  const availableCategories = useMemo<CategoryPublic[]>(() => {
+    if (!categories.data || !job.data) return [];
+    const existingCategoryIds = new Set(
+      job.data.category_budgets.map((b) => b.category_id),
+    );
+    return categories.data.filter(
+      (c) => c.is_active && !existingCategoryIds.has(c.category_id),
+    );
+  }, [categories.data, job.data]);
+
+  // Helper: current text for a budget row (edited or server value).
+  const getBudgetText = (budget: JobCategoryBudgetPublic): string =>
+    budgetEdits[budget.budget_id] ??
+    moneyToText(budget.budget_amount_ex_gst);
+
+  // Helper: is this row's edit valid + different from the server value?
+  // Drives the visibility of the per-row Save button.
+  const budgetRowDirty = (budget: JobCategoryBudgetPublic): boolean => {
+    const edit = budgetEdits[budget.budget_id];
+    if (edit === undefined) return false;
+    if (!isMoneyValid(edit) || edit.trim().length === 0) return false;
+    return Number(edit.trim()) !== Number(budget.budget_amount_ex_gst);
+  };
+
+  // Per-row save: validates blank/negative, no-ops if unchanged, calls
+  // PATCH, clears edit on success, alerts on error.
+  const onSaveBudget = async (budget: JobCategoryBudgetPublic) => {
+    const text = budgetEdits[budget.budget_id];
+    if (text === undefined) return;
+    if (!isMoneyValid(text) || text.trim().length === 0) {
+      Alert.alert(
+        t('common.error'),
+        t('jobs_edit.budget_amount_invalid'),
+      );
+      return;
+    }
+    const amount = Number(text.trim());
+    if (amount === Number(budget.budget_amount_ex_gst)) {
+      setBudgetEdits((prev) => {
+        const next = { ...prev };
+        delete next[budget.budget_id];
+        return next;
+      });
+      return;
+    }
+    setSavingBudgetId(budget.budget_id);
+    try {
+      await updateBudget.mutateAsync({
+        budgetId: budget.budget_id,
+        budget_amount_ex_gst: amount,
+      });
+      setBudgetEdits((prev) => {
+        const next = { ...prev };
+        delete next[budget.budget_id];
+        return next;
+      });
+    } catch (err) {
+      Alert.alert(
+        t('common.error'),
+        extractErrorMessage(err, t('jobs_edit.budget_save_error')),
+      );
+    } finally {
+      setSavingBudgetId(null);
+    }
+  };
+
+  // Per-row delete: Alert.alert confirm (destructive style on iOS),
+  // calls DELETE on confirm, alerts on error.
+  const onDeleteBudget = (budget: JobCategoryBudgetPublic) => {
+    Alert.alert(
+      t('jobs_edit.budget_delete_confirm_title'),
+      t('jobs_edit.budget_delete_confirm_message'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('jobs_edit.budget_delete_confirm_action'),
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingBudgetId(budget.budget_id);
+            try {
+              await deleteBudget.mutateAsync({
+                budgetId: budget.budget_id,
+              });
+              // Drop any in-progress edit for the just-deleted row.
+              setBudgetEdits((prev) => {
+                const next = { ...prev };
+                delete next[budget.budget_id];
+                return next;
+              });
+            } catch (err) {
+              Alert.alert(
+                t('common.error'),
+                extractErrorMessage(
+                  err,
+                  t('jobs_edit.budget_delete_error'),
+                ),
+              );
+            } finally {
+              setDeletingBudgetId(null);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  // Add-row submit: requires both a selected category AND a valid
+  // (non-blank, non-negative, numeric) amount. POSTs and resets state.
+  const onAddBudget = async () => {
+    if (!newBudgetCategoryId) return;
+    if (
+      !isMoneyValid(newBudgetAmount) ||
+      newBudgetAmount.trim().length === 0
+    ) {
+      Alert.alert(
+        t('common.error'),
+        t('jobs_edit.budget_amount_invalid'),
+      );
+      return;
+    }
+    if (createBudget.isPending) return;
+    const amount = Number(newBudgetAmount.trim());
+    try {
+      await createBudget.mutateAsync({
+        category_id: newBudgetCategoryId,
+        budget_amount_ex_gst: amount,
+      });
+      setNewBudgetCategoryId(null);
+      setNewBudgetAmount('');
+    } catch (err) {
+      Alert.alert(
+        t('common.error'),
+        extractErrorMessage(err, t('jobs_edit.budget_add_error')),
+      );
+    }
+  };
+
+  const addBudgetDisabled =
+    createBudget.isPending ||
+    !newBudgetCategoryId ||
+    newBudgetAmount.trim().length === 0 ||
+    !isMoneyValid(newBudgetAmount);
 
   const saveDisabled =
     update.isPending || !contractValid || !budgetValid;
@@ -465,6 +645,179 @@ export default function JobEditScreen() {
               </TouchableOpacity>
             </View>
 
+            {/* Slice B (Tier 1C) — Category budgets editing. Existing
+                budgets render as one row each (read-only category
+                name, editable amount, per-row Save + Delete). Add row
+                lets the admin attach a budget to a category that
+                doesn't yet have one (filtered client-side to avoid
+                the backend's 409 on duplicate). All mutations
+                invalidate ['jobs'] so the modal + budget summary
+                refresh. */}
+            <Text style={s.sectionHeader}>{t('job.budgets')}</Text>
+            {job.data.category_budgets.length === 0 ? (
+              <Text style={s.muted}>{t('jobs_edit.budgets_empty')}</Text>
+            ) : (
+              <View style={s.budgetList}>
+                {job.data.category_budgets.map((b) => (
+                  <View
+                    key={b.budget_id}
+                    style={s.budgetRow}
+                    testID={`job-edit-budget-${b.budget_id}`}
+                  >
+                    <Text
+                      style={s.budgetCategoryName}
+                      numberOfLines={1}
+                    >
+                      {b.category.category_name}
+                    </Text>
+                    <TextInput
+                      value={getBudgetText(b)}
+                      onChangeText={(text) =>
+                        setBudgetEdits((prev) => ({
+                          ...prev,
+                          [b.budget_id]: text,
+                        }))
+                      }
+                      keyboardType="decimal-pad"
+                      editable={
+                        savingBudgetId !== b.budget_id &&
+                        deletingBudgetId !== b.budget_id
+                      }
+                      style={[s.input, s.budgetAmountInput]}
+                      testID={`job-edit-budget-amount-${b.budget_id}`}
+                    />
+                    {budgetRowDirty(b) ? (
+                      <TouchableOpacity
+                        onPress={() => onSaveBudget(b)}
+                        disabled={savingBudgetId !== null}
+                        style={[
+                          s.budgetSaveBtn,
+                          savingBudgetId !== null &&
+                            s.budgetSaveBtnDisabled,
+                        ]}
+                        testID={`job-edit-budget-save-${b.budget_id}`}
+                        accessibilityRole="button"
+                      >
+                        {savingBudgetId === b.budget_id ? (
+                          <ActivityIndicator color="#fff" size="small" />
+                        ) : (
+                          <Text style={s.budgetSaveBtnText}>
+                            {t('common.save')}
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                    ) : null}
+                    <TouchableOpacity
+                      onPress={() => onDeleteBudget(b)}
+                      disabled={deletingBudgetId !== null}
+                      style={[
+                        s.budgetDeleteBtn,
+                        deletingBudgetId === b.budget_id &&
+                          s.budgetDeleteBtnDisabled,
+                      ]}
+                      testID={`job-edit-budget-delete-${b.budget_id}`}
+                      accessibilityRole="button"
+                      accessibilityLabel={t(
+                        'jobs_edit.budget_delete_confirm_action',
+                      )}
+                    >
+                      {deletingBudgetId === b.budget_id ? (
+                        <ActivityIndicator color="#dc2626" size="small" />
+                      ) : (
+                        <Text style={s.budgetDeleteBtnText}>{'×'}</Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {/* Add a new category budget. Hidden / informational when
+                every category already has a budget. */}
+            <Text style={s.subSectionHeader}>
+              {t('jobs_edit.budget_add_heading')}
+            </Text>
+            {categories.isLoading ? (
+              <View style={s.spendingLoadingRow}>
+                <ActivityIndicator size="small" color="#64748b" />
+                <Text style={s.aliasHint}>{t('common.loading')}</Text>
+              </View>
+            ) : availableCategories.length === 0 ? (
+              <Text style={s.muted}>
+                {t('jobs_edit.budget_all_categories_used')}
+              </Text>
+            ) : (
+              <>
+                <Text style={s.aliasHint}>
+                  {t('jobs_edit.budget_pick_category')}
+                </Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={s.budgetCategoryChipsRow}
+                  testID="job-edit-budget-add-categories"
+                  keyboardShouldPersistTaps="handled"
+                >
+                  {availableCategories.map((c) => (
+                    <TouchableOpacity
+                      key={c.category_id}
+                      onPress={() => setNewBudgetCategoryId(c.category_id)}
+                      style={[
+                        s.budgetCategoryChip,
+                        c.category_id === newBudgetCategoryId &&
+                          s.budgetCategoryChipActive,
+                      ]}
+                      testID={`job-edit-budget-add-category-${c.category_id}`}
+                      accessibilityRole="radio"
+                      accessibilityState={{
+                        selected: c.category_id === newBudgetCategoryId,
+                      }}
+                    >
+                      <Text
+                        style={[
+                          s.budgetCategoryChipText,
+                          c.category_id === newBudgetCategoryId &&
+                            s.budgetCategoryChipTextActive,
+                        ]}
+                      >
+                        {c.category_name}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+                <View style={s.budgetAddInputRow}>
+                  <TextInput
+                    value={newBudgetAmount}
+                    onChangeText={setNewBudgetAmount}
+                    placeholder={t('jobs_edit.budget_amount_placeholder')}
+                    placeholderTextColor="#94a3b8"
+                    keyboardType="decimal-pad"
+                    editable={!createBudget.isPending}
+                    style={[s.input, s.budgetAddAmountInput]}
+                    testID="job-edit-budget-add-amount"
+                  />
+                  <TouchableOpacity
+                    onPress={onAddBudget}
+                    disabled={addBudgetDisabled}
+                    style={[
+                      s.budgetAddBtn,
+                      addBudgetDisabled && s.budgetAddBtnDisabled,
+                    ]}
+                    testID="job-edit-budget-add-btn"
+                    accessibilityRole="button"
+                  >
+                    {createBudget.isPending ? (
+                      <ActivityIndicator color="#fff" />
+                    ) : (
+                      <Text style={s.budgetAddBtnText}>
+                        {t('jobs_edit.alias_add')}
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+
             {formError ? (
               <View style={s.errorBanner} testID="job-edit-error-banner">
                 <Text style={s.errorBannerText}>{formError}</Text>
@@ -660,4 +1013,96 @@ const s = StyleSheet.create({
   },
   saveBtnDisabled: { opacity: 0.4 },
   saveBtnText: { color: '#ffffff', fontWeight: '600', fontSize: 16 },
+  // Slice B (Tier 1C) — Category budgets editing styles.
+  subSectionHeader: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#475569',
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  budgetList: { marginTop: 4, gap: 6 },
+  budgetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  budgetCategoryName: {
+    flex: 1,
+    color: '#0f172a',
+    fontSize: 14,
+  },
+  budgetAmountInput: {
+    width: 110,
+    paddingVertical: 8,
+    fontVariant: ['tabular-nums'],
+  },
+  budgetSaveBtn: {
+    backgroundColor: '#1e293b',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 60,
+  },
+  budgetSaveBtnDisabled: { opacity: 0.4 },
+  budgetSaveBtnText: { color: '#ffffff', fontWeight: '600', fontSize: 13 },
+  budgetDeleteBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 32,
+    minHeight: 32,
+  },
+  budgetDeleteBtnDisabled: { opacity: 0.4 },
+  budgetDeleteBtnText: {
+    color: '#dc2626',
+    fontSize: 22,
+    lineHeight: 24,
+    fontWeight: '300',
+  },
+  budgetCategoryChipsRow: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingVertical: 4,
+  },
+  budgetCategoryChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 14,
+    backgroundColor: '#f8fafc',
+  },
+  budgetCategoryChipActive: {
+    backgroundColor: '#1e293b',
+    borderColor: '#1e293b',
+  },
+  budgetCategoryChipText: { color: '#0f172a', fontSize: 13 },
+  budgetCategoryChipTextActive: { color: '#ffffff' },
+  budgetAddInputRow: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'stretch',
+    marginTop: 8,
+  },
+  budgetAddAmountInput: { flex: 1 },
+  budgetAddBtn: {
+    backgroundColor: '#1e293b',
+    paddingHorizontal: 14,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 72,
+  },
+  budgetAddBtnDisabled: { opacity: 0.4 },
+  budgetAddBtnText: { color: '#ffffff', fontWeight: '600', fontSize: 14 },
+  spendingLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 4,
+  },
 });

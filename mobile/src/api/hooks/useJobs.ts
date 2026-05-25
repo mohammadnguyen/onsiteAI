@@ -12,6 +12,8 @@ export type JobAliasPublic = components['schemas']['JobAliasPublic'];
 export type JobBudgetSummary = components['schemas']['JobBudgetSummary'];
 export type CategoryBudgetRow = components['schemas']['CategoryBudgetRow'];
 export type JobStatus = components['schemas']['JobStatus'];
+export type JobCategoryBudgetPublic = components['schemas']['JobCategoryBudgetPublic'];
+export type JobCategoryBudgetCreateInput = components['schemas']['JobCategoryBudgetCreate'];
 
 export function useJobs() {
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -149,6 +151,91 @@ export function useCreateJobAlias() {
     onSuccess: (_data, vars) => {
       void qc.invalidateQueries({ queryKey: ['jobs'] });
       void qc.invalidateQueries({ queryKey: ['jobs', vars.jobId] });
+    },
+  });
+}
+
+/**
+ * Slice B mobile — POST /jobs/{job_id}/category-budgets (admin-only).
+ *
+ * Adds a new per-category budget row. 409 from the backend when
+ * (job_id, category_id) already has a budget; the caller (mobile edit
+ * screen) prevents this duplicate by filtering already-budgeted
+ * categories out of the add-row picker, so 409 should only surface in
+ * a race with another admin. Invalidates `['jobs']` so the per-job
+ * detail (which carries `category_budgets` inline) AND the per-job
+ * budget summary both refetch.
+ */
+export function useCreateJobCategoryBudget(jobId: string) {
+  const qc = useQueryClient();
+  return useMutation<
+    JobCategoryBudgetPublic,
+    unknown,
+    { category_id: string; budget_amount_ex_gst: number | string }
+  >({
+    mutationFn: async (body) => {
+      const { data } = await api.post<JobCategoryBudgetPublic>(
+        `/jobs/${jobId}/category-budgets`,
+        body,
+      );
+      return data;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
+    },
+  });
+}
+
+/**
+ * Slice B mobile — PATCH /jobs/{job_id}/category-budgets/{budget_id}
+ * (admin-only; Slice A backend endpoint shipped at commit 689ec15).
+ *
+ * Updates only the amount of an existing budget row. The Pydantic
+ * `JobCategoryBudgetUpdate` schema is not yet in the generated
+ * `mobile/src/api/types.ts` (drift acknowledged in CLAUDE.md); the
+ * body shape `{ budget_amount_ex_gst }` is defined inline here. The
+ * atomic (job_id, budget_id) pair check happens server-side — 404
+ * with detail "Budget not found" if the pair doesn't resolve (also
+ * the response when the budget belongs to a different job, by
+ * design — no information leak).
+ */
+export function useUpdateJobCategoryBudget(jobId: string) {
+  const qc = useQueryClient();
+  return useMutation<
+    JobCategoryBudgetPublic,
+    unknown,
+    { budgetId: string; budget_amount_ex_gst: number | string }
+  >({
+    mutationFn: async ({ budgetId, budget_amount_ex_gst }) => {
+      const { data } = await api.patch<JobCategoryBudgetPublic>(
+        `/jobs/${jobId}/category-budgets/${budgetId}`,
+        { budget_amount_ex_gst },
+      );
+      return data;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
+    },
+  });
+}
+
+/**
+ * Slice B mobile — DELETE /jobs/{job_id}/category-budgets/{budget_id}
+ * (admin-only; Slice A backend endpoint shipped at commit 689ec15).
+ *
+ * Non-idempotent on the backend by design: a second DELETE on the
+ * same `budgetId` returns 404, NOT a silent 204. The caller
+ * (mobile edit screen) confirms via `Alert.alert` before invoking
+ * so accidental double-taps are avoided at the UX layer.
+ */
+export function useDeleteJobCategoryBudget(jobId: string) {
+  const qc = useQueryClient();
+  return useMutation<void, unknown, { budgetId: string }>({
+    mutationFn: async ({ budgetId }) => {
+      await api.delete(`/jobs/${jobId}/category-budgets/${budgetId}`);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
     },
   });
 }

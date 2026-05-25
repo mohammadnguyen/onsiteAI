@@ -166,7 +166,19 @@
     "alias_add_placeholder": "Add an alias…",
     "alias_add": "Add",
     "alias_duplicate": "That alias already exists.",
-    "alias_error": "Couldn't add alias."
+    "alias_error": "Couldn't add alias.",
+    "budgets_empty": "No category budgets yet.",
+    "budget_add_heading": "Add a category budget",
+    "budget_amount_placeholder": "Amount (ex GST)",
+    "budget_amount_invalid": "Amount must be a number 0 or greater.",
+    "budget_pick_category": "Pick a category",
+    "budget_delete_confirm_title": "Delete budget?",
+    "budget_delete_confirm_message": "Remove this category budget from the job?",
+    "budget_delete_confirm_action": "Delete",
+    "budget_save_error": "Couldn't save budget.",
+    "budget_delete_error": "Couldn't delete budget.",
+    "budget_add_error": "Couldn't add budget.",
+    "budget_all_categories_used": "All categories already have budgets."
   },
   "review_reason": {
     "amount_uncertain": "Amount uncertain",

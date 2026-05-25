@@ -166,7 +166,19 @@
     "alias_add_placeholder": "\u65b0\u589e\u522b\u540d\u2026\u2026",
     "alias_add": "\u6dfb\u52a0",
     "alias_duplicate": "\u8be5\u522b\u540d\u5df2\u5b58\u5728\u3002",
-    "alias_error": "\u65e0\u6cd5\u6dfb\u52a0\u522b\u540d\u3002"
+    "alias_error": "\u65e0\u6cd5\u6dfb\u52a0\u522b\u540d\u3002",
+    "budgets_empty": "\u6682\u65e0\u5206\u7c7b\u9884\u7b97\u3002",
+    "budget_add_heading": "\u65b0\u589e\u5206\u7c7b\u9884\u7b97",
+    "budget_amount_placeholder": "\u91d1\u989d\uff08\u4e0d\u542bGST\uff09",
+    "budget_amount_invalid": "\u91d1\u989d\u5fc5\u987b\u4e3a\u5927\u4e8e\u7b49\u4e8e 0 \u7684\u6570\u5b57\u3002",
+    "budget_pick_category": "\u9009\u62e9\u5206\u7c7b",
+    "budget_delete_confirm_title": "\u5220\u9664\u9884\u7b97\uff1f",
+    "budget_delete_confirm_message": "\u662f\u5426\u5c06\u8be5\u5206\u7c7b\u9884\u7b97\u4ece\u6b64\u9879\u76ee\u4e2d\u79fb\u9664\uff1f",
+    "budget_delete_confirm_action": "\u5220\u9664",
+    "budget_save_error": "\u65e0\u6cd5\u4fdd\u5b58\u9884\u7b97\u3002",
+    "budget_delete_error": "\u65e0\u6cd5\u5220\u9664\u9884\u7b97\u3002",
+    "budget_add_error": "\u65e0\u6cd5\u6dfb\u52a0\u9884\u7b97\u3002",
+    "budget_all_categories_used": "\u6240\u6709\u5206\u7c7b\u5747\u5df2\u8bbe\u7f6e\u9884\u7b97\u3002"
   },
   "review_reason": {
     "amount_uncertain": "\u91d1\u989d\u4e0d\u786e\u5b9a",
