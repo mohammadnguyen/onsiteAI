@@ -49,6 +49,14 @@ export type AuthState = {
   hydrated: boolean;
   hydrate: () => Promise<void>;
   setTokens: (a: string, r: string) => Promise<void>;
+  /**
+   * Update ONLY the access token in both SecureStore and in-memory
+   * store. Used by the axios response interceptor's refresh-on-401
+   * flow: the backend `/auth/refresh` route returns just a new access
+   * token (the refresh token remains valid until its 30-day TTL), so
+   * `setTokens` would be misleading here.
+   */
+  setAccessToken: (a: string) => Promise<void>;
   clear: () => Promise<void>;
 };
 
@@ -63,6 +71,10 @@ export const useAuthStore = create<AuthState>((set) => ({
   setTokens: async (a, r) => {
     await Promise.all([setItem(ACCESS_KEY, a), setItem(REFRESH_KEY, r)]);
     set({ accessToken: a, refreshToken: r });
+  },
+  setAccessToken: async (a) => {
+    await setItem(ACCESS_KEY, a);
+    set({ accessToken: a });
   },
   clear: async () => {
     await Promise.all([deleteItem(ACCESS_KEY), deleteItem(REFRESH_KEY)]);
