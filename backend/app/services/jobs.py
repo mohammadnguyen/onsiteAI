@@ -69,6 +69,24 @@ class DuplicateBudget(Exception):
         )
 
 
+class BudgetNotFound(Exception):
+    """Raised when ``(job_id, budget_id)`` doesn't resolve to a budget row.
+
+    Slice A semantics: this is raised both when the ``budget_id`` doesn't
+    exist at all AND when it exists but belongs to a different ``job_id``.
+    The HTTP layer maps both to 404 — we deliberately don't differentiate
+    so we never leak information about budget IDs that belong to a
+    different job.
+    """
+
+    def __init__(self, job_id: uuid.UUID, budget_id: uuid.UUID):
+        self.job_id = job_id
+        self.budget_id = budget_id
+        super().__init__(
+            f"Budget {budget_id} not found for job {job_id}"
+        )
+
+
 class DuplicateJobCode(Exception):
     """Raised when PATCH /jobs/{id} would set ``job_code`` to a value
     that is already in use by a different job.
@@ -484,6 +502,83 @@ async def add_category_budget(
     # ``CategoryPublic`` without an extra query outside the session scope.
     await db.refresh(budget, ["category"])
     return budget
+
+
+# ---------------------------------------------------------------------------
+# Slice A — PATCH + DELETE for category budgets
+# ---------------------------------------------------------------------------
+#
+# Completes the partial CRUD surface flagged in Phase 1: prior code only
+# supported POST (create) on per-category budgets, leaving "correct an
+# existing budget amount" and "remove a budget" unreachable via the API.
+# Both new functions take the (job_id, budget_id) pair and validate it
+# atomically — a budget_id that belongs to a different job raises
+# :class:`BudgetNotFound` rather than silently operating on the wrong row.
+
+
+async def update_category_budget(
+    db: AsyncSession,
+    job_id: uuid.UUID,
+    budget_id: uuid.UUID,
+    *,
+    budget_amount_ex_gst: Decimal,
+) -> JobCategoryBudget:
+    """Update the ``budget_amount_ex_gst`` of an existing per-category
+    budget row.
+
+    Raises :class:`BudgetNotFound` if ``budget_id`` doesn't resolve OR
+    resolves to a budget that belongs to a different ``job_id``. The
+    HTTP layer maps both to 404 — we deliberately don't differentiate
+    so we never leak information about budgets from other jobs.
+
+    The column is NOT NULL; the schema layer
+    (:class:`~app.schemas.job.JobCategoryBudgetUpdate`) enforces
+    ``ge=0`` so callers can't pass a negative amount (surfaces as 422
+    from FastAPI before reaching the service).
+
+    Returns the refreshed row with the joined ``category`` eager-loaded
+    so the HTTP response mirrors the POST endpoint's shape.
+    """
+    q = select(JobCategoryBudget).where(
+        JobCategoryBudget.budget_id == budget_id,
+        JobCategoryBudget.job_id == job_id,
+    )
+    budget = (await db.execute(q)).scalar_one_or_none()
+    if budget is None:
+        raise BudgetNotFound(job_id, budget_id)
+
+    budget.budget_amount_ex_gst = budget_amount_ex_gst
+    await db.flush()
+    await db.refresh(budget, ["category"])
+    return budget
+
+
+async def delete_category_budget(
+    db: AsyncSession,
+    job_id: uuid.UUID,
+    budget_id: uuid.UUID,
+) -> None:
+    """Delete a per-category budget row.
+
+    Raises :class:`BudgetNotFound` if ``budget_id`` doesn't resolve OR
+    resolves to a budget that belongs to a different ``job_id`` (same
+    no-leak rationale as :func:`update_category_budget`).
+
+    Idempotency is intentionally NOT silent: a second DELETE on the
+    same ``budget_id`` raises :class:`BudgetNotFound` (→ 404). Callers
+    that want "delete-or-noop" semantics should ignore the 404 from
+    this endpoint themselves.
+    """
+    q = select(JobCategoryBudget).where(
+        JobCategoryBudget.budget_id == budget_id,
+        JobCategoryBudget.job_id == job_id,
+    )
+    budget = (await db.execute(q)).scalar_one_or_none()
+    if budget is None:
+        raise BudgetNotFound(job_id, budget_id)
+
+    await db.delete(budget)
+    await db.flush()
 
 
 # ---------------------------------------------------------------------------

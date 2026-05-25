@@ -1108,3 +1108,308 @@ async def test_delete_job_non_admin_returns_403(
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Slice A: PATCH + DELETE for category budgets
+# ---------------------------------------------------------------------------
+
+
+async def _create_budget(
+    client,
+    admin_token,
+    *,
+    job_id: str,
+    category_id: str,
+    amount: str = "1000.00",
+) -> dict:
+    """Helper: POST a category budget and return the JSON body (asserting 201)."""
+    r = await client.post(
+        f"/jobs/{job_id}/category-budgets",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "category_id": category_id,
+            "budget_amount_ex_gst": amount,
+        },
+    )
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+@pytest.mark.asyncio
+async def test_patch_category_budget_updates_amount(
+    client, admin_token, seed_categories
+):
+    """PATCH updates the amount; the changed value is visible via GET."""
+    job = await _create_job(client, admin_token, name="Patch Budget Job")
+    plumbing = seed_categories[8]
+    budget = await _create_budget(
+        client,
+        admin_token,
+        job_id=job["job_id"],
+        category_id=str(plumbing.category_id),
+        amount="1000.00",
+    )
+
+    r = await client.patch(
+        f"/jobs/{job['job_id']}/category-budgets/{budget['budget_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"budget_amount_ex_gst": "5500.00"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["budget_id"] == budget["budget_id"]
+    assert Decimal(str(body["budget_amount_ex_gst"])) == Decimal("5500.00")
+    # Joined category eager-loaded — mirrors POST shape.
+    assert body["category"]["category_name"] == "Plumbing"
+
+    # GET /jobs/{id} reflects the new amount.
+    r = await client.get(
+        f"/jobs/{job['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 200
+    budgets = r.json()["category_budgets"]
+    assert len(budgets) == 1
+    assert Decimal(str(budgets[0]["budget_amount_ex_gst"])) == Decimal("5500.00")
+
+
+@pytest.mark.asyncio
+async def test_patch_category_budget_allows_zero(
+    client, admin_token, seed_categories
+):
+    """PATCH must accept 0 — a zero budget is a valid explicit statement
+    ("we are not budgeting this category"), distinct from no row at all."""
+    job = await _create_job(client, admin_token, name="Zero Budget Job")
+    plumbing = seed_categories[8]
+    budget = await _create_budget(
+        client,
+        admin_token,
+        job_id=job["job_id"],
+        category_id=str(plumbing.category_id),
+    )
+
+    r = await client.patch(
+        f"/jobs/{job['job_id']}/category-budgets/{budget['budget_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"budget_amount_ex_gst": "0"},
+    )
+    assert r.status_code == 200, r.text
+    assert Decimal(str(r.json()["budget_amount_ex_gst"])) == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_patch_category_budget_rejects_negative(
+    client, admin_token, seed_categories
+):
+    """PATCH with a negative amount is rejected at the Pydantic ge=0
+    constraint, surfacing as 422 before the service is reached."""
+    job = await _create_job(client, admin_token, name="Negative Reject")
+    plumbing = seed_categories[8]
+    budget = await _create_budget(
+        client,
+        admin_token,
+        job_id=job["job_id"],
+        category_id=str(plumbing.category_id),
+    )
+
+    r = await client.patch(
+        f"/jobs/{job['job_id']}/category-budgets/{budget['budget_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"budget_amount_ex_gst": "-1.00"},
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_patch_category_budget_404_on_missing_budget(
+    client, admin_token
+):
+    """PATCH on a budget_id that does not exist returns 404 with the
+    'Budget not found' detail."""
+    job = await _create_job(client, admin_token, name="No Such Budget")
+    random_budget_id = uuid.uuid4()
+
+    r = await client.patch(
+        f"/jobs/{job['job_id']}/category-budgets/{random_budget_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"budget_amount_ex_gst": "100.00"},
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Budget not found"
+
+
+@pytest.mark.asyncio
+async def test_patch_category_budget_404_on_mismatched_job(
+    client, admin_token, seed_categories
+):
+    """Critical correctness guard: a real budget_id paired with the
+    WRONG job_id in the URL must NOT update the budget on its real
+    parent job. The (job_id, budget_id) pair is validated atomically
+    and the mismatch returns 404 (no information leak about the
+    budget's actual parent)."""
+    # Create two jobs.
+    job_a = await _create_job(client, admin_token, name="Job A")
+    job_b = await _create_job(client, admin_token, name="Job B")
+    plumbing = seed_categories[8]
+    budget_a = await _create_budget(
+        client,
+        admin_token,
+        job_id=job_a["job_id"],
+        category_id=str(plumbing.category_id),
+        amount="1000.00",
+    )
+
+    # Try to PATCH job_a's budget while addressing it under job_b's id.
+    r = await client.patch(
+        f"/jobs/{job_b['job_id']}/category-budgets/{budget_a['budget_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"budget_amount_ex_gst": "99999.00"},
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Budget not found"
+
+    # Verify job_a's budget was NOT touched — still at 1000.00.
+    r = await client.get(
+        f"/jobs/{job_a['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 200
+    budgets = r.json()["category_budgets"]
+    assert len(budgets) == 1
+    assert Decimal(str(budgets[0]["budget_amount_ex_gst"])) == Decimal("1000.00")
+
+
+@pytest.mark.asyncio
+async def test_patch_category_budget_contributor_forbidden(
+    client, admin_token, contributor_token, seed_categories
+):
+    """PATCH is admin-only; contributor caller gets 403 at the
+    require_admin gate (no service-layer work performed)."""
+    job = await _create_job(client, admin_token, name="RBAC Patch")
+    plumbing = seed_categories[8]
+    budget = await _create_budget(
+        client,
+        admin_token,
+        job_id=job["job_id"],
+        category_id=str(plumbing.category_id),
+    )
+
+    r = await client.patch(
+        f"/jobs/{job['job_id']}/category-budgets/{budget['budget_id']}",
+        headers={"Authorization": f"Bearer {contributor_token}"},
+        json={"budget_amount_ex_gst": "999.00"},
+    )
+    assert r.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_delete_category_budget_removes_row(
+    client, admin_token, seed_categories
+):
+    """DELETE removes the budget row; GET /jobs/{id} shows it gone."""
+    job = await _create_job(client, admin_token, name="Delete Budget Job")
+    plumbing = seed_categories[8]
+    budget = await _create_budget(
+        client,
+        admin_token,
+        job_id=job["job_id"],
+        category_id=str(plumbing.category_id),
+    )
+
+    r = await client.delete(
+        f"/jobs/{job['job_id']}/category-budgets/{budget['budget_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 204
+
+    # GET reflects the removal.
+    r = await client.get(
+        f"/jobs/{job['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 200
+    assert r.json()["category_budgets"] == []
+
+
+@pytest.mark.asyncio
+async def test_delete_category_budget_second_call_returns_404(
+    client, admin_token, seed_categories
+):
+    """A second DELETE on the same budget_id returns 404 (NOT silently
+    204). Callers wanting noop-on-missing semantics must ignore the 404
+    themselves."""
+    job = await _create_job(client, admin_token, name="Twice Delete")
+    plumbing = seed_categories[8]
+    budget = await _create_budget(
+        client,
+        admin_token,
+        job_id=job["job_id"],
+        category_id=str(plumbing.category_id),
+    )
+
+    r1 = await client.delete(
+        f"/jobs/{job['job_id']}/category-budgets/{budget['budget_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r1.status_code == 204
+
+    r2 = await client.delete(
+        f"/jobs/{job['job_id']}/category-budgets/{budget['budget_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r2.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_category_budget_404_on_mismatched_job(
+    client, admin_token, seed_categories
+):
+    """Critical correctness guard (mirror of the PATCH variant): a real
+    budget_id paired with the WRONG job_id must NOT delete the budget
+    on its real parent job."""
+    job_a = await _create_job(client, admin_token, name="Job A Delete")
+    job_b = await _create_job(client, admin_token, name="Job B Delete")
+    plumbing = seed_categories[8]
+    budget_a = await _create_budget(
+        client,
+        admin_token,
+        job_id=job_a["job_id"],
+        category_id=str(plumbing.category_id),
+    )
+
+    r = await client.delete(
+        f"/jobs/{job_b['job_id']}/category-budgets/{budget_a['budget_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Budget not found"
+
+    # Verify job_a's budget still exists.
+    r = await client.get(
+        f"/jobs/{job_a['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 200
+    assert len(r.json()["category_budgets"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_category_budget_contributor_forbidden(
+    client, admin_token, contributor_token, seed_categories
+):
+    """DELETE is admin-only; contributor caller gets 403."""
+    job = await _create_job(client, admin_token, name="RBAC Delete")
+    plumbing = seed_categories[8]
+    budget = await _create_budget(
+        client,
+        admin_token,
+        job_id=job["job_id"],
+        category_id=str(plumbing.category_id),
+    )
+
+    r = await client.delete(
+        f"/jobs/{job['job_id']}/category-budgets/{budget['budget_id']}",
+        headers={"Authorization": f"Bearer {contributor_token}"},
+    )
+    assert r.status_code == 403

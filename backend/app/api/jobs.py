@@ -34,6 +34,7 @@ from app.schemas.job import (
     JobAuditRow,
     JobCategoryBudgetCreate,
     JobCategoryBudgetPublic,
+    JobCategoryBudgetUpdate,
     JobCreate,
     JobPublic,
     JobUpdate,
@@ -41,6 +42,7 @@ from app.schemas.job import (
 )
 from app.services.budget_summary import summarize_job, summarize_jobs
 from app.services.jobs import (
+    BudgetNotFound,
     CategoryNotFound,
     DuplicateAlias,
     DuplicateBudget,
@@ -50,10 +52,12 @@ from app.services.jobs import (
     add_alias,
     add_category_budget,
     create_job,
+    delete_category_budget,
     delete_empty_job,
     get_job,
     list_job_audit,
     list_jobs,
+    update_category_budget,
     update_job,
 )
 
@@ -397,3 +401,69 @@ async def add_category_budget_endpoint(
             status_code=status.HTTP_409_CONFLICT,
             detail="Budget for that job + category already exists",
         ) from exc
+
+
+@router.patch(
+    "/{job_id}/category-budgets/{budget_id}",
+    response_model=JobCategoryBudgetPublic,
+    status_code=status.HTTP_200_OK,
+)
+async def update_category_budget_endpoint(
+    job_id: uuid.UUID,
+    budget_id: uuid.UUID,
+    body: JobCategoryBudgetUpdate,
+    _admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a per-category budget row's amount (admin only).
+
+    Slice A. 404 if ``(job_id, budget_id)`` doesn't resolve — either
+    the budget doesn't exist OR it belongs to a different job. The
+    pair is checked atomically so a mismatched job_id cannot
+    accidentally update someone else's budget.
+
+    Pydantic rejects negative amounts at the schema layer
+    (:class:`~app.schemas.job.JobCategoryBudgetUpdate` ``ge=0``),
+    surfacing as 422 before this handler is reached. ``0`` is
+    explicitly permitted (a zero budget is a valid statement).
+    """
+    try:
+        return await update_category_budget(
+            db,
+            job_id,
+            budget_id,
+            budget_amount_ex_gst=body.budget_amount_ex_gst,
+        )
+    except BudgetNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Budget not found",
+        ) from exc
+
+
+@router.delete(
+    "/{job_id}/category-budgets/{budget_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_category_budget_endpoint(
+    job_id: uuid.UUID,
+    budget_id: uuid.UUID,
+    _admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Delete a per-category budget row (admin only).
+
+    Slice A. 404 if ``(job_id, budget_id)`` doesn't resolve — same
+    no-leak rationale as the PATCH endpoint. A second DELETE on the
+    same ``budget_id`` also returns 404 (not silently 204); callers
+    that want noop-on-missing semantics should ignore the 404
+    themselves.
+    """
+    try:
+        await delete_category_budget(db, job_id, budget_id)
+    except BudgetNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Budget not found",
+        ) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

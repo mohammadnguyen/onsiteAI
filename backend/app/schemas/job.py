@@ -122,6 +122,23 @@ class JobCategoryBudgetCreate(BaseModel):
     budget_amount_ex_gst: Decimal = Field(ge=0)
 
 
+class JobCategoryBudgetUpdate(BaseModel):
+    """Body of ``PATCH /jobs/{job_id}/category-budgets/{budget_id}`` (admin-only).
+
+    Single editable field — ``budget_amount_ex_gst``. The underlying DB
+    column is NOT NULL, so this field is required (not Optional). 0 is
+    a valid value (the operator explicitly approved zero budgets);
+    negative values are rejected at the schema layer via ``ge=0``,
+    surfacing as 422 from FastAPI before reaching the service.
+
+    No partial-update semantics needed because there's only one
+    editable field — if more fields ever become editable, the conditional-
+    spread pattern from ``JobUpdate`` is the model to copy.
+    """
+
+    budget_amount_ex_gst: Decimal = Field(ge=0)
+
+
 class JobCategoryBudgetPublic(BaseModel):
     """Serialised view of a :class:`~app.models.job.JobCategoryBudget`.
 
