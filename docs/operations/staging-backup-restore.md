@@ -33,18 +33,60 @@ private ops journal — NOT in this canonical runbook.
 
 ## Verification status (current installation)
 
-| Phase | Status | Evidence reference |
-|---|---|---|
-| Backup creation (R-1, native Fly snapshot) | **VERIFIED** | private ops log: `<BACKUP_ID>` |
-| Backup creation (R-2, portable pg_dump) | **VERIFIED** | private ops log: dump file sha256 `<SHA256_HASH>` |
-| Restore (R-3 + R-4 + R-5) | **NOT YET VERIFIED** | Rehearsal pending |
-| Disposable cluster cleanup (R-6) | **NOT YET VERIFIED** | Pending R-3 execution |
+Rehearsal date: 2026-06-02. Specific evidence values (cluster IDs,
+backup ID, dump hash, exact row counts, sanitized log tail) live in the
+operator's private ops journal — NOT in this canonical runbook.
 
-R-1 and R-2 prove that backup artefacts can be CREATED. They do NOT
-prove that those artefacts can be RESTORED. The backup strategy is not
-fully proven until the restore loop (R-3 → R-4 → R-5) passes. Until
-then, defense-in-depth backup artefacts exist but restore confidence
-is incomplete.
+| Gate | Status | Evidence reference |
+|---|---|---|
+| R-1 — native Fly snapshot backup | **VERIFIED** | private ops log: `<BACKUP_ID>` |
+| R-2 — portable pg_dump | **VERIFIED** | private ops log: dump sha256 `<SHA256_HASH>` |
+| R-3 — disposable MPG cluster create | **VERIFIED** | rehearsal 2026-06-02; private ops log |
+| R-4 — pg_restore (Path A, portable dump) | **COMPLETED WITH WARNINGS / pg_restore exit 1** | system-object errors only; private ops log (sanitized tail) |
+| R-4 — Path B (native fly mpg restore) | **NOT EXERCISED** (deliberately avoided) | finding 1 below |
+| R-5 — verification | **QUALIFIED PASS** | alembic head present + core-table counts plausible; private ops log |
+| R-6 — destroy disposable cluster | **CONFIRMED / scheduled teardown** | private ops log |
+| R-7 — doc close-out | recorded by this commit | this document |
+
+**Overall: restore rehearsal completed with QUALIFIED PASS** (Path A,
+portable dump). This is NOT a clean, zero-error restore: `pg_restore`
+exited 1 with system-object (pgbouncer / extension) errors only, and
+exact dump-time-count equality was not asserted (no R-2 dump-time
+counts were captured). Native restore (Path B) was not exercised.
+
+R-1 and R-2 prove backup artefacts can be CREATED. The 2026-06-02
+rehearsal additionally proved the R-2 portable dump is RESTORABLE to a
+fresh cluster (R-3 → R-4 → R-5) at the QUALIFIED-PASS level, and that
+the disposable cluster was destroyed (R-6). Restore confidence for the
+portable-dump path is now established; the native-snapshot restore path
+(Path B) remains unproven.
+
+### Rehearsal findings (2026-06-02)
+
+1. Native `fly mpg restore` (Path B) remains deliberately avoided due to
+   ambiguous source/target semantics; it was not exercised. Path A
+   (portable `.dump` + Docker `pg_restore`) is the exercised path and
+   reached a QUALIFIED PASS.
+2. The portable `.dump` + Docker `postgres:16` `pg_restore` path is
+   viable end-to-end.
+3. In this rehearsal, `pg_restore` emitted system-object / pgbouncer /
+   extension-related errors and exited 1. Future rehearsals may see
+   similar system-object errors.
+4. A non-zero `pg_restore` exit must NOT be treated as a pass
+   automatically — classify the errors first (see Gate R-4).
+5. A QUALIFIED PASS is acceptable only when the `public` schema and core
+   tables/data restored, the `alembic_version` row exists, verification
+   counts are plausible, and NO data-level error (failed `COPY`, missing
+   table, `public.*` constraint/FK failure) occurred.
+6. Future rehearsals should capture R-2 dump-time row counts before
+   restore, so R-5 can assert exact equality instead of a qualified
+   pass.
+7. If no native `psql` is on PATH, verify via Docker `postgres:16`
+   `psql` through the disposable proxy (see Gate R-5).
+8. Do NOT run `fly mpg status <ID> --json` during the rehearsal — it can
+   expose a plaintext credentials block. Use `fly mpg list` for status.
+9. Gate R-6 destroy is mandatory — especially if the disposable
+   cluster's credentials were exposed at any point.
 
 ## Prerequisites
 
@@ -189,6 +231,10 @@ After Terminal B completes successfully, Ctrl-C in Terminal A.
   return `False` before closing the terminal.
 - Never paste `DATABASE_URL`, password, connection string, or
   `.dump`-file contents into evidence.
+- Never run `fly mpg status <ID> --json`. It returns a `credentials`
+  block containing the plaintext password and pgbouncer URI. For
+  cluster status use `fly mpg list`. (`fly mpg backup list <CLUSTER_ID>
+  --json` in Gate R-1 is fine — it carries no credentials.)
 
 ### Post-step verification
 
@@ -209,6 +255,11 @@ After Terminal B completes successfully, Ctrl-C in Terminal A.
 - `pg_dump` exit code.
 - Backup context tag (`<CONTEXT_TAG>` portion of the filename).
 - `PGPASSWORD` wipe confirmation.
+- Dump-time row counts for the core tables (`jobs`, `expenses`,
+  `users`, `suppliers`, plus any other core tables). Capturing these at
+  dump time lets Gate R-5 assert EXACT equality against the restored
+  cluster instead of settling for a qualified pass. (The 2026-06-02
+  rehearsal skipped this, so R-5 reached only a QUALIFIED PASS.)
 - Any warnings / errors verbatim (sanitized; no secrets).
 
 ## Gate R-3: Create a disposable Fly MPG cluster
@@ -217,10 +268,10 @@ After Terminal B completes successfully, Ctrl-C in Terminal A.
 resource that MUST be destroyed at the end of the rehearsal (Gate
 R-6).
 
-**SYNTAX UNVERIFIED — preflight required.** Before this gate executes,
-run `fly mpg create --help` to confirm the current flag shape. The
-legacy `flyctl postgres create` command does NOT apply to Fly Managed
-Postgres.
+**SYNTAX confirmed 2026-06-02** (`fly mpg create --name <NAME> --plan
+<PLAN>`). Per ADR 0003, still re-run `fly mpg create --help` before
+execution to confirm the current flag shape. The legacy `flyctl
+postgres create` command does NOT apply to Fly Managed Postgres.
 
 Likely current shape (verify before use):
 
@@ -242,8 +293,9 @@ new disposable cluster.
 
 **APPROVAL REQUIRED** before running the commands.
 
-**TWO RESTORE PATHS** (operator chooses; both unverified, preflight
-required before execution).
+**TWO RESTORE PATHS.** Path A has been exercised to a QUALIFIED PASS.
+Path B remains unexercised and should NOT be used until separately
+tested. Per ADR 0003, re-run the relevant `--help` before execution.
 
 ### Path A — restore from the R-2 portable `.dump`
 
@@ -254,7 +306,14 @@ Postgres can restore the file).
 # Terminal A
 fly mpg proxy <DISPOSABLE_CLUSTER_ID>
 
-# Terminal B (PowerShell, paste as one block; mirrors R-2 secret handling)
+# Terminal B (PowerShell, paste AS ONE BLOCK; mirrors R-2 secret handling + guards)
+docker run --rm postgres:16 pg_isready --host=host.docker.internal --port=16380
+$readyExit = $LASTEXITCODE
+Write-Host "pg_isready exit code: $readyExit"
+if ($readyExit -ne 0) {
+  throw "pg_isready failed with exit code $readyExit. The proxy is not reachable — do NOT enter the database password until this passes."
+}
+
 $secure = Read-Host -AsSecureString "PGPASSWORD for disposable cluster"
 $bstr   = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
 $env:PGPASSWORD = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
@@ -262,7 +321,7 @@ $env:PGPASSWORD = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bst
 
 docker run --rm `
   -e PGPASSWORD `
-  -v "C:/sitetracker_backups:/dump" `
+  -v "C:/sitetracker_backups:/dump:ro" `
   postgres:16 `
   pg_restore `
     --host=host.docker.internal `
@@ -272,8 +331,28 @@ docker run --rm `
     --no-owner --no-acl --verbose `
     /dump/sitetracker_staging_<UTC_TIMESTAMP>_<CONTEXT_TAG>.dump
 
-Remove-Item env:PGPASSWORD
+$code = $LASTEXITCODE
+Remove-Item Env:\PGPASSWORD -ErrorAction SilentlyContinue
+"pg_restore exit code: $code"
+"PGPASSWORD still set? " + [bool]$env:PGPASSWORD
+
+if ($code -ne 0) {
+  throw "pg_restore exited non-zero ($code). STOP before R-5. Classify the sanitized tail: data-level error => run Gate R-6 destroy; system-object-only errors => continue only if the Gate R-4 qualified-pass checklist is satisfied."
+}
 ```
+
+**Paste AS ONE BLOCK.** As in R-2, `throw` halts only the current
+pipeline, so pasting line-by-line could reach the password prompt after
+`pg_isready` failed, or flow into R-5 after a failed restore. Select the
+whole block and paste once. The dump is mounted read-only (`:ro`) so the
+restore container cannot alter the artefact.
+
+The final `throw` is intentional: it stops the block so a non-zero
+`pg_restore` exit cannot silently flow into R-5. "Classify sanitized
+tail" means apply *Interpreting the `pg_restore` exit code (Path A)*
+below — a system-object-only exit 1 is a QUALIFIED PASS (then proceed to
+R-5 deliberately); only a data-level error makes the R-6 destroy named
+in the throw mandatory.
 
 ### Path B — restore from the R-1 native Fly snapshot
 
@@ -289,10 +368,64 @@ fly mpg restore <DISPOSABLE_CLUSTER_ID> --backup-id <BACKUP_ID>
 
 ### Recommendation
 
-If practical, run BOTH paths (cost: extra ~10 minutes; benefit:
-proves both restore mechanisms independently). If only one, prefer
-Path B (native; faster; matches the primary backup mechanism the
-operator would reach for in an emergency).
+Path A (portable `.dump` + Docker `pg_restore`) is the exercised path
+and reached a QUALIFIED PASS — the 2026-06-02 rehearsal ran it
+end-to-end. This was not a clean or exact restore (see the exit-code
+interpretation below); prefer Path A because it is the path that has
+actually been run, not because it restored cleanly.
+
+Path B (native `fly mpg restore`) was deliberately NOT exercised. Its
+source/target semantics are ambiguous (which backup restores into
+which cluster, and whether it can target a fresh disposable cluster
+versus only restoring in place), and getting that wrong risks touching
+the wrong cluster. Until those semantics are confirmed against current
+`fly mpg restore --help` on a throwaway target, treat Path B as
+unproven and do not reach for it in an emergency.
+
+### Interpreting the `pg_restore` exit code (Path A)
+
+`pg_restore` exit 1 means "completed with errors that were ignored,"
+NOT "aborted." A Fly MPG target pre-provisions system objects (the
+`pgbouncer` schema, the `pg_stat_monitor` and `pgaudit` extensions),
+so restoring a dump that also references them produces a handful of
+benign system-object errors. In this rehearsal `pg_restore` emitted
+errors of the form:
+
+- `schema "pgbouncer" already exists`
+- `must be owner of extension pg_stat_monitor`
+- `must be owner of extension pgaudit`
+- `permission denied for schema pgbouncer`
+
+and exited 1. Future rehearsals may see similar system-object errors.
+
+A non-zero exit is a QUALIFIED PASS — not an automatic pass — only
+when ALL of the following hold:
+
+1. Every error is a system-object error (pgbouncer schema, extension
+   ownership, or pgbouncer-schema permission), NOT a `public.*` object.
+2. No `COPY` failed and no table's data load errored.
+3. The `public` schema, its tables, constraints, indexes and FKs were
+   all created (visible in the `--verbose` log).
+4. Gate R-5 verification then finds the `alembic_version` row and
+   plausible core-table counts.
+
+If ANY error references a `public.*` object, a failed `COPY`, a
+missing table, or a constraint/FK that did not build: STOP. That is a
+data-level failure, not a benign warning. Do not proceed to trust the
+backup.
+
+### Optional: cleaner exit via public-schema-only restore
+
+To avoid the system-object noise entirely, a restore can be scoped to
+just the application schema by adding `--schema=public` to the
+`pg_restore` invocation above. It typically exits 0 because it never
+touches the pre-provisioned pgbouncer schema or the extensions.
+Caveat: it restores ONLY the `public` schema, so anything the
+application legitimately places outside `public` would be skipped. The
+full-dump restore (no `--schema` filter) remains the canonical
+rehearsal path because it exercises the whole artefact; the
+`--schema=public` variant is a diagnostic convenience, not the
+default.
 
 **Post-step verification.** See Gate R-5.
 
@@ -310,27 +443,78 @@ SELECT COUNT(*) FROM users;
 \q
 ```
 
-Compare each count to the same query run against the live staging
-cluster (`fly mpg connect <CLUSTER_ID>`). All counts must match for
-the rehearsal to pass.
+If `fly mpg connect` cannot find a native `psql` on PATH, run the same
+queries through Docker `postgres:16` against the disposable proxy (same
+secret hygiene as R-2 — `Read-Host -AsSecureString`, `-e PGPASSWORD`
+pass-through, wipe after):
 
-**If counts do NOT match:** STOP. The backup is not faithfully
-restorable. Do NOT trust production data on this backup path until
-the discrepancy is resolved. Report and pause.
+```powershell
+# Terminal A: fly mpg proxy <DISPOSABLE_CLUSTER_ID>  (still up from R-4)
+
+# Terminal B (PowerShell, paste as one block)
+$secure = Read-Host -AsSecureString "PGPASSWORD for disposable cluster"
+$bstr   = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+$env:PGPASSWORD = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+[System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+
+docker run --rm `
+  -e PGPASSWORD `
+  postgres:16 `
+  psql `
+    -v ON_ERROR_STOP=1 `
+    --host=host.docker.internal `
+    --port=16380 `
+    --username=<DISPOSABLE_DB_USER> `
+    --dbname=<DISPOSABLE_DB_NAME> `
+    -c "SELECT version_num FROM alembic_version;" `
+    -c "SELECT COUNT(*) FROM jobs;" `
+    -c "SELECT COUNT(*) FROM expenses;" `
+    -c "SELECT COUNT(*) FROM users;" `
+    -c "SELECT COUNT(*) FROM suppliers;"
+
+Remove-Item env:PGPASSWORD
+"PGPASSWORD set? $([bool]$env:PGPASSWORD)"
+```
+
+### Pass criteria
+
+**Exact pass** — every restored count equals the source count. This
+requires EITHER the R-2 dump-time counts (captured per R-2 "Evidence
+to capture") OR a live cross-check against the staging cluster at
+verification time together with confidence that the live data did not
+change between dump and check. Only then can equality be asserted
+exactly.
+
+**Qualified pass** — the `alembic_version` row is present, the
+core-table counts are plausible (non-zero where data is expected), and
+Gate R-4 reported NO data-level error (no failed `COPY`, no missing
+`public.*` object). This is the ceiling the 2026-06-02 rehearsal
+reached, because R-2 dump-time counts were not captured.
+
+**If a data-level mismatch appears** (a `public.*` table missing, or a
+count that contradicts a known-good source value): STOP. The backup is
+not faithfully restorable. Do NOT trust production data on this backup
+path until the discrepancy is resolved. Report and pause.
 
 ## Gate R-6: Destroy the disposable cluster
 
 **APPROVAL REQUIRED** before running the command.
 
-**SYNTAX UNVERIFIED — preflight required.** Run
-`fly mpg destroy --help` (or whichever subcommand `fly mpg --help`
-shows for cluster deletion) before execution. Likely shape:
+**SYNTAX confirmed 2026-06-02** (`fly mpg destroy
+<DISPOSABLE_CLUSTER_ID>`, interactive — prompts for confirmation). Per
+ADR 0003, still re-run `fly mpg destroy --help` before execution to
+confirm the current flag shape. Shape:
 
 ```
 fly mpg destroy <DISPOSABLE_CLUSTER_ID>
 ```
 
-Frees the cluster's resources and stops billing.
+Frees the cluster's resources and stops billing. Gate R-6 is mandatory
+and is doubly urgent if the disposable cluster's credentials were
+exposed at any point during the rehearsal (e.g. surfaced in a
+transcript). Run it interactively (no `--yes`) and confirm the prompt
+shows the DISPOSABLE cluster's ID before accepting — never destroy by
+reflex.
 
 **Post-step verification.** `fly mpg list --org <ORG_SLUG>` no longer
 shows the disposable cluster.
@@ -342,13 +526,15 @@ Report (private ops journal, NOT this repo):
 - Backup ID created in R-1 (`<BACKUP_ID>` reference).
 - Local pg_dump file path + size + SHA-256 hash (`<SHA256_HASH>`
   reference).
-- Counts comparison from R-5 (live staging vs disposable, all
-  matching).
+- Counts from R-5 (and, if dump-time counts were captured in R-2, the
+  exact comparison; otherwise note the qualified-pass basis).
 - Confirmation that the disposable cluster was destroyed (R-6).
 - Total rehearsal duration (for future planning estimates).
-- Flip the `## Verification status` table entries for R-3 / R-4 /
-  R-5 / R-6 from **NOT YET VERIFIED** → **VERIFIED** in a separate
-  doc-only commit.
+- Record the `## Verification status` outcome in a separate doc-only
+  commit using accurate statuses — R-3 **VERIFIED**, R-4 **COMPLETED
+  WITH WARNINGS / pg_restore exit 1**, R-5 **QUALIFIED PASS**, R-6
+  **CONFIRMED / scheduled teardown** — NOT a blanket "VERIFIED". The
+  rehearsal date may appear inline; specific evidence values must not.
 - All sanitized evidence captured in the operator's private ops
   journal (path: operator's choice; explicitly NOT in this repo).
 
