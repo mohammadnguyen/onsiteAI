@@ -16,7 +16,10 @@
     },
     "ios": {
       "bundleIdentifier": "com.sitetracker.mobile",
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.sitetracker.mobile",

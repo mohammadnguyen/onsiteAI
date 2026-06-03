@@ -75,3 +75,4 @@ adding a new test, fixing a bug, renaming a variable.
 | [0001](./0001-current-architecture.md) | Current Architecture | Accepted |
 | [0002](./0002-environment-and-secrets-strategy.md) | Environment and Secrets Strategy | Accepted |
 | [0003](./0003-staging-deployment-strategy.md) | Staging Deployment Strategy | Accepted |
+| [0004](./0004-mobile-testflight-distribution.md) | Mobile TestFlight Distribution | Accepted |
