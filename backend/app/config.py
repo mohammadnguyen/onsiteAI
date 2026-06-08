@@ -157,6 +157,13 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 30
 
+    # Maximum number of simultaneously-active admins (role=admin AND
+    # is_active=True). Enforced in app.services.users on invite and on
+    # promotion to admin; the last active admin can be neither deactivated
+    # nor demoted. App-level rule only — no DB constraint, no migration.
+    # The app is single-tenant, so this is a global cap.
+    max_active_admins: int = 3
+
     # Comma-separated list of allowed origins. Example value:
     #   CORS_ALLOWED_ORIGINS=https://admin.example.com,https://app.example.com
     # ``NoDecode`` tells pydantic-settings not to JSON-decode the env-var

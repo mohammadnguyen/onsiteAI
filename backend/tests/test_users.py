@@ -154,3 +154,161 @@ async def test_patch_changes_language_preference(
     assert body["full_name"] == "Seed Contributor"
     assert body["role"] == "contributor"
     assert body["is_active"] is True
+
+
+# ---------------------------------------------------------------------------
+# C-2: active-admin cap (default max 3) + last-admin protection.
+# Baseline for these tests = the single ``seeded_admin`` (1 active admin).
+# ---------------------------------------------------------------------------
+
+
+async def _invite(client, token, *, email, role, full_name="Cap User"):
+    return await client.post(
+        "/users/invite",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "full_name": full_name,
+            "email": email,
+            "role": role,
+            "initial_password": "secret-initial-password",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_admin_can_create_contributor(client, admin_token):
+    r = await _invite(client, admin_token, email="c1@example.com", role="contributor")
+    assert r.status_code == 201
+    assert r.json()["role"] == "contributor"
+
+
+@pytest.mark.asyncio
+async def test_admin_cap_blocks_fourth_active_admin(client, admin_token):
+    # 1 baseline admin; two more reach the cap of 3; the fourth is rejected.
+    r2 = await _invite(client, admin_token, email="a2@example.com", role="admin")
+    r3 = await _invite(client, admin_token, email="a3@example.com", role="admin")
+    r4 = await _invite(client, admin_token, email="a4@example.com", role="admin")
+    assert r2.status_code == 201
+    assert r3.status_code == 201
+    assert r4.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_contributors_are_unlimited(client, admin_token):
+    for i in range(5):
+        r = await _invite(
+            client, admin_token, email=f"c{i}@example.com", role="contributor"
+        )
+        assert r.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_promote_contributor_to_admin_under_cap(
+    client, admin_token, seeded_contributor
+):
+    # 1 baseline admin; promoting the contributor makes 2 active admins.
+    r = await client.patch(
+        f"/users/{seeded_contributor.user_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"role": "admin"},
+    )
+    assert r.status_code == 200
+    assert r.json()["role"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_promote_contributor_to_admin_at_cap_409(
+    client, admin_token, seeded_contributor
+):
+    # Fill to the cap (1 + 2 = 3), then the promotion must be rejected.
+    r2 = await _invite(client, admin_token, email="a2@example.com", role="admin")
+    r3 = await _invite(client, admin_token, email="a3@example.com", role="admin")
+    assert r2.status_code == 201
+    assert r3.status_code == 201
+    r = await client.patch(
+        f"/users/{seeded_contributor.user_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"role": "admin"},
+    )
+    assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_deactivate_last_admin_rejected(client, admin_token, seeded_admin):
+    r = await client.patch(
+        f"/users/{seeded_admin.user_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"is_active": False},
+    )
+    assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_demote_last_admin_rejected(client, admin_token, seeded_admin):
+    r = await client.patch(
+        f"/users/{seeded_admin.user_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"role": "contributor"},
+    )
+    assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_deactivate_admin_when_another_active_admin_exists(
+    client, admin_token, seeded_admin
+):
+    # With a 2nd active admin present, deactivating the first is allowed.
+    r2 = await _invite(client, admin_token, email="a2@example.com", role="admin")
+    assert r2.status_code == 201
+    r = await client.patch(
+        f"/users/{seeded_admin.user_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"is_active": False},
+    )
+    assert r.status_code == 200
+    assert r.json()["is_active"] is False
+
+
+@pytest.mark.asyncio
+async def test_edit_existing_admin_without_role_change_allowed(
+    client, admin_token, seeded_admin
+):
+    r = await client.patch(
+        f"/users/{seeded_admin.user_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"full_name": "Renamed Admin"},
+    )
+    assert r.status_code == 200
+    assert r.json()["full_name"] == "Renamed Admin"
+    assert r.json()["role"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_inactive_admin_does_not_count_toward_cap(client, admin_token):
+    # Reach 3 active admins, deactivate one (-> 2 active), then a new active
+    # admin is allowed — proving an inactive admin frees a slot.
+    r2 = await _invite(client, admin_token, email="a2@example.com", role="admin")
+    r3 = await _invite(client, admin_token, email="a3@example.com", role="admin")
+    assert r2.status_code == 201
+    assert r3.status_code == 201
+    deact = await client.patch(
+        f"/users/{r3.json()['user_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"is_active": False},
+    )
+    assert deact.status_code == 200
+    r4 = await _invite(client, admin_token, email="a4@example.com", role="admin")
+    assert r4.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_contributor_cannot_promote_self(
+    client, contributor_token, seeded_contributor
+):
+    # PATCH /users is admin-only, so a contributor cannot escalate own role.
+    r = await client.patch(
+        f"/users/{seeded_contributor.user_id}",
+        headers={"Authorization": f"Bearer {contributor_token}"},
+        json={"role": "admin"},
+    )
+    assert r.status_code == 403

@@ -8,6 +8,10 @@ these routes gets a 403 from :func:`app.deps.require_admin`. A
 deactivated user's token is rejected earlier by :func:`get_current_user`
 (401), so ``PATCH /users/{id}`` with ``is_active=False`` effectively
 logs the target out — even though their JWT has not expired.
+
+Active-admin cap (C-2): inviting/promoting beyond
+:attr:`app.config.Settings.max_active_admins` active admins, or
+deactivating/demoting the last active admin, returns ``409 Conflict``.
 """
 
 from __future__ import annotations
@@ -56,7 +60,8 @@ async def invite_user_endpoint(
     magic-link / reset-password flow.
 
     Returns 201 with the new :class:`UserPublic`. A pre-existing user
-    with the same email produces a 409.
+    with the same email produces a 409; inviting an admin beyond the
+    active-admin cap also produces a 409.
     """
     try:
         return await svc.invite_user(
@@ -68,6 +73,10 @@ async def invite_user_endpoint(
             language_preference=body.language_preference,
         )
     except svc.DuplicateEmail as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except svc.AdminLimitReached as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
@@ -90,6 +99,9 @@ async def update_user_endpoint(
     ``language_preference`` may be supplied. Setting ``is_active=False``
     forces the target's existing access tokens to 401 on the next auth
     check — :func:`app.deps.get_current_user` rejects deactivated users.
+
+    Returns 409 when promoting beyond the active-admin cap or when the
+    change would remove the last active admin.
     """
     try:
         return await svc.update_user(
@@ -103,4 +115,8 @@ async def update_user_endpoint(
     except svc.UserNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        ) from exc
+    except (svc.AdminLimitReached, svc.LastAdminProtected) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
