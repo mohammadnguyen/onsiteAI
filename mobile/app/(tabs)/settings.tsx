@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import { useRouter } from 'expo-router';
+import { useRouter, type Href } from 'expo-router';
 import Constants from 'expo-constants';
 import i18n, { setLanguage, type Lang } from '../../src/i18n';
 import { useAuthStore } from '../../src/store/auth';
@@ -14,6 +14,10 @@ export default function SettingsScreen() {
   const router = useRouter();
   const clear = useAuthStore((s) => s.clear);
   const { data: me, isLoading } = useMe();
+  // M4: admin-only Users entry — /auth/me drives VISIBILITY ONLY;
+  // the /users backend routes stay authoritative (403 for
+  // contributors). Hidden while the role loads (fails closed).
+  const isAdmin = me?.role === 'admin';
   const [lang, setLang] = useState<Lang>((i18n.language as Lang) || 'en');
 
   useEffect(() => {
@@ -97,6 +101,20 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        {isAdmin ? (
+          <TouchableOpacity
+            style={s.card}
+            onPress={() => router.push('/users' as unknown as Href)}
+            testID="settings-users-entry"
+            accessibilityRole="button"
+          >
+            <View style={s.entryRow}>
+              <Text style={s.cardValue}>{t('users.entry')}</Text>
+              <Text style={s.entryChevron}>{'›'}</Text>
+            </View>
+          </TouchableOpacity>
+        ) : null}
+
         <View style={s.card} testID="settings-diagnostics">
           <Text style={s.cardLabel}>{t('settings.diagnostics')}</Text>
           <View style={s.diagRow}>
@@ -169,6 +187,12 @@ const s = StyleSheet.create({
   langBtnActive: { backgroundColor: '#1e293b', borderColor: '#1e293b' },
   langBtnText: { color: '#0f172a', fontWeight: '500' },
   langBtnTextActive: { color: '#ffffff' },
+  entryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  entryChevron: { fontSize: 20, color: '#94a3b8' },
   diagRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
