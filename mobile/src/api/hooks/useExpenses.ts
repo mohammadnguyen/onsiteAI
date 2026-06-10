@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { api } from '../client';
 import { useAuthStore } from '../../store/auth';
 import type { components } from '../types';
@@ -264,5 +269,74 @@ export function useUpdateExpense(expenseId: string) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['expenses'] });
     },
+  });
+}
+
+/** M2-B: filter set for the full expenses list. All fields optional;
+ *  omitted fields send no query param (backend defaults apply). */
+export type ExpenseListFilters = {
+  jobId?: string;
+  status?: ReviewStatus;
+  supplierId?: string;
+  categoryId?: string;
+  /** ISO date (YYYY-MM-DD), inclusive lower bound on expense_date. */
+  from?: string;
+  /** ISO date (YYYY-MM-DD), inclusive upper bound on expense_date. */
+  to?: string;
+};
+
+const EXPENSE_LIST_PAGE_SIZE = 25;
+
+/**
+ * M2-B: infinite full expenses list backed by M2-A keyset pagination.
+ *
+ * Backend: GET /expenses?cursor=...
+ *   - ``next_cursor`` is an OPAQUE token — this hook echoes it back
+ *     verbatim as ``cursor`` for the next page and never parses it.
+ *     A null ``next_cursor`` means last page (getNextPageParam
+ *     returns null → ``hasNextPage`` false).
+ *   - Role scoping is server-side: admins get the whole tenant,
+ *     contributors get only their own rows. No ``mine`` param is
+ *     sent — this list intentionally shows "everything I'm allowed
+ *     to see".
+ *   - Page size 25 keeps pagination real at field data volumes
+ *     (the backend caps limit at 500).
+ *
+ * Cache key sits under the ``['expenses']`` ROOT deliberately:
+ * every existing mutation (create / update / delete / resolve /
+ * reject) already invalidates that root, so this list refetches
+ * after any expense mutation with zero new wiring. Filters are part
+ * of the key, so each filter combination caches independently.
+ */
+export function useExpensesList(filters: ExpenseListFilters) {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  return useInfiniteQuery({
+    queryKey: ['expenses', 'list', filters],
+    queryFn: async ({ pageParam }): Promise<ExpenseListResponse> => {
+      const { data } = await api.get<ExpenseListResponse>('/expenses', {
+        params: {
+          limit: EXPENSE_LIST_PAGE_SIZE,
+          ...(filters.jobId ? { job_id: filters.jobId } : {}),
+          ...(filters.status ? { status: filters.status } : {}),
+          ...(filters.supplierId ? { supplier_id: filters.supplierId } : {}),
+          ...(filters.categoryId ? { category_id: filters.categoryId } : {}),
+          ...(filters.from ? { from: filters.from } : {}),
+          ...(filters.to ? { to: filters.to } : {}),
+          ...(pageParam ? { cursor: pageParam } : {}),
+        },
+      });
+      return data;
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? null,
+    enabled: !!accessToken,
+    // 30s rather than 0: the list screen remounts on every detail
+    // round trip (root Slot navigator unmounts siblings), and
+    // staleTime 0 would re-fire a sequential refetch of EVERY cached
+    // page each time — an N-request chain on a field network.
+    // Mutation freshness is unaffected: invalidateQueries(['expenses'])
+    // marks the data stale and refetches regardless of staleTime.
+    staleTime: 30_000,
+    retry: false,
   });
 }

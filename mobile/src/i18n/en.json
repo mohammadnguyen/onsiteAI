@@ -166,6 +166,21 @@
     "edit_reason_label": "Reason for change (optional)",
     "edit_reason_help": "Saved to the audit history."
   },
+  "expense_list": {
+    "title": "All expenses",
+    "view_all": "View all expenses",
+    "filter_job": "Job",
+    "filter_status": "Status",
+    "filter_date": "Date",
+    "filter_supplier": "Supplier",
+    "filter_category": "Category",
+    "all": "All",
+    "date_week": "This week",
+    "date_month": "This month",
+    "empty": "No expenses match these filters.",
+    "end": "End of list",
+    "error": "Could not load expenses."
+  },
   "edit": {
     "title": "Edit Expense",
     "cancel": "Cancel",

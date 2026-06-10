@@ -166,6 +166,21 @@
     "edit_reason_label": "\u4fee\u6539\u539f\u56e0\uff08\u53ef\u9009\uff09",
     "edit_reason_help": "\u5c06\u4fdd\u5b58\u5230\u5ba1\u8ba1\u8bb0\u5f55\u3002"
   },
+  "expense_list": {
+    "title": "\u5168\u90e8\u652f\u51fa",
+    "view_all": "\u67e5\u770b\u5168\u90e8\u652f\u51fa",
+    "filter_job": "\u9879\u76ee",
+    "filter_status": "\u72b6\u6001",
+    "filter_date": "\u65e5\u671f",
+    "filter_supplier": "\u4f9b\u5e94\u5546",
+    "filter_category": "\u7c7b\u522b",
+    "all": "\u5168\u90e8",
+    "date_week": "\u672c\u5468",
+    "date_month": "\u672c\u6708",
+    "empty": "\u6ca1\u6709\u7b26\u5408\u7b5b\u9009\u6761\u4ef6\u7684\u652f\u51fa\u3002",
+    "end": "\u5df2\u5230\u5217\u8868\u672b\u5c3e",
+    "error": "\u65e0\u6cd5\u52a0\u8f7d\u652f\u51fa\u3002"
+  },
   "edit": {
     "title": "\u7f16\u8f91\u652f\u51fa",
     "cancel": "\u53d6\u6d88",

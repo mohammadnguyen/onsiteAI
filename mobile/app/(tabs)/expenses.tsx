@@ -283,7 +283,7 @@ export default function ExpensesScreen() {
             result={multiResult}
             onReset={onReset}
           />
-          <RecentCapturesList query={recentExpenses} />
+          <RecentCapturesList query={recentExpenses} showViewAll />
         </ScrollView>
       </SafeAreaView>
     );
@@ -299,7 +299,7 @@ export default function ExpensesScreen() {
         >
           <Text style={s.title}>{t('capture.title')}</Text>
           <CaptureResultCard result={result} onReset={onReset} />
-          <RecentCapturesList query={recentExpenses} />
+          <RecentCapturesList query={recentExpenses} showViewAll />
         </ScrollView>
       </SafeAreaView>
     );
@@ -417,7 +417,7 @@ export default function ExpensesScreen() {
               visible, the path "I want to fix something I captured
               earlier" -> scroll -> tap row -> detail -> Edit expense
               is one tap from the default state of the Capture tab. */}
-          <RecentCapturesList query={recentExpenses} />
+          <RecentCapturesList query={recentExpenses} showViewAll />
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>

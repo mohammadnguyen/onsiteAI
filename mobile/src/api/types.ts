@@ -2144,6 +2144,8 @@ export interface operations {
                 from?: string | null;
                 to?: string | null;
                 receipt_status?: components["schemas"]["ReceiptStatus"] | null;
+                supplier_id?: string | null;
+                category_id?: string | null;
                 limit?: number;
                 cursor?: string | null;
             };
