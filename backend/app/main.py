@@ -2,13 +2,19 @@
 
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 
 from app.api.router import api_router
 from app.config import get_settings, resolved_env_file_path
 
 logger = logging.getLogger("app.startup")
+
+# M0 observability: dedicated logger for unhandled request exceptions.
+# Lives beside the startup logger so log filtering can target either
+# channel independently ("app.startup" vs "app.errors").
+error_logger = logging.getLogger("app.errors")
 
 
 def create_app() -> FastAPI:
@@ -75,6 +81,33 @@ def create_app() -> FastAPI:
         # round-trip silently degrades to the fallback "export.xlsx".
         expose_headers=["Content-Disposition"],
     )
+
+    # M0 observability: explicit app-level logging for unhandled
+    # exceptions (anything that would surface as a 500). Starlette's
+    # ServerErrorMiddleware invokes this handler to build the 500
+    # response and then RE-RAISES the original exception, so existing
+    # server-level behaviour (uvicorn error logging, test-client
+    # exception propagation) is unchanged. The response body matches
+    # Starlette's default plain-text 500 exactly — wire behaviour is
+    # preserved for clients.
+    #
+    # Privacy rules (same spirit as the startup log above): log the
+    # method + URL *path* + exception type only. NEVER log query
+    # strings (they can carry business text such as delete reasons),
+    # request bodies, headers, tokens, or secret values. The attached
+    # ``exc_info`` traceback contains code locations, not payloads.
+    @app.exception_handler(Exception)
+    async def _log_unhandled_exception(
+        request: Request, exc: Exception
+    ) -> PlainTextResponse:
+        error_logger.error(
+            "unhandled_exception method=%s path=%s exc_type=%s",
+            request.method,
+            request.url.path,
+            type(exc).__name__,
+            exc_info=exc,
+        )
+        return PlainTextResponse("Internal Server Error", status_code=500)
 
     @app.get("/healthz", tags=["system"])
     async def healthz() -> dict[str, str]:
