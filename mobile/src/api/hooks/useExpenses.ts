@@ -188,14 +188,20 @@ export function useRejectQueueItem(reviewId: string) {
   });
 }
 
+/** M1: optional audit-reason payload for useDeleteExpense. */
+export type DeleteExpenseInput = { reason?: string };
+
 /**
  * Soft-delete mutation for the mobile expense detail screen.
  *
- * Backend: DELETE /expenses/{id}
+ * Backend: DELETE /expenses/{id}?reason=...
  *   - admin-only (require_admin); contributors get 403
  *   - returns 204 on success
  *   - semantics: sets review_status='rejected' + writes audit log
  *     (the row stays in the DB; it's removed from active lists)
+ *   - `reason` is an OPTIONAL query param (max_length=500) recorded
+ *     on the audit row only — the backend NEVER requires it. Omitting
+ *     it deletes exactly as before M1.
  *
  * Cache invalidation: BOTH `['expenses']` and `['jobs']` roots,
  * because a delete affects (a) every expense list query — My
@@ -207,9 +213,15 @@ export function useRejectQueueItem(reviewId: string) {
  */
 export function useDeleteExpense(expenseId: string) {
   const qc = useQueryClient();
-  return useMutation<void, unknown, void>({
-    mutationFn: async () => {
-      await api.delete(`/expenses/${expenseId}`);
+  return useMutation<void, unknown, DeleteExpenseInput>({
+    mutationFn: async (input) => {
+      // Trim + cap to the backend's max_length=500. axios `params`
+      // URL-encodes the value safely. An empty/whitespace-only reason
+      // is treated as "no reason" and the param is omitted entirely.
+      const reason = input.reason?.trim().slice(0, 500);
+      await api.delete(`/expenses/${expenseId}`, {
+        params: reason ? { reason } : undefined,
+      });
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['expenses'] });
@@ -229,9 +241,13 @@ export function useDeleteExpense(expenseId: string) {
  *
  * Backend role semantics (handled server-side, not in this hook):
  *   - contributor: edit own row while review_status='pending'
- *   - admin:       any row; edits on reviewed rows require `reason`
- *                  (mobile UI does NOT surface `reason` in P4 — admin
- *                   reviewed-row edits stay on admin web until P4.5)
+ *   - admin:       any row, any status. `ExpenseUpdate.reason` is
+ *                  OPTIONAL audit metadata — the backend does NOT
+ *                  reject reason-less admin edits (verified against
+ *                  app/services/expenses.py: `reason` is discarded
+ *                  from the patch set and written to the audit log
+ *                  only). M1's edit screen surfaces it on non-pending
+ *                  rows and includes it only when the admin types one.
  *   - job_id is IMMUTABLE post-create (any attempt → 422)
  *
  * Cache invalidation: hits the `['expenses']` root so both the detail

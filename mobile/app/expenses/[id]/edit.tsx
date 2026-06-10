@@ -24,6 +24,7 @@ import {
   type PaymentMethod,
   type ReceiptStatus,
 } from '../../../src/api/hooks/useExpenses';
+import { useMe } from '../../../src/api/hooks/useAuth';
 import { DatePills } from '../../../src/components/DatePills';
 
 /**
@@ -37,8 +38,13 @@ import { DatePills } from '../../../src/components/DatePills';
  *   - Editable fields: amount_inc_gst, payment_method, expense_date,
  *     receipt_status, description, notes.
  *   - NOT editable here: supplier, category, job (immutable),
- *     review_status, reason (admin reviewed-row edit stays on admin web
- *     until P4.5).
+ *     review_status.
+ *   - M1: admins editing a non-pending row get an OPTIONAL "reason"
+ *     field — audit-only metadata (`ExpenseUpdate.reason`). The
+ *     backend never requires it, Save is never blocked on it, and it
+ *     is included in the PATCH body only when non-empty. (An earlier
+ *     comment claimed the backend 403s reviewed-row edits without a
+ *     reason; that check does not exist — corrected in M1.)
  *   - amount_ex_gst / gst_amount: server recomputes from amount_inc_gst.
  *   - PD-7=B — Save is BLOCKED when the DatePills component is in an
  *     invalid state (Other-mode parse error or empty Other input).
@@ -101,6 +107,7 @@ export default function ExpenseEditScreen() {
   const { t } = useTranslation();
   const expense = useExpense(id);
   const update = useUpdateExpense(id ?? '');
+  const me = useMe();
 
   // Form state. Seeded from expense.data once after first load.
   const [amountText, setAmountText] = useState<string>('');
@@ -109,6 +116,12 @@ export default function ExpenseEditScreen() {
   const [receiptLater, setReceiptLater] = useState<boolean>(false);
   const [description, setDescription] = useState<string>('');
   const [notes, setNotes] = useState<string>('');
+  // M1: optional audit reason for admin edits of non-pending rows.
+  // Deliberately NOT part of the diff builder — typing a reason alone
+  // never dirties the form, and an empty reason never blocks Save
+  // (the backend treats ExpenseUpdate.reason as OPTIONAL audit-only
+  // metadata; permissions stay server-side).
+  const [reason, setReason] = useState<string>('');
 
   // Validity signals from sub-components / our own parsers.
   const [dateValid, setDateValid] = useState<boolean>(true);
@@ -176,6 +189,15 @@ export default function ExpenseEditScreen() {
     notes,
   ]);
 
+  // M1: show the optional reason field only to admins editing a row
+  // that has already left `pending`. Role data comes from the cached
+  // /auth/me query and drives VISIBILITY ONLY — the backend service
+  // remains the authority on what an edit may do.
+  const showReasonField =
+    me.data?.role === 'admin' &&
+    !!expense.data &&
+    expense.data.review_status !== 'pending';
+
   const onBack = () => {
     if (router.canGoBack()) router.back();
     // Deep-link / cold-launch fallback: there's no detail-back history
@@ -193,7 +215,16 @@ export default function ExpenseEditScreen() {
     setFormError(null);
     Keyboard.dismiss();
     try {
-      await update.mutateAsync(diff);
+      // M1: attach the optional audit reason only when the field is
+      // visible AND non-empty after trimming. `reason` is NOT in the
+      // diff builder, so it can never dirty a pristine form or block
+      // Save on its own. Cap at the backend's max_length=500.
+      const trimmedReason = reason.trim();
+      const body: ExpenseUpdateInput =
+        showReasonField && trimmedReason.length > 0
+          ? { ...diff, reason: trimmedReason.slice(0, 500) }
+          : diff;
+      await update.mutateAsync(body);
       onBack();
     } catch (err) {
       setFormError(extractErrorMessage(err, t('edit.error_network')));
@@ -365,6 +396,25 @@ export default function ExpenseEditScreen() {
               accessibilityLabel={t('expense.notes')}
             />
 
+            {showReasonField ? (
+              <>
+                <Text style={s.label}>{t('expense.edit_reason_label')}</Text>
+                <TextInput
+                  value={reason}
+                  onChangeText={setReason}
+                  placeholderTextColor="#94a3b8"
+                  editable={!update.isPending}
+                  maxLength={500}
+                  style={s.input}
+                  testID="edit-reason"
+                  accessibilityLabel={t('expense.edit_reason_label')}
+                />
+                <Text style={s.reasonHelp}>
+                  {t('expense.edit_reason_help')}
+                </Text>
+              </>
+            ) : null}
+
             {formError ? (
               <View style={s.errorBanner} testID="edit-error-banner">
                 <Text style={s.errorBannerText}>{formError}</Text>
@@ -488,6 +538,7 @@ const s = StyleSheet.create({
   inputError: { borderColor: '#dc2626' },
   multiline: { minHeight: 80, textAlignVertical: 'top' },
   fieldError: { color: '#b91c1c', fontSize: 13 },
+  reasonHelp: { color: '#64748b', fontSize: 12 },
   paymentRow: {
     flexDirection: 'row',
     alignItems: 'center',

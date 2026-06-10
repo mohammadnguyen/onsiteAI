@@ -161,7 +161,10 @@
     "reject_confirm_title": "Reject expense?",
     "reject_confirm_message": "Reject and remove from active lists. Remains in the audit history.",
     "reject_error": "Couldn't reject expense.",
-    "review_forbidden": "Only admins can approve or reject expenses."
+    "review_forbidden": "Only admins can approve or reject expenses.",
+    "delete_reason_hint": "Optional: add a reason for the audit history.",
+    "edit_reason_label": "Reason for change (optional)",
+    "edit_reason_help": "Saved to the audit history."
   },
   "edit": {
     "title": "Edit Expense",

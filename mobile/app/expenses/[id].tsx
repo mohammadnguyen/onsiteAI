@@ -7,6 +7,7 @@ import {
   Pressable,
   StyleSheet,
   Alert,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, type Href } from 'expo-router';
@@ -20,6 +21,7 @@ import {
   useRejectQueueItem,
 } from '../../src/api/hooks/useExpenses';
 import { useJobs } from '../../src/api/hooks/useJobs';
+import { useMe } from '../../src/api/hooks/useAuth';
 import { useSelectedJobStore } from '../../src/store/selectedJob';
 import type {
   ExpenseDetailPublic,
@@ -88,6 +90,7 @@ export default function ExpenseDetailScreen() {
   const { t } = useTranslation();
   const expense = useExpense(id);
   const jobs = useJobs();
+  const me = useMe();
   const deleteMutation = useDeleteExpense(id ?? '');
   const reviewId = expense.data?.pending_review_queue_id ?? '';
   const resolveMutation = useResolveQueueItem(reviewId);
@@ -129,27 +132,41 @@ export default function ExpenseDetailScreen() {
     router.push(editHref);
   };
 
+  // M1: role-aware visibility. `/auth/me` (cached under ['auth','me'])
+  // drives VISIBILITY ONLY — defence in depth on top of the backend's
+  // require_admin checks, which remain the authority. While the role
+  // is still loading, admin-only controls stay hidden until the cached
+  // role arrives (failing closed beats flashing admin affordances at
+  // contributors).
+  const isAdmin = me.data?.role === 'admin';
+
   // P4: Edit button visibility — only enabled once the row has loaded
-  // AND the row is editable (contributor: pending only; admin gets the
-  // button on every status but the backend will 403 on reviewed rows
-  // without `reason`, which mobile P4 deliberately does not surface).
+  // AND the row is not rejected. Edit is NOT admin-only: contributors
+  // may edit their own pending rows; the backend service enforces the
+  // real rules (contributor = own row + pending only; admin = any row,
+  // any status — `reason` is OPTIONAL audit metadata, never required.
+  // M1 corrected an earlier claim here that reviewed-row edits 403
+  // without a reason; no such backend check exists).
   // Hide the button entirely while loading/erroring to keep header
   // affordances clean and predictable.
   const editEnabled =
     !!expense.data && expense.data.review_status !== 'rejected';
-  // Delete visibility: same rule (rejected rows are already
-  // soft-deleted; backend would 403). Admin-only on the backend;
-  // contributors who somehow see the button get a clear "only admins"
-  // alert when they tap.
+  // Delete visibility (M1): admin-only — DELETE /expenses/{id} sits
+  // behind require_admin, so non-admins no longer see a button that
+  // can only produce a 403. Rejected rows hide it too (already
+  // soft-deleted; the backend treats a repeat delete as an idempotent
+  // 204 no-op, but there's nothing useful for the user to do).
   const deleteEnabled =
-    !!expense.data && expense.data.review_status !== 'rejected';
+    !!expense.data && expense.data.review_status !== 'rejected' && isAdmin;
   // Approve / Reject visibility: gated STRICTLY on the presence of
-  // pending_review_queue_id (the slice-1A.1 backend field). Never
+  // pending_review_queue_id (the slice-1A.1 backend field) AND the
+  // admin role (M1 — both queue routes are require_admin). Never
   // gate on review_status alone — a historical resolved/rejected
   // queue row would otherwise leak as a callable workflow action,
   // and the backend would return 4xx when mobile tried to POST
   // /review-queue/{id}/resolve on a non-open row.
-  const approveRejectEnabled = !!expense.data?.pending_review_queue_id;
+  const approveRejectEnabled =
+    !!expense.data?.pending_review_queue_id && isAdmin;
 
   const handleReviewError = (err: unknown, fallbackKey: string) => {
     const status = axios.isAxiosError(err) ? err.response?.status : undefined;
@@ -210,8 +227,62 @@ export default function ExpenseDetailScreen() {
     );
   };
 
+  // M1: shared delete executor. `reasonText` comes from the iOS
+  // Alert.prompt input; it is OPTIONAL — the backend's `reason` query
+  // param is audit-only metadata, so a blank value simply omits the
+  // param and the delete proceeds exactly as before M1.
+  const performDelete = async (reasonText?: string) => {
+    try {
+      const reason = reasonText?.trim();
+      await deleteMutation.mutateAsync(reason ? { reason } : {});
+      // Cache invalidation in onSuccess refreshes all
+      // affected lists; navigate back to whichever screen
+      // brought the user here.
+      onBack();
+    } catch (err) {
+      const status = axios.isAxiosError(err)
+        ? err.response?.status
+        : undefined;
+      let message: string;
+      if (status === 403) {
+        message = t('expense.delete_forbidden');
+      } else {
+        const detail = axios.isAxiosError(err)
+          ? err.response?.data?.detail
+          : undefined;
+        message =
+          typeof detail === 'string' ? detail : t('expense.delete_error');
+      }
+      Alert.alert(t('common.error'), message);
+    }
+  };
+
   const onDelete = () => {
     if (!id) return;
+    if (Platform.OS === 'ios') {
+      // M1: Alert.prompt is iOS-only (RN). The free-text field captures
+      // an optional audit reason; submitting it empty deletes without
+      // a reason — same contract as before M1. iOS-first product: this
+      // is the primary path.
+      Alert.prompt(
+        t('expense.delete_confirm_title'),
+        `${t('expense.delete_confirm_message')}\n\n${t('expense.delete_reason_hint')}`,
+        [
+          { text: t('common.cancel'), style: 'cancel' },
+          {
+            text: t('expense.delete_cta'),
+            style: 'destructive',
+            onPress: (text?: string) => void performDelete(text),
+          },
+        ],
+        'plain-text',
+      );
+      return;
+    }
+    // Non-iOS fallback: keep the pre-M1 two-button confirm without a
+    // reason input. Contract-compliant because reason is optional;
+    // react-native-web's Alert is effectively a no-op anyway (existing
+    // precedent on this screen).
     Alert.alert(
       t('expense.delete_confirm_title'),
       t('expense.delete_confirm_message'),
@@ -220,32 +291,7 @@ export default function ExpenseDetailScreen() {
         {
           text: t('expense.delete_cta'),
           style: 'destructive',
-          onPress: async () => {
-            try {
-              await deleteMutation.mutateAsync();
-              // Cache invalidation in onSuccess refreshes all
-              // affected lists; navigate back to whichever screen
-              // brought the user here.
-              onBack();
-            } catch (err) {
-              const status = axios.isAxiosError(err)
-                ? err.response?.status
-                : undefined;
-              let message: string;
-              if (status === 403) {
-                message = t('expense.delete_forbidden');
-              } else {
-                const detail = axios.isAxiosError(err)
-                  ? err.response?.data?.detail
-                  : undefined;
-                message =
-                  typeof detail === 'string'
-                    ? detail
-                    : t('expense.delete_error');
-              }
-              Alert.alert(t('common.error'), message);
-            }
-          },
+          onPress: () => void performDelete(),
         },
       ],
     );
