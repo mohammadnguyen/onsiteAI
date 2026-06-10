@@ -41,6 +41,8 @@ export function useCreateExpense() {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['expenses'] });
+      // M3: a new capture can open a review-queue row.
+      void qc.invalidateQueries({ queryKey: ['review-queue'] });
     },
   });
 }
@@ -164,6 +166,7 @@ export function useResolveQueueItem(reviewId: string) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['expenses'] });
       void qc.invalidateQueries({ queryKey: ['jobs'] });
+      void qc.invalidateQueries({ queryKey: ['review-queue'] }); // M3 triage list
     },
   });
 }
@@ -189,6 +192,7 @@ export function useRejectQueueItem(reviewId: string) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['expenses'] });
       void qc.invalidateQueries({ queryKey: ['jobs'] });
+      void qc.invalidateQueries({ queryKey: ['review-queue'] }); // M3 triage list
     },
   });
 }
@@ -231,6 +235,7 @@ export function useDeleteExpense(expenseId: string) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['expenses'] });
       void qc.invalidateQueries({ queryKey: ['jobs'] });
+      void qc.invalidateQueries({ queryKey: ['review-queue'] }); // M3 triage list
     },
   });
 }
@@ -268,6 +273,8 @@ export function useUpdateExpense(expenseId: string) {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['expenses'] });
+      // M3: an edit can change what the triage row shows.
+      void qc.invalidateQueries({ queryKey: ['review-queue'] });
     },
   });
 }

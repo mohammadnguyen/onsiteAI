@@ -181,6 +181,14 @@
     "end": "End of list",
     "error": "Could not load expenses."
   },
+  "review_queue": {
+    "title": "Pending review",
+    "entry": "Pending review",
+    "empty": "Nothing is waiting for review.",
+    "error": "Could not load the review queue.",
+    "waiting_since": "Waiting since {{date}}",
+    "summary_unavailable": "Details unavailable — tap to open"
+  },
   "edit": {
     "title": "Edit Expense",
     "cancel": "Cancel",

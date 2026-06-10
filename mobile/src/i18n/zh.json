@@ -181,6 +181,14 @@
     "end": "\u5df2\u5230\u5217\u8868\u672b\u5c3e",
     "error": "\u65e0\u6cd5\u52a0\u8f7d\u652f\u51fa\u3002"
   },
+  "review_queue": {
+    "title": "\u5f85\u5ba1\u6838",
+    "entry": "\u5f85\u5ba1\u6838",
+    "empty": "\u6ca1\u6709\u5f85\u5ba1\u6838\u7684\u652f\u51fa\u3002",
+    "error": "\u65e0\u6cd5\u52a0\u8f7d\u5ba1\u6838\u961f\u5217\u3002",
+    "waiting_since": "\u81ea {{date}} \u8d77\u7b49\u5f85",
+    "summary_unavailable": "\u6458\u8981\u4e0d\u53ef\u7528\u2014\u2014\u70b9\u6309\u67e5\u770b\u8be6\u60c5"
+  },
   "edit": {
     "title": "\u7f16\u8f91\u652f\u51fa",
     "cancel": "\u53d6\u6d88",

@@ -23,6 +23,7 @@ import {
   type PaymentMethod,
   type ReceiptStatus,
 } from '../../src/api/hooks/useExpenses';
+import { useMe } from '../../src/api/hooks/useAuth';
 import { CaptureResultCard } from '../../src/components/CaptureResultCard';
 import { RecentCapturesList } from '../../src/components/RecentCapturesList';
 import { RecentFailuresList } from '../../src/components/RecentFailuresList';
@@ -105,6 +106,11 @@ export default function ExpensesScreen() {
   // Job detail modal stays at 20 (different context: comprehensive
   // per-job view).
   const recentExpenses = useMyRecentExpenses(5);
+  // M3: admin-only triage entry. /auth/me drives VISIBILITY ONLY —
+  // the review-queue backend routes stay authoritative (403 for
+  // contributors). Hidden while the role is loading (fails closed).
+  const me = useMe();
+  const isAdmin = me.data?.role === 'admin';
   // M0: persisted failed-capture store — failures recorded here stay
   // visible after form reset and app restart (see src/store/failures).
   const recordFailure = useFailuresStore((st) => st.recordFailure);
@@ -283,7 +289,11 @@ export default function ExpensesScreen() {
             result={multiResult}
             onReset={onReset}
           />
-          <RecentCapturesList query={recentExpenses} showViewAll />
+          <RecentCapturesList
+            query={recentExpenses}
+            showViewAll
+            showPendingTriage={isAdmin}
+          />
         </ScrollView>
       </SafeAreaView>
     );
@@ -299,7 +309,11 @@ export default function ExpensesScreen() {
         >
           <Text style={s.title}>{t('capture.title')}</Text>
           <CaptureResultCard result={result} onReset={onReset} />
-          <RecentCapturesList query={recentExpenses} showViewAll />
+          <RecentCapturesList
+            query={recentExpenses}
+            showViewAll
+            showPendingTriage={isAdmin}
+          />
         </ScrollView>
       </SafeAreaView>
     );
@@ -417,7 +431,11 @@ export default function ExpensesScreen() {
               visible, the path "I want to fix something I captured
               earlier" -> scroll -> tap row -> detail -> Edit expense
               is one tap from the default state of the Capture tab. */}
-          <RecentCapturesList query={recentExpenses} showViewAll />
+          <RecentCapturesList
+            query={recentExpenses}
+            showViewAll
+            showPendingTriage={isAdmin}
+          />
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>

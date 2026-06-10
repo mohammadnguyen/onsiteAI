@@ -51,6 +51,12 @@ type Props = {
    * the full expenses list at `/expenses/list`.
    */
   showViewAll?: boolean;
+  /**
+   * M3: when true, renders an admin-only "Pending review" footer
+   * link to the triage screen at `/review-queue`. The PARENT decides
+   * admin-ness (via useMe) — this component stays role-unaware.
+   */
+  showPendingTriage?: boolean;
 };
 
 export function RecentCapturesList({
@@ -58,6 +64,7 @@ export function RecentCapturesList({
   heading,
   fromJobId,
   showViewAll,
+  showPendingTriage,
 }: Props) {
   const { t } = useTranslation();
   const jobs = useJobs();
@@ -119,6 +126,19 @@ export function RecentCapturesList({
             style={({ pressed }) => [s.viewAll, pressed && s.viewAllPressed]}
           >
             <Text style={s.viewAllText}>{t('expense_list.view_all')} ›</Text>
+          </Pressable>
+        </Link>
+      ) : null}
+
+      {showPendingTriage ? (
+        <Link href={'/review-queue' as unknown as Href} asChild>
+          <Pressable
+            testID="pending-triage-link"
+            accessibilityRole="button"
+            hitSlop={8}
+            style={({ pressed }) => [s.viewAll, pressed && s.viewAllPressed]}
+          >
+            <Text style={s.viewAllText}>{t('review_queue.entry')} ›</Text>
           </Pressable>
         </Link>
       ) : null}
