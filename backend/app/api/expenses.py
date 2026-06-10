@@ -117,24 +117,39 @@ async def list_expenses_endpoint(
     from_date: date | None = Query(default=None, alias="from"),
     to_date: date | None = Query(default=None, alias="to"),
     receipt_status: ReceiptStatus | None = None,
+    supplier_id: uuid.UUID | None = None,
+    category_id: uuid.UUID | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     cursor: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ExpenseListResponse:
-    """List expenses (contributors are restricted to their own rows)."""
-    rows, next_cursor = await svc.list_expenses(
-        db,
-        current_user=current_user,
-        mine=bool(mine),
-        job_id=job_id,
-        status=review_status,
-        from_date=from_date,
-        to_date=to_date,
-        receipt_status=receipt_status,
-        limit=limit,
-        cursor=cursor,
-    )
+    """List expenses (contributors are restricted to their own rows).
+
+    M2-A: ``cursor`` is the opaque ``next_cursor`` token from the
+    previous page — echo it back verbatim to fetch the next page; an
+    undecodable cursor returns 400. ``supplier_id`` / ``category_id``
+    are exact-match filters (indexes exist for both).
+    """
+    try:
+        rows, next_cursor = await svc.list_expenses(
+            db,
+            current_user=current_user,
+            mine=bool(mine),
+            job_id=job_id,
+            status=review_status,
+            from_date=from_date,
+            to_date=to_date,
+            receipt_status=receipt_status,
+            supplier_id=supplier_id,
+            category_id=category_id,
+            limit=limit,
+            cursor=cursor,
+        )
+    except svc.InvalidCursor as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=exc.detail
+        ) from exc
     return ExpenseListResponse(
         items=[ExpensePublic.model_validate(r) for r in rows],
         next_cursor=next_cursor,

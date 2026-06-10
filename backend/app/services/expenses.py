@@ -38,13 +38,15 @@ re-implemented here. See :mod:`app.services.parser` for the orchestrator.
 
 from __future__ import annotations
 
+import base64
+import json
 import uuid
 from dataclasses import asdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.text import normalize_alias
@@ -117,6 +119,19 @@ class JobNotFoundForExpense(Exception):
     def __init__(self, job_id: uuid.UUID):
         self.job_id = job_id
         super().__init__(f"Job {job_id} not found")
+
+
+class InvalidCursor(Exception):
+    """Raised when a list-pagination ``cursor`` fails to decode (M2-A).
+
+    Maps to HTTP 400 at the API layer — a malformed cursor is a
+    client-side request error, never a server fault. Cursors are
+    opaque: clients must only echo ``next_cursor`` back verbatim.
+    """
+
+    def __init__(self, detail: str = "Invalid cursor"):
+        self.detail = detail
+        super().__init__(detail)
 
 
 # ---------------------------------------------------------------------------
@@ -713,6 +728,45 @@ async def preview_parse(
 # ---------------------------------------------------------------------------
 
 
+# M2-A: keyset-pagination cursor. The wire format is OPAQUE —
+# base64url-encoded JSON of the last row's (expense_date, created_at,
+# expense_id). Clients must treat ``next_cursor`` as a token to echo
+# back verbatim, never parse it. The triple mirrors the fixed ORDER BY
+# exactly (date DESC, created_at DESC, id DESC) so a row-value
+# comparison resumes the scan with no duplicates and no skips —
+# including full ties: ``created_at`` is the transaction timestamp
+# (server_default now()), so multi-row captures share it and
+# ``expense_id`` breaks the tie.
+
+
+def _encode_cursor(row: Expense) -> str:
+    payload = json.dumps(
+        {
+            "d": row.expense_date.isoformat(),
+            "c": row.created_at.isoformat(),
+            "i": row.expense_id.hex,
+        },
+        separators=(",", ":"),
+    )
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def _decode_cursor(cursor: str) -> tuple[date, datetime, uuid.UUID]:
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode("ascii"))
+        payload = json.loads(raw.decode("utf-8"))
+        return (
+            date.fromisoformat(payload["d"]),
+            datetime.fromisoformat(payload["c"]),
+            uuid.UUID(hex=payload["i"]),
+        )
+    except (ValueError, KeyError, TypeError) as exc:
+        # binascii.Error / JSONDecodeError / UnicodeError are ValueError
+        # subclasses; non-dict payloads raise TypeError; missing keys
+        # raise KeyError. Anything undecodable is the client's problem.
+        raise InvalidCursor() from exc
+
+
 async def list_expenses(
     db: AsyncSession,
     *,
@@ -723,18 +777,27 @@ async def list_expenses(
     from_date: date | None = None,
     to_date: date | None = None,
     receipt_status: ReceiptStatus | None = None,
+    supplier_id: uuid.UUID | None = None,
+    category_id: uuid.UUID | None = None,
     limit: int = 100,
     cursor: str | None = None,
 ) -> tuple[list[Expense], str | None]:
     """List expenses (contributors always restricted to their own rows).
 
-    Phase 2 returns a simple list with an opaque ``next_cursor``; when
-    fewer than ``limit`` rows match the cursor is ``None``. Full
-    pagination (keyset) is left for a later task — this keeps Phase 2
-    tests straightforward while still allowing clients to tell "there
-    may be more".
+    M2-A: real keyset pagination. The order is fixed at
+    ``expense_date DESC, created_at DESC, expense_id DESC`` — the id
+    tiebreak makes the order total, which keyset resumption requires.
+    ``cursor`` is the opaque ``next_cursor`` from the previous page;
+    passing it back resumes the scan strictly after that row under the
+    same filters. ``next_cursor`` is ``None`` on the last page. An
+    undecodable cursor raises :class:`InvalidCursor` (HTTP 400 at the
+    API layer), never a 500.
     """
-    stmt = select(Expense).order_by(Expense.expense_date.desc(), Expense.created_at.desc())
+    stmt = select(Expense).order_by(
+        Expense.expense_date.desc(),
+        Expense.created_at.desc(),
+        Expense.expense_id.desc(),
+    )
 
     # Contributors never see other users' expenses, regardless of
     # ``mine``. Admins see everyone by default; ``mine=True`` restricts
@@ -752,6 +815,21 @@ async def list_expenses(
         stmt = stmt.where(Expense.expense_date <= to_date)
     if receipt_status is not None:
         stmt = stmt.where(Expense.receipt_status == receipt_status)
+    if supplier_id is not None:
+        stmt = stmt.where(Expense.supplier_id == supplier_id)
+    if category_id is not None:
+        stmt = stmt.where(Expense.category_id == category_id)
+
+    if cursor is not None:
+        last_date, last_created, last_id = _decode_cursor(cursor)
+        # Row-value comparison: under an all-DESC order, the "next"
+        # rows are exactly those whose (date, created_at, id) tuple is
+        # strictly smaller than the cursor row's. Postgres evaluates
+        # this natively; filters above still apply.
+        stmt = stmt.where(
+            tuple_(Expense.expense_date, Expense.created_at, Expense.expense_id)
+            < (last_date, last_created, last_id)
+        )
 
     stmt = stmt.limit(limit + 1)
     rows = list((await db.execute(stmt)).scalars().all())
@@ -759,10 +837,7 @@ async def list_expenses(
     next_cursor: str | None = None
     if len(rows) > limit:
         rows = rows[:limit]
-        # Cursor payload is intentionally opaque. Phase 2 only needs
-        # clients to know "there are more rows"; future tasks can wire
-        # up real keyset pagination.
-        next_cursor = rows[-1].expense_id.hex if rows else None
+        next_cursor = _encode_cursor(rows[-1])
 
     return rows, next_cursor
 

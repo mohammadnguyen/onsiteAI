@@ -20,6 +20,7 @@ Covers:
 
 from __future__ import annotations
 
+import base64
 import datetime as _datetime
 import uuid
 from decimal import Decimal
@@ -29,6 +30,7 @@ import pytest_asyncio
 from sqlalchemy import select
 
 from app.models import (
+    Category,
     Expense,
     ExpenseAuditLog,
     ExpenseReviewQueue,
@@ -365,6 +367,7 @@ async def _seed_structured_expense(
     amount: str = "100",
     description: str = "seed",
     supplier_id=None,
+    category_id=None,
     review_status: ReviewStatus = ReviewStatus.reviewed,
     receipt_status: ReceiptStatus = ReceiptStatus.no_receipt,
     payment_method: PaymentMethod = PaymentMethod.unknown,
@@ -374,6 +377,7 @@ async def _seed_structured_expense(
         expense_id=uuid.uuid4(),
         job_id=job_id,
         supplier_id=supplier_id,
+        category_id=category_id,
         entered_by_user_id=entered_by_user_id,
         expense_type=ExpenseType.supplier_expense,
         description=description,
@@ -386,6 +390,28 @@ async def _seed_structured_expense(
     db_session.add(exp)
     await db_session.flush()
     return exp
+
+
+async def _walk_pages(client, token: str, base_query: str, *, max_pages: int = 20):
+    """M2-A helper: follow ``next_cursor`` until exhausted.
+
+    Returns (items, page_count). Asserts every page is a 200 and that
+    the walk terminates within ``max_pages`` (runaway guard).
+    """
+    items: list[dict] = []
+    cursor: str | None = None
+    pages = 0
+    while True:
+        url = f"/expenses?{base_query}" + (f"&cursor={cursor}" if cursor else "")
+        r = await client.get(url, headers=_auth(token))
+        assert r.status_code == 200, r.text
+        body = r.json()
+        items.extend(body["items"])
+        pages += 1
+        cursor = body["next_cursor"]
+        if cursor is None:
+            return items, pages
+        assert pages < max_pages, "pagination did not terminate"
 
 
 @pytest.mark.asyncio
@@ -520,6 +546,246 @@ async def test_list_filters_by_receipt_status(client, db_session, world, admin_t
     ids = {x["expense_id"] for x in r.json()["items"]}
     assert str(expected.expense_id) in ids
     assert str(none_.expense_id) not in ids
+
+
+# ---------------------------------------------------------------------------
+# M2-A: supplier/category filters + keyset pagination
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_filters_by_supplier(client, db_session, world, admin_token):
+    """?supplier_id=<x> returns only that supplier's rows (M2-A)."""
+    bunnings = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        supplier_id=world["sup_a"].supplier_id,
+    )
+    mitre = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        supplier_id=world["sup_b"].supplier_id,
+    )
+    no_supplier = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+    )
+
+    r = await client.get(
+        f"/expenses?supplier_id={world['sup_a'].supplier_id}",
+        headers=_auth(admin_token),
+    )
+    assert r.status_code == 200
+    ids = {x["expense_id"] for x in r.json()["items"]}
+    assert str(bunnings.expense_id) in ids
+    assert str(mitre.expense_id) not in ids
+    assert str(no_supplier.expense_id) not in ids
+
+
+@pytest.mark.asyncio
+async def test_list_filters_by_category(client, db_session, world, admin_token):
+    """?category_id=<x> returns only that category's rows (M2-A)."""
+    cats = (
+        (
+            await db_session.execute(
+                select(Category).order_by(Category.display_order).limit(2)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    cat_a, cat_b = cats[0], cats[1]
+    in_cat = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        category_id=cat_a.category_id,
+    )
+    other_cat = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        category_id=cat_b.category_id,
+    )
+    no_cat = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+    )
+
+    r = await client.get(
+        f"/expenses?category_id={cat_a.category_id}",
+        headers=_auth(admin_token),
+    )
+    assert r.status_code == 200
+    ids = {x["expense_id"] for x in r.json()["items"]}
+    assert str(in_cat.expense_id) in ids
+    assert str(other_cat.expense_id) not in ids
+    assert str(no_cat.expense_id) not in ids
+
+
+@pytest.mark.asyncio
+async def test_list_keyset_pagination_three_pages_no_dup_no_skip(
+    client, db_session, world, admin_token
+):
+    """M2-A: limit=3 over 8 distinct-date rows -> 3 pages, each row exactly once, newest first."""
+    base = _datetime.date.today() - _datetime.timedelta(days=30)
+    seeded = []
+    for i in range(8):
+        seeded.append(
+            await _seed_structured_expense(
+                db_session,
+                job_id=world["job_a"].job_id,
+                entered_by_user_id=world["admin"].user_id,
+                expense_date=base + _datetime.timedelta(days=i),
+                description=f"page-walk-{i}",
+            )
+        )
+    expected_ids = {str(e.expense_id) for e in seeded}
+
+    items, pages = await _walk_pages(client, admin_token, "limit=3")
+
+    got_ids = [x["expense_id"] for x in items]
+    assert len(got_ids) == len(set(got_ids)), "duplicate row across page boundary"
+    assert set(got_ids) == expected_ids, "skipped row across page boundary"
+    assert pages == 3  # 3 + 3 + 2
+    dates = [x["expense_date"] for x in items]
+    assert dates == sorted(dates, reverse=True), "order broken across pages"
+
+
+@pytest.mark.asyncio
+async def test_list_keyset_pagination_equal_date_ties(client, db_session, world, admin_token):
+    """M2-A: rows tying on BOTH expense_date and created_at paginate via the id tiebreak.
+
+    All five rows share ``expense_date`` by construction and share
+    ``created_at`` because it is the transaction timestamp
+    (``server_default now()``) and the whole test runs in one
+    transaction — the strongest possible tie. limit=2 must still walk
+    them with no duplicate and no skip.
+    """
+    same_day = _datetime.date.today() - _datetime.timedelta(days=3)
+    seeded = []
+    for i in range(5):
+        seeded.append(
+            await _seed_structured_expense(
+                db_session,
+                job_id=world["job_a"].job_id,
+                entered_by_user_id=world["admin"].user_id,
+                expense_date=same_day,
+                description=f"tie-{i}",
+            )
+        )
+    expected_ids = {str(e.expense_id) for e in seeded}
+
+    items, pages = await _walk_pages(client, admin_token, "limit=2")
+
+    got_ids = [x["expense_id"] for x in items]
+    assert len(got_ids) == len(set(got_ids)), "duplicate row on full tie"
+    assert set(got_ids) == expected_ids, "skipped row on full tie"
+    assert pages == 3  # 2 + 2 + 1
+
+
+@pytest.mark.asyncio
+async def test_list_filter_plus_cursor_combination(client, db_session, world, admin_token):
+    """M2-A: the job filter holds across cursor pages (no cross-job leak mid-walk)."""
+    base = _datetime.date.today() - _datetime.timedelta(days=20)
+    a_rows = []
+    b_ids = set()
+    # Interleave job_a / job_b rows by date so naive pagination would mix them.
+    for i in range(5):
+        a_rows.append(
+            await _seed_structured_expense(
+                db_session,
+                job_id=world["job_a"].job_id,
+                entered_by_user_id=world["admin"].user_id,
+                expense_date=base + _datetime.timedelta(days=2 * i),
+            )
+        )
+        b = await _seed_structured_expense(
+            db_session,
+            job_id=world["job_b"].job_id,
+            entered_by_user_id=world["admin"].user_id,
+            expense_date=base + _datetime.timedelta(days=2 * i + 1),
+        )
+        b_ids.add(str(b.expense_id))
+    expected_a_ids = {str(e.expense_id) for e in a_rows}
+
+    items, pages = await _walk_pages(
+        client, admin_token, f"job_id={world['job_a'].job_id}&limit=2"
+    )
+
+    got_ids = [x["expense_id"] for x in items]
+    assert len(got_ids) == len(set(got_ids))
+    assert set(got_ids) == expected_a_ids
+    assert not (set(got_ids) & b_ids), "other job's rows leaked into a filtered walk"
+    assert pages == 3  # 2 + 2 + 1
+
+
+@pytest.mark.asyncio
+async def test_list_contributor_scoping_holds_with_new_filters_and_cursor(
+    client, db_session, world, seeded_contributor, contributor_token
+):
+    """M2-A: contributor + supplier filter + pagination never surfaces others' rows."""
+    own_ids = set()
+    for i in range(3):
+        e = await _seed_structured_expense(
+            db_session,
+            job_id=world["job_a"].job_id,
+            entered_by_user_id=seeded_contributor.user_id,
+            supplier_id=world["sup_a"].supplier_id,
+            expense_date=_datetime.date.today() - _datetime.timedelta(days=i),
+        )
+        own_ids.add(str(e.expense_id))
+    for i in range(2):
+        await _seed_structured_expense(
+            db_session,
+            job_id=world["job_a"].job_id,
+            entered_by_user_id=world["admin"].user_id,
+            supplier_id=world["sup_a"].supplier_id,
+            expense_date=_datetime.date.today() - _datetime.timedelta(days=i),
+        )
+
+    items, pages = await _walk_pages(
+        client, contributor_token, f"supplier_id={world['sup_a'].supplier_id}&limit=2"
+    )
+
+    got_ids = [x["expense_id"] for x in items]
+    assert len(got_ids) == len(set(got_ids))
+    assert set(got_ids) == own_ids, "contributor scoping broken under filter+cursor"
+    assert pages == 2  # 2 + 1
+
+
+@pytest.mark.asyncio
+async def test_list_limit_cap(client, world, admin_token):
+    """limit is validated at the edge: 0 and 501 -> 422; 500 -> 200."""
+    r = await client.get("/expenses?limit=501", headers=_auth(admin_token))
+    assert r.status_code == 422
+    r = await client.get("/expenses?limit=0", headers=_auth(admin_token))
+    assert r.status_code == 422
+    r = await client.get("/expenses?limit=500", headers=_auth(admin_token))
+    assert r.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_list_invalid_cursor_returns_400(client, world, admin_token):
+    """M2-A: every flavour of undecodable cursor is a controlled 400, never a 500."""
+    bad_cursors = [
+        "garbage",  # not base64 (bad length + alphabet)
+        "AAAA",  # decodes to bytes that aren't JSON
+        base64.urlsafe_b64encode(b"not json").decode("ascii"),
+        base64.urlsafe_b64encode(b"[1,2,3]").decode("ascii"),  # JSON, not an object
+        base64.urlsafe_b64encode(b'{"d":"x"}').decode("ascii"),  # missing keys
+        base64.urlsafe_b64encode(b'{"d":"nope","c":"nope","i":"nope"}').decode(
+            "ascii"
+        ),  # right keys, unparseable values
+    ]
+    for bad in bad_cursors:
+        r = await client.get(f"/expenses?cursor={bad}", headers=_auth(admin_token))
+        assert r.status_code == 400, (bad, r.status_code, r.text)
+        assert r.json()["detail"] == "Invalid cursor"
 
 
 @pytest.mark.asyncio
