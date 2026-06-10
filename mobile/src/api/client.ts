@@ -7,7 +7,10 @@ import Constants from 'expo-constants';
 import { useAuthStore } from '../store/auth';
 
 const extraApiUrl = (Constants.expoConfig?.extra as { apiUrl?: string } | undefined)?.apiUrl;
-const apiUrl: string =
+// Exported for the Settings → Diagnostics card (M0): shows the exact
+// base URL this client resolved so on-site triage can confirm which
+// environment a device points at. Read-only; nothing else consumes it.
+export const apiUrl: string =
   extraApiUrl ??
   process.env.EXPO_PUBLIC_API_URL ??
   'http://127.0.0.1:8000';

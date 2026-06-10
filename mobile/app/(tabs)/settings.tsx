@@ -3,9 +3,10 @@ import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'rea
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'expo-router';
+import Constants from 'expo-constants';
 import i18n, { setLanguage, type Lang } from '../../src/i18n';
 import { useAuthStore } from '../../src/store/auth';
-import { api } from '../../src/api/client';
+import { api, apiUrl } from '../../src/api/client';
 import { useMe } from '../../src/api/hooks/useAuth';
 
 export default function SettingsScreen() {
@@ -37,6 +38,22 @@ export default function SettingsScreen() {
     await clear();
     router.replace('/(auth)/login');
   };
+
+  // M0 release/environment marker (Settings → Diagnostics). All values
+  // come from existing Expo config — no extra native module:
+  //  - version: app.json `expo.version`
+  //  - build: ios.buildNumber / android.versionCode ('—' when unset,
+  //    e.g. local dev before EAS assigns build numbers)
+  //  - buildCommit: injected by app.config.ts from
+  //    EAS_BUILD_GIT_COMMIT_HASH at EAS build time; 'dev' locally
+  //  - apiUrl: the exact base URL the API client resolved at startup
+  const appVersion = Constants.expoConfig?.version ?? '—';
+  const iosBuild = Constants.expoConfig?.ios?.buildNumber;
+  const androidBuild = Constants.expoConfig?.android?.versionCode;
+  const build = iosBuild ?? (androidBuild != null ? String(androidBuild) : '—');
+  const buildCommit =
+    (Constants.expoConfig?.extra as { buildCommit?: string } | undefined)
+      ?.buildCommit ?? 'dev';
 
   return (
     <SafeAreaView style={s.safe} edges={['bottom', 'left', 'right']}>
@@ -80,6 +97,38 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        <View style={s.card} testID="settings-diagnostics">
+          <Text style={s.cardLabel}>{t('settings.diagnostics')}</Text>
+          <View style={s.diagRow}>
+            <Text style={s.diagKey}>{t('settings.app_version')}</Text>
+            <Text style={s.diagValue} testID="settings-app-version">
+              {appVersion}
+            </Text>
+          </View>
+          <View style={s.diagRow}>
+            <Text style={s.diagKey}>{t('settings.build')}</Text>
+            <Text style={s.diagValue} testID="settings-build">
+              {build}
+            </Text>
+          </View>
+          <View style={s.diagRow}>
+            <Text style={s.diagKey}>{t('settings.build_commit')}</Text>
+            <Text style={s.diagValue} testID="settings-build-commit">
+              {buildCommit}
+            </Text>
+          </View>
+          <View style={s.diagRow}>
+            <Text style={s.diagKey}>{t('settings.api_host')}</Text>
+            <Text
+              style={[s.diagValue, s.diagValueLong]}
+              numberOfLines={1}
+              testID="settings-api-host"
+            >
+              {apiUrl}
+            </Text>
+          </View>
+        </View>
+
         <TouchableOpacity
           style={s.logoutBtn}
           onPress={onLogout}
@@ -120,6 +169,15 @@ const s = StyleSheet.create({
   langBtnActive: { backgroundColor: '#1e293b', borderColor: '#1e293b' },
   langBtnText: { color: '#0f172a', fontWeight: '500' },
   langBtnTextActive: { color: '#ffffff' },
+  diagRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  diagKey: { color: '#475569', fontSize: 14 },
+  diagValue: { color: '#0f172a', fontSize: 14, fontVariant: ['tabular-nums'] },
+  diagValueLong: { fontSize: 12, flexShrink: 1, marginLeft: 12 },
   logoutBtn: {
     marginTop: 12,
     padding: 14,

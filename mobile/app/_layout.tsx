@@ -1,11 +1,23 @@
 import { useEffect, useState } from 'react';
-import { Slot, useRouter, useSegments } from 'expo-router';
+import {
+  Slot,
+  useRouter,
+  useSegments,
+  type ErrorBoundaryProps,
+} from 'expo-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { View, ActivityIndicator, StyleSheet } from 'react-native';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  ActivityIndicator,
+  StyleSheet,
+} from 'react-native';
 import { useAuthStore } from '../src/store/auth';
-import { initI18n } from '../src/i18n';
+import i18n, { initI18n } from '../src/i18n';
+import { useFailuresStore } from '../src/store/failures';
 
 const qc = new QueryClient({
   defaultOptions: {
@@ -15,6 +27,122 @@ const qc = new QueryClient({
     },
   },
 });
+
+/**
+ * M0: global JS error hook.
+ *
+ * React Native funnels uncaught JS errors through `ErrorUtils`. We wrap
+ * the previously-installed handler — never replace it — so the
+ * platform's own behaviour (dev red box, native crash handling) is
+ * unchanged; we only add a bounded, non-secret record to the persisted
+ * failures store so a field crash leaves a visible trace after restart
+ * (the entry shows up on the Capture screen's failed-captures list).
+ *
+ * `ErrorUtils` is a React Native global; on web it is undefined and
+ * registration is a safe no-op — the exported ErrorBoundary below
+ * still catches render errors there.
+ */
+type GlobalErrorHandler = (error: unknown, isFatal?: boolean) => void;
+type ErrorUtilsLike = {
+  getGlobalHandler?: () => GlobalErrorHandler | undefined;
+  setGlobalHandler?: (handler: GlobalErrorHandler) => void;
+};
+
+let globalErrorHandlerInstalled = false;
+
+function registerGlobalErrorHandler(): void {
+  if (globalErrorHandlerInstalled) return;
+  const errorUtils = (globalThis as { ErrorUtils?: ErrorUtilsLike }).ErrorUtils;
+  if (!errorUtils?.getGlobalHandler || !errorUtils.setGlobalHandler) return;
+  const previous = errorUtils.getGlobalHandler();
+  errorUtils.setGlobalHandler((error, isFatal) => {
+    try {
+      const message =
+        error instanceof Error
+          ? error.message
+          : String(error ?? 'Unknown error');
+      useFailuresStore.getState().recordFailure({
+        inputText: '',
+        errorMessage: message,
+        context: 'app',
+      });
+    } catch {
+      // Recording must never interfere with platform error handling.
+    }
+    previous?.(error, isFatal);
+  });
+  globalErrorHandlerInstalled = true;
+}
+
+registerGlobalErrorHandler();
+
+/**
+ * M0: translate-with-fallback for the error screen.
+ *
+ * The ErrorBoundary must render even when the crash happened before
+ * i18n finished initialising, so it cannot use the useTranslation hook
+ * (which can suspend pre-init). Post-init this returns the normal
+ * bilingual string; pre-init it falls back to English. The literal
+ * fallbacks exist ONLY for this worst-case path.
+ */
+function tSafe(key: string, fallback: string): string {
+  try {
+    if (i18n.isInitialized) {
+      const value = i18n.t(key);
+      if (typeof value === 'string' && value !== key) return value;
+    }
+  } catch {
+    // fall through to the literal fallback
+  }
+  return fallback;
+}
+
+/**
+ * M0: app-level error boundary (expo-router convention — exporting
+ * `ErrorBoundary` from the root layout catches render/runtime errors
+ * for the whole route tree). Renders a safe fallback with a retry
+ * button. Shows `error.message` only — never a stack trace, request
+ * data, or anything token-bearing — and records the failure in the
+ * persisted store for post-restart visibility.
+ */
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  useEffect(() => {
+    useFailuresStore.getState().recordFailure({
+      inputText: '',
+      errorMessage: error.message || String(error),
+      context: 'app',
+    });
+  }, [error]);
+
+  return (
+    <View style={styles.errorWrap} testID="app-error-boundary">
+      <Text style={styles.errorTitle}>
+        {tSafe('error_boundary.title', 'Something went wrong')}
+      </Text>
+      <Text style={styles.errorMessage}>
+        {tSafe(
+          'error_boundary.message',
+          'The app hit an unexpected error. Please try again.',
+        )}
+      </Text>
+      {error.message ? (
+        <Text style={styles.errorDetail} numberOfLines={4}>
+          {error.message}
+        </Text>
+      ) : null}
+      <TouchableOpacity
+        onPress={retry}
+        style={styles.errorRetryBtn}
+        testID="app-error-retry"
+        accessibilityRole="button"
+      >
+        <Text style={styles.errorRetryText}>
+          {tSafe('error_boundary.retry', 'Try again')}
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
 
 export default function RootLayout() {
   const [ready, setReady] = useState(false);
@@ -72,4 +200,37 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#ffffff',
   },
+  errorWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#ffffff',
+    padding: 24,
+  },
+  errorTitle: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#0f172a',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  errorMessage: {
+    fontSize: 14,
+    color: '#475569',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  errorDetail: {
+    fontSize: 12,
+    color: '#94a3b8',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  errorRetryBtn: {
+    backgroundColor: '#1e293b',
+    paddingVertical: 12,
+    paddingHorizontal: 32,
+    borderRadius: 6,
+  },
+  errorRetryText: { color: '#ffffff', fontWeight: '600', fontSize: 16 },
 });

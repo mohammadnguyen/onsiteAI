@@ -25,7 +25,9 @@ import {
 } from '../../src/api/hooks/useExpenses';
 import { CaptureResultCard } from '../../src/components/CaptureResultCard';
 import { RecentCapturesList } from '../../src/components/RecentCapturesList';
+import { RecentFailuresList } from '../../src/components/RecentFailuresList';
 import { DatePills } from '../../src/components/DatePills';
+import { useFailuresStore } from '../../src/store/failures';
 import { todayISO } from '../../src/util/dates';
 
 /**
@@ -103,6 +105,9 @@ export default function ExpensesScreen() {
   // Job detail modal stays at 20 (different context: comprehensive
   // per-job view).
   const recentExpenses = useMyRecentExpenses(5);
+  // M0: persisted failed-capture store — failures recorded here stay
+  // visible after form reset and app restart (see src/store/failures).
+  const recordFailure = useFailuresStore((st) => st.recordFailure);
   const textareaRef = useRef<TextInput>(null);
 
   const [rawInputText, setRawInputText] = useState('');
@@ -177,7 +182,11 @@ export default function ExpensesScreen() {
         const resp = await createExpense.mutateAsync(body as ExpenseCreateInput);
         setResult(resp);
       } catch (err) {
-        setFormError(extractErrorMessage(err, t('capture.error_network')));
+        const msg = extractErrorMessage(err, t('capture.error_network'));
+        setFormError(msg);
+        // M0: persist the failed capture (typed text + error message)
+        // so it survives reset/restart and can be refilled for retry.
+        recordFailure({ inputText: trimmed, errorMessage: msg, context: 'single' });
       }
       return;
     }
@@ -221,10 +230,14 @@ export default function ExpensesScreen() {
               reviewPending: resp.expense.review_status === 'pending',
             };
           } catch (err) {
+            const msg = extractErrorMessage(err, t('capture.error_network'));
+            // M0: persist each failed item for visibility/retry after
+            // the result card is dismissed or the app restarts.
+            recordFailure({ inputText: text, errorMessage: msg, context: 'multi' });
             return {
               text,
               success: false,
-              error: extractErrorMessage(err, t('capture.error_network')),
+              error: msg,
             };
           }
         }),
@@ -245,6 +258,15 @@ export default function ExpensesScreen() {
     setFormError(null);
     setResult(null);
     setMultiResult(null);
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  };
+
+  // M0: put a failed capture's original text back into the form for a
+  // retry. Clears any stale error banner; deliberately keeps the
+  // payment/date/receipt selections as the user last set them.
+  const onRefillFailure = (text: string) => {
+    setRawInputText(text);
+    setFormError(null);
     setTimeout(() => textareaRef.current?.focus(), 0);
   };
 
@@ -381,6 +403,11 @@ export default function ExpensesScreen() {
               <Text style={s.submitBtnText}>{t('capture.submit')}</Text>
             )}
           </TouchableOpacity>
+
+          {/* M0: persisted failed captures (if any) — tap a row to put
+              the text back into the form and retry it. Renders nothing
+              when there are no stored failures. */}
+          <RecentFailuresList onRefill={onRefillFailure} />
 
           {/* Correction-loop fix: render My Captures below the form even
               in the pre-submit (empty form) state. Previously this list

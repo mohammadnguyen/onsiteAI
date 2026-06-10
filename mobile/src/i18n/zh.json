@@ -54,7 +54,12 @@
     "chinese": "\u4e2d\u6587",
     "logout": "\u9000\u51fa\u767b\u5f55",
     "signed_in_as": "\u5f53\u524d\u7528\u6237",
-    "coming_soon": "\u5373\u5c06\u63a8\u51fa"
+    "coming_soon": "\u5373\u5c06\u63a8\u51fa",
+    "diagnostics": "\u8bca\u65ad\u4fe1\u606f",
+    "app_version": "\u5e94\u7528\u7248\u672c",
+    "build": "\u6784\u5efa\u53f7",
+    "build_commit": "\u6784\u5efa\u63d0\u4ea4",
+    "api_host": "API \u670d\u52a1\u5668"
   },
   "common": {
     "error": "\u51fa\u73b0\u9519\u8bef\u3002",
@@ -100,6 +105,18 @@
       "duplicate_flag": "\u91cd\u590d",
       "receipt_later_flag": "\u7a0d\u540e\u8865\u53d1\u7968"
     }
+  },
+  "failures": {
+    "title": "\u63d0\u4ea4\u5931\u8d25\u7684\u652f\u51fa",
+    "clear_all": "\u5168\u90e8\u6e05\u9664",
+    "app_error": "\u5e94\u7528\u9519\u8bef",
+    "refill_hint": "\u70b9\u6309\u53ef\u6062\u590d\u5230\u8f93\u5165\u6846",
+    "dismiss": "\u5173\u95ed"
+  },
+  "error_boundary": {
+    "title": "\u51fa\u73b0\u9519\u8bef",
+    "message": "\u5e94\u7528\u9047\u5230\u610f\u5916\u9519\u8bef\uff0c\u8bf7\u91cd\u8bd5\u3002",
+    "retry": "\u91cd\u8bd5"
   },
   "expense": {
     "amount_inc_gst": "\u91d1\u989d\uff08\u542bGST\uff09",

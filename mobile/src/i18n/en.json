@@ -54,7 +54,12 @@
     "chinese": "\u4e2d\u6587",
     "logout": "Log out",
     "signed_in_as": "Signed in as",
-    "coming_soon": "Coming soon"
+    "coming_soon": "Coming soon",
+    "diagnostics": "Diagnostics",
+    "app_version": "App version",
+    "build": "Build",
+    "build_commit": "Build commit",
+    "api_host": "API server"
   },
   "common": {
     "error": "Something went wrong.",
@@ -100,6 +105,18 @@
       "duplicate_flag": "Duplicate",
       "receipt_later_flag": "Receipt later"
     }
+  },
+  "failures": {
+    "title": "Failed captures",
+    "clear_all": "Clear all",
+    "app_error": "App error",
+    "refill_hint": "Tap to put the text back into the form",
+    "dismiss": "Dismiss"
+  },
+  "error_boundary": {
+    "title": "Something went wrong",
+    "message": "The app hit an unexpected error. Please try again.",
+    "retry": "Try again"
   },
   "expense": {
     "amount_inc_gst": "Amount (inc GST)",
