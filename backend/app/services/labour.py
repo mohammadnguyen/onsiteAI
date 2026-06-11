@@ -1,0 +1,385 @@
+"""Labour v1 business logic (slice L-A).
+
+HTTP-agnostic, mirroring the house service pattern: typed inputs,
+persisted rows or domain exceptions out; the HTTP layer maps
+exceptions to status codes.
+
+Core rules enforced here (operator decisions 1-10, L-A plan):
+
+* Workers are roster records — created/updated by admins only,
+  deactivated never deleted (no delete function exists).
+* Attendance is recorded in day fractions ∈ {0.5, 1.0} against
+  ACTIVE jobs and (for new entries) ACTIVE workers only.
+* A worker's total allocation per ``work_date`` across ALL jobs may
+  not exceed 1.0 day. This cross-row rule cannot be a DB CHECK; it is
+  enforced inside the write transaction with ``SELECT … FOR UPDATE``
+  row locks on the worker's existing rows for that date (workers are
+  processed in sorted order to avoid deadlocks between concurrent
+  batches).
+* Batch saves are ALL-OR-NOTHING: the first violation raises and the
+  request-scoped transaction rolls back everything.
+* Edit/delete permissions (OD-1): admins always; contributors only
+  their OWN entries whose ``work_date`` is today or later (the
+  "later" allowance covers the same +1-day clock-skew tolerance used
+  at creation — a Sydney morning is UTC "tomorrow").
+* No payroll concepts anywhere.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import date, timedelta
+from decimal import Decimal
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import Job, JobStatus, LabourEntry, User, UserRole, Worker
+
+# ---------------------------------------------------------------------------
+# Domain exceptions
+# ---------------------------------------------------------------------------
+
+
+class WorkerNotFound(Exception):
+    """Raised when a worker_id doesn't resolve."""
+
+    def __init__(self, worker_id: uuid.UUID):
+        self.worker_id = worker_id
+        super().__init__(f"Worker {worker_id} not found")
+
+
+class LabourEntryNotFound(Exception):
+    """Raised when an entry_id doesn't resolve."""
+
+    def __init__(self, entry_id: uuid.UUID):
+        self.entry_id = entry_id
+        super().__init__(f"Labour entry {entry_id} not found")
+
+
+class LabourValidationError(Exception):
+    """Raised on save-time validation errors (maps to 422)."""
+
+    def __init__(self, detail: str):
+        self.detail = detail
+        super().__init__(detail)
+
+
+class LabourEditForbidden(Exception):
+    """Raised when the caller may not modify an entry (maps to 403)."""
+
+    def __init__(self, detail: str = "You can only change your own entries for today"):
+        self.detail = detail
+        super().__init__(detail)
+
+
+# Mirrors the expense-side tolerances (CHP-4/CHP-5 reasoning): one day
+# of clock skew forward; five years back.
+_FUTURE_TOLERANCE_DAYS = 1
+_MAX_PAST_YEARS = 5
+
+_MAX_DAY_TOTAL = Decimal("1.0")
+
+
+def _is_admin(user: User) -> bool:
+    return user.role == UserRole.admin
+
+
+def _validate_work_date(work_date: date) -> None:
+    today = date.today()
+    if work_date > today + timedelta(days=_FUTURE_TOLERANCE_DAYS):
+        raise LabourValidationError("work_date cannot be in the future")
+    if work_date < today - timedelta(days=365 * _MAX_PAST_YEARS):
+        raise LabourValidationError("work_date is too far in the past")
+
+
+def _can_modify(user: User, entry: LabourEntry) -> bool:
+    """OD-1: admin always; contributor = own entry, work_date today+.
+
+    ``work_date >= today`` (server UTC) deliberately includes the
+    +1-day skew window: a Sydney-morning entry carries UTC-tomorrow's
+    date and must remain editable by its recorder that same morning.
+    """
+    if _is_admin(user):
+        return True
+    return (
+        entry.recorded_by_user_id == user.user_id
+        and entry.work_date >= date.today()
+    )
+
+
+# ---------------------------------------------------------------------------
+# Workers (roster)
+# ---------------------------------------------------------------------------
+
+
+async def list_workers(
+    db: AsyncSession, *, include_inactive: bool = False
+) -> list[Worker]:
+    stmt = select(Worker).order_by(Worker.display_name, Worker.created_at)
+    if not include_inactive:
+        stmt = stmt.where(Worker.is_active.is_(True))
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def create_worker(
+    db: AsyncSession,
+    *,
+    created_by: User,
+    display_name: str,
+    note: str | None = None,
+) -> Worker:
+    worker = Worker(
+        worker_id=uuid.uuid4(),
+        display_name=display_name.strip(),
+        note=note,
+        created_by=created_by.user_id,
+    )
+    db.add(worker)
+    await db.flush()
+    return worker
+
+
+async def update_worker(db: AsyncSession, worker_id: uuid.UUID, **fields) -> Worker:
+    """Partial update; caller passes only the fields the client set."""
+    worker = await db.get(Worker, worker_id)
+    if worker is None:
+        raise WorkerNotFound(worker_id)
+    if "display_name" in fields and fields["display_name"] is not None:
+        worker.display_name = fields["display_name"].strip()
+    if "note" in fields:
+        worker.note = fields["note"]
+    if "is_active" in fields and fields["is_active"] is not None:
+        worker.is_active = fields["is_active"]
+    await db.flush()
+    return worker
+
+
+# ---------------------------------------------------------------------------
+# Attendance entries
+# ---------------------------------------------------------------------------
+
+
+async def batch_upsert_entries(
+    db: AsyncSession,
+    *,
+    current_user: User,
+    job_id: uuid.UUID,
+    work_date: date,
+    items: list,  # list[LabourBatchItem]-shaped (worker_id, day_fraction)
+) -> list[LabourEntry]:
+    """The tick-screen save: create-or-update one row per (worker, job, date).
+
+    ALL-OR-NOTHING — any violation raises and nothing persists.
+    Existing rows update ``day_fraction`` only (``recorded_by`` stays
+    the original recorder); updates are permission-checked per OD-1.
+    New rows require an ACTIVE worker; updates to existing rows are
+    allowed even if the worker was deactivated since (corrections of
+    history must stay possible).
+    """
+    _validate_work_date(work_date)
+
+    job = await db.get(Job, job_id)
+    if job is None:
+        raise LabourValidationError("Job not found")
+    if job.status != JobStatus.active:
+        raise LabourValidationError(
+            "Job is archived — attendance can only be recorded against active jobs"
+        )
+
+    worker_ids = [item.worker_id for item in items]
+    if len(set(worker_ids)) != len(worker_ids):
+        raise LabourValidationError("Duplicate worker in batch")
+
+    workers_by_id: dict[uuid.UUID, Worker] = {
+        w.worker_id: w
+        for w in (
+            await db.execute(select(Worker).where(Worker.worker_id.in_(worker_ids)))
+        ).scalars()
+    }
+    missing = [str(wid) for wid in worker_ids if wid not in workers_by_id]
+    if missing:
+        raise LabourValidationError(f"Worker not found: {', '.join(missing)}")
+
+    result: list[LabourEntry] = []
+    # Sorted worker order keeps lock acquisition deterministic so two
+    # concurrent batches touching the same workers cannot deadlock.
+    for worker_id in sorted(worker_ids, key=str):
+        item = next(i for i in items if i.worker_id == worker_id)
+        worker = workers_by_id[worker_id]
+        fraction = Decimal(item.day_fraction)
+
+        # Lock every existing row this worker has on this date — across
+        # ALL jobs — so the <=1.0 total is computed against stable rows.
+        locked_rows = list(
+            (
+                await db.execute(
+                    select(LabourEntry)
+                    .where(
+                        LabourEntry.worker_id == worker_id,
+                        LabourEntry.work_date == work_date,
+                    )
+                    .with_for_update()
+                )
+            ).scalars()
+        )
+        existing_here = next((r for r in locked_rows if r.job_id == job_id), None)
+
+        if existing_here is None and not worker.is_active:
+            raise LabourValidationError(
+                f"{worker.display_name} is deactivated — reactivate the worker "
+                "to record new attendance"
+            )
+        if existing_here is not None and not _can_modify(current_user, existing_here):
+            raise LabourEditForbidden(
+                f"{worker.display_name}'s entry for {work_date.isoformat()} was "
+                "recorded by someone else — only admins can change it"
+                if existing_here.recorded_by_user_id != current_user.user_id
+                else "You can only change your own entries for today"
+            )
+
+        other_total = sum(
+            (r.day_fraction for r in locked_rows if r.job_id != job_id),
+            Decimal("0"),
+        )
+        if other_total + fraction > _MAX_DAY_TOTAL:
+            raise LabourValidationError(
+                f"{worker.display_name} already has {other_total} day(s) "
+                f"recorded on {work_date.isoformat()} — the daily total "
+                "cannot exceed 1.0"
+            )
+
+        if existing_here is not None:
+            existing_here.day_fraction = fraction
+            result.append(existing_here)
+        else:
+            entry = LabourEntry(
+                entry_id=uuid.uuid4(),
+                worker_id=worker_id,
+                job_id=job_id,
+                work_date=work_date,
+                day_fraction=fraction,
+                recorded_by_user_id=current_user.user_id,
+            )
+            db.add(entry)
+            result.append(entry)
+
+    await db.flush()
+    # UPDATEd rows have ``updated_at`` expired by the server-side
+    # onupdate default; refresh inside the async context so response
+    # serialization never triggers a lazy (sync) attribute load.
+    for entry in result:
+        await db.refresh(entry)
+    return result
+
+
+async def delete_entry(
+    db: AsyncSession, *, current_user: User, entry_id: uuid.UUID
+) -> None:
+    entry = await db.get(LabourEntry, entry_id)
+    if entry is None:
+        raise LabourEntryNotFound(entry_id)
+    if not _can_modify(current_user, entry):
+        raise LabourEditForbidden()
+    await db.delete(entry)
+    await db.flush()
+
+
+async def list_entries(
+    db: AsyncSession,
+    *,
+    job_id: uuid.UUID | None = None,
+    worker_id: uuid.UUID | None = None,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    limit: int = 200,
+) -> list[LabourEntry]:
+    stmt = select(LabourEntry).order_by(
+        LabourEntry.work_date.desc(), LabourEntry.created_at.desc()
+    )
+    if job_id is not None:
+        stmt = stmt.where(LabourEntry.job_id == job_id)
+    if worker_id is not None:
+        stmt = stmt.where(LabourEntry.worker_id == worker_id)
+    if from_date is not None:
+        stmt = stmt.where(LabourEntry.work_date >= from_date)
+    if to_date is not None:
+        stmt = stmt.where(LabourEntry.work_date <= to_date)
+    stmt = stmt.limit(min(limit, 500))
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def summarize(
+    db: AsyncSession,
+    *,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    job_id: uuid.UUID | None = None,
+) -> tuple[list[dict], list[dict], Decimal]:
+    """Per-worker and per-job day totals for the filtered range.
+
+    Returns plain dict rows (the route validates them into the
+    response schema). Archived jobs' historical entries are INCLUDED
+    by design — history survives archiving.
+    """
+
+    def _filtered(stmt):
+        if from_date is not None:
+            stmt = stmt.where(LabourEntry.work_date >= from_date)
+        if to_date is not None:
+            stmt = stmt.where(LabourEntry.work_date <= to_date)
+        if job_id is not None:
+            stmt = stmt.where(LabourEntry.job_id == job_id)
+        return stmt
+
+    worker_rows = (
+        await db.execute(
+            _filtered(
+                select(
+                    Worker.worker_id,
+                    Worker.display_name,
+                    func.sum(LabourEntry.day_fraction).label("total_days"),
+                )
+                .join(LabourEntry, LabourEntry.worker_id == Worker.worker_id)
+                .group_by(Worker.worker_id, Worker.display_name)
+                .order_by(func.sum(LabourEntry.day_fraction).desc())
+            )
+        )
+    ).all()
+
+    job_rows = (
+        await db.execute(
+            _filtered(
+                select(
+                    Job.job_id,
+                    Job.job_name,
+                    func.sum(LabourEntry.day_fraction).label("total_days"),
+                )
+                .join(LabourEntry, LabourEntry.job_id == Job.job_id)
+                .group_by(Job.job_id, Job.job_name)
+                .order_by(func.sum(LabourEntry.day_fraction).desc())
+            )
+        )
+    ).all()
+
+    total = (
+        await db.execute(
+            _filtered(select(func.coalesce(func.sum(LabourEntry.day_fraction), 0)))
+        )
+    ).scalar() or Decimal("0")
+
+    return (
+        [
+            {
+                "worker_id": r.worker_id,
+                "display_name": r.display_name,
+                "total_days": r.total_days,
+            }
+            for r in worker_rows
+        ],
+        [
+            {"job_id": r.job_id, "job_name": r.job_name, "total_days": r.total_days}
+            for r in job_rows
+        ],
+        Decimal(total),
+    )

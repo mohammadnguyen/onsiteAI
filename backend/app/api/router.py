@@ -12,6 +12,7 @@ from app.api import (
     categories,
     expenses,
     jobs,
+    labour,
     reports,
     review_queue,
     suppliers,
@@ -23,6 +24,9 @@ api_router.include_router(auth.router, prefix="/auth")
 api_router.include_router(categories.router, prefix="/categories")
 api_router.include_router(expenses.router, prefix="/expenses")
 api_router.include_router(jobs.router, prefix="/jobs")
+# Labour spans /workers, /labour-entries and /labour-summary (one
+# feature, three roots) — included unprefixed with absolute paths.
+api_router.include_router(labour.router)
 api_router.include_router(reports.router, prefix="/reports")
 api_router.include_router(review_queue.router, prefix="/review-queue")
 api_router.include_router(suppliers.router, prefix="/suppliers")

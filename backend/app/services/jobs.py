@@ -30,6 +30,7 @@ from app.models.category import Category
 from app.models.expense import Expense
 from app.models.job import Job, JobAlias, JobCategoryBudget, JobStatus
 from app.models.job_audit_log import JobAuditLog
+from app.models.labour import LabourEntry
 from app.models.review_queue import ExpenseReviewQueue
 from app.models.user import LanguageCode, User
 
@@ -666,6 +667,25 @@ async def delete_empty_job(
         raise JobHasDependencies(
             f"Job has {queue_count} review queue {noun} and cannot be "
             "deleted. Archive it instead."
+        )
+
+    # Dependency check 3 (Labour v1): attendance history blocks hard
+    # delete the same way expenses do — archive instead. The DB-level
+    # ON DELETE RESTRICT on labour_entries.job_id is the backstop;
+    # this friendly 409 is the contract.
+    labour_count = int(
+        (
+            await db.execute(
+                select(func.count()).where(LabourEntry.job_id == job_id)
+            )
+        ).scalar()
+        or 0
+    )
+    if labour_count > 0:
+        noun = "labour entry" if labour_count == 1 else "labour entries"
+        raise JobHasDependencies(
+            f"Job has {labour_count} {noun} and cannot be deleted. "
+            "Archive it instead."
         )
 
     # Pre-delete audit row. Snapshots reflect the pre-delete state of
