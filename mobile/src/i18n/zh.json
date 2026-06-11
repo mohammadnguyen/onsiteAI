@@ -192,6 +192,19 @@
     "end": "\u5df2\u5230\u5217\u8868\u672b\u5c3e",
     "error": "\u65e0\u6cd5\u52a0\u8f7d\u652f\u51fa\u3002"
   },
+  "dashboard": {
+    "month_spend": "本月支出（不含GST）",
+    "pending_review": "待审核",
+    "active_jobs": "进行中项目",
+    "jobs_heading": "项目预算状况",
+    "spent_of": "已用 {{spent}} / 预算 {{budget}}",
+    "spent_label": "已支出 {{spent}}",
+    "over_by": "超支 {{amount}}",
+    "left": "剩余 {{amount}}",
+    "no_budget": "未设预算",
+    "empty": "暂无进行中的项目。",
+    "error": "无法加载仪表盘。"
+  },
   "review_queue": {
     "title": "\u5f85\u5ba1\u6838",
     "entry": "\u5f85\u5ba1\u6838",

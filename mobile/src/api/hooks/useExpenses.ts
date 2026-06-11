@@ -279,6 +279,34 @@ export function useUpdateExpense(expenseId: string) {
   });
 }
 
+/**
+ * Dashboard v1: expenses since a given date for the month-spend stat.
+ *
+ * One page (limit 500 — the backend cap) is deliberate: monthly
+ * volume at this tenant's scale is far below 500; if that ever
+ * changes the stat undercounts and the dashboard slice gets a
+ * pagination follow-up. The component sums ex-GST amounts client-side
+ * and excludes rejected rows (display rule parity with the lists).
+ *
+ * Keyed under the ['expenses'] root so every existing mutation
+ * invalidation refreshes the stat automatically.
+ */
+export function useExpensesSince(fromIso: string) {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  return useQuery<ExpenseListResponse>({
+    queryKey: ['expenses', { dashboardFrom: fromIso }],
+    queryFn: async () => {
+      const { data } = await api.get<ExpenseListResponse>('/expenses', {
+        params: { from: fromIso, limit: 500 },
+      });
+      return data;
+    },
+    enabled: !!accessToken,
+    staleTime: 0,
+    retry: false,
+  });
+}
+
 /** M2-B: filter set for the full expenses list. All fields optional;
  *  omitted fields send no query param (backend defaults apply). */
 export type ExpenseListFilters = {

@@ -192,6 +192,19 @@
     "end": "End of list",
     "error": "Could not load expenses."
   },
+  "dashboard": {
+    "month_spend": "This month (ex GST)",
+    "pending_review": "Pending review",
+    "active_jobs": "Active jobs",
+    "jobs_heading": "Jobs by budget pressure",
+    "spent_of": "{{spent}} of {{budget}} budget",
+    "spent_label": "{{spent}} spent",
+    "over_by": "{{amount}} over",
+    "left": "{{amount}} left",
+    "no_budget": "No budget set",
+    "empty": "No active jobs yet.",
+    "error": "Could not load the dashboard."
+  },
   "review_queue": {
     "title": "Pending review",
     "entry": "Pending review",
