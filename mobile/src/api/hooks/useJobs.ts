@@ -239,3 +239,27 @@ export function useDeleteJobCategoryBudget(jobId: string) {
     },
   });
 }
+
+/**
+ * M5 — DELETE /jobs/{id} (admin-only; backend Job Lifecycle v1A-3).
+ *
+ * Hard-deletes an EMPTY job only. The server is the guard: any
+ * expense or review-queue row on the job produces a 409 whose detail
+ * ("Job has N expenses and cannot be deleted. Archive it instead.")
+ * the caller surfaces verbatim. Aliases + category budgets cascade
+ * server-side; the job's audit row survives the delete.
+ *
+ * Takes {jobId} per call (mirrors useUpdateUser's shape) so the job
+ * detail modal can act without per-row hook instantiation.
+ */
+export function useDeleteJob() {
+  const qc = useQueryClient();
+  return useMutation<void, unknown, { jobId: string }>({
+    mutationFn: async ({ jobId }) => {
+      await api.delete(`/jobs/${jobId}`);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
+    },
+  });
+}

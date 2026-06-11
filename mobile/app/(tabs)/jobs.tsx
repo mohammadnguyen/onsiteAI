@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   Modal,
   ScrollView,
+  Alert,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -17,11 +18,14 @@ import {
   useJob,
   useJobs,
   useJobBudgetSummary,
+  useUpdateJob,
+  useDeleteJob,
   type JobPublic,
   type JobBudgetSummary,
 } from '../../src/api/hooks/useJobs';
 import { useFocusEffect, useRouter, type Href } from 'expo-router';
 import { useJobExpenses } from '../../src/api/hooks/useExpenses';
+import { useMe } from '../../src/api/hooks/useAuth';
 import { NewJobModal } from '../../src/components/NewJobModal';
 import { RecentCapturesList } from '../../src/components/RecentCapturesList';
 import { useSelectedJobStore } from '../../src/store/selectedJob';
@@ -89,6 +93,20 @@ export default function JobsScreen() {
 
   const jobs = useMemo(() => data ?? [], [data]);
 
+  // M5: active jobs first; archived (status=completed) jobs sit
+  // below a labelled divider with muted styling — still visible and
+  // tappable for history, out of the way for daily use.
+  const listData = useMemo<JobListItem[]>(() => {
+    const active = jobs.filter((j) => j.status === 'active');
+    const archived = jobs.filter((j) => j.status !== 'active');
+    const out: JobListItem[] = active.map((job) => ({ kind: 'job', job }));
+    if (archived.length > 0) {
+      out.push({ kind: 'archived-header' });
+      archived.forEach((job) => out.push({ kind: 'job', job }));
+    }
+    return out;
+  }, [jobs]);
+
   return (
     <SafeAreaView style={s.safe} edges={['bottom', 'left', 'right']}>
       <View style={s.header}>
@@ -118,11 +136,23 @@ export default function JobsScreen() {
         </View>
       ) : (
         <FlatList
-          data={jobs}
-          keyExtractor={(item) => item.job_id}
-          renderItem={({ item }) => (
-            <JobRow job={item} onPress={() => setSelectedId(item.job_id)} />
-          )}
+          data={listData}
+          keyExtractor={(item) =>
+            item.kind === 'job' ? item.job.job_id : '__archived_header__'
+          }
+          renderItem={({ item }) =>
+            item.kind === 'job' ? (
+              <JobRow
+                job={item.job}
+                archived={item.job.status !== 'active'}
+                onPress={() => setSelectedId(item.job.job_id)}
+              />
+            ) : (
+              <Text style={s.archivedHeader} testID="jobs-archived-header">
+                {t('job.archived_section')}
+              </Text>
+            )
+          }
           ItemSeparatorComponent={() => <View style={s.sep} />}
           contentContainerStyle={s.listContent}
         />
@@ -140,10 +170,26 @@ export default function JobsScreen() {
   );
 }
 
-function JobRow({ job, onPress }: { job: JobPublic; onPress: () => void }) {
+// M5: jobs-list item — either a job row or the single archived-section
+// divider injected between active and archived groups.
+type JobListItem = { kind: 'job'; job: JobPublic } | { kind: 'archived-header' };
+
+function JobRow({
+  job,
+  archived,
+  onPress,
+}: {
+  job: JobPublic;
+  archived?: boolean;
+  onPress: () => void;
+}) {
   const { t } = useTranslation();
   return (
-    <TouchableOpacity onPress={onPress} style={s.row} testID={`job-row-${job.job_id}`}>
+    <TouchableOpacity
+      onPress={onPress}
+      style={[s.row, archived && s.rowArchived]}
+      testID={`job-row-${job.job_id}`}
+    >
       <View style={s.rowMain}>
         <Text style={s.rowName}>{job.job_name}</Text>
         {job.job_code ? <Text style={s.rowCode}>{job.job_code}</Text> : null}
@@ -184,6 +230,100 @@ function JobDetailModal({
   // if 20 turns out not to be enough during dogfooding. Reuses the
   // existing RecentCapturesList row + navigation chrome.
   const jobExpenses = useJobExpenses(jobId, 20);
+  // M5: lifecycle actions. /auth/me drives VISIBILITY ONLY — the job
+  // write routes are require_admin, so the backend stays
+  // authoritative; contributors see no lifecycle affordances.
+  const me = useMe();
+  const isAdmin = me.data?.role === 'admin';
+  const updateJob = useUpdateJob(jobId ?? '');
+  const deleteJob = useDeleteJob();
+  const lifecycleBusy = updateJob.isPending || deleteJob.isPending;
+
+  const performStatusChange = async (target: 'active' | 'completed') => {
+    try {
+      await updateJob.mutateAsync({ status: target });
+      // ['jobs'] root invalidation refetches the modal's useJob — the
+      // status row and the archive/reopen button swap in place.
+    } catch (err) {
+      const detail = axios.isAxiosError(err)
+        ? err.response?.data?.detail
+        : undefined;
+      Alert.alert(
+        t('common.error'),
+        typeof detail === 'string' ? detail : t('job.lifecycle_error'),
+      );
+    }
+  };
+
+  const onArchive = () => {
+    Alert.alert(
+      t('job.archive_confirm_title'),
+      t('job.archive_confirm_message'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('job.archive_cta'),
+          onPress: () => void performStatusChange('completed'),
+        },
+      ],
+    );
+  };
+
+  const onReopen = () => {
+    Alert.alert(
+      t('job.reopen_confirm_title'),
+      t('job.reopen_confirm_message'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('job.reopen_cta'),
+          onPress: () => void performStatusChange('active'),
+        },
+      ],
+    );
+  };
+
+  const onDeleteJob = () => {
+    Alert.alert(
+      t('job.delete_confirm_title'),
+      t('job.delete_confirm_message'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('job.delete_cta'),
+          style: 'destructive',
+          onPress: async () => {
+            if (!jobId) return;
+            try {
+              await deleteJob.mutateAsync({ jobId });
+              onClose();
+            } catch (err) {
+              const detail = axios.isAxiosError(err)
+                ? err.response?.data?.detail
+                : undefined;
+              // A 409 carries the backend's "…Archive it instead."
+              // guidance verbatim — exactly what the user should see.
+              Alert.alert(
+                t('common.error'),
+                typeof detail === 'string' ? detail : t('job.lifecycle_error'),
+              );
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  // M5: Delete is offered ONLY when the job's expense query has
+  // loaded and returned zero RAW rows (the raw items include rejected
+  // expenses, so zero here genuinely means empty; review-queue rows
+  // can't exist without a parent expense). The server's v1A-3 guard
+  // (409) remains the authority if this signal is ever stale.
+  const emptyForDelete =
+    isAdmin &&
+    jobExpenses.isSuccess &&
+    (jobExpenses.data?.items.length ?? 1) === 0;
+
   // Mobile Smoke Patch 1: <Modal> on iOS renders in its own native window,
   // so SafeAreaView inside it does NOT always pick up the device's top
   // inset (status bar / Dynamic Island). Read the inset explicitly via
@@ -265,6 +405,57 @@ function JobDetailModal({
               heading={t('job.expenses')}
               fromJobId={jobId ?? undefined}
             />
+            {isAdmin ? (
+              <View style={s.lifecycleSection} testID="job-lifecycle">
+                {data.status === 'active' ? (
+                  <TouchableOpacity
+                    onPress={onArchive}
+                    disabled={lifecycleBusy}
+                    style={[
+                      s.lifecycleBtn,
+                      lifecycleBusy && s.lifecycleBtnDisabled,
+                    ]}
+                    testID="job-archive"
+                    accessibilityRole="button"
+                  >
+                    <Text style={s.lifecycleBtnText}>
+                      {t('job.archive_cta')}
+                    </Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity
+                    onPress={onReopen}
+                    disabled={lifecycleBusy}
+                    style={[
+                      s.lifecycleBtn,
+                      lifecycleBusy && s.lifecycleBtnDisabled,
+                    ]}
+                    testID="job-reopen"
+                    accessibilityRole="button"
+                  >
+                    <Text style={s.lifecycleBtnText}>
+                      {t('job.reopen_cta')}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                {emptyForDelete ? (
+                  <TouchableOpacity
+                    onPress={onDeleteJob}
+                    disabled={lifecycleBusy}
+                    style={[
+                      s.jobDeleteBtn,
+                      lifecycleBusy && s.lifecycleBtnDisabled,
+                    ]}
+                    testID="job-delete"
+                    accessibilityRole="button"
+                  >
+                    <Text style={s.jobDeleteBtnText}>
+                      {t('job.delete_cta')}
+                    </Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            ) : null}
           </ScrollView>
         )}
       </SafeAreaView>
@@ -471,4 +662,33 @@ const s = StyleSheet.create({
     paddingVertical: 6,
   },
   overspendValue: { color: '#b91c1c', fontWeight: '600' },
+  // M5: lifecycle section + archived-list styling.
+  rowArchived: { opacity: 0.6 },
+  archivedHeader: {
+    paddingHorizontal: 16,
+    paddingTop: 18,
+    paddingBottom: 6,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#94a3b8',
+    textTransform: 'uppercase',
+  },
+  lifecycleSection: { marginTop: 24, gap: 10 },
+  lifecycleBtn: {
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 6,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  lifecycleBtnText: { color: '#1e293b', fontWeight: '600', fontSize: 15 },
+  lifecycleBtnDisabled: { opacity: 0.5 },
+  jobDeleteBtn: {
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    borderRadius: 6,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  jobDeleteBtnText: { color: '#b91c1c', fontWeight: '600', fontSize: 15 },
 });

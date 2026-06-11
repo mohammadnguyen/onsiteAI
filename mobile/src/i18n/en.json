@@ -45,7 +45,18 @@
     "no_budget_set": "No budget set",
     "spending_loading": "Loading spending…",
     "spending_load_error": "Couldn't load spending.",
-    "edit": "Edit"
+    "edit": "Edit",
+    "archived_section": "Archived",
+    "archive_cta": "Archive job",
+    "archive_confirm_title": "Archive this job?",
+    "archive_confirm_message": "New captures will no longer match this job. Its expenses, budgets and history remain, and you can reopen it later.",
+    "reopen_cta": "Reopen job",
+    "reopen_confirm_title": "Reopen this job?",
+    "reopen_confirm_message": "The job becomes active again and new captures can match it.",
+    "delete_cta": "Delete empty job",
+    "delete_confirm_title": "Delete this job?",
+    "delete_confirm_message": "This permanently deletes the job. Only possible while it has no expenses.",
+    "lifecycle_error": "Couldn't update job."
   },
   "settings": {
     "title": "Settings",
