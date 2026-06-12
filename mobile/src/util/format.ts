@@ -29,3 +29,18 @@ export function formatMoney(value: string | number | null | undefined): string {
     maximumFractionDigits: 2,
   })}`;
 }
+
+/**
+ * Format a labour day count (L-B1/L-B2).
+ *
+ * Accepts the wire-shape Decimal string (``"0.5"``, ``"3.5"``,
+ * ``"12"``) or a number. Whole numbers render bare (``"12"``), halves
+ * render with one decimal (``"3.5"``). Non-numeric input renders the
+ * em-dash placeholder, mirroring :func:`formatMoney`.
+ */
+export function formatDays(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === '') return '—';
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return '—';
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}

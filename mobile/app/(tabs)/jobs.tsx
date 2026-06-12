@@ -25,11 +25,12 @@ import {
 } from '../../src/api/hooks/useJobs';
 import { useFocusEffect, useRouter, type Href } from 'expo-router';
 import { useJobExpenses } from '../../src/api/hooks/useExpenses';
+import { useLabourSummary } from '../../src/api/hooks/useLabour';
 import { useMe } from '../../src/api/hooks/useAuth';
 import { NewJobModal } from '../../src/components/NewJobModal';
 import { RecentCapturesList } from '../../src/components/RecentCapturesList';
 import { useSelectedJobStore } from '../../src/store/selectedJob';
-import { formatMoney } from '../../src/util/format';
+import { formatDays, formatMoney } from '../../src/util/format';
 
 /**
  * Mobile Polish slice (Half A): map the backend's job-status enum
@@ -216,6 +217,11 @@ function JobDetailModal({
   // scanned identity rows. Endpoint is admin-only; contributors get 403
   // and the section hides silently (see SpendingSection below).
   const summary = useJobBudgetSummary(jobId);
+  // L-B2: all-time labour days for this job (admin-only endpoint —
+  // contributors get 403 and the row hides silently, exactly like
+  // SpendingSection). One small server-computed total; no per-day
+  // drilldown by design.
+  const labourDays = useLabourSummary(null, null, jobId);
 
   // Tier 1B: navigate to the job edit screen. selectedJobId stays in
   // the store, so when the user returns via router.back() the modal
@@ -394,6 +400,7 @@ function JobDetailModal({
               ))
             )}
             <SpendingSection summary={summary} />
+            <LabourDaysSection summary={labourDays} />
             {/* Per-job expense list (correction-loop slice): show
                 the recent expenses for this job below spending, so
                 admins can drill into individual rows to correct
@@ -522,6 +529,47 @@ function SpendingSection({
         <SpendingBody data={summary.data} />
       ) : null}
     </>
+  );
+}
+
+/**
+ * L-B2: one all-time "Labour days" row in the job detail modal.
+ *
+ * Mirrors SpendingSection's error semantics exactly: 403 (admin-only
+ * endpoint, contributor caller) hides silently; other failures show a
+ * small non-blocking message; loading is a tiny inline indicator. The
+ * value is the server-computed total — attendance days, never pay.
+ */
+function LabourDaysSection({
+  summary,
+}: {
+  summary: ReturnType<typeof useLabourSummary>;
+}) {
+  const { t } = useTranslation();
+  const is403 =
+    axios.isAxiosError(summary.error) &&
+    summary.error.response?.status === 403;
+  if (is403) return null;
+
+  return (
+    <View testID="job-labour-days">
+      {summary.isLoading ? (
+        <View style={s.spendingLoading} testID="job-labour-loading">
+          <ActivityIndicator size="small" color="#64748b" />
+        </View>
+      ) : summary.isError ? (
+        <Text style={s.spendingError} testID="job-labour-error">
+          {t('labour.job_days_error')}
+        </Text>
+      ) : summary.data ? (
+        <DetailRow
+          label={t('labour.job_days_label')}
+          value={t('labour.days_value', {
+            days: formatDays(summary.data.total_days),
+          })}
+        />
+      ) : null}
+    </View>
   );
 }
 

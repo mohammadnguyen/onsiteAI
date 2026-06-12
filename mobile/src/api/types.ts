@@ -159,6 +159,11 @@ export interface paths {
         /**
          * List Expenses Endpoint
          * @description List expenses (contributors are restricted to their own rows).
+         *
+         *     M2-A: ``cursor`` is the opaque ``next_cursor`` token from the
+         *     previous page — echo it back verbatim to fetch the next page; an
+         *     undecodable cursor returns 400. ``supplier_id`` / ``category_id``
+         *     are exact-match filters (indexes exist for both).
          */
         get: operations["list_expenses_endpoint_expenses_get"];
         put?: never;
@@ -475,6 +480,171 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/jobs/{job_id}/category-budgets/{budget_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Category Budget Endpoint
+         * @description Delete a per-category budget row (admin only).
+         *
+         *     Slice A. 404 if ``(job_id, budget_id)`` doesn't resolve — same
+         *     no-leak rationale as the PATCH endpoint. A second DELETE on the
+         *     same ``budget_id`` also returns 404 (not silently 204); callers
+         *     that want noop-on-missing semantics should ignore the 404
+         *     themselves.
+         */
+        delete: operations["delete_category_budget_endpoint_jobs__job_id__category_budgets__budget_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Category Budget Endpoint
+         * @description Update a per-category budget row's amount (admin only).
+         *
+         *     Slice A. 404 if ``(job_id, budget_id)`` doesn't resolve — either
+         *     the budget doesn't exist OR it belongs to a different job. The
+         *     pair is checked atomically so a mismatched job_id cannot
+         *     accidentally update someone else's budget.
+         *
+         *     Pydantic rejects negative amounts at the schema layer
+         *     (:class:`~app.schemas.job.JobCategoryBudgetUpdate` ``ge=0``),
+         *     surfacing as 422 before this handler is reached. ``0`` is
+         *     explicitly permitted (a zero budget is a valid statement).
+         */
+        patch: operations["update_category_budget_endpoint_jobs__job_id__category_budgets__budget_id__patch"];
+        trace?: never;
+    };
+    "/workers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Workers Endpoint
+         * @description Roster list (any authenticated caller). Active-only by default.
+         */
+        get: operations["list_workers_endpoint_workers_get"];
+        put?: never;
+        /**
+         * Create Worker Endpoint
+         * @description Add a worker to the roster (admin only). Duplicate names allowed.
+         */
+        post: operations["create_worker_endpoint_workers_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workers/{worker_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Worker Endpoint
+         * @description Rename / annotate / (de)activate a worker (admin only).
+         */
+        patch: operations["update_worker_endpoint_workers__worker_id__patch"];
+        trace?: never;
+    };
+    "/labour-entries/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Batch Entries Endpoint
+         * @description The tick-screen save: all-or-nothing create-or-update.
+         */
+        post: operations["batch_entries_endpoint_labour_entries_batch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/labour-entries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Entries Endpoint
+         * @description Attendance entries, newest first (any authenticated caller).
+         */
+        get: operations["list_entries_endpoint_labour_entries_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/labour-entries/{entry_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Entry Endpoint
+         * @description Remove one entry (admin any; contributor own + today's date).
+         */
+        delete: operations["delete_entry_endpoint_labour_entries__entry_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/labour-summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Labour Summary Endpoint
+         * @description Fortnight attendance summary source (admin only): per-worker and
+         *     per-job day totals for the filtered range.
+         */
+        get: operations["labour_summary_endpoint_labour_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/reports/expenses-excel": {
         parameters: {
             query?: never;
@@ -698,7 +868,8 @@ export interface paths {
          *     magic-link / reset-password flow.
          *
          *     Returns 201 with the new :class:`UserPublic`. A pre-existing user
-         *     with the same email produces a 409.
+         *     with the same email produces a 409; inviting an admin beyond the
+         *     active-admin cap also produces a 409.
          */
         post: operations["invite_user_endpoint_users_invite_post"];
         delete?: never;
@@ -728,6 +899,9 @@ export interface paths {
          *     ``language_preference`` may be supplied. Setting ``is_active=False``
          *     forces the target's existing access tokens to 401 on the next auth
          *     check — :func:`app.deps.get_current_user` rejects deactivated users.
+         *
+         *     Returns 409 when promoting beyond the active-admin cap or when the
+         *     change would remove the last active admin.
          */
         patch: operations["update_user_endpoint_users__user_id__patch"];
         trace?: never;
@@ -1314,6 +1488,24 @@ export interface components {
             category: components["schemas"]["CategoryPublic"];
         };
         /**
+         * JobCategoryBudgetUpdate
+         * @description Body of ``PATCH /jobs/{job_id}/category-budgets/{budget_id}`` (admin-only).
+         *
+         *     Single editable field — ``budget_amount_ex_gst``. The underlying DB
+         *     column is NOT NULL, so this field is required (not Optional). 0 is
+         *     a valid value (the operator explicitly approved zero budgets);
+         *     negative values are rejected at the schema layer via ``ge=0``,
+         *     surfacing as 422 from FastAPI before reaching the service.
+         *
+         *     No partial-update semantics needed because there's only one
+         *     editable field — if more fields ever become editable, the conditional-
+         *     spread pattern from ``JobUpdate`` is the model to copy.
+         */
+        JobCategoryBudgetUpdate: {
+            /** Budget Amount Ex Gst */
+            budget_amount_ex_gst: number | string;
+        };
+        /**
          * JobCreate
          * @description Body of ``POST /jobs`` (admin-only).
          *
@@ -1340,6 +1532,21 @@ export interface components {
             warning_red_pct?: number | string | null;
             /** @default active */
             status: components["schemas"]["JobStatus"];
+        };
+        /**
+         * JobDaysRow
+         * @description Per-job day total within a summary range.
+         */
+        JobDaysRow: {
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /** Job Name */
+            job_name: string;
+            /** Total Days */
+            total_days: string;
         };
         /**
          * JobPublic
@@ -1505,6 +1712,102 @@ export interface components {
              * @default []
              */
             category_budgets: components["schemas"]["JobCategoryBudgetPublic"][];
+        };
+        /**
+         * LabourBatchItem
+         * @description One worker's tick within a batch save.
+         */
+        LabourBatchItem: {
+            /**
+             * Worker Id
+             * Format: uuid
+             */
+            worker_id: string;
+            /** Day Fraction */
+            day_fraction: number | string;
+        };
+        /**
+         * LabourBatchRequest
+         * @description Body of ``POST /labour-entries/batch`` — the tick-screen save.
+         *
+         *     All-or-nothing: any invalid row rejects the whole batch. Removals
+         *     are deliberately NOT expressible here (no implicit deletes of
+         *     other users' records) — unticking a worker is an explicit
+         *     ``DELETE /labour-entries/{id}`` governed by the edit-permission
+         *     rules.
+         */
+        LabourBatchRequest: {
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /**
+             * Work Date
+             * Format: date
+             */
+            work_date: string;
+            /** Entries */
+            entries: components["schemas"]["LabourBatchItem"][];
+        };
+        /**
+         * LabourEntryPublic
+         * @description Serialised attendance entry.
+         */
+        LabourEntryPublic: {
+            /**
+             * Entry Id
+             * Format: uuid
+             */
+            entry_id: string;
+            /**
+             * Worker Id
+             * Format: uuid
+             */
+            worker_id: string;
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /**
+             * Work Date
+             * Format: date
+             */
+            work_date: string;
+            /** Day Fraction */
+            day_fraction: string;
+            /**
+             * Recorded By User Id
+             * Format: uuid
+             */
+            recorded_by_user_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * LabourSummary
+         * @description Response of ``GET /labour-summary`` (admin only).
+         *
+         *     One payload serves both the fortnight attendance summary (per
+         *     worker) and the per-job labour-days view. ``total_days`` is the
+         *     grand total for the filtered range.
+         */
+        LabourSummary: {
+            /** Workers */
+            workers: components["schemas"]["WorkerDaysRow"][];
+            /** Jobs */
+            jobs: components["schemas"]["JobDaysRow"][];
+            /** Total Days */
+            total_days: string;
         };
         /**
          * LanguageCode
@@ -1899,6 +2202,64 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /**
+         * WorkerCreate
+         * @description Body of ``POST /workers`` (admin only).
+         */
+        WorkerCreate: {
+            /** Display Name */
+            display_name: string;
+            /** Note */
+            note?: string | null;
+        };
+        /**
+         * WorkerDaysRow
+         * @description Per-worker day total within a summary range.
+         */
+        WorkerDaysRow: {
+            /**
+             * Worker Id
+             * Format: uuid
+             */
+            worker_id: string;
+            /** Display Name */
+            display_name: string;
+            /** Total Days */
+            total_days: string;
+        };
+        /**
+         * WorkerPublic
+         * @description Serialised roster row.
+         */
+        WorkerPublic: {
+            /**
+             * Worker Id
+             * Format: uuid
+             */
+            worker_id: string;
+            /** Display Name */
+            display_name: string;
+            /** Note */
+            note: string | null;
+            /** Is Active */
+            is_active: boolean;
+        };
+        /**
+         * WorkerUpdate
+         * @description Body of ``PATCH /workers/{worker_id}`` (admin only).
+         *
+         *     PATCH semantics mirror jobs: omitted field = no change; the route
+         *     forwards ``model_dump(exclude_unset=True)``. ``note`` may be set
+         *     to explicit null to clear it.
+         */
+        WorkerUpdate: {
+            /** Display Name */
+            display_name?: string | null;
+            /** Note */
+            note?: string | null;
+            /** Is Active */
+            is_active?: boolean | null;
         };
     };
     responses: never;
@@ -2636,6 +2997,301 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobCategoryBudgetPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_category_budget_endpoint_jobs__job_id__category_budgets__budget_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                budget_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_category_budget_endpoint_jobs__job_id__category_budgets__budget_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                budget_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JobCategoryBudgetUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobCategoryBudgetPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_workers_endpoint_workers_get: {
+        parameters: {
+            query?: {
+                include_inactive?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerPublic"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_worker_endpoint_workers_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkerCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_worker_endpoint_workers__worker_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                worker_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkerUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    batch_entries_endpoint_labour_entries_batch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LabourBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LabourEntryPublic"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_entries_endpoint_labour_entries_get: {
+        parameters: {
+            query?: {
+                job_id?: string | null;
+                worker_id?: string | null;
+                from?: string | null;
+                to?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LabourEntryPublic"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_entry_endpoint_labour_entries__entry_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    labour_summary_endpoint_labour_summary_get: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+                job_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LabourSummary"];
                 };
             };
             /** @description Validation Error */
