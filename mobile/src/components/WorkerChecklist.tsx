@@ -7,20 +7,23 @@ import {
 } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import type { WorkerPublic } from '../api/hooks/useLabour';
+import { formatHoursShort, type TimeRangeStatus } from '../util/time';
 
 /**
- * L-B1: the daily attendance tick list.
+ * L-B1 / L-C3: the daily attendance tick list.
  *
  * Purely presentational — the Labour screen owns all state (tick map,
- * fractions, lock computation) and passes resolved rows down. Rendered
- * with a plain map inside the screen's ScrollView (no FlatList: rosters
- * are small for a single-builder tenant, and nesting a VirtualizedList
- * in a ScrollView is an RN anti-pattern).
+ * fractions, typed time text, lock computation) and passes resolved rows
+ * down. Rendered with a plain map inside the screen's ScrollView (no
+ * FlatList: rosters are small for a single-builder tenant, and nesting a
+ * VirtualizedList in a ScrollView is an RN anti-pattern).
  *
  * Row anatomy: checkbox + name (+ optional note / deactivated badge /
- * lock reason) and, when ticked, the Full/Half day-fraction pills.
- * Locked rows (another user's entry, or a past-date entry the caller
- * may not change) render muted with the reason and ignore presses.
+ * lock reason) and, when ticked, the Full/Half day-fraction pills plus a
+ * TYPED start->end time range (L-C3). The backend derives the hours from
+ * that range and stays the source of truth; this row only shows the live
+ * computed duration (or an inline validation message) before save.
+ * Locked rows render muted with the reason and ignore presses.
  */
 
 export type ChecklistRowState = {
@@ -28,13 +31,18 @@ export type ChecklistRowState = {
   ticked: boolean;
   /** Effective day fraction (0.5 | 1) — only meaningful while ticked. */
   fraction: number;
+  /** Raw typed start/end text (controlled), only meaningful while ticked. */
+  startText: string;
+  endText: string;
+  /** Derived validity + duration for the typed range (see computeTimeRange). */
+  time: TimeRangeStatus;
   /**
-   * Raw hours-input text (controlled), only meaningful while ticked.
-   * Optional — empty means no hours recorded (attendance still counts;
-   * labour cost is left incomplete). Hours are NOT sensitive (any auth
-   * may enter them); only rates/cost are admin-only.
+   * Existing hours to surface when the entry has hours but NO time range
+   * (a pre-L-C3 row), shown read-only so the user can see what drives the
+   * cost. Null when not applicable. Hours are NOT sensitive (any auth may
+   * see them); only rates/cost are admin-only.
    */
-  hoursText: string;
+  legacyHours: string | null;
   /** True when the current user may not modify the existing entry. */
   locked: boolean;
   /** Translated lock copy (name-free); null when not locked. */
@@ -46,13 +54,15 @@ export function WorkerChecklist({
   disabled,
   onToggle,
   onSetFraction,
-  onSetHours,
+  onSetStart,
+  onSetEnd,
 }: {
   rows: ChecklistRowState[];
   disabled: boolean;
   onToggle: (workerId: string) => void;
   onSetFraction: (workerId: string, fraction: number) => void;
-  onSetHours: (workerId: string, text: string) => void;
+  onSetStart: (workerId: string, text: string) => void;
+  onSetEnd: (workerId: string, text: string) => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -115,26 +125,105 @@ export function WorkerChecklist({
                     testID={`fraction-half-${id}`}
                   />
                 </View>
-                <View style={s.hoursRow}>
-                  <TextInput
-                    value={row.hoursText}
-                    onChangeText={(text) => onSetHours(id, text)}
-                    editable={!rowDisabled}
-                    keyboardType="decimal-pad"
-                    placeholder={t('labour.hours_placeholder')}
-                    placeholderTextColor="#94a3b8"
-                    style={[s.hoursInput, rowDisabled && s.pillDisabled]}
-                    maxLength={5}
-                    testID={`hours-${id}`}
-                    accessibilityLabel={t('labour.hours_label')}
-                  />
-                  <Text style={s.hoursUnit}>{t('labour.hours_unit')}</Text>
-                </View>
+                <TimeControls
+                  id={id}
+                  row={row}
+                  disabled={rowDisabled}
+                  onSetStart={onSetStart}
+                  onSetEnd={onSetEnd}
+                />
               </View>
             ) : null}
           </View>
         );
       })}
+    </View>
+  );
+}
+
+/**
+ * The typed start->end time pair plus the live duration / validation
+ * line. The hours that drive labour cost are DERIVED server-side from
+ * these times — this is display only.
+ */
+function TimeControls({
+  id,
+  row,
+  disabled,
+  onSetStart,
+  onSetEnd,
+}: {
+  id: string;
+  row: ChecklistRowState;
+  disabled: boolean;
+  onSetStart: (workerId: string, text: string) => void;
+  onSetEnd: (workerId: string, text: string) => void;
+}) {
+  const { t } = useTranslation();
+  const { time } = row;
+
+  let status: { text: string; error: boolean } | null = null;
+  if (time.parseError) {
+    status = { text: t('labour.error_time_invalid'), error: true };
+  } else if (time.onePresent) {
+    status = { text: t('labour.error_time_one'), error: true };
+  } else if (time.orderError) {
+    status = { text: t('labour.error_time_order'), error: true };
+  } else if (time.ready) {
+    status = {
+      text: t('labour.duration_value', {
+        hours: formatHoursShort(time.durationHours),
+      }),
+      error: false,
+    };
+  } else if (row.legacyHours) {
+    status = {
+      text: t('labour.hours_recorded', { hours: row.legacyHours }),
+      error: false,
+    };
+  }
+
+  return (
+    <View style={s.timeBlock}>
+      <View style={s.timeRow}>
+        <TextInput
+          value={row.startText}
+          onChangeText={(text) => onSetStart(id, text)}
+          editable={!disabled}
+          keyboardType="numbers-and-punctuation"
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder={t('labour.start_placeholder')}
+          placeholderTextColor="#94a3b8"
+          style={[s.timeInput, disabled && s.pillDisabled]}
+          maxLength={8}
+          testID={`start-${id}`}
+          accessibilityLabel={t('labour.start_label')}
+        />
+        <Text style={s.timeArrow}>{'→'}</Text>
+        <TextInput
+          value={row.endText}
+          onChangeText={(text) => onSetEnd(id, text)}
+          editable={!disabled}
+          keyboardType="numbers-and-punctuation"
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder={t('labour.end_placeholder')}
+          placeholderTextColor="#94a3b8"
+          style={[s.timeInput, disabled && s.pillDisabled]}
+          maxLength={8}
+          testID={`end-${id}`}
+          accessibilityLabel={t('labour.end_label')}
+        />
+      </View>
+      {status ? (
+        <Text
+          style={status.error ? s.timeError : s.timeDuration}
+          testID={`time-status-${id}`}
+        >
+          {status.text}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -217,9 +306,10 @@ const s = StyleSheet.create({
   note: { color: '#64748b', fontSize: 13, marginTop: 1 },
   lockText: { color: '#92400e', fontSize: 12, marginTop: 2 },
   controls: { alignItems: 'flex-end', gap: 6 },
-  hoursRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  hoursInput: {
-    width: 56,
+  timeBlock: { alignItems: 'flex-end', gap: 2 },
+  timeRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  timeInput: {
+    width: 64,
     borderWidth: 1,
     borderColor: '#cbd5e1',
     borderRadius: 6,
@@ -228,9 +318,15 @@ const s = StyleSheet.create({
     fontSize: 14,
     color: '#0f172a',
     backgroundColor: '#ffffff',
-    textAlign: 'right',
+    textAlign: 'center',
   },
-  hoursUnit: { color: '#64748b', fontSize: 13 },
+  timeArrow: { color: '#64748b', fontSize: 14 },
+  timeDuration: {
+    color: '#475569',
+    fontSize: 13,
+    fontVariant: ['tabular-nums'],
+  },
+  timeError: { color: '#b45309', fontSize: 12 },
   pills: { flexDirection: 'row', gap: 6 },
   pill: {
     paddingHorizontal: 12,

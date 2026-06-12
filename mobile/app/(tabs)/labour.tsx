@@ -7,6 +7,7 @@ import {
   StyleSheet,
   ScrollView,
   RefreshControl,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, type Href } from 'expo-router';
@@ -29,50 +30,45 @@ import {
 } from '../../src/components/WorkerChecklist';
 import { todayISO } from '../../src/util/dates';
 import { formatDays } from '../../src/util/format';
+import { computeTimeRange, formatHoursShort, hhmmFromServer } from '../../src/util/time';
 
 /**
- * L-B1: Labour tab — daily attendance tick screen.
+ * L-B1 / L-C3: Labour tab — daily attendance tick screen.
  *
  * Fast-morning flow: Today + last-used job preselected; tick workers
- * (default full day); Save. The checklist is DECLARATIVE — saving
- * computes a diff against the server entries for the selected
- * (job, date): removals become per-entry DELETEs (run first), then new
- * and changed ticks go up as ONE all-or-nothing batch POST. After any
- * save attempt the entries query is invalidated, so the screen always
- * settles on server truth (the two phases are not atomic with each
- * other — accepted v1 shortcut, see useSaveAttendance).
+ * (default full day); optionally type a start->end time range; Save. The
+ * checklist is DECLARATIVE — saving computes a diff against the server
+ * entries for the selected (job, date): removals become per-entry
+ * DELETEs (run first), then new and changed ticks go up as ONE
+ * all-or-nothing batch POST. After any save attempt the entries query is
+ * invalidated, so the screen always settles on server truth.
+ *
+ * L-C3 time range: hours are DERIVED server-side from the typed
+ * start->end span (full span, no break, same-day). The client sends
+ * canonical HH:MM and shows the live duration before save; the backend
+ * recomputes and enforces ordering, so it stays the source of truth.
+ * Clearing a previously-saved range prompts whether to also clear the
+ * recorded hours, so the user can never think a cleared time silently
+ * left old hours driving the labour cost.
  *
  * Lock rules mirror the backend's OD-1 (server stays authoritative):
- * admins edit anything; contributors only their OWN entries dated
- * today or later. The mirror uses device-local "today" for UI hints
- * only — when the clocks disagree (e.g. reverse UTC skew) a row can
- * stay visually unlocked while the server keeps rejecting; the 403 is
- * surfaced readably and nothing corrupts. Rows recorded by someone
- * else show a name-free reason — contributors cannot resolve recorder
- * names (the users list is admin-only by design).
+ * admins edit anything; contributors only their OWN entries dated today
+ * or later. The mirror uses device-local "today" for UI hints only.
  *
- * Attendance/days language only. No payroll concepts anywhere.
+ * Attendance/hours/days language only. No payroll concepts anywhere.
  */
 
 /** In-session memory of the last job picked (module-level on purpose —
  * survives the root Slot unmounting the tab screen on drill-ins). */
 let lastUsedJobId: string | null = null;
 
-type RowEdit = { ticked: boolean; fraction: number; hoursText: string };
+type RowEdit = {
+  ticked: boolean;
+  fraction: number;
+  startText: string;
+  endText: string;
+};
 type Banner = { kind: 'success' | 'error'; text: string };
-
-/** Parse the hours input. Empty = no hours (valid, null). Otherwise must
- * be a finite number in (0, 24] — mirrors the backend's hours CHECK so we
- * block client-side instead of surfacing a raw 422. */
-function parseHours(text: string): { value: number | null; valid: boolean } {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return { value: null, valid: true };
-  const n = Number(trimmed);
-  if (!Number.isFinite(n) || n <= 0 || n > 24) {
-    return { value: null, valid: false };
-  }
-  return { value: n, valid: true };
-}
 
 /** House helper (same shape as the capture screen's): surface the
  * server's string detail; flatten Pydantic array details. */
@@ -176,34 +172,64 @@ export default function LabourScreen() {
           : entry
             ? Number(entry.day_fraction)
             : 1;
-        // hours is a Decimal-string from the API; show it as a plain
-        // number string for the input ("8", "9.5"). Empty when absent.
-        const hoursText = edit
-          ? edit.hoursText
-          : entry && entry.hours != null
-            ? String(Number(entry.hours))
-            : '';
+        // Prefill the typed inputs from the server's HH:MM:SS times
+        // (trimmed to HH:MM); empty when the entry has no range.
+        const startText = edit ? edit.startText : hhmmFromServer(entry?.start_time);
+        const endText = edit ? edit.endText : hhmmFromServer(entry?.end_time);
+        const time = computeTimeRange(startText, endText);
+        // Surface pre-L-C3 hours-only entries (hours but no times) so the
+        // user can see what drives the cost; hidden once a range is typed.
+        const hasServerTimes = !!entry?.start_time && !!entry?.end_time;
+        const legacyHours =
+          entry &&
+          entry.hours != null &&
+          !hasServerTimes &&
+          time.startValue === null &&
+          time.endValue === null
+            ? formatHoursShort(Number(entry.hours))
+            : null;
         const lockReason = !locked
           ? null
           : entry && entry.recorded_by_user_id !== myId
             ? t('labour.locked_other')
             : t('labour.locked_past');
-        return { worker: w, ticked, fraction, hoursText, locked, lockReason };
+        return {
+          worker: w,
+          ticked,
+          fraction,
+          startText,
+          endText,
+          time,
+          legacyHours,
+          locked,
+          lockReason,
+        };
       });
   }, [workers.data, entriesByWorker, edits, isAdmin, myId, today, t]);
 
-  // The diff save (approved L-B1 semantics): unticked existing rows
-  // become DELETEs; ticked rows are sent in the batch only when NEW or
-  // CHANGED — untouched rows stay out, so another user's entries are
-  // never re-submitted (which would 403 for contributors).
+  // The diff save (L-B1 semantics, L-C3 time-aware): unticked existing
+  // rows become DELETEs; ticked rows are sent only when NEW or CHANGED.
+  //
+  // L-C3 per ticked row:
+  //  - both times typed & valid -> send start_time/end_time; backend
+  //    derives hours and ignores any client hours.
+  //  - one time only / end<=start / unparseable -> timesInvalid (Save
+  //    blocked; the row shows the reason inline).
+  //  - no times, server HAD a range -> the user cleared it: collected in
+  //    clearedTimeWorkers so Save can ask whether to also clear hours.
+  //  - no times, no server range -> a fraction-only change preserves any
+  //    legacy hours (and absent times) by omitting both fields.
   const diff = useMemo(() => {
     const deletes: { entryId: string; workerId: string }[] = [];
     const batch: {
       worker_id: string;
       day_fraction: number;
-      hours: number | null;
+      hours?: number | null;
+      start_time?: string | null;
+      end_time?: string | null;
     }[] = [];
-    let hoursInvalid = false;
+    const clearedTimeWorkers: { workerId: string; fraction: number }[] = [];
+    let timesInvalid = false;
     for (const row of rows) {
       if (row.locked) continue;
       const entry = entriesByWorker.get(row.worker.worker_id) ?? null;
@@ -212,49 +238,70 @@ export default function LabourScreen() {
         continue;
       }
       if (!row.ticked) continue;
-      const parsed = parseHours(row.hoursText);
-      if (!parsed.valid) {
-        hoursInvalid = true;
+      const ts = row.time;
+      if (ts.parseError || ts.onePresent || ts.orderError) {
+        timesInvalid = true;
         continue;
       }
-      const entryHours = entry?.hours != null ? Number(entry.hours) : null;
+      const serverStart = hhmmFromServer(entry?.start_time);
+      const serverEnd = hhmmFromServer(entry?.end_time);
+      const hadServerTimes = serverStart !== '' && serverEnd !== '';
       const fractionChanged =
         !entry || Number(entry.day_fraction) !== row.fraction;
-      const hoursChanged = parsed.value !== entryHours;
-      // A v2 client always sends hours explicitly (number sets it, null
-      // clears it) — so a changed row carries its current hours.
-      if (fractionChanged || hoursChanged) {
+      if (ts.ready) {
+        const timesChanged =
+          ts.startValue !== (serverStart || null) ||
+          ts.endValue !== (serverEnd || null);
+        if (fractionChanged || timesChanged) {
+          batch.push({
+            worker_id: row.worker.worker_id,
+            day_fraction: row.fraction,
+            start_time: ts.startValue,
+            end_time: ts.endValue,
+          });
+        }
+      } else if (hadServerTimes) {
+        // Both inputs empty but the entry had a saved range — a clear.
+        clearedTimeWorkers.push({
+          workerId: row.worker.worker_id,
+          fraction: row.fraction,
+        });
+      } else if (fractionChanged) {
+        // No range involved: change the day fraction only and preserve
+        // any existing hours + (absent) times by omitting those fields.
         batch.push({
           worker_id: row.worker.worker_id,
           day_fraction: row.fraction,
-          hours: parsed.value,
         });
       }
     }
-    return { deletes, batch, hoursInvalid };
+    return { deletes, batch, clearedTimeWorkers, timesInvalid };
   }, [rows, entriesByWorker]);
 
   const tickedRows = rows.filter((r) => r.ticked);
   const totalDays = tickedRows.reduce((acc, r) => acc + r.fraction, 0);
   const totalHours = tickedRows.reduce((acc, r) => {
-    return acc + (parseHours(r.hoursText).value ?? 0);
+    if (r.time.ready && r.time.durationHours != null) {
+      return acc + r.time.durationHours;
+    }
+    if (r.legacyHours) return acc + Number(r.legacyHours);
+    return acc;
   }, 0);
 
   const isFuture = date > today;
   const entriesReady = !!jobId && !entries.isLoading && !entries.isError;
-  const hasChanges = diff.deletes.length + diff.batch.length > 0;
+  const effectiveBatchCount = diff.batch.length + diff.clearedTimeWorkers.length;
+  const hasChanges = diff.deletes.length + effectiveBatchCount > 0;
   // Server caps a batch at 50 entries; block client-side with a
   // readable message instead of surfacing the raw Pydantic 422.
-  // Deliberately NOT chunked — chunking would silently break the
-  // backend's all-or-nothing batch semantics.
-  const overBatchCap = diff.batch.length > 50;
+  const overBatchCap = effectiveBatchCount > 50;
   const saveDisabled =
     !hasChanges ||
     save.isPending ||
     isFuture ||
     !entriesReady ||
     overBatchCap ||
-    diff.hoursInvalid;
+    diff.timesInvalid;
 
   const mapLabourDetail = (detail: string): string => {
     if (detail.includes('cannot exceed 1.0')) {
@@ -273,6 +320,8 @@ export default function LabourScreen() {
     if (detail.includes('own entries for today')) {
       return t('labour.error_own_today_only');
     }
+    if (detail.includes('after start time')) return t('labour.error_time_order');
+    if (detail.includes('both a start time')) return t('labour.error_time_one');
     return detail;
   };
 
@@ -287,11 +336,55 @@ export default function LabourScreen() {
     const savedWorkers = tickedRows.length;
     const savedDays = formatDays(totalDays);
     try {
+      // Clearing a saved range: ask once whether to also clear the
+      // recorded hours so a removed time can't silently keep driving cost.
+      let cleared: typeof diff.batch = [];
+      if (diff.clearedTimeWorkers.length > 0) {
+        const choice = await new Promise<'keep' | 'clear' | 'cancel'>(
+          (resolve) => {
+            Alert.alert(
+              t('labour.clear_hours_title'),
+              t('labour.clear_hours_message', {
+                count: diff.clearedTimeWorkers.length,
+              }),
+              [
+                {
+                  text: t('common.cancel'),
+                  style: 'cancel',
+                  onPress: () => resolve('cancel'),
+                },
+                {
+                  text: t('labour.clear_hours_keep'),
+                  onPress: () => resolve('keep'),
+                },
+                {
+                  text: t('labour.clear_hours_clear'),
+                  style: 'destructive',
+                  onPress: () => resolve('clear'),
+                },
+              ],
+              { cancelable: true, onDismiss: () => resolve('cancel') },
+            );
+          },
+        );
+        if (choice === 'cancel') {
+          savingRef.current = false;
+          return;
+        }
+        cleared = diff.clearedTimeWorkers.map((c) => ({
+          worker_id: c.workerId,
+          day_fraction: c.fraction,
+          start_time: null,
+          end_time: null,
+          // Keep: omit hours (server preserves). Clear: explicit null.
+          ...(choice === 'clear' ? { hours: null } : {}),
+        }));
+      }
       await save.mutateAsync({
         jobId,
         date,
         deletes: diff.deletes,
-        batch: diff.batch,
+        batch: [...diff.batch, ...cleared],
       });
       setEdits({});
       setBanner({
@@ -332,7 +425,8 @@ export default function LabourScreen() {
       [workerId]: {
         ticked: !row.ticked,
         fraction: row.fraction,
-        hoursText: row.hoursText,
+        startText: row.startText,
+        endText: row.endText,
       },
     }));
   };
@@ -343,17 +437,42 @@ export default function LabourScreen() {
     if (!row || row.locked) return;
     setEdits((prev) => ({
       ...prev,
-      [workerId]: { ticked: true, fraction, hoursText: row.hoursText },
+      [workerId]: {
+        ticked: true,
+        fraction,
+        startText: row.startText,
+        endText: row.endText,
+      },
     }));
   };
 
-  const onSetHours = (workerId: string, text: string) => {
+  const onSetStart = (workerId: string, text: string) => {
     setBanner(null);
     const row = rows.find((r) => r.worker.worker_id === workerId);
     if (!row || row.locked) return;
     setEdits((prev) => ({
       ...prev,
-      [workerId]: { ticked: true, fraction: row.fraction, hoursText: text },
+      [workerId]: {
+        ticked: true,
+        fraction: row.fraction,
+        startText: text,
+        endText: row.endText,
+      },
+    }));
+  };
+
+  const onSetEnd = (workerId: string, text: string) => {
+    setBanner(null);
+    const row = rows.find((r) => r.worker.worker_id === workerId);
+    if (!row || row.locked) return;
+    setEdits((prev) => ({
+      ...prev,
+      [workerId]: {
+        ticked: true,
+        fraction: row.fraction,
+        startText: row.startText,
+        endText: text,
+      },
     }));
   };
 
@@ -465,7 +584,8 @@ export default function LabourScreen() {
               disabled={save.isPending}
               onToggle={onToggle}
               onSetFraction={onSetFraction}
-              onSetHours={onSetHours}
+              onSetStart={onSetStart}
+              onSetEnd={onSetEnd}
             />
           </>
         )}
@@ -474,9 +594,9 @@ export default function LabourScreen() {
           <Text style={s.warnText}>{t('labour.error_too_many')}</Text>
         ) : null}
 
-        {diff.hoursInvalid ? (
-          <Text style={s.warnText} testID="labour-hours-invalid">
-            {t('labour.error_hours_invalid')}
+        {diff.timesInvalid ? (
+          <Text style={s.warnText} testID="labour-times-invalid">
+            {t('labour.error_time_fix')}
           </Text>
         ) : null}
 
@@ -508,7 +628,7 @@ export default function LabourScreen() {
               ? t('labour.summary_line_hours', {
                   workers: tickedRows.length,
                   days: formatDays(totalDays),
-                  hours: formatDays(totalHours),
+                  hours: formatHoursShort(totalHours),
                 })
               : t('labour.summary_line', {
                   workers: tickedRows.length,

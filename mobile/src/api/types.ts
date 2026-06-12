@@ -1755,6 +1755,10 @@ export interface components {
             day_fraction: number | string;
             /** Hours */
             hours?: number | string | null;
+            /** Start Time */
+            start_time?: string | null;
+            /** End Time */
+            end_time?: string | null;
         };
         /**
          * LabourBatchRequest
@@ -1809,6 +1813,10 @@ export interface components {
             day_fraction: string;
             /** Hours */
             hours?: string | null;
+            /** Start Time */
+            start_time?: string | null;
+            /** End Time */
+            end_time?: string | null;
             /**
              * Recorded By User Id
              * Format: uuid
