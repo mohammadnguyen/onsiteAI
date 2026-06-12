@@ -9,6 +9,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter, type Href } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
 import { useMe } from '../../src/api/hooks/useAuth';
@@ -27,6 +28,7 @@ import {
   type ChecklistRowState,
 } from '../../src/components/WorkerChecklist';
 import { todayISO } from '../../src/util/dates';
+import { formatDays } from '../../src/util/format';
 
 /**
  * L-B1: Labour tab — daily attendance tick screen.
@@ -79,12 +81,9 @@ function extractErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-function formatDays(n: number): string {
-  return Number.isInteger(n) ? String(n) : n.toFixed(1);
-}
-
 export default function LabourScreen() {
   const { t } = useTranslation();
+  const router = useRouter();
   const me = useMe();
   const jobs = useJobs();
   // include_inactive so a since-deactivated worker's existing entry on
@@ -320,7 +319,37 @@ export default function LabourScreen() {
         keyboardShouldPersistTaps="handled"
         refreshControl={refreshControl}
       >
-        <Text style={s.title}>{t('labour.title')}</Text>
+        <View style={s.titleRow}>
+          <Text style={s.title}>{t('labour.title')}</Text>
+          {/* L-B2: admin-only entries to roster management and the
+              attendance summary. useMe drives VISIBILITY only — both
+              destinations re-gate themselves and the backend write/
+              summary routes are require_admin (fails closed). */}
+          {isAdmin ? (
+            <View style={s.headerBtns}>
+              <TouchableOpacity
+                onPress={() =>
+                  router.push('/labour/workers' as unknown as Href)
+                }
+                style={s.headerBtn}
+                accessibilityRole="button"
+                testID="labour-workers-btn"
+              >
+                <Text style={s.headerBtnText}>{t('labour.workers_entry')}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() =>
+                  router.push('/labour/summary' as unknown as Href)
+                }
+                style={s.headerBtn}
+                accessibilityRole="button"
+                testID="labour-summary-btn"
+              >
+                <Text style={s.headerBtnText}>{t('labour.summary_entry')}</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+        </View>
 
         <DatePills value={date} onChange={setDate} disabled={save.isPending} />
 
@@ -449,7 +478,23 @@ export default function LabourScreen() {
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#ffffff' },
   scroll: { padding: 16, gap: 14 },
-  title: { fontSize: 24, fontWeight: '600', color: '#0f172a', marginBottom: 4 },
+  title: { fontSize: 24, fontWeight: '600', color: '#0f172a' },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  headerBtns: { flexDirection: 'row', gap: 8 },
+  headerBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 6,
+    backgroundColor: '#f8fafc',
+  },
+  headerBtnText: { color: '#1e293b', fontSize: 14, fontWeight: '600' },
   jobRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   jobLabel: { color: '#475569', fontSize: 14 },
   jobChip: {

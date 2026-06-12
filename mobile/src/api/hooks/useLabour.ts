@@ -5,7 +5,10 @@ import { useAuthStore } from '../../store/auth';
 import type { components } from '../types';
 
 export type WorkerPublic = components['schemas']['WorkerPublic'];
+export type WorkerCreateInput = components['schemas']['WorkerCreate'];
+export type WorkerUpdateInput = components['schemas']['WorkerUpdate'];
 export type LabourEntryPublic = components['schemas']['LabourEntryPublic'];
+export type LabourSummary = components['schemas']['LabourSummary'];
 
 /**
  * L-B1 labour attendance hooks (read roster, read day entries, save).
@@ -162,5 +165,91 @@ export function useSaveAttendance() {
       // keeps the matrix complete from day one at zero cost.
       void qc.invalidateQueries({ queryKey: ['labour-summary'] });
     },
+  });
+}
+
+/**
+ * L-B2 — POST /workers (admin-only on the backend; contributors get
+ * 403, surfaced verbatim by the caller). Duplicate display names are
+ * ALLOWED server-side by design — the roster screen shows a soft
+ * confirm before submitting one.
+ *
+ * Invalidates ['labour-summary'] alongside ['workers'] because
+ * summary rows carry display_name.
+ */
+export function useCreateWorker() {
+  const qc = useQueryClient();
+  return useMutation<WorkerPublic, unknown, WorkerCreateInput>({
+    mutationFn: async (body) => {
+      const { data } = await api.post<WorkerPublic>('/workers', body);
+      return data;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['workers'] });
+      void qc.invalidateQueries({ queryKey: ['labour-summary'] });
+    },
+  });
+}
+
+/**
+ * L-B2 — PATCH /workers/{id} (admin-only). Takes {workerId, patch}
+ * per call (useUpdateUser precedent) so the roster list can act on
+ * any row without hooks-in-loops. PATCH semantics: omitted field =
+ * no change; note: null clears the note. Deactivation is
+ * is_active: false — there is NO delete route by design.
+ */
+export function useUpdateWorker() {
+  const qc = useQueryClient();
+  return useMutation<
+    WorkerPublic,
+    unknown,
+    { workerId: string; patch: WorkerUpdateInput }
+  >({
+    mutationFn: async ({ workerId, patch }) => {
+      const { data } = await api.patch<WorkerPublic>(
+        `/workers/${workerId}`,
+        patch,
+      );
+      return data;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['workers'] });
+      void qc.invalidateQueries({ queryKey: ['labour-summary'] });
+    },
+  });
+}
+
+/**
+ * L-B2 — GET /labour-summary (ADMIN-ONLY on the backend; a
+ * contributor caller gets 403, which consumers either map to a
+ * forbidden state (summary screen) or hide silently (job-detail
+ * Labour-days row, SpendingSection precedent)).
+ *
+ * Two call shapes share this hook:
+ *   - summary screen: (from, to, jobId|null) — date-bounded range
+ *   - job detail:     (null, null, jobId)    — all-time, one job
+ * Totals are server-computed (Decimal-as-string); the client only
+ * formats — never sums.
+ */
+export function useLabourSummary(
+  from: string | null,
+  to: string | null,
+  jobId: string | null,
+) {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  return useQuery<LabourSummary>({
+    queryKey: ['labour-summary', { from, to, jobId }],
+    queryFn: async () => {
+      const r = await api.get<LabourSummary>('/labour-summary', {
+        params: {
+          ...(from ? { from } : {}),
+          ...(to ? { to } : {}),
+          ...(jobId ? { job_id: jobId } : {}),
+        },
+      });
+      return r.data;
+    },
+    enabled: !!accessToken && (!!from || !!jobId),
+    retry: false,
   });
 }
