@@ -562,12 +562,24 @@ function LabourDaysSection({
           {t('labour.job_days_error')}
         </Text>
       ) : summary.data ? (
-        <DetailRow
-          label={t('labour.job_days_label')}
-          value={t('labour.days_value', {
-            days: formatDays(summary.data.total_days),
-          })}
-        />
+        <>
+          {/* Distinguish the job's DURATION (distinct dates on site)
+              from its labour INPUT (worker-days), then the cost. */}
+          <DetailRow
+            label={t('labour.job_days_on_site_label')}
+            value={String(summary.data.jobs[0]?.days_on_site ?? 0)}
+          />
+          <DetailRow
+            label={t('labour.job_worker_days_label')}
+            value={formatDays(summary.data.jobs[0]?.total_days ?? 0)}
+          />
+          {summary.data.jobs[0]?.labour_cost != null ? (
+            <DetailRow
+              label={t('labour.job_cost_label')}
+              value={formatMoney(summary.data.jobs[0].labour_cost)}
+            />
+          ) : null}
+        </>
       ) : null}
     </View>
   );

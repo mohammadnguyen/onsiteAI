@@ -58,8 +58,21 @@ import { formatDays } from '../../src/util/format';
  * survives the root Slot unmounting the tab screen on drill-ins). */
 let lastUsedJobId: string | null = null;
 
-type RowEdit = { ticked: boolean; fraction: number };
+type RowEdit = { ticked: boolean; fraction: number; hoursText: string };
 type Banner = { kind: 'success' | 'error'; text: string };
+
+/** Parse the hours input. Empty = no hours (valid, null). Otherwise must
+ * be a finite number in (0, 24] — mirrors the backend's hours CHECK so we
+ * block client-side instead of surfacing a raw 422. */
+function parseHours(text: string): { value: number | null; valid: boolean } {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return { value: null, valid: true };
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n <= 0 || n > 24) {
+    return { value: null, valid: false };
+  }
+  return { value: n, valid: true };
+}
 
 /** House helper (same shape as the capture screen's): surface the
  * server's string detail; flatten Pydantic array details. */
@@ -163,12 +176,19 @@ export default function LabourScreen() {
           : entry
             ? Number(entry.day_fraction)
             : 1;
+        // hours is a Decimal-string from the API; show it as a plain
+        // number string for the input ("8", "9.5"). Empty when absent.
+        const hoursText = edit
+          ? edit.hoursText
+          : entry && entry.hours != null
+            ? String(Number(entry.hours))
+            : '';
         const lockReason = !locked
           ? null
           : entry && entry.recorded_by_user_id !== myId
             ? t('labour.locked_other')
             : t('labour.locked_past');
-        return { worker: w, ticked, fraction, locked, lockReason };
+        return { worker: w, ticked, fraction, hoursText, locked, lockReason };
       });
   }, [workers.data, entriesByWorker, edits, isAdmin, myId, today, t]);
 
@@ -178,27 +198,47 @@ export default function LabourScreen() {
   // never re-submitted (which would 403 for contributors).
   const diff = useMemo(() => {
     const deletes: { entryId: string; workerId: string }[] = [];
-    const batch: { worker_id: string; day_fraction: number }[] = [];
+    const batch: {
+      worker_id: string;
+      day_fraction: number;
+      hours: number | null;
+    }[] = [];
+    let hoursInvalid = false;
     for (const row of rows) {
       if (row.locked) continue;
       const entry = entriesByWorker.get(row.worker.worker_id) ?? null;
       if (entry && !row.ticked) {
         deletes.push({ entryId: entry.entry_id, workerId: row.worker.worker_id });
-      } else if (
-        row.ticked &&
-        (!entry || Number(entry.day_fraction) !== row.fraction)
-      ) {
+        continue;
+      }
+      if (!row.ticked) continue;
+      const parsed = parseHours(row.hoursText);
+      if (!parsed.valid) {
+        hoursInvalid = true;
+        continue;
+      }
+      const entryHours = entry?.hours != null ? Number(entry.hours) : null;
+      const fractionChanged =
+        !entry || Number(entry.day_fraction) !== row.fraction;
+      const hoursChanged = parsed.value !== entryHours;
+      // A v2 client always sends hours explicitly (number sets it, null
+      // clears it) — so a changed row carries its current hours.
+      if (fractionChanged || hoursChanged) {
         batch.push({
           worker_id: row.worker.worker_id,
           day_fraction: row.fraction,
+          hours: parsed.value,
         });
       }
     }
-    return { deletes, batch };
+    return { deletes, batch, hoursInvalid };
   }, [rows, entriesByWorker]);
 
   const tickedRows = rows.filter((r) => r.ticked);
   const totalDays = tickedRows.reduce((acc, r) => acc + r.fraction, 0);
+  const totalHours = tickedRows.reduce((acc, r) => {
+    return acc + (parseHours(r.hoursText).value ?? 0);
+  }, 0);
 
   const isFuture = date > today;
   const entriesReady = !!jobId && !entries.isLoading && !entries.isError;
@@ -209,7 +249,12 @@ export default function LabourScreen() {
   // backend's all-or-nothing batch semantics.
   const overBatchCap = diff.batch.length > 50;
   const saveDisabled =
-    !hasChanges || save.isPending || isFuture || !entriesReady || overBatchCap;
+    !hasChanges ||
+    save.isPending ||
+    isFuture ||
+    !entriesReady ||
+    overBatchCap ||
+    diff.hoursInvalid;
 
   const mapLabourDetail = (detail: string): string => {
     if (detail.includes('cannot exceed 1.0')) {
@@ -284,7 +329,11 @@ export default function LabourScreen() {
     if (!row || row.locked) return;
     setEdits((prev) => ({
       ...prev,
-      [workerId]: { ticked: !row.ticked, fraction: row.fraction },
+      [workerId]: {
+        ticked: !row.ticked,
+        fraction: row.fraction,
+        hoursText: row.hoursText,
+      },
     }));
   };
 
@@ -292,7 +341,20 @@ export default function LabourScreen() {
     setBanner(null);
     const row = rows.find((r) => r.worker.worker_id === workerId);
     if (!row || row.locked) return;
-    setEdits((prev) => ({ ...prev, [workerId]: { ticked: true, fraction } }));
+    setEdits((prev) => ({
+      ...prev,
+      [workerId]: { ticked: true, fraction, hoursText: row.hoursText },
+    }));
+  };
+
+  const onSetHours = (workerId: string, text: string) => {
+    setBanner(null);
+    const row = rows.find((r) => r.worker.worker_id === workerId);
+    if (!row || row.locked) return;
+    setEdits((prev) => ({
+      ...prev,
+      [workerId]: { ticked: true, fraction: row.fraction, hoursText: text },
+    }));
   };
 
   const refreshControl = (
@@ -403,12 +465,19 @@ export default function LabourScreen() {
               disabled={save.isPending}
               onToggle={onToggle}
               onSetFraction={onSetFraction}
+              onSetHours={onSetHours}
             />
           </>
         )}
 
         {overBatchCap ? (
           <Text style={s.warnText}>{t('labour.error_too_many')}</Text>
+        ) : null}
+
+        {diff.hoursInvalid ? (
+          <Text style={s.warnText} testID="labour-hours-invalid">
+            {t('labour.error_hours_invalid')}
+          </Text>
         ) : null}
 
         {me.data && !isAdmin && date < today && rows.length > 0 ? (
@@ -435,10 +504,16 @@ export default function LabourScreen() {
 
         <View style={s.footerRow}>
           <Text style={s.summaryText}>
-            {t('labour.summary_line', {
-              workers: tickedRows.length,
-              days: formatDays(totalDays),
-            })}
+            {totalHours > 0
+              ? t('labour.summary_line_hours', {
+                  workers: tickedRows.length,
+                  days: formatDays(totalDays),
+                  hours: formatDays(totalHours),
+                })
+              : t('labour.summary_line', {
+                  workers: tickedRows.length,
+                  days: formatDays(totalDays),
+                })}
           </Text>
         </View>
 

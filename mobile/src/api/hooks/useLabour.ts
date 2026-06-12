@@ -90,8 +90,12 @@ export type AttendanceSaveInput = {
   date: string;
   /** Existing entries to remove (unticked rows the caller may modify). */
   deletes: { entryId: string; workerId: string }[];
-  /** New/changed ticks. day_fraction is a JSON number (0.5 | 1). */
-  batch: { worker_id: string; day_fraction: number }[];
+  /**
+   * New/changed ticks. day_fraction is a JSON number (0.5 | 1). hours is
+   * optional (v2): a number sends/updates it, explicit null clears it,
+   * omitting the key leaves an existing entry's hours unchanged.
+   */
+  batch: { worker_id: string; day_fraction: number; hours?: number | null }[];
 };
 
 export type AttendanceSaveResult = {

@@ -530,6 +530,10 @@ export interface paths {
         /**
          * List Workers Endpoint
          * @description Roster list (any authenticated caller). Active-only by default.
+         *
+         *     ``hourly_rate`` is ADMIN-ONLY — it is stripped to null for
+         *     contributors so pay rates never reach a non-admin device (the tick
+         *     screen needs names, not rates).
          */
         get: operations["list_workers_endpoint_workers_get"];
         put?: never;
@@ -1535,7 +1539,12 @@ export interface components {
         };
         /**
          * JobDaysRow
-         * @description Per-job day total within a summary range.
+         * @description Per-job totals within a summary range.
+         *
+         *     ``total_days`` is worker-days (sum of day fractions) — the labour
+         *     INPUT. ``days_on_site`` is the distinct count of dates anyone was on
+         *     the job — the job's DURATION. Showing both fixes the misleading
+         *     "4 workers x 1 day = 4 days" reading. v2 also adds hours + cost.
          */
         JobDaysRow: {
             /**
@@ -1547,6 +1556,25 @@ export interface components {
             job_name: string;
             /** Total Days */
             total_days: string;
+            /**
+             * Days On Site
+             * @default 0
+             */
+            days_on_site: number;
+            /** Total Hours */
+            total_hours?: string | null;
+            /** Labour Cost */
+            labour_cost?: string | null;
+            /**
+             * Entries Total
+             * @default 0
+             */
+            entries_total: number;
+            /**
+             * Entries Costed
+             * @default 0
+             */
+            entries_costed: number;
         };
         /**
          * JobPublic
@@ -1725,6 +1753,8 @@ export interface components {
             worker_id: string;
             /** Day Fraction */
             day_fraction: number | string;
+            /** Hours */
+            hours?: number | string | null;
         };
         /**
          * LabourBatchRequest
@@ -1777,6 +1807,8 @@ export interface components {
             work_date: string;
             /** Day Fraction */
             day_fraction: string;
+            /** Hours */
+            hours?: string | null;
             /**
              * Recorded By User Id
              * Format: uuid
@@ -1797,9 +1829,10 @@ export interface components {
          * LabourSummary
          * @description Response of ``GET /labour-summary`` (admin only).
          *
-         *     One payload serves both the fortnight attendance summary (per
-         *     worker) and the per-job labour-days view. ``total_days`` is the
-         *     grand total for the filtered range.
+         *     One payload serves the weekly labour summary (per worker) and the
+         *     per-job labour-cost view. ``total_days`` is the grand worker-day
+         *     total; v2 adds grand ``total_hours`` and ``total_labour_cost`` plus
+         *     the costed/total entry counts for completeness signalling.
          */
         LabourSummary: {
             /** Workers */
@@ -1808,6 +1841,20 @@ export interface components {
             jobs: components["schemas"]["JobDaysRow"][];
             /** Total Days */
             total_days: string;
+            /** Total Hours */
+            total_hours?: string | null;
+            /** Total Labour Cost */
+            total_labour_cost?: string | null;
+            /**
+             * Entries Total
+             * @default 0
+             */
+            entries_total: number;
+            /**
+             * Entries Costed
+             * @default 0
+             */
+            entries_costed: number;
         };
         /**
          * LanguageCode
@@ -2212,10 +2259,18 @@ export interface components {
             display_name: string;
             /** Note */
             note?: string | null;
+            /** Hourly Rate */
+            hourly_rate?: number | string | null;
         };
         /**
          * WorkerDaysRow
-         * @description Per-worker day total within a summary range.
+         * @description Per-worker totals within a summary range.
+         *
+         *     ``total_days`` is worker-days (sum of day fractions) — kept for
+         *     backward compatibility. v2 adds ``total_hours`` and ``labour_cost``
+         *     (sum of ``hours * rate_snapshot``; null when no entry is costable).
+         *     ``entries_total`` vs ``entries_costed`` lets the client flag an
+         *     incomplete cost (some entries missing hours or rate).
          */
         WorkerDaysRow: {
             /**
@@ -2227,10 +2282,27 @@ export interface components {
             display_name: string;
             /** Total Days */
             total_days: string;
+            /** Total Hours */
+            total_hours?: string | null;
+            /** Labour Cost */
+            labour_cost?: string | null;
+            /**
+             * Entries Total
+             * @default 0
+             */
+            entries_total: number;
+            /**
+             * Entries Costed
+             * @default 0
+             */
+            entries_costed: number;
         };
         /**
          * WorkerPublic
          * @description Serialised roster row.
+         *
+         *     ``hourly_rate`` is ADMIN-ONLY: the ``GET /workers`` route nulls it
+         *     for non-admin callers, so a contributor never sees pay rates.
          */
         WorkerPublic: {
             /**
@@ -2244,14 +2316,16 @@ export interface components {
             note: string | null;
             /** Is Active */
             is_active: boolean;
+            /** Hourly Rate */
+            hourly_rate?: string | null;
         };
         /**
          * WorkerUpdate
          * @description Body of ``PATCH /workers/{worker_id}`` (admin only).
          *
          *     PATCH semantics mirror jobs: omitted field = no change; the route
-         *     forwards ``model_dump(exclude_unset=True)``. ``note`` may be set
-         *     to explicit null to clear it.
+         *     forwards ``model_dump(exclude_unset=True)``. ``note`` and
+         *     ``hourly_rate`` may be set to explicit null to clear them.
          */
         WorkerUpdate: {
             /** Display Name */
@@ -2260,6 +2334,8 @@ export interface components {
             note?: string | null;
             /** Is Active */
             is_active?: boolean | null;
+            /** Hourly Rate */
+            hourly_rate?: number | string | null;
         };
     };
     responses: never;

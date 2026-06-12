@@ -1,4 +1,10 @@
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+} from 'react-native';
 import { useTranslation } from 'react-i18next';
 import type { WorkerPublic } from '../api/hooks/useLabour';
 
@@ -22,6 +28,13 @@ export type ChecklistRowState = {
   ticked: boolean;
   /** Effective day fraction (0.5 | 1) — only meaningful while ticked. */
   fraction: number;
+  /**
+   * Raw hours-input text (controlled), only meaningful while ticked.
+   * Optional — empty means no hours recorded (attendance still counts;
+   * labour cost is left incomplete). Hours are NOT sensitive (any auth
+   * may enter them); only rates/cost are admin-only.
+   */
+  hoursText: string;
   /** True when the current user may not modify the existing entry. */
   locked: boolean;
   /** Translated lock copy (name-free); null when not locked. */
@@ -33,11 +46,13 @@ export function WorkerChecklist({
   disabled,
   onToggle,
   onSetFraction,
+  onSetHours,
 }: {
   rows: ChecklistRowState[];
   disabled: boolean;
   onToggle: (workerId: string) => void;
   onSetFraction: (workerId: string, fraction: number) => void;
+  onSetHours: (workerId: string, text: string) => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -83,21 +98,38 @@ export function WorkerChecklist({
               </View>
             </TouchableOpacity>
             {row.ticked ? (
-              <View style={s.pills}>
-                <FractionPill
-                  label={t('labour.full_day')}
-                  active={row.fraction === 1}
-                  disabled={rowDisabled}
-                  onPress={() => onSetFraction(id, 1)}
-                  testID={`fraction-full-${id}`}
-                />
-                <FractionPill
-                  label={t('labour.half_day')}
-                  active={row.fraction === 0.5}
-                  disabled={rowDisabled}
-                  onPress={() => onSetFraction(id, 0.5)}
-                  testID={`fraction-half-${id}`}
-                />
+              <View style={s.controls}>
+                <View style={s.pills}>
+                  <FractionPill
+                    label={t('labour.full_day')}
+                    active={row.fraction === 1}
+                    disabled={rowDisabled}
+                    onPress={() => onSetFraction(id, 1)}
+                    testID={`fraction-full-${id}`}
+                  />
+                  <FractionPill
+                    label={t('labour.half_day')}
+                    active={row.fraction === 0.5}
+                    disabled={rowDisabled}
+                    onPress={() => onSetFraction(id, 0.5)}
+                    testID={`fraction-half-${id}`}
+                  />
+                </View>
+                <View style={s.hoursRow}>
+                  <TextInput
+                    value={row.hoursText}
+                    onChangeText={(text) => onSetHours(id, text)}
+                    editable={!rowDisabled}
+                    keyboardType="decimal-pad"
+                    placeholder={t('labour.hours_placeholder')}
+                    placeholderTextColor="#94a3b8"
+                    style={[s.hoursInput, rowDisabled && s.pillDisabled]}
+                    maxLength={5}
+                    testID={`hours-${id}`}
+                    accessibilityLabel={t('labour.hours_label')}
+                  />
+                  <Text style={s.hoursUnit}>{t('labour.hours_unit')}</Text>
+                </View>
               </View>
             ) : null}
           </View>
@@ -184,6 +216,21 @@ const s = StyleSheet.create({
   },
   note: { color: '#64748b', fontSize: 13, marginTop: 1 },
   lockText: { color: '#92400e', fontSize: 12, marginTop: 2 },
+  controls: { alignItems: 'flex-end', gap: 6 },
+  hoursRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  hoursInput: {
+    width: 56,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    fontSize: 14,
+    color: '#0f172a',
+    backgroundColor: '#ffffff',
+    textAlign: 'right',
+  },
+  hoursUnit: { color: '#64748b', fontSize: 13 },
   pills: { flexDirection: 'row', gap: 6 },
   pill: {
     paddingHorizontal: 12,

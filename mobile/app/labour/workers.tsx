@@ -26,6 +26,7 @@ import {
   type WorkerUpdateInput,
 } from '../../src/api/hooks/useLabour';
 import { useMe } from '../../src/api/hooks/useAuth';
+import { formatMoney } from '../../src/util/format';
 
 /**
  * L-B2: worker roster management (admin-only).
@@ -52,6 +53,16 @@ type Editing =
   | { mode: 'edit'; worker: WorkerPublic }
   | null;
 
+/** Parse the hourly-rate input. Empty = no rate (valid, null). Otherwise
+ * a finite number >= 0 (mirrors the backend hourly_rate CHECK). */
+function parseRate(text: string): { value: number | null; valid: boolean } {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return { value: null, valid: true };
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n < 0) return { value: null, valid: false };
+  return { value: n, valid: true };
+}
+
 export default function WorkersScreen() {
   const router = useRouter();
   const { t } = useTranslation();
@@ -66,6 +77,9 @@ export default function WorkersScreen() {
   const [editing, setEditing] = useState<Editing>(null);
   const [name, setName] = useState('');
   const [note, setNote] = useState('');
+  // Admin-only hourly rate (this whole screen is admin-gated; the
+  // backend returns hourly_rate only to admins). Raw input text.
+  const [rate, setRate] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -93,6 +107,7 @@ export default function WorkersScreen() {
     setEditing({ mode: 'add' });
     setName('');
     setNote('');
+    setRate('');
     setFormError(null);
   };
 
@@ -100,6 +115,7 @@ export default function WorkersScreen() {
     setEditing({ mode: 'edit', worker: w });
     setName(w.display_name);
     setNote(w.note ?? '');
+    setRate(w.hourly_rate != null ? String(Number(w.hourly_rate)) : '');
     setFormError(null);
   };
 
@@ -130,6 +146,12 @@ export default function WorkersScreen() {
     if (trimmed.length === 0) return;
     setFormError(null);
 
+    const parsedRate = parseRate(rate);
+    if (!parsedRate.valid) {
+      setFormError(t('labour.rate_invalid'));
+      return;
+    }
+
     // Soft duplicate warning: server allows duplicates by design; the
     // confirm only fires when the (changed) name case-insensitively
     // matches another roster row, including deactivated ones.
@@ -149,6 +171,7 @@ export default function WorkersScreen() {
           await createWorker.mutateAsync({
             display_name: trimmed,
             note: note.trim().length > 0 ? note.trim() : null,
+            hourly_rate: parsedRate.value,
           });
         } else {
           // Changed-fields-only PATCH: the backend applies only the
@@ -157,12 +180,20 @@ export default function WorkersScreen() {
           // note: explicit null CLEARS a previously set note — an
           // emptied field is an intentional clear.
           const normNote = note.trim().length > 0 ? note.trim() : null;
+          const normRate = parsedRate.value;
+          const currentRate =
+            editing.worker.hourly_rate != null
+              ? Number(editing.worker.hourly_rate)
+              : null;
           const patch: WorkerUpdateInput = {};
           if (trimmed !== editing.worker.display_name) {
             patch.display_name = trimmed;
           }
           if (normNote !== (editing.worker.note ?? null)) {
             patch.note = normNote;
+          }
+          if (normRate !== currentRate) {
+            patch.hourly_rate = normRate;
           }
           if (Object.keys(patch).length === 0) {
             closeForm();
@@ -261,6 +292,18 @@ export default function WorkersScreen() {
           style={s.input}
           testID="worker-note-input"
           accessibilityLabel={t('labour.field_note')}
+        />
+        <TextInput
+          value={rate}
+          onChangeText={setRate}
+          placeholder={t('labour.field_rate')}
+          placeholderTextColor="#94a3b8"
+          editable={!busy}
+          keyboardType="decimal-pad"
+          maxLength={10}
+          style={s.input}
+          testID="worker-rate-input"
+          accessibilityLabel={t('labour.field_rate')}
         />
         {formError ? (
           <View style={s.errorBanner} testID="worker-form-error">
@@ -436,13 +479,22 @@ export default function WorkersScreen() {
                     </Text>
                   ) : null}
                 </View>
-                {!item.is_active ? (
-                  <View style={s.inactivePill}>
-                    <Text style={s.inactiveText}>
-                      {t('labour.deactivated_badge')}
+                <View style={s.rowRight}>
+                  {item.hourly_rate != null ? (
+                    <Text style={s.rowRate} testID={`rate-${item.worker_id}`}>
+                      {t('labour.rate_per_hour', {
+                        amount: formatMoney(item.hourly_rate),
+                      })}
                     </Text>
-                  </View>
-                ) : null}
+                  ) : null}
+                  {!item.is_active ? (
+                    <View style={s.inactivePill}>
+                      <Text style={s.inactiveText}>
+                        {t('labour.deactivated_badge')}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
               </Pressable>
             )}
             style={s.list}
@@ -629,6 +681,13 @@ const s = StyleSheet.create({
   rowMain: { flex: 1 },
   rowName: { fontSize: 16, fontWeight: '500', color: '#0f172a' },
   rowNote: { fontSize: 13, color: '#64748b', marginTop: 2 },
+  rowRight: { alignItems: 'flex-end', gap: 4, marginLeft: 8 },
+  rowRate: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#0f172a',
+    fontVariant: ['tabular-nums'],
+  },
   inactivePill: {
     paddingHorizontal: 8,
     paddingVertical: 2,

@@ -19,32 +19,41 @@ import { useJobs } from '../../src/api/hooks/useJobs';
 import { useMe } from '../../src/api/hooks/useAuth';
 import { OptionPickerModal } from '../../src/components/OptionPickerModal';
 import { dateToISO, formatDateAU, todayISO } from '../../src/util/dates';
-import { formatDays } from '../../src/util/format';
+import { formatDays, formatMoney } from '../../src/util/format';
 
 /**
- * L-B2: attendance summary (admin-only) — labour DAYS, never pay.
+ * L-C2: weekly labour summary (admin-only) — labour cost CAPTURE,
+ * never payroll.
  *
  * Route: ``/labour/summary``, entered via the admin-only "Summary"
  * header button on the Labour tab. GET /labour-summary is
  * require_admin on the backend; the screen gates on /auth/me (fails
  * closed) and maps a server 403 to the forbidden state as backstop.
  *
- * Range model: a rolling window of WINDOW_DAYS (14) ending at
- * ``end`` (default device-local today). Chevrons step the window by
- * 14 days; "Last 14 days" resets. Deliberately NOT anchored to any
- * pay cycle — this is an attendance/days view. Totals are
- * server-computed; the client formats Decimal-strings only.
+ * Range model: a WEEK (Monday–Sunday) containing ``weekStart``;
+ * chevrons step one week; "This week" resets. Per worker: days, hours,
+ * labour cost. Per job: days on site (distinct dates = duration) AND
+ * worker-days (labour input) + hours + cost. Totals are server-
+ * computed; the client only FORMATS Decimal-strings (never sums) and
+ * shows costs only where complete — a missing rate/hours leaves the
+ * value out rather than guessing.
  *
- * Job filter: all jobs INCLUDING archived (history survives
- * archiving by design).
+ * Job filter: all jobs INCLUDING archived (history survives archiving).
  */
-
-const WINDOW_DAYS = 14;
 
 function shiftISO(iso: string, days: number): string {
   const [y, m, d] = iso.split('-').map(Number);
   const dt = new Date(y, m - 1, d);
   dt.setDate(dt.getDate() + days);
+  return dateToISO(dt);
+}
+
+/** Monday of the week containing the given ISO date (local). */
+function mondayOf(iso: string): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  const dow = dt.getDay(); // 0=Sun..6=Sat
+  dt.setDate(dt.getDate() - ((dow + 6) % 7));
   return dateToISO(dt);
 }
 
@@ -55,12 +64,13 @@ export default function LabourSummaryScreen() {
   const jobs = useJobs();
 
   const today = todayISO();
-  const [end, setEnd] = useState<string>(today);
+  const thisMonday = mondayOf(today);
+  const [weekStart, setWeekStart] = useState<string>(thisMonday);
   const [jobId, setJobId] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
 
-  const from = shiftISO(end, -(WINDOW_DAYS - 1));
-  const summary = useLabourSummary(from, end, jobId);
+  const weekEnd = shiftISO(weekStart, 6);
+  const summary = useLabourSummary(weekStart, weekEnd, jobId);
 
   const isAdmin = me.data?.role === 'admin';
   const isForbidden =
@@ -68,7 +78,7 @@ export default function LabourSummaryScreen() {
     axios.isAxiosError(summary.error) &&
     summary.error.response?.status === 403;
 
-  const atToday = end >= today;
+  const atThisWeek = weekStart >= thisMonday;
   const selectedJob =
     jobId === null
       ? null
@@ -153,7 +163,7 @@ export default function LabourSummaryScreen() {
         >
           <View style={s.rangeRow}>
             <TouchableOpacity
-              onPress={() => setEnd(shiftISO(end, -WINDOW_DAYS))}
+              onPress={() => setWeekStart((prev) => shiftISO(prev, -7))}
               style={s.chevronBtn}
               accessibilityRole="button"
               accessibilityLabel={t('labour.range_earlier')}
@@ -162,21 +172,21 @@ export default function LabourSummaryScreen() {
               <Text style={s.chevronText}>{'‹'}</Text>
             </TouchableOpacity>
             <Text style={s.rangeLabel} testID="summary-range">
-              {formatDateAU(from)} – {formatDateAU(end)}
+              {formatDateAU(weekStart)} – {formatDateAU(weekEnd)}
             </Text>
             <TouchableOpacity
               onPress={() =>
-                // Clamp to today — across a midnight rollover a stale
-                // `end` could otherwise step the window into the
-                // future (label showing dates with no possible data).
-                setEnd((prev) => {
-                  const next = shiftISO(prev, WINDOW_DAYS);
-                  const t0 = todayISO();
-                  return next > t0 ? t0 : next;
+                // Clamp so we never step into a future week (a stale
+                // weekStart across a midnight/week rollover otherwise
+                // could land on a week with no possible data).
+                setWeekStart((prev) => {
+                  const next = shiftISO(prev, 7);
+                  const cur = mondayOf(todayISO());
+                  return next > cur ? cur : next;
                 })
               }
-              disabled={atToday}
-              style={[s.chevronBtn, atToday && s.chevronDisabled]}
+              disabled={atThisWeek}
+              style={[s.chevronBtn, atThisWeek && s.chevronDisabled]}
               accessibilityRole="button"
               accessibilityLabel={t('labour.range_later')}
               testID="summary-next"
@@ -186,14 +196,16 @@ export default function LabourSummaryScreen() {
           </View>
 
           <View style={s.filterRow}>
-            {!atToday ? (
+            {!atThisWeek ? (
               <TouchableOpacity
-                onPress={() => setEnd(today)}
+                onPress={() => setWeekStart(thisMonday)}
                 style={s.resetPill}
                 accessibilityRole="button"
                 testID="summary-reset-range"
               >
-                <Text style={s.resetPillText}>{t('labour.range_last14')}</Text>
+                <Text style={s.resetPillText}>
+                  {t('labour.range_this_week')}
+                </Text>
               </TouchableOpacity>
             ) : null}
             <TouchableOpacity
@@ -229,12 +241,36 @@ export default function LabourSummaryScreen() {
           ) : summary.data ? (
             <>
               <View style={s.totalCard} testID="summary-total">
-                <Text style={s.totalLabel}>{t('labour.total_days')}</Text>
-                <Text style={s.totalValue}>
-                  {t('labour.days_value', {
-                    days: formatDays(summary.data.total_days),
-                  })}
-                </Text>
+                <View style={s.totalRow}>
+                  <Text style={s.totalLabel}>{t('labour.total_days')}</Text>
+                  <Text style={s.totalValue}>
+                    {t('labour.days_value', {
+                      days: formatDays(summary.data.total_days),
+                    })}
+                  </Text>
+                </View>
+                <View style={s.totalRow}>
+                  <Text style={s.totalLabel}>{t('labour.total_hours')}</Text>
+                  <Text style={s.totalValue}>
+                    {t('labour.hours_value', {
+                      hours: formatDays(summary.data.total_hours),
+                    })}
+                  </Text>
+                </View>
+                <View style={s.totalRow}>
+                  <Text style={s.totalLabel}>{t('labour.total_cost')}</Text>
+                  <Text style={s.totalValue} testID="summary-total-cost">
+                    {formatMoney(summary.data.total_labour_cost)}
+                  </Text>
+                </View>
+                {summary.data.entries_costed < summary.data.entries_total ? (
+                  <Text style={s.incompleteNote} testID="summary-incomplete">
+                    {t('labour.cost_incomplete', {
+                      costed: summary.data.entries_costed,
+                      total: summary.data.entries_total,
+                    })}
+                  </Text>
+                ) : null}
               </View>
 
               {empty ? (
@@ -253,11 +289,25 @@ export default function LabourSummaryScreen() {
                       <Text style={s.totalsName} numberOfLines={1}>
                         {w.display_name}
                       </Text>
-                      <Text style={s.totalsDays}>
-                        {t('labour.days_value', {
-                          days: formatDays(w.total_days),
-                        })}
-                      </Text>
+                      <View style={s.totalsMetrics}>
+                        <Text style={s.totalsDays}>
+                          {t('labour.days_value', {
+                            days: formatDays(w.total_days),
+                          })}
+                        </Text>
+                        {w.total_hours != null ? (
+                          <Text style={s.totalsSub}>
+                            {t('labour.hours_value', {
+                              hours: formatDays(w.total_hours),
+                            })}
+                          </Text>
+                        ) : null}
+                        {w.labour_cost != null ? (
+                          <Text style={s.totalsCost}>
+                            {formatMoney(w.labour_cost)}
+                          </Text>
+                        ) : null}
+                      </View>
                     </View>
                   ))}
 
@@ -271,11 +321,30 @@ export default function LabourSummaryScreen() {
                       <Text style={s.totalsName} numberOfLines={1}>
                         {j.job_name}
                       </Text>
-                      <Text style={s.totalsDays}>
-                        {t('labour.days_value', {
-                          days: formatDays(j.total_days),
-                        })}
-                      </Text>
+                      <View style={s.totalsMetrics}>
+                        <Text style={s.totalsDays}>
+                          {t('labour.days_on_site_value', {
+                            days: j.days_on_site,
+                          })}
+                        </Text>
+                        <Text style={s.totalsSub}>
+                          {t('labour.worker_days_value', {
+                            days: formatDays(j.total_days),
+                          })}
+                        </Text>
+                        {j.total_hours != null ? (
+                          <Text style={s.totalsSub}>
+                            {t('labour.hours_value', {
+                              hours: formatDays(j.total_hours),
+                            })}
+                          </Text>
+                        ) : null}
+                        {j.labour_cost != null ? (
+                          <Text style={s.totalsCost}>
+                            {formatMoney(j.labour_cost)}
+                          </Text>
+                        ) : null}
+                      </View>
                     </View>
                   ))}
                 </>
@@ -385,12 +454,16 @@ const s = StyleSheet.create({
     borderColor: '#e2e8f0',
     borderRadius: 8,
     padding: 16,
+    gap: 8,
+    backgroundColor: '#f8fafc',
+  },
+  totalRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#f8fafc',
   },
   totalLabel: { color: '#475569', fontSize: 15, fontWeight: '600' },
+  incompleteNote: { color: '#92400e', fontSize: 12, marginTop: 2 },
   totalValue: {
     color: '#0f172a',
     fontSize: 20,
@@ -406,12 +479,37 @@ const s = StyleSheet.create({
   },
   totalsRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
     paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#f1f5f9',
   },
-  totalsName: { color: '#0f172a', fontSize: 15, flexShrink: 1, marginRight: 12 },
-  totalsDays: { color: '#0f172a', fontSize: 15, fontVariant: ['tabular-nums'] },
+  totalsName: {
+    color: '#0f172a',
+    fontSize: 15,
+    flexShrink: 1,
+    marginRight: 12,
+    paddingTop: 1,
+  },
+  totalsMetrics: { alignItems: 'flex-end' },
+  totalsDays: {
+    color: '#0f172a',
+    fontSize: 15,
+    fontWeight: '500',
+    fontVariant: ['tabular-nums'],
+  },
+  totalsSub: {
+    color: '#64748b',
+    fontSize: 13,
+    fontVariant: ['tabular-nums'],
+    marginTop: 1,
+  },
+  totalsCost: {
+    color: '#0f172a',
+    fontSize: 14,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+    marginTop: 1,
+  },
 });
