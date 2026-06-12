@@ -28,7 +28,7 @@ Core rules enforced here (operator decisions 1-10, L-A plan):
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -106,6 +106,64 @@ def _can_modify(user: User, entry: LabourEntry) -> bool:
         entry.recorded_by_user_id == user.user_id
         and entry.work_date >= date.today()
     )
+
+
+# ---------------------------------------------------------------------------
+# Hours-from-times derivation (L-C3)
+# ---------------------------------------------------------------------------
+
+# Two-decimal quantum matching labour_entries.hours NUMERIC(4,2).
+_HOURS_QUANTUM = Decimal("0.01")
+_SECONDS_PER_HOUR = Decimal("3600")
+
+
+def _hours_between(start: time, end: time) -> Decimal:
+    """Derive labour hours from a same-day ``start``->``end`` span.
+
+    The FULL span — NO break deduction (operator decision). Same-day
+    only: these are TIME-of-day values, not timestamps, so the caller
+    must ensure ``end > start`` (overnight is out of scope). Quantised to
+    two decimals to fit ``labour_entries.hours`` NUMERIC(4,2).
+    """
+    start_secs = start.hour * 3600 + start.minute * 60 + start.second
+    end_secs = end.hour * 3600 + end.minute * 60 + end.second
+    return (Decimal(end_secs - start_secs) / _SECONDS_PER_HOUR).quantize(
+        _HOURS_QUANTUM
+    )
+
+
+def _derive_times(item) -> tuple[Decimal, time, time] | None:
+    """Resolve a batch item's time range into derived hours, or ``None``.
+
+    Three L-C3 cases (operator-locked):
+
+    * BOTH times present -> returns ``(hours, start, end)`` with hours
+      DERIVED from ``end - start``; any client-sent ``hours`` is IGNORED
+      so the range is the single source of truth. ``end`` must be after
+      ``start`` (same-day) or it raises.
+    * EXACTLY ONE present -> raises (the schema guards this too; the
+      service re-checks so the rule holds even on a direct call).
+    * NEITHER present -> returns ``None`` so the caller keeps the
+      unchanged hours-only path.
+    """
+    start = item.start_time
+    end = item.end_time
+    if start is None and end is None:
+        return None
+    if start is None or end is None:
+        raise LabourValidationError(
+            "Provide both a start time and an end time, or neither"
+        )
+    if end <= start:
+        raise LabourValidationError(
+            "End time must be after start time on the same day"
+        )
+    hours = _hours_between(start, end)
+    if hours <= 0:
+        raise LabourValidationError(
+            "The time range is too short to record any hours"
+        )
+    return hours, start, end
 
 
 # ---------------------------------------------------------------------------
@@ -258,25 +316,56 @@ async def batch_upsert_entries(
                 "cannot exceed 1.0"
             )
 
+        # L-C3: if a start/end range is supplied, hours is DERIVED from it
+        # (and the times stored); otherwise None and the hours-only path
+        # below applies. Raises on a lone time or end<=start.
+        derived = _derive_times(item)
+
         if existing_here is not None:
             existing_here.day_fraction = fraction
-            # Update hours only when the client explicitly sent the field
-            # (declarative: a v2 client always sends it, so null clears it;
-            # a v1 client never sends it, so its existing hours are
-            # preserved rather than wiped). rate_snapshot is write-once —
-            # never modified on edit, so a later rate change can't rewrite
-            # historical labour cost.
-            if "hours" in item.model_fields_set:
-                existing_here.hours = item.hours
+            if derived is not None:
+                # Time range is the single source of truth: store the
+                # times and overwrite hours with the derived span,
+                # ignoring any client-sent hours.
+                (
+                    existing_here.hours,
+                    existing_here.start_time,
+                    existing_here.end_time,
+                ) = derived
+            else:
+                # No time range supplied — keep the L-C1 hours-only
+                # semantics. Update hours only when the client explicitly
+                # sent the field (a v2 client always sends it, so null
+                # clears it; a v1 client never sends it, so existing hours
+                # are preserved). rate_snapshot is write-once — never
+                # modified on edit, so a later rate change can't rewrite
+                # historical labour cost.
+                if "hours" in item.model_fields_set:
+                    existing_here.hours = item.hours
+                # Only an explicit null on the time fields clears stored
+                # times; a client that omits them (v1 shape) leaves them
+                # untouched.
+                if (
+                    "start_time" in item.model_fields_set
+                    or "end_time" in item.model_fields_set
+                ):
+                    existing_here.start_time = None
+                    existing_here.end_time = None
             result.append(existing_here)
         else:
+            if derived is not None:
+                entry_hours, start_time_val, end_time_val = derived
+            else:
+                entry_hours, start_time_val, end_time_val = item.hours, None, None
             entry = LabourEntry(
                 entry_id=uuid.uuid4(),
                 worker_id=worker_id,
                 job_id=job_id,
                 work_date=work_date,
                 day_fraction=fraction,
-                hours=item.hours,
+                hours=entry_hours,
+                start_time=start_time_val,
+                end_time=end_time_val,
                 # Snapshot the worker's CURRENT rate at create time (may be
                 # None). Write-once: never refreshed afterwards.
                 rate_snapshot=worker.hourly_rate,

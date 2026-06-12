@@ -12,10 +12,10 @@ appears in a public response.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _ALLOWED_FRACTIONS = (Decimal("0.5"), Decimal("1.0"))
 _MAX_HOURS = Decimal("24")
@@ -69,7 +69,16 @@ class LabourBatchItem(BaseModel):
     day_fraction: Decimal
     # v2: optional hours for this entry. None = no hours recorded (the
     # entry still counts for attendance; its cost is left incomplete).
+    # v2.1 (L-C3): when start_time + end_time are both supplied the
+    # service DERIVES hours from them and ignores any client ``hours``.
     hours: Decimal | None = None
+    # v2.1 (L-C3): optional start/end TIME-OF-DAY. Both-or-neither (a lone
+    # time is rejected below); when both are present the service derives
+    # hours as the same-day span. The end-after-start ordering is enforced
+    # in the service so a single rule owns it (with the DB CHECK as
+    # backstop); this schema only guards the both-or-neither shape.
+    start_time: time | None = None
+    end_time: time | None = None
 
     @field_validator("day_fraction")
     @classmethod
@@ -84,6 +93,14 @@ class LabourBatchItem(BaseModel):
         if v is not None and not (Decimal("0") < v <= _MAX_HOURS):
             raise ValueError("hours must be greater than 0 and at most 24")
         return v
+
+    @model_validator(mode="after")
+    def _times_both_or_neither(self) -> "LabourBatchItem":
+        if (self.start_time is None) != (self.end_time is None):
+            raise ValueError(
+                "Provide both a start time and an end time, or neither"
+            )
+        return self
 
 
 class LabourBatchRequest(BaseModel):
@@ -115,6 +132,11 @@ class LabourEntryPublic(BaseModel):
     # deliberately NOT here — it stays server-side; cost surfaces only in
     # the admin-only summary.
     hours: Decimal | None = None
+    # v2.1 (L-C3): the start/end times the hours were derived from (null
+    # for hours-only or attendance-only entries). Exposed so the client
+    # can redisplay and re-edit the range.
+    start_time: time | None = None
+    end_time: time | None = None
     recorded_by_user_id: uuid.UUID
     created_at: datetime
     updated_at: datetime

@@ -923,3 +923,193 @@ async def test_summary_cost_null_when_nothing_costable(
     assert body["workers"][0]["labour_cost"] is None
     assert body["workers"][0]["entries_costed"] == 0
     assert body["total_labour_cost"] is None
+
+
+# ---------------------------------------------------------------------------
+# Labour v2.1 (slice L-C3): start/end time range -> derived hours
+# ---------------------------------------------------------------------------
+
+
+def _batch(job, *, start=None, end=None, hours=None, fraction="1.0", worker=None):
+    """Build a one-row batch payload, omitting unset optional fields."""
+    entry: dict = {"worker_id": str(worker.worker_id), "day_fraction": fraction}
+    if hours is not None:
+        entry["hours"] = hours
+    if start is not None:
+        entry["start_time"] = start
+    if end is not None:
+        entry["end_time"] = end
+    return {
+        "job_id": str(job.job_id),
+        "work_date": _today().isoformat(),
+        "entries": [entry],
+    }
+
+
+@pytest.mark.asyncio
+async def test_times_derive_hours_and_appear_in_response(
+    client, db_session, seeded_admin, admin_token
+):
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    w = await _mk_worker(db_session, seeded_admin, name="Sam", hourly_rate="40.00")
+
+    r = await client.post(
+        "/labour-entries/batch",
+        headers=_auth(admin_token),
+        json=_batch(job, worker=w, start="07:30:00", end="17:00:00"),
+    )
+    assert r.status_code == 201, r.text
+    row = r.json()[0]
+    # 07:30 -> 17:00 is the full 9.5h span (no break deduction).
+    assert Decimal(row["hours"]) == Decimal("9.5")
+    assert row["start_time"] == "07:30:00"
+    assert row["end_time"] == "17:00:00"
+
+    entry = await _get_entry(db_session, w)
+    assert entry.hours == Decimal("9.5")
+    assert entry.start_time == _datetime.time(7, 30)
+    assert entry.end_time == _datetime.time(17, 0)
+    # Snapshot still captured at create, exactly as the hours-only path.
+    assert entry.rate_snapshot == Decimal("40")
+
+
+@pytest.mark.asyncio
+async def test_minute_only_times_parse(
+    client, db_session, seeded_admin, admin_token
+):
+    # The mobile sends HH:MM (typed) — confirm it parses and derives.
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    w = await _mk_worker(db_session, seeded_admin, name="Sam")
+    r = await client.post(
+        "/labour-entries/batch",
+        headers=_auth(admin_token),
+        json=_batch(job, worker=w, start="08:00", end="12:15"),
+    )
+    assert r.status_code == 201, r.text
+    assert Decimal(r.json()[0]["hours"]) == Decimal("4.25")
+
+
+@pytest.mark.asyncio
+async def test_times_ignore_client_sent_hours(
+    client, db_session, seeded_admin, admin_token
+):
+    # When both times are present the range is the single source of truth:
+    # a disagreeing client ``hours`` is ignored, not stored.
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    w = await _mk_worker(db_session, seeded_admin, name="Sam")
+    r = await client.post(
+        "/labour-entries/batch",
+        headers=_auth(admin_token),
+        json=_batch(job, worker=w, start="08:00:00", end="16:00:00", hours="3"),
+    )
+    assert r.status_code == 201, r.text
+    assert Decimal(r.json()[0]["hours"]) == Decimal("8")  # derived, not 3
+    entry = await _get_entry(db_session, w)
+    assert entry.hours == Decimal("8")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("start,end", [("08:00:00", None), (None, "16:00:00")])
+async def test_lone_time_rejected_422(
+    client, db_session, seeded_admin, admin_token, start, end
+):
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    w = await _mk_worker(db_session, seeded_admin, name="Sam")
+    r = await client.post(
+        "/labour-entries/batch",
+        headers=_auth(admin_token),
+        json=_batch(job, worker=w, start=start, end=end),
+    )
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("start,end", [("17:00:00", "09:00:00"), ("09:00:00", "09:00:00")])
+async def test_end_not_after_start_rejected_422(
+    client, db_session, seeded_admin, admin_token, start, end
+):
+    # Same-day only: end must be strictly after start (overnight and
+    # zero-length spans are out of scope).
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    w = await _mk_worker(db_session, seeded_admin, name="Sam")
+    r = await client.post(
+        "/labour-entries/batch",
+        headers=_auth(admin_token),
+        json=_batch(job, worker=w, start=start, end=end),
+    )
+    assert r.status_code == 422, r.text
+    assert "after start" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_hours_only_path_unchanged_no_times(
+    client, db_session, seeded_admin, admin_token
+):
+    # Backward compatibility: a payload with hours and no times behaves
+    # exactly as L-C1 — hours stored, times null.
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    w = await _mk_worker(db_session, seeded_admin, name="Sam")
+    r = await client.post(
+        "/labour-entries/batch",
+        headers=_auth(admin_token),
+        json=_batch(job, worker=w, hours="8"),
+    )
+    assert r.status_code == 201, r.text
+    row = r.json()[0]
+    assert Decimal(row["hours"]) == Decimal("8")
+    assert row["start_time"] is None
+    assert row["end_time"] is None
+    entry = await _get_entry(db_session, w)
+    assert entry.start_time is None
+    assert entry.end_time is None
+
+
+@pytest.mark.asyncio
+async def test_update_with_times_overwrites_hours(
+    client, db_session, seeded_admin, admin_token
+):
+    # Create hours-only, then re-save the same entry with a time range:
+    # the derived span overwrites the manual hours and the times persist.
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    w = await _mk_worker(db_session, seeded_admin, name="Sam")
+    await client.post(
+        "/labour-entries/batch",
+        headers=_auth(admin_token),
+        json=_batch(job, worker=w, hours="5"),
+    )
+    r = await client.post(
+        "/labour-entries/batch",
+        headers=_auth(admin_token),
+        json=_batch(job, worker=w, start="08:00:00", end="16:00:00"),
+    )
+    assert r.status_code == 201, r.text
+    entry = await _get_entry(db_session, w)
+    assert entry.hours == Decimal("8")  # derived span, not the old 5
+    assert entry.start_time == _datetime.time(8, 0)
+    assert entry.end_time == _datetime.time(16, 0)
+
+
+@pytest.mark.asyncio
+async def test_update_omitting_times_preserves_them(
+    client, db_session, seeded_admin, admin_token
+):
+    # A v1-shaped re-save (day_fraction only, no hours, no times) must
+    # leave an existing range untouched — never silently wipe it.
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    w = await _mk_worker(db_session, seeded_admin, name="Sam")
+    await client.post(
+        "/labour-entries/batch",
+        headers=_auth(admin_token),
+        json=_batch(job, worker=w, start="08:00:00", end="16:00:00"),
+    )
+    r = await client.post(
+        "/labour-entries/batch",
+        headers=_auth(admin_token),
+        json=_batch(job, worker=w, fraction="0.5"),
+    )
+    assert r.status_code == 201, r.text
+    entry = await _get_entry(db_session, w)
+    assert entry.day_fraction == Decimal("0.5")
+    assert entry.hours == Decimal("8")  # preserved
+    assert entry.start_time == _datetime.time(8, 0)  # preserved
+    assert entry.end_time == _datetime.time(16, 0)

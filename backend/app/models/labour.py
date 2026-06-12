@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date as date_type
+from datetime import time as time_type
 from decimal import Decimal
 
 from sqlalchemy import (
@@ -46,6 +47,7 @@ from sqlalchemy import (
     Index,
     Numeric,
     String,
+    Time,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -114,6 +116,15 @@ class LabourEntry(Base, TimestampMixin):
     rate_snapshot: Mapped[Decimal | None] = mapped_column(
         Numeric(8, 2), nullable=True
     )
+    # Labour v2.1 (slice L-C3): optional start/end TIME-OF-DAY for this
+    # entry. When BOTH are set the service DERIVES ``hours`` as the full
+    # span (end - start, no break deduction) — the time range is then the
+    # single source of truth and any client-sent ``hours`` is ignored.
+    # SAME-DAY ONLY: the CHECK requires start < end; these are TIME values,
+    # not timestamps, so overnight spans are out of scope. Both-or-neither
+    # is enforced in the schema/service; a lone time is rejected.
+    start_time: Mapped[time_type | None] = mapped_column(Time, nullable=True)
+    end_time: Mapped[time_type | None] = mapped_column(Time, nullable=True)
     recorded_by_user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False
     )
@@ -136,6 +147,14 @@ class LabourEntry(Base, TimestampMixin):
         CheckConstraint(
             "rate_snapshot >= 0",
             name="ck_labour_entries_rate_snapshot",
+        ),
+        # L-C3: same-day ordering backstop. Either time may be null
+        # (hours-only entries), but when both are present start must
+        # precede end. The service rejects this earlier with a 422; this
+        # CHECK is the DB-level defence against any other write path.
+        CheckConstraint(
+            "start_time IS NULL OR end_time IS NULL OR start_time < end_time",
+            name="ck_labour_entries_time_order",
         ),
         # Per-job history / day totals.
         Index("ix_labour_entries_job_date", "job_id", "work_date"),
