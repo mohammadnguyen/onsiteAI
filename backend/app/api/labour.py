@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.deps import get_current_user, require_admin
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.labour import (
     LabourBatchRequest,
     LabourEntryPublic,
@@ -57,9 +57,21 @@ async def list_workers_endpoint(
     _user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[WorkerPublic]:
-    """Roster list (any authenticated caller). Active-only by default."""
+    """Roster list (any authenticated caller). Active-only by default.
+
+    ``hourly_rate`` is ADMIN-ONLY — it is stripped to null for
+    contributors so pay rates never reach a non-admin device (the tick
+    screen needs names, not rates).
+    """
     rows = await svc.list_workers(db, include_inactive=include_inactive)
-    return [WorkerPublic.model_validate(w) for w in rows]
+    is_admin = _user.role == UserRole.admin
+    result: list[WorkerPublic] = []
+    for w in rows:
+        pub = WorkerPublic.model_validate(w)
+        if not is_admin:
+            pub.hourly_rate = None
+        result.append(pub)
+    return result
 
 
 @router.post(
@@ -74,7 +86,11 @@ async def create_worker_endpoint(
 ) -> WorkerPublic:
     """Add a worker to the roster (admin only). Duplicate names allowed."""
     worker = await svc.create_worker(
-        db, created_by=admin, display_name=body.display_name, note=body.note
+        db,
+        created_by=admin,
+        display_name=body.display_name,
+        note=body.note,
+        hourly_rate=body.hourly_rate,
     )
     return WorkerPublic.model_validate(worker)
 
@@ -192,7 +208,7 @@ async def labour_summary_endpoint(
 ) -> LabourSummary:
     """Fortnight attendance summary source (admin only): per-worker and
     per-job day totals for the filtered range."""
-    workers, jobs, total = await svc.summarize(
+    summary = await svc.summarize(
         db, from_date=from_date, to_date=to_date, job_id=job_id
     )
-    return LabourSummary(workers=workers, jobs=jobs, total_days=total)
+    return LabourSummary(**summary)

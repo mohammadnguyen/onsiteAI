@@ -53,11 +53,13 @@ async def _mk_worker(
     name: str,
     is_active: bool = True,
     worker_id: uuid.UUID | None = None,
+    hourly_rate: str | None = None,
 ) -> Worker:
     worker = Worker(
         worker_id=worker_id or uuid.uuid4(),
         display_name=name,
         is_active=is_active,
+        hourly_rate=Decimal(hourly_rate) if hourly_rate is not None else None,
         created_by=admin.user_id,
     )
     db_session.add(worker)
@@ -73,6 +75,8 @@ async def _mk_entry(
     recorded_by,
     work_date=None,
     fraction: str = "1.0",
+    hours: str | None = None,
+    rate_snapshot: str | None = None,
 ) -> LabourEntry:
     entry = LabourEntry(
         entry_id=uuid.uuid4(),
@@ -80,6 +84,8 @@ async def _mk_entry(
         job_id=job.job_id,
         work_date=work_date or _today(),
         day_fraction=Decimal(fraction),
+        hours=Decimal(hours) if hours is not None else None,
+        rate_snapshot=Decimal(rate_snapshot) if rate_snapshot is not None else None,
         recorded_by_user_id=recorded_by.user_id,
     )
     db_session.add(entry)
@@ -674,3 +680,246 @@ async def test_delete_empty_job_blocked_by_labour_entries(
     assert r.status_code == 409
     assert "labour" in r.json()["detail"].lower()
     assert "Archive it instead" in r.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Labour v2 (slice L-C1): rates, hours, labour cost, days-on-site
+# ---------------------------------------------------------------------------
+
+
+async def _get_entry(db_session, worker) -> LabourEntry:
+    return (
+        await db_session.execute(
+            select(LabourEntry).where(LabourEntry.worker_id == worker.worker_id)
+        )
+    ).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_worker_create_with_rate_admin_sees_it(client, admin_token):
+    r = await client.post(
+        "/workers",
+        headers=_auth(admin_token),
+        json={"display_name": "Sam", "hourly_rate": "40.00"},
+    )
+    assert r.status_code == 201, r.text
+    assert Decimal(r.json()["hourly_rate"]) == Decimal("40")
+
+
+@pytest.mark.asyncio
+async def test_worker_rate_hidden_from_contributor(
+    client, db_session, seeded_admin, admin_token, contributor_token
+):
+    await _mk_worker(db_session, seeded_admin, name="Sam", hourly_rate="40.00")
+
+    as_admin = await client.get("/workers", headers=_auth(admin_token))
+    assert Decimal(as_admin.json()[0]["hourly_rate"]) == Decimal("40")
+
+    as_contrib = await client.get("/workers", headers=_auth(contributor_token))
+    assert as_contrib.json()[0]["hourly_rate"] is None
+
+
+@pytest.mark.asyncio
+async def test_worker_patch_rate_set_then_clear(
+    client, db_session, seeded_admin, admin_token
+):
+    w = await _mk_worker(db_session, seeded_admin, name="Sam")
+
+    r1 = await client.patch(
+        f"/workers/{w.worker_id}",
+        headers=_auth(admin_token),
+        json={"hourly_rate": "42.50"},
+    )
+    assert Decimal(r1.json()["hourly_rate"]) == Decimal("42.5")
+
+    r2 = await client.patch(
+        f"/workers/{w.worker_id}",
+        headers=_auth(admin_token),
+        json={"hourly_rate": None},
+    )
+    assert r2.json()["hourly_rate"] is None
+
+
+@pytest.mark.asyncio
+async def test_batch_records_hours_and_snapshots_rate(
+    client, db_session, seeded_admin, admin_token
+):
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    w = await _mk_worker(db_session, seeded_admin, name="Sam", hourly_rate="40.00")
+
+    r = await client.post(
+        "/labour-entries/batch",
+        headers=_auth(admin_token),
+        json={
+            "job_id": str(job.job_id),
+            "work_date": _today().isoformat(),
+            "entries": [
+                {"worker_id": str(w.worker_id), "day_fraction": "1.0", "hours": "8"}
+            ],
+        },
+    )
+    assert r.status_code == 201, r.text
+    assert Decimal(r.json()[0]["hours"]) == Decimal("8")
+    # rate_snapshot is server-side only — never in the response.
+    assert "rate_snapshot" not in r.json()[0]
+
+    entry = await _get_entry(db_session, w)
+    assert entry.hours == Decimal("8")
+    assert entry.rate_snapshot == Decimal("40")
+
+
+@pytest.mark.asyncio
+async def test_rate_snapshot_is_write_once(
+    client, db_session, seeded_admin, admin_token
+):
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    w = await _mk_worker(db_session, seeded_admin, name="Sam", hourly_rate="40.00")
+    body = {
+        "job_id": str(job.job_id),
+        "work_date": _today().isoformat(),
+        "entries": [
+            {"worker_id": str(w.worker_id), "day_fraction": "1.0", "hours": "8"}
+        ],
+    }
+    await client.post("/labour-entries/batch", headers=_auth(admin_token), json=body)
+    entry = await _get_entry(db_session, w)
+    assert entry.rate_snapshot == Decimal("40")
+
+    # Raise the worker's current rate, then re-save the same entry.
+    await client.patch(
+        f"/workers/{w.worker_id}",
+        headers=_auth(admin_token),
+        json={"hourly_rate": "50.00"},
+    )
+    body["entries"][0]["hours"] = "9"
+    await client.post("/labour-entries/batch", headers=_auth(admin_token), json=body)
+
+    await db_session.refresh(entry)
+    assert entry.hours == Decimal("9")  # hours updated
+    assert entry.rate_snapshot == Decimal("40")  # snapshot UNCHANGED
+
+
+@pytest.mark.asyncio
+async def test_hours_preserved_when_field_omitted(
+    client, db_session, seeded_admin, admin_token
+):
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    w = await _mk_worker(db_session, seeded_admin, name="Sam", hourly_rate="40.00")
+    base = {"job_id": str(job.job_id), "work_date": _today().isoformat()}
+
+    await client.post(
+        "/labour-entries/batch",
+        headers=_auth(admin_token),
+        json={**base, "entries": [
+            {"worker_id": str(w.worker_id), "day_fraction": "1.0", "hours": "8"}
+        ]},
+    )
+    # Re-save WITHOUT the hours field (v1-client shape) — hours preserved.
+    await client.post(
+        "/labour-entries/batch",
+        headers=_auth(admin_token),
+        json={**base, "entries": [
+            {"worker_id": str(w.worker_id), "day_fraction": "0.5"}
+        ]},
+    )
+    entry = await _get_entry(db_session, w)
+    assert entry.day_fraction == Decimal("0.5")
+    assert entry.hours == Decimal("8")
+
+    # Re-save WITH explicit null — hours cleared (v2-client clear).
+    await client.post(
+        "/labour-entries/batch",
+        headers=_auth(admin_token),
+        json={**base, "entries": [
+            {"worker_id": str(w.worker_id), "day_fraction": "1.0", "hours": None}
+        ]},
+    )
+    await db_session.refresh(entry)
+    assert entry.hours is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["25", "0", "-1"])
+async def test_hours_out_of_range_rejected(
+    client, db_session, seeded_admin, admin_token, bad
+):
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    w = await _mk_worker(db_session, seeded_admin, name="Sam")
+    r = await client.post(
+        "/labour-entries/batch",
+        headers=_auth(admin_token),
+        json={
+            "job_id": str(job.job_id),
+            "work_date": _today().isoformat(),
+            "entries": [
+                {"worker_id": str(w.worker_id), "day_fraction": "1.0", "hours": bad}
+            ],
+        },
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_summary_days_on_site_vs_worker_days(
+    client, db_session, seeded_admin, admin_token
+):
+    # The operator's "4 guys, 1 day" scenario: 4 workers, each a full day,
+    # all on the SAME job on the SAME date. Worker-days = 4, but the job
+    # ran for only 1 day on site.
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    for i in range(4):
+        w = await _mk_worker(db_session, seeded_admin, name=f"W{i}")
+        await _mk_entry(db_session, worker=w, job=job, recorded_by=seeded_admin)
+
+    r = await client.get(
+        f"/labour-summary?job_id={job.job_id}", headers=_auth(admin_token)
+    )
+    assert r.status_code == 200, r.text
+    job_row = r.json()["jobs"][0]
+    assert Decimal(job_row["total_days"]) == Decimal("4.0")  # worker-days
+    assert job_row["days_on_site"] == 1  # the job's actual duration
+
+
+@pytest.mark.asyncio
+async def test_summary_labour_cost_and_completeness(
+    client, db_session, seeded_admin, admin_token
+):
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    w = await _mk_worker(db_session, seeded_admin, name="Sam", hourly_rate="40.00")
+    # One costable entry (hours + snapshot) and one without hours.
+    await _mk_entry(
+        db_session, worker=w, job=job, recorded_by=seeded_admin,
+        work_date=_today(), hours="8", rate_snapshot="40.00",
+    )
+    await _mk_entry(
+        db_session, worker=w, job=job, recorded_by=seeded_admin,
+        work_date=_today() - _datetime.timedelta(days=1), rate_snapshot="40.00",
+    )
+
+    r = await client.get("/labour-summary", headers=_auth(admin_token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    wr = body["workers"][0]
+    assert Decimal(wr["total_hours"]) == Decimal("8")
+    assert Decimal(wr["labour_cost"]) == Decimal("320")  # 8 * 40, the no-hours row excluded
+    assert wr["entries_total"] == 2
+    assert wr["entries_costed"] == 1
+    assert Decimal(body["total_labour_cost"]) == Decimal("320")
+
+
+@pytest.mark.asyncio
+async def test_summary_cost_null_when_nothing_costable(
+    client, db_session, seeded_admin, admin_token
+):
+    # Worker has no rate; entry has hours but no snapshot -> not costable.
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    w = await _mk_worker(db_session, seeded_admin, name="Sam")
+    await _mk_entry(
+        db_session, worker=w, job=job, recorded_by=seeded_admin, hours="8"
+    )
+
+    r = await client.get("/labour-summary", headers=_auth(admin_token))
+    body = r.json()
+    assert body["workers"][0]["labour_cost"] is None
+    assert body["workers"][0]["entries_costed"] == 0
+    assert body["total_labour_cost"] is None

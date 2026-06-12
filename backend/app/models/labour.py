@@ -1,10 +1,13 @@
-"""Worker roster + labour attendance models (Labour v1, slice L-A).
+"""Worker roster + labour attendance models (Labour v1 L-A + v2 L-C1).
 
-Labour v1 tracks ATTENDANCE IN DAYS — who was on which site on which
-date, full or half day. It deliberately carries NO payroll concepts:
-no rates, wages, hours, overtime, super, or tax. Wage payments remain
-ordinary expenses under the Labour category; this module only answers
-"who went where, for how many days".
+Labour tracks ATTENDANCE IN DAYS (v1: who was on which site on which
+date, full or half day) plus, in v2, optional HOURS per entry and a
+per-worker HOURLY RATE for COST CAPTURE. It is a cost-capture aid, NOT
+payroll: no wages, salary, super, tax, or overtime concepts. Labour
+cost (hours × the rate snapshotted at entry creation) is computed on
+read and NEVER stored as money; the external payroll system stays
+authoritative for actual pay. Wage payments remain ordinary expenses
+under the Labour category.
 
 A :class:`Worker` is a ROSTER RECORD, not an app user: workers never
 log in, have no credentials, and are unrelated to ``users``.
@@ -63,8 +66,18 @@ class Worker(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true"
     )
+    # Labour v2 (slice L-C1): a worker's current default hourly rate, used
+    # ONLY to snapshot onto new labour entries (see LabourEntry.rate_snapshot).
+    # Nullable — a worker may have no rate yet, in which case their entries
+    # carry no cost. Admin-managed; never exposed to non-admin callers.
+    # This is a cost-CAPTURE aid, NOT payroll — no wages/super/tax concepts.
+    hourly_rate: Mapped[Decimal | None] = mapped_column(Numeric(8, 2), nullable=True)
     created_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("hourly_rate >= 0", name="ck_workers_hourly_rate"),
     )
 
 
@@ -88,6 +101,19 @@ class LabourEntry(Base, TimestampMixin):
     )
     work_date: Mapped[date_type] = mapped_column(Date, nullable=False)
     day_fraction: Mapped[Decimal] = mapped_column(Numeric(2, 1), nullable=False)
+    # Labour v2 (slice L-C1): optional hours worked for this entry. Days
+    # (day_fraction) remain the attendance record; hours add precision for
+    # the cost guide. Independent of day_fraction — no cross-validation.
+    hours: Mapped[Decimal | None] = mapped_column(Numeric(4, 2), nullable=True)
+    # Labour v2: the worker's hourly_rate SNAPSHOTTED when this entry was
+    # CREATED — write-once. Later changes to the worker's rate do NOT alter
+    # past entries (a current rate may not reflect the historical rate). A
+    # NULL snapshot (worker had no rate at create) stays NULL; filling it is
+    # a deferred explicit-admin correction, never automatic. Labour cost =
+    # hours * rate_snapshot, computed on read, never stored as money.
+    rate_snapshot: Mapped[Decimal | None] = mapped_column(
+        Numeric(8, 2), nullable=True
+    )
     recorded_by_user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False
     )
@@ -102,6 +128,14 @@ class LabourEntry(Base, TimestampMixin):
         CheckConstraint(
             "day_fraction IN (0.5, 1.0)",
             name="ck_labour_entries_day_fraction",
+        ),
+        CheckConstraint(
+            "hours > 0 AND hours <= 24",
+            name="ck_labour_entries_hours",
+        ),
+        CheckConstraint(
+            "rate_snapshot >= 0",
+            name="ck_labour_entries_rate_snapshot",
         ),
         # Per-job history / day totals.
         Index("ix_labour_entries_job_date", "job_id", "work_date"),

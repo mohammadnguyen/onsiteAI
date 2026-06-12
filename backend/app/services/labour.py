@@ -128,11 +128,13 @@ async def create_worker(
     created_by: User,
     display_name: str,
     note: str | None = None,
+    hourly_rate: Decimal | None = None,
 ) -> Worker:
     worker = Worker(
         worker_id=uuid.uuid4(),
         display_name=display_name.strip(),
         note=note,
+        hourly_rate=hourly_rate,
         created_by=created_by.user_id,
     )
     db.add(worker)
@@ -141,7 +143,12 @@ async def create_worker(
 
 
 async def update_worker(db: AsyncSession, worker_id: uuid.UUID, **fields) -> Worker:
-    """Partial update; caller passes only the fields the client set."""
+    """Partial update; caller passes only the fields the client set.
+
+    ``hourly_rate`` may be set to a value or to explicit null (clear).
+    Changing it sets the worker's CURRENT rate only — it never touches
+    the ``rate_snapshot`` on existing entries (those are write-once).
+    """
     worker = await db.get(Worker, worker_id)
     if worker is None:
         raise WorkerNotFound(worker_id)
@@ -151,6 +158,8 @@ async def update_worker(db: AsyncSession, worker_id: uuid.UUID, **fields) -> Wor
         worker.note = fields["note"]
     if "is_active" in fields and fields["is_active"] is not None:
         worker.is_active = fields["is_active"]
+    if "hourly_rate" in fields:
+        worker.hourly_rate = fields["hourly_rate"]
     await db.flush()
     return worker
 
@@ -251,6 +260,14 @@ async def batch_upsert_entries(
 
         if existing_here is not None:
             existing_here.day_fraction = fraction
+            # Update hours only when the client explicitly sent the field
+            # (declarative: a v2 client always sends it, so null clears it;
+            # a v1 client never sends it, so its existing hours are
+            # preserved rather than wiped). rate_snapshot is write-once —
+            # never modified on edit, so a later rate change can't rewrite
+            # historical labour cost.
+            if "hours" in item.model_fields_set:
+                existing_here.hours = item.hours
             result.append(existing_here)
         else:
             entry = LabourEntry(
@@ -259,6 +276,10 @@ async def batch_upsert_entries(
                 job_id=job_id,
                 work_date=work_date,
                 day_fraction=fraction,
+                hours=item.hours,
+                # Snapshot the worker's CURRENT rate at create time (may be
+                # None). Write-once: never refreshed afterwards.
+                rate_snapshot=worker.hourly_rate,
                 recorded_by_user_id=current_user.user_id,
             )
             db.add(entry)
@@ -315,12 +336,27 @@ async def summarize(
     from_date: date | None = None,
     to_date: date | None = None,
     job_id: uuid.UUID | None = None,
-) -> tuple[list[dict], list[dict], Decimal]:
-    """Per-worker and per-job day totals for the filtered range.
+) -> dict:
+    """Per-worker and per-job labour totals for the filtered range.
 
-    Returns plain dict rows (the route validates them into the
-    response schema). Archived jobs' historical entries are INCLUDED
-    by design — history survives archiving.
+    Returns a dict the route validates into ``LabourSummary``. Archived
+    jobs' historical entries are INCLUDED by design — history survives
+    archiving.
+
+    Each grouping carries (v2):
+    * ``total_days`` — worker-days (sum of day fractions).
+    * ``total_hours`` — sum of recorded hours (null when none recorded).
+    * ``labour_cost`` — sum of ``hours * rate_snapshot``; null when no
+      entry in the group is costable. Computed on read, never stored.
+    * ``entries_total`` / ``entries_costed`` — lets the client flag an
+      incomplete cost (some entries miss hours or a rate snapshot).
+    Per job additionally: ``days_on_site`` — distinct dates anyone was
+    on the job (the job's DURATION, vs worker-days which is INPUT).
+
+    Cost math relies on SQL: ``hours * rate_snapshot`` is null when
+    either operand is null, and ``sum``/``count(...) filter`` ignore
+    nulls — so incomplete rows neither corrupt nor are guessed into the
+    total.
     """
 
     def _filtered(stmt):
@@ -332,6 +368,14 @@ async def summarize(
             stmt = stmt.where(LabourEntry.job_id == job_id)
         return stmt
 
+    _cost = func.sum(LabourEntry.hours * LabourEntry.rate_snapshot)
+    _hours = func.sum(LabourEntry.hours)
+    _total_entries = func.count(LabourEntry.entry_id)
+    _costed_entries = func.count(LabourEntry.entry_id).filter(
+        LabourEntry.hours.isnot(None),
+        LabourEntry.rate_snapshot.isnot(None),
+    )
+
     worker_rows = (
         await db.execute(
             _filtered(
@@ -339,6 +383,10 @@ async def summarize(
                     Worker.worker_id,
                     Worker.display_name,
                     func.sum(LabourEntry.day_fraction).label("total_days"),
+                    _hours.label("total_hours"),
+                    _cost.label("labour_cost"),
+                    _total_entries.label("entries_total"),
+                    _costed_entries.label("entries_costed"),
                 )
                 .join(LabourEntry, LabourEntry.worker_id == Worker.worker_id)
                 .group_by(Worker.worker_id, Worker.display_name)
@@ -354,6 +402,13 @@ async def summarize(
                     Job.job_id,
                     Job.job_name,
                     func.sum(LabourEntry.day_fraction).label("total_days"),
+                    func.count(func.distinct(LabourEntry.work_date)).label(
+                        "days_on_site"
+                    ),
+                    _hours.label("total_hours"),
+                    _cost.label("labour_cost"),
+                    _total_entries.label("entries_total"),
+                    _costed_entries.label("entries_costed"),
                 )
                 .join(LabourEntry, LabourEntry.job_id == Job.job_id)
                 .group_by(Job.job_id, Job.job_name)
@@ -362,24 +417,51 @@ async def summarize(
         )
     ).all()
 
-    total = (
+    totals = (
         await db.execute(
-            _filtered(select(func.coalesce(func.sum(LabourEntry.day_fraction), 0)))
+            _filtered(
+                select(
+                    func.coalesce(func.sum(LabourEntry.day_fraction), 0).label(
+                        "total_days"
+                    ),
+                    _hours.label("total_hours"),
+                    _cost.label("total_labour_cost"),
+                    _total_entries.label("entries_total"),
+                    _costed_entries.label("entries_costed"),
+                )
+            )
         )
-    ).scalar() or Decimal("0")
+    ).one()
 
-    return (
-        [
+    return {
+        "workers": [
             {
                 "worker_id": r.worker_id,
                 "display_name": r.display_name,
                 "total_days": r.total_days,
+                "total_hours": r.total_hours,
+                "labour_cost": r.labour_cost,
+                "entries_total": r.entries_total,
+                "entries_costed": r.entries_costed,
             }
             for r in worker_rows
         ],
-        [
-            {"job_id": r.job_id, "job_name": r.job_name, "total_days": r.total_days}
+        "jobs": [
+            {
+                "job_id": r.job_id,
+                "job_name": r.job_name,
+                "total_days": r.total_days,
+                "days_on_site": r.days_on_site,
+                "total_hours": r.total_hours,
+                "labour_cost": r.labour_cost,
+                "entries_total": r.entries_total,
+                "entries_costed": r.entries_costed,
+            }
             for r in job_rows
         ],
-        Decimal(total),
-    )
+        "total_days": Decimal(totals.total_days or 0),
+        "total_hours": totals.total_hours,
+        "total_labour_cost": totals.total_labour_cost,
+        "entries_total": totals.entries_total or 0,
+        "entries_costed": totals.entries_costed or 0,
+    }
