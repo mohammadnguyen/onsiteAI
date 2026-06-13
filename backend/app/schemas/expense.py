@@ -119,6 +119,12 @@ class ExpenseUpdate(BaseModel):
     rows — it is NOT written back as a column on the expense.
     """
 
+    # A1 (Option A): reassign an expense to a different job. ADMIN-ONLY and
+    # ACTIVE-job-only — those rules are enforced in app.services.expenses
+    # (and the review-resolve path), NOT here. Flows through both
+    # PATCH /expenses/{id} and the review-resolve expense_patch via the
+    # shared ``_AUDITABLE_FIELDS`` tuple, so a reassignment is audited.
+    job_id: uuid.UUID | None = None
     supplier_id: uuid.UUID | None = None
     expense_type: ExpenseType | None = None
     amount_inc_gst: Decimal | None = Field(default=None, gt=0, le=Decimal("10000000"))

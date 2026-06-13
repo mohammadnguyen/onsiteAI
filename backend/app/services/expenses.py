@@ -518,6 +518,28 @@ def _validate_save(
         raise ExpenseValidationError("Expense date is in the future")
 
 
+async def _validate_job_active_for_reassign(
+    db: AsyncSession, job_id: uuid.UUID | None
+) -> None:
+    """A1: validate the TARGET job of a reassignment exists and is ACTIVE.
+
+    Used by the PATCH path (and, via a ValueError adapter, the
+    review-resolve path) when ``job_id`` changes. Mirrors the create-time
+    lookup (``JobNotFoundForExpense`` -> 422) and adds the active-only rule
+    so a correction can never move spend onto an archived/completed job.
+    ``None`` is left for ``_validate_save`` to reject as "Job is required".
+    """
+    if job_id is None:
+        return
+    job = await db.get(Job, job_id)
+    if job is None:
+        raise JobNotFoundForExpense(job_id)
+    if job.status != JobStatus.active:
+        raise ExpenseValidationError(
+            "Cannot reassign to an archived or completed job — reopen it first"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Create
 # ---------------------------------------------------------------------------
@@ -908,6 +930,10 @@ async def get_expense_with_reasons(
 # always write audit rows; the other fields only write audit rows when
 # an admin touches a reviewed row.
 _AUDITABLE_FIELDS: tuple[str, ...] = (
+    # job_id is admin-only + active-job-only to change (see update_expense /
+    # _validate_job_active_for_reassign); included here so a reassignment is
+    # applied and AUDITED on both the PATCH and review-resolve paths.
+    "job_id",
     "supplier_id",
     "expense_type",
     "amount_inc_gst",
@@ -961,6 +987,26 @@ async def update_expense(
         # Contributors may not set review_status themselves.
         if "review_status" in patch_set:
             raise EditForbidden("Contributors cannot change review status")
+
+    # A1 (Option A): job reassignment rules. The generic apply loop below
+    # writes (and audits) job_id via _AUDITABLE_FIELDS; these guards run
+    # FIRST (before any mutation) for clean 403/422s.
+    if "job_id" in patch_set:
+        # An expense must ALWAYS have a job — never allow clearing it. This
+        # is a deliberate contract: explicit null is rejected here (not left
+        # to _validate_save), so the 422 is unambiguous and no mutation runs.
+        if patch.job_id is None:
+            raise ExpenseValidationError(
+                "An expense must always have a job; job_id cannot be cleared"
+            )
+        # Reassigning to a DIFFERENT job is admin-only + active-job-only. A
+        # no-op (same job_id) is neither blocked nor active-validated.
+        if patch.job_id != expense.job_id:
+            if not is_admin:
+                raise EditForbidden(
+                    "Only admins can reassign an expense to another job"
+                )
+            await _validate_job_active_for_reassign(db, patch.job_id)
 
     # Pre-check any new FK references for a clean 422.
     if "supplier_id" in patch_set or "category_id" in patch_set:

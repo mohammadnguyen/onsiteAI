@@ -1335,6 +1335,247 @@ async def test_create_raw_text_with_cash_keyword_applies_cash_rule(
     assert Decimal(expense["gst_amount"]) == Decimal("0.00")
 
 
+# ---------------------------------------------------------------------------
+# A1 (Option A): job reassignment via PATCH + review-resolve
+# (admin-only, active-job-only; pending + reviewed-with-reason)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reassign_admin_pending_to_active_job_200(
+    client, db_session, world, admin_token
+):
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        review_status=ReviewStatus.pending,
+    )
+    r = await client.patch(
+        f"/expenses/{exp.expense_id}",
+        headers=_auth(admin_token),
+        json={"job_id": str(world["job_b"].job_id)},
+    )
+    assert r.status_code == 200, r.text
+    await db_session.refresh(exp)
+    assert exp.job_id == world["job_b"].job_id
+
+
+@pytest.mark.asyncio
+async def test_reassign_admin_reviewed_with_reason_audits(
+    client, db_session, world, admin_token
+):
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        review_status=ReviewStatus.reviewed,
+    )
+    r = await client.patch(
+        f"/expenses/{exp.expense_id}",
+        headers=_auth(admin_token),
+        json={"job_id": str(world["job_b"].job_id), "reason": "billed to wrong job"},
+    )
+    assert r.status_code == 200, r.text
+    await db_session.refresh(exp)
+    assert exp.job_id == world["job_b"].job_id
+
+    rows = await _audit_rows_for(db_session, exp.expense_id)
+    assert len(rows) == 1
+    audit = rows[0]
+    assert audit.reason == "billed to wrong job"
+    assert "job_id" in audit.changed_fields
+    assert str(audit.changed_fields["job_id"]["old"]) == str(world["job_a"].job_id)
+    assert str(audit.changed_fields["job_id"]["new"]) == str(world["job_b"].job_id)
+
+
+@pytest.mark.asyncio
+async def test_reassign_to_archived_job_422(
+    client, db_session, world, seeded_admin, admin_token
+):
+    archived = await _mk_job(db_session, seeded_admin, name="Done", code="DN-09")
+    archived.status = JobStatus.completed
+    await db_session.flush()
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        review_status=ReviewStatus.pending,
+    )
+    r = await client.patch(
+        f"/expenses/{exp.expense_id}",
+        headers=_auth(admin_token),
+        json={"job_id": str(archived.job_id)},
+    )
+    assert r.status_code == 422, r.text
+    assert "archived or completed" in r.json()["detail"]
+    await db_session.refresh(exp)
+    assert exp.job_id == world["job_a"].job_id  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_reassign_contributor_forbidden_403(
+    client, db_session, world, seeded_contributor, contributor_token
+):
+    # Contributor owns a pending expense (editable for other fields) but
+    # may NOT reassign its job — admin-only correction.
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=seeded_contributor.user_id,
+        review_status=ReviewStatus.pending,
+    )
+    r = await client.patch(
+        f"/expenses/{exp.expense_id}",
+        headers=_auth(contributor_token),
+        json={"job_id": str(world["job_b"].job_id)},
+    )
+    assert r.status_code == 403, r.text
+    await db_session.refresh(exp)
+    assert exp.job_id == world["job_a"].job_id  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_reassign_moves_job_budget_totals(
+    client, db_session, world, admin_token
+):
+    # $1100 expense starts on job_a; after reassign it counts on job_b.
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        amount="1100",
+        review_status=ReviewStatus.reviewed,
+    )
+
+    async def _spent_inc(job) -> Decimal:
+        r = await client.get(
+            f"/jobs/{job.job_id}/budget-summary", headers=_auth(admin_token)
+        )
+        assert r.status_code == 200, r.text
+        return Decimal(str(r.json()["actual_inc_gst"]))
+
+    assert await _spent_inc(world["job_a"]) == Decimal("1100.00")
+    assert await _spent_inc(world["job_b"]) == Decimal("0.00")
+
+    r = await client.patch(
+        f"/expenses/{exp.expense_id}",
+        headers=_auth(admin_token),
+        json={"job_id": str(world["job_b"].job_id), "reason": "moved"},
+    )
+    assert r.status_code == 200, r.text
+
+    assert await _spent_inc(world["job_a"]) == Decimal("0.00")  # old job drops
+    assert await _spent_inc(world["job_b"]) == Decimal("1100.00")  # new job gains
+
+
+@pytest.mark.asyncio
+async def test_review_resolve_patch_reassigns_job(
+    client, db_session, world, admin_token
+):
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        review_status=ReviewStatus.pending,
+    )
+    queue = await _seed_queue_row(
+        db_session,
+        expense_id=exp.expense_id,
+        reasons=[ReviewReasonCode.job_uncertain],
+    )
+    r = await client.post(
+        f"/review-queue/{queue.review_id}/resolve",
+        headers=_auth(admin_token),
+        json={
+            "expense_patch": {"job_id": str(world["job_b"].job_id)},
+            "notes": "fixed job during review",
+        },
+    )
+    assert r.status_code == 204, r.text
+    await db_session.refresh(exp)
+    assert exp.job_id == world["job_b"].job_id
+    assert exp.review_status == ReviewStatus.reviewed
+
+
+@pytest.mark.asyncio
+async def test_review_resolve_patch_archived_job_422(
+    client, db_session, world, seeded_admin, admin_token
+):
+    archived = await _mk_job(db_session, seeded_admin, name="Old", code="OD-09")
+    archived.status = JobStatus.completed
+    await db_session.flush()
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        review_status=ReviewStatus.pending,
+    )
+    queue = await _seed_queue_row(
+        db_session,
+        expense_id=exp.expense_id,
+        reasons=[ReviewReasonCode.job_uncertain],
+    )
+    r = await client.post(
+        f"/review-queue/{queue.review_id}/resolve",
+        headers=_auth(admin_token),
+        json={"expense_patch": {"job_id": str(archived.job_id)}, "notes": "x"},
+    )
+    assert r.status_code == 422, r.text
+    await db_session.refresh(exp)
+    assert exp.job_id == world["job_a"].job_id  # guard runs before apply
+    assert exp.review_status == ReviewStatus.pending
+
+
+@pytest.mark.asyncio
+async def test_reassign_explicit_null_job_422(client, db_session, world, admin_token):
+    # Hardening: an expense must ALWAYS have a job — explicit null is a
+    # deliberate 422, never a silent clear, and nothing mutates.
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        review_status=ReviewStatus.pending,
+    )
+    r = await client.patch(
+        f"/expenses/{exp.expense_id}",
+        headers=_auth(admin_token),
+        json={"job_id": None},
+    )
+    assert r.status_code == 422, r.text
+    assert "cannot be cleared" in r.json()["detail"]
+    await db_session.refresh(exp)
+    assert exp.job_id == world["job_a"].job_id  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_review_resolve_explicit_null_job_422(
+    client, db_session, world, admin_token
+):
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        review_status=ReviewStatus.pending,
+    )
+    queue = await _seed_queue_row(
+        db_session,
+        expense_id=exp.expense_id,
+        reasons=[ReviewReasonCode.job_uncertain],
+    )
+    r = await client.post(
+        f"/review-queue/{queue.review_id}/resolve",
+        headers=_auth(admin_token),
+        json={"expense_patch": {"job_id": None}, "notes": "x"},
+    )
+    assert r.status_code == 422, r.text
+    await db_session.refresh(exp)
+    await db_session.refresh(queue)
+    assert exp.job_id == world["job_a"].job_id  # unchanged
+    assert exp.review_status == ReviewStatus.pending
+    assert queue.status == ReviewQueueStatus.open  # review row remains open
+
+
 @pytest.mark.asyncio
 async def test_create_raw_text_with_zh_cash_keyword_applies_cash_rule(
     client, world, admin_token

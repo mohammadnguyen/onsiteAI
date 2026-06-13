@@ -55,7 +55,10 @@ from app.schemas.expense import ExpenseUpdate
 from app.services.expenses import (
     _AUDITABLE_FIELDS,
     _coerce_audit_value,
+    _validate_job_active_for_reassign,
     _validate_save,
+    ExpenseValidationError,
+    JobNotFoundForExpense,
 )
 
 # ---------------------------------------------------------------------------
@@ -258,6 +261,26 @@ async def resolve(
             supplier_id=expense_patch.supplier_id if "supplier_id" in patch_set else None,
             category_id=expense_patch.category_id if "category_id" in patch_set else None,
         )
+
+        # A1 (Option A): job reassignment rules on the resolve path. All
+        # raises are ValueError so the resolve route's ``except ValueError
+        # -> 422`` maps them (and we never reach the apply loop / status
+        # flip below, so the expense + queue row stay untouched).
+        if "job_id" in patch_set:
+            # Never allow clearing an expense's job (deliberate contract;
+            # raised here rather than leaving it to _validate_save, which
+            # would surface as a 500 on this route).
+            if expense_patch.job_id is None:
+                raise ValueError(
+                    "An expense must always have a job; job_id cannot be cleared"
+                )
+            # Reassignment must target an ACTIVE job (resolve is admin-only
+            # via the route, so no role check here).
+            if expense_patch.job_id != expense.job_id:
+                try:
+                    await _validate_job_active_for_reassign(db, expense_patch.job_id)
+                except (JobNotFoundForExpense, ExpenseValidationError) as exc:
+                    raise ValueError(str(exc)) from exc
 
         for field in _AUDITABLE_FIELDS:
             if field in patch_set:
