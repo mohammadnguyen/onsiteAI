@@ -175,7 +175,17 @@
     "review_forbidden": "Only admins can approve or reject expenses.",
     "delete_reason_hint": "Optional: add a reason for the audit history.",
     "edit_reason_label": "Reason for change (optional)",
-    "edit_reason_help": "Saved to the audit history."
+    "edit_reason_help": "Saved to the audit history.",
+    "correct_title": "Correct & approve",
+    "correct_hint": "Fix the job, supplier, or category, then approve.",
+    "correct_none": "Not set",
+    "create_supplier": "+ New supplier",
+    "new_supplier_placeholder": "Supplier name",
+    "create_supplier_cta": "Create",
+    "correct_error_contributor": "Only admins can correct and approve.",
+    "correct_error_archived": "That job is archived — pick an active job.",
+    "correct_error_no_job": "An expense must always have a job.",
+    "correct_error_generic": "Couldn't save the correction."
   },
   "expense_list": {
     "title": "All expenses",

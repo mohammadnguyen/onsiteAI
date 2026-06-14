@@ -1283,6 +1283,8 @@ export interface components {
          *     rows — it is NOT written back as a column on the expense.
          */
         ExpenseUpdate: {
+            /** Job Id */
+            job_id?: string | null;
             /** Supplier Id */
             supplier_id?: string | null;
             expense_type?: components["schemas"]["ExpenseType"] | null;

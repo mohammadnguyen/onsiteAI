@@ -149,19 +149,41 @@ export function useExpense(expenseId: string | undefined) {
  * presence — never on `review_status` alone, so a historical
  * resolved/rejected queue row can't leak as a callable action.
  *
- * Body: empty object in v1 (operator brief: no reason input).
- * Backend's `ResolveRequest` accepts optional `notes` and
- * `expense_patch`; we send neither.
+ * Body (A3): optional `expense_patch` — the resolve-with-corrections
+ * sheet sends the admin's job/supplier/category fixes so the patch AND
+ * the queue resolution happen ATOMICALLY in this one backend call,
+ * replacing the old empty-patch approve. Calling with no argument still
+ * posts `{}` (a plain approve). `notes` stays deferred.
  *
- * Cache invalidation: `['expenses']` AND `['jobs']` roots (mirrors
- * useDeleteExpense; covers My Captures, expense detail, per-job
- * expense list, per-job budget summary, jobs list).
+ * Cache invalidation (verified A3-complete): the `['expenses']`,
+ * `['jobs']`, and `['review-queue']` roots together cover EVERY query a
+ * resolve-with-corrections can affect, so a job/supplier/category fix
+ * never leaves stale data:
+ *   - `['expenses']` → expense detail (`['expenses', id]`), My Captures
+ *     (`{mine}`), per-job list (`{job_id}`), dashboard month-spend
+ *     (`{dashboardFrom}`), full list (`'list'`), and the triage list's
+ *     pending summaries (`{pendingSummaries}`).
+ *   - `['jobs']` → jobs list, job detail, and per-job budget-summary —
+ *     so a job_id REASSIGNMENT refreshes dashboard/job money totals
+ *     (the audit's stale-totals risk does NOT recur here).
+ *   - `['review-queue']` → the open-items triage list.
+ * Supplier quick-create invalidates `['suppliers']` in its own hook;
+ * `['categories']` needs no invalidation (resolve sets category_id, it
+ * never creates a category).
  */
+export type ResolvePatch = {
+  job_id?: string;
+  supplier_id?: string;
+  category_id?: string;
+};
+
 export function useResolveQueueItem(reviewId: string) {
   const qc = useQueryClient();
-  return useMutation<void, unknown, void>({
-    mutationFn: async () => {
-      await api.post(`/review-queue/${reviewId}/resolve`, {});
+  return useMutation<void, unknown, ResolvePatch | void>({
+    mutationFn: async (patch) => {
+      const body =
+        patch && Object.keys(patch).length > 0 ? { expense_patch: patch } : {};
+      await api.post(`/review-queue/${reviewId}/resolve`, body);
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['expenses'] });
@@ -258,7 +280,8 @@ export function useDeleteExpense(expenseId: string) {
  *                  from the patch set and written to the audit log
  *                  only). M1's edit screen surfaces it on non-pending
  *                  rows and includes it only when the admin types one.
- *   - job_id is IMMUTABLE post-create (any attempt → 422)
+ *   - job_id: admin-only reassignment to an ACTIVE job (A1); a
+ *     contributor attempt → 403, an archived/null target → 422
  *
  * Cache invalidation: hits the `['expenses']` root so both the detail
  * cache (`['expenses', id]`) and the My-Captures list cache

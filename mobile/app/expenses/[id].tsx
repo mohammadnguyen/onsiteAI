@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -17,7 +17,6 @@ import axios from 'axios';
 import {
   useExpense,
   useDeleteExpense,
-  useResolveQueueItem,
   useRejectQueueItem,
 } from '../../src/api/hooks/useExpenses';
 import { useJobs } from '../../src/api/hooks/useJobs';
@@ -27,6 +26,7 @@ import type {
   ExpenseDetailPublic,
   ReviewReasonCode,
 } from '../../src/api/hooks/useExpenses';
+import { ReviewCorrectionsSheet } from '../../src/components/ReviewCorrectionsSheet';
 import { formatMoney } from '../../src/util/format';
 import { formatDateAU } from '../../src/util/dates';
 import { localizeCategoryName } from '../../src/util/category';
@@ -93,8 +93,8 @@ export default function ExpenseDetailScreen() {
   const me = useMe();
   const deleteMutation = useDeleteExpense(id ?? '');
   const reviewId = expense.data?.pending_review_queue_id ?? '';
-  const resolveMutation = useResolveQueueItem(reviewId);
   const rejectMutation = useRejectQueueItem(reviewId);
+  const [correctOpen, setCorrectOpen] = useState(false);
   const setSelectedJobId = useSelectedJobStore((s) => s.setSelectedJobId);
 
   const jobName = useMemo(() => {
@@ -182,26 +182,12 @@ export default function ExpenseDetailScreen() {
     Alert.alert(t('common.error'), message);
   };
 
+  // A3: approving a review item opens the resolve-with-corrections sheet
+  // (admin fixes job/supplier/category, then patch + resolve happen
+  // atomically in one backend call). Replaces the old empty-patch approve.
   const onApprove = () => {
     if (!approveRejectEnabled) return;
-    Alert.alert(
-      t('expense.approve_confirm_title'),
-      t('expense.approve_confirm_message'),
-      [
-        { text: t('common.cancel'), style: 'cancel' },
-        {
-          text: t('expense.approve_cta'),
-          onPress: async () => {
-            try {
-              await resolveMutation.mutateAsync();
-              onBack();
-            } catch (err) {
-              handleReviewError(err, 'expense.approve_error');
-            }
-          },
-        },
-      ],
-    );
+    setCorrectOpen(true);
   };
 
   const onReject = () => {
@@ -372,6 +358,18 @@ export default function ExpenseDetailScreen() {
             approveRejectEnabled={approveRejectEnabled}
           />
         </ScrollView>
+      ) : null}
+      {expense.data ? (
+        <ReviewCorrectionsSheet
+          visible={correctOpen}
+          onClose={() => setCorrectOpen(false)}
+          reviewId={reviewId}
+          expense={expense.data}
+          onResolved={() => {
+            setCorrectOpen(false);
+            onBack();
+          }}
+        />
       ) : null}
     </SafeAreaView>
   );
