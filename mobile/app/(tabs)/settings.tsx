@@ -115,6 +115,20 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         ) : null}
 
+        {isAdmin ? (
+          <TouchableOpacity
+            style={s.card}
+            onPress={() => router.push('/export' as unknown as Href)}
+            testID="settings-export-entry"
+            accessibilityRole="button"
+          >
+            <View style={s.entryRow}>
+              <Text style={s.cardValue}>{t('export.entry')}</Text>
+              <Text style={s.entryChevron}>{'›'}</Text>
+            </View>
+          </TouchableOpacity>
+        ) : null}
+
         <View style={s.card} testID="settings-diagnostics">
           <Text style={s.cardLabel}>{t('settings.diagnostics')}</Text>
           <View style={s.diagRow}>
