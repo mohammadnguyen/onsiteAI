@@ -15,8 +15,19 @@ export const apiUrl: string =
   process.env.EXPO_PUBLIC_API_URL ??
   'http://127.0.0.1:8000';
 
+// R1: cap every request so a weak-network stall can't leave the UI on a
+// spinner forever. 15s tolerates slow-but-working mobile data while still
+// surfacing a clear timeout (classifyApiError -> 'timeout') instead of an
+// indefinite hang. Global default on the shared instance; a specific call
+// can still override `timeout` per-request if a future endpoint needs it.
+// A timeout is a no-response error, so the 401 refresh interceptor below
+// never mistakes it for auth. Does NOT cover the Excel export, which uses
+// expo-file-system downloadAsync (separate transport — tracked follow-up).
+const REQUEST_TIMEOUT_MS = 15000;
+
 export const api: AxiosInstance = axios.create({
   baseURL: apiUrl,
+  timeout: REQUEST_TIMEOUT_MS,
   headers: { 'Content-Type': 'application/json' },
 });
 

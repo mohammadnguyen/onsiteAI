@@ -103,6 +103,8 @@
     "cancel": "Cancel",
     "loading": "Loading…",
     "retry": "Retry",
+    "error_timeout": "Request timed out. Check your connection and try again.",
+    "error_offline": "No connection. Check your network and try again.",
     "unavailable_in_this_version": "This feature isn't available in the current version. For now, please use Expenses and Jobs."
   },
   "capture": {

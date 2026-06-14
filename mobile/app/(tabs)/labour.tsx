@@ -12,8 +12,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, type Href } from 'expo-router';
 import { useTranslation } from 'react-i18next';
-import axios from 'axios';
 import { useMe } from '../../src/api/hooks/useAuth';
+import { resolveApiErrorMessage } from '../../src/api/errors';
 import { useJobs } from '../../src/api/hooks/useJobs';
 import {
   AttendanceDeleteError,
@@ -69,26 +69,6 @@ type RowEdit = {
   endText: string;
 };
 type Banner = { kind: 'success' | 'error'; text: string };
-
-/** House helper (same shape as the capture screen's): surface the
- * server's string detail; flatten Pydantic array details. */
-function extractErrorMessage(error: unknown, fallback: string): string {
-  if (axios.isAxiosError(error)) {
-    const detail = error.response?.data?.detail;
-    if (typeof detail === 'string') return detail;
-    if (Array.isArray(detail) && detail.length > 0) {
-      return detail
-        .map((d: { msg?: string; loc?: (string | number)[] }) => {
-          const loc = Array.isArray(d.loc) ? d.loc.join('.') : '';
-          return loc ? `${loc}: ${d.msg ?? ''}` : (d.msg ?? '');
-        })
-        .join('; ');
-    }
-    if (error.message) return error.message;
-  }
-  if (error instanceof Error && error.message) return error.message;
-  return fallback;
-}
 
 export default function LabourScreen() {
   const { t } = useTranslation();
@@ -400,14 +380,15 @@ export default function LabourScreen() {
         const name =
           rows.find((r) => r.worker.worker_id === err.workerId)?.worker
             .display_name ?? '';
-        const detail = extractErrorMessage(
+        const detail = resolveApiErrorMessage(
           err.cause,
+          t,
           t('capture.error_network'),
         );
         text = `${t('labour.error_delete_failed', { name })}\n${mapLabourDetail(detail)}`;
       } else {
         text = mapLabourDetail(
-          extractErrorMessage(err, t('capture.error_network')),
+          resolveApiErrorMessage(err, t, t('capture.error_network')),
         );
       }
       setBanner({ kind: 'error', text });

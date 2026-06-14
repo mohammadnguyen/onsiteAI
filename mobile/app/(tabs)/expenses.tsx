@@ -14,7 +14,6 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import axios from 'axios';
 import {
   useCreateExpense,
   useMyRecentExpenses,
@@ -23,6 +22,7 @@ import {
   type PaymentMethod,
   type ReceiptStatus,
 } from '../../src/api/hooks/useExpenses';
+import { resolveApiErrorMessage } from '../../src/api/errors';
 import { useMe } from '../../src/api/hooks/useAuth';
 import { CaptureResultCard } from '../../src/components/CaptureResultCard';
 import { RecentCapturesList } from '../../src/components/RecentCapturesList';
@@ -70,24 +70,6 @@ type MultiCaptureResult = {
   items: MultiCaptureItem[];
   preamble: string | null;
 };
-
-function extractErrorMessage(error: unknown, fallback: string): string {
-  if (axios.isAxiosError(error)) {
-    const detail = error.response?.data?.detail;
-    if (typeof detail === 'string') return detail;
-    if (Array.isArray(detail) && detail.length > 0) {
-      return detail
-        .map((d: { msg?: string; loc?: (string | number)[] }) => {
-          const loc = Array.isArray(d.loc) ? d.loc.join('.') : '';
-          return loc ? `${loc}: ${d.msg ?? ''}` : (d.msg ?? '');
-        })
-        .join('; ');
-    }
-    if (error.message) return error.message;
-  }
-  if (error instanceof Error && error.message) return error.message;
-  return fallback;
-}
 
 export default function ExpensesScreen() {
   const { t } = useTranslation();
@@ -188,7 +170,7 @@ export default function ExpensesScreen() {
         const resp = await createExpense.mutateAsync(body as ExpenseCreateInput);
         setResult(resp);
       } catch (err) {
-        const msg = extractErrorMessage(err, t('capture.error_network'));
+        const msg = resolveApiErrorMessage(err, t, t('capture.error_network'));
         setFormError(msg);
         // M0: persist the failed capture (typed text + error message)
         // so it survives reset/restart and can be refilled for retry.
@@ -236,7 +218,7 @@ export default function ExpensesScreen() {
               reviewPending: resp.expense.review_status === 'pending',
             };
           } catch (err) {
-            const msg = extractErrorMessage(err, t('capture.error_network'));
+            const msg = resolveApiErrorMessage(err, t, t('capture.error_network'));
             // M0: persist each failed item for visibility/retry after
             // the result card is dismissed or the app restarts.
             recordFailure({ inputText: text, errorMessage: msg, context: 'multi' });
