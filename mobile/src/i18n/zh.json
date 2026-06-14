@@ -236,7 +236,10 @@
     "left": "剩余 {{amount}}",
     "no_budget": "未设预算",
     "empty": "暂无进行中的项目。",
-    "error": "无法加载仪表盘。"
+    "error": "无法加载仪表盘。",
+    "card_error": "无法加载",
+    "stale": "数据可能不是最新",
+    "partial_error": "部分数据未能加载"
   },
   "review_queue": {
     "title": "\u5f85\u5ba1\u6838",

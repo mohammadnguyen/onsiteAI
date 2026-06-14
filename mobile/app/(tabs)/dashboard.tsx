@@ -93,6 +93,18 @@ function isoMonthStart(): string {
   return `${now.getFullYear()}-${m}-01`;
 }
 
+/**
+ * R1: map a dashboard query's status to a render state so a failed fetch
+ * NEVER coalesces to a real-looking value. A real $0.00 / 0 shows only on
+ * success. 'stale' = a refetch failed but React Query still holds the last
+ * successful data (shown with a marker); 'error' = no data ever loaded.
+ */
+type StatState = 'loading' | 'value' | 'stale' | 'error';
+function statState(isError: boolean, hasData: boolean): StatState {
+  if (hasData) return isError ? 'stale' : 'value';
+  return isError ? 'error' : 'loading';
+}
+
 function AdminDashboard() {
   const { t } = useTranslation();
   const router = useRouter();
@@ -142,6 +154,19 @@ function AdminDashboard() {
 
   const pendingCount = queue.data?.length ?? null;
 
+  // R1: per-query render states — a failed fetch must never look like a
+  // real value on a money/count card (see statState).
+  const monthStat = statState(monthExpenses.isError, monthExpenses.data !== undefined);
+  const jobsStat = statState(jobs.isError, jobs.data !== undefined);
+  const queueStat = statState(queue.isError, queue.data !== undefined);
+  const anyStatDegraded =
+    monthStat === 'error' ||
+    monthStat === 'stale' ||
+    jobsStat === 'error' ||
+    jobsStat === 'stale' ||
+    queueStat === 'error' ||
+    queueStat === 'stale';
+
   const onRefresh = () => {
     setUserRefreshing(true);
     void Promise.allSettled([
@@ -181,6 +206,17 @@ function AdminDashboard() {
         ListHeaderComponent={
           <View>
             <Text style={s.title}>{t('tabs.dashboard')}</Text>
+            {anyStatDegraded ? (
+              <Pressable
+                onPress={onRefresh}
+                style={({ pressed }) => [s.degradedBanner, pressed && s.cardPressed]}
+                accessibilityRole="button"
+                testID="dashboard-degraded"
+              >
+                <Text style={s.degradedText}>{t('dashboard.partial_error')}</Text>
+                <Text style={s.degradedRetry}>{t('common.retry')}</Text>
+              </Pressable>
+            ) : null}
             <View style={s.statRow}>
               <Pressable
                 style={({ pressed }) => [s.statCard, pressed && s.cardPressed]}
@@ -189,9 +225,21 @@ function AdminDashboard() {
                 testID="dashboard-month-spend"
               >
                 <Text style={s.statLabel}>{t('dashboard.month_spend')}</Text>
-                <Text style={s.statValue} numberOfLines={1}>
-                  {monthExpenses.isLoading ? '…' : formatMoney(monthTotalExGst.toFixed(2))}
+                <Text
+                  style={[s.statValue, monthStat === 'error' && s.statValueError]}
+                  numberOfLines={1}
+                >
+                  {monthStat === 'loading'
+                    ? '…'
+                    : monthStat === 'error'
+                      ? '—'
+                      : formatMoney(monthTotalExGst.toFixed(2))}
                 </Text>
+                {monthStat === 'stale' ? (
+                  <Text style={s.staleTag}>{t('dashboard.stale')}</Text>
+                ) : monthStat === 'error' ? (
+                  <Text style={s.errorTag}>{t('dashboard.card_error')}</Text>
+                ) : null}
               </Pressable>
               <Pressable
                 style={({ pressed }) => [
@@ -206,16 +254,39 @@ function AdminDashboard() {
                 <Text style={[s.statLabel, s.statLabelPending]}>
                   {t('dashboard.pending_review')}
                 </Text>
-                <Text style={[s.statValue, s.statValuePending]}>
-                  {pendingCount == null ? '…' : pendingCount}
-                  {' ›'}
+                <Text
+                  style={[
+                    s.statValue,
+                    s.statValuePending,
+                    queueStat === 'error' && s.statValueError,
+                  ]}
+                >
+                  {queueStat === 'loading'
+                    ? '…'
+                    : queueStat === 'error'
+                      ? '—'
+                      : `${pendingCount} ›`}
                 </Text>
+                {queueStat === 'stale' ? (
+                  <Text style={s.staleTag}>{t('dashboard.stale')}</Text>
+                ) : queueStat === 'error' ? (
+                  <Text style={s.errorTag}>{t('dashboard.card_error')}</Text>
+                ) : null}
               </Pressable>
               <View style={s.statCard} testID="dashboard-active-jobs">
                 <Text style={s.statLabel}>{t('dashboard.active_jobs')}</Text>
-                <Text style={s.statValue}>
-                  {jobs.isLoading ? '…' : activeJobs.length}
+                <Text style={[s.statValue, jobsStat === 'error' && s.statValueError]}>
+                  {jobsStat === 'loading'
+                    ? '…'
+                    : jobsStat === 'error'
+                      ? '—'
+                      : activeJobs.length}
                 </Text>
+                {jobsStat === 'stale' ? (
+                  <Text style={s.staleTag}>{t('dashboard.stale')}</Text>
+                ) : jobsStat === 'error' ? (
+                  <Text style={s.errorTag}>{t('dashboard.card_error')}</Text>
+                ) : null}
               </View>
             </View>
             <Text style={s.sectionHeading}>{t('dashboard.jobs_heading')}</Text>
@@ -233,7 +304,7 @@ function AdminDashboard() {
                 {t('dashboard.error')}
               </Text>
               <Pressable
-                onPress={() => void jobs.refetch()}
+                onPress={onRefresh}
                 style={({ pressed }) => [
                   s.linkBtn,
                   pressed && s.linkBtnPressed,
@@ -373,6 +444,23 @@ const s = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   statValuePending: { color: '#78350f' },
+  statValueError: { color: '#b91c1c' },
+  staleTag: { fontSize: 10, color: '#b45309', marginTop: 2 },
+  errorTag: { fontSize: 10, color: '#b91c1c', marginTop: 2 },
+  degradedBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 12,
+  },
+  degradedText: { color: '#b91c1c', fontSize: 13, flexShrink: 1 },
+  degradedRetry: { color: '#b91c1c', fontSize: 13, fontWeight: '700', marginLeft: 12 },
   sectionHeading: {
     fontSize: 14,
     fontWeight: '600',

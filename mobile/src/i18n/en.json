@@ -236,7 +236,10 @@
     "left": "{{amount}} left",
     "no_budget": "No budget set",
     "empty": "No active jobs yet.",
-    "error": "Could not load the dashboard."
+    "error": "Could not load the dashboard.",
+    "card_error": "Couldn't load",
+    "stale": "Not up to date",
+    "partial_error": "Some data couldn't load"
   },
   "review_queue": {
     "title": "Pending review",
