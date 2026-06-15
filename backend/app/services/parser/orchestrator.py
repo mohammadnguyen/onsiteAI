@@ -263,14 +263,19 @@ async def parse(
     # Step 11: re-derive reasons on the (possibly updated) partial.
     reasons = _review.derive_review_reasons(partial)
 
-    # Step 12: pick review status from reasons-list emptiness.
-    review_status = ReviewStatus.pending if reasons else ReviewStatus.reviewed
+    # Step 12 (A1b): only MONEY-integrity reasons gate to ``pending`` + a
+    # review-queue row. Supplier / category-only uncertainty is
+    # non-blocking enrichment, so the expense saves as ``reviewed`` with
+    # no queue row. The queue row (when opened) carries only these gating
+    # reasons, so the active review queue is money-driven.
+    gating = _review.gating_reasons(reasons)
+    review_status = ReviewStatus.pending if gating else ReviewStatus.reviewed
 
     # Step 13: assemble + return.
     return ParseResult(
         partial=partial,
         review_status=review_status,
-        review_reasons=tuple(reasons),
+        review_reasons=tuple(gating),
         ambiguous_job_matches=job.ambiguous_matches,
         ambiguous_supplier_matches=sup.ambiguous_matches,
         amount_source_span=amt.source_span,

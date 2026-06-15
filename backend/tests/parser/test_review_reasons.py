@@ -22,7 +22,12 @@ import pytest
 
 from app.models import ExpenseType, PaymentMethod, ReviewReasonCode
 from app.services.parser.llm_adapter import ParsePartial
-from app.services.parser.review import derive_review_reasons
+from app.services.parser.review import (
+    ENRICHMENT_REASONS,
+    MONEY_INTEGRITY_REASONS,
+    derive_review_reasons,
+    gating_reasons,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -349,3 +354,56 @@ def test_returned_list_elements_are_enum_members():
 
     for reason in derive_review_reasons(parts):
         assert isinstance(reason, ReviewReasonCode)
+
+
+# ---------------------------------------------------------------------------
+# A1b — money-integrity vs enrichment partition (routing)
+# ---------------------------------------------------------------------------
+
+
+def test_money_enrichment_partition_is_total_and_disjoint():
+    """Every ReviewReasonCode is classified exactly once (money XOR enrichment).
+
+    Guards A1b routing against a future reason code being added without
+    being classified as money-integrity or enrichment.
+    """
+    assert MONEY_INTEGRITY_REASONS | ENRICHMENT_REASONS == set(ReviewReasonCode)
+    assert MONEY_INTEGRITY_REASONS & ENRICHMENT_REASONS == set()
+
+
+def test_money_integrity_membership():
+    """The four amount/job-affecting reasons gate; the two label reasons do not."""
+    assert MONEY_INTEGRITY_REASONS == {
+        ReviewReasonCode.amount_uncertain,
+        ReviewReasonCode.job_uncertain,
+        ReviewReasonCode.duplicate_suspected,
+        ReviewReasonCode.unsupported_currency,
+    }
+    assert ENRICHMENT_REASONS == {
+        ReviewReasonCode.supplier_uncertain,
+        ReviewReasonCode.category_uncertain,
+    }
+
+
+def test_gating_reasons_filters_enrichment_and_preserves_order():
+    """gating_reasons keeps only money reasons, in the input (canonical) order."""
+    # Supplier/category-only -> no gating reasons (the expense saves reviewed).
+    assert (
+        gating_reasons(
+            [ReviewReasonCode.supplier_uncertain, ReviewReasonCode.category_uncertain]
+        )
+        == []
+    )
+    # Mixed -> money reasons only, original order preserved.
+    assert gating_reasons(
+        [
+            ReviewReasonCode.job_uncertain,
+            ReviewReasonCode.supplier_uncertain,
+            ReviewReasonCode.category_uncertain,
+            ReviewReasonCode.amount_uncertain,
+        ]
+    ) == [ReviewReasonCode.job_uncertain, ReviewReasonCode.amount_uncertain]
+    # All-money -> unchanged.
+    assert gating_reasons(
+        [ReviewReasonCode.amount_uncertain, ReviewReasonCode.duplicate_suspected]
+    ) == [ReviewReasonCode.amount_uncertain, ReviewReasonCode.duplicate_suspected]

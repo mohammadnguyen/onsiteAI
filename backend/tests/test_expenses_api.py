@@ -173,17 +173,20 @@ async def test_create_with_raw_text_pending(client, db_session, world, admin_tok
     )
     assert r.status_code == 201, r.text
     body = r.json()
+    # amount_uncertain is a MONEY reason → still gates to pending.
     assert body["expense"]["review_status"] == "pending"
     reasons = body["parse"]["review_reasons"]
     assert "amount_uncertain" in reasons
-    assert "supplier_uncertain" in reasons
+    # A1b: supplier_uncertain is ENRICHMENT — it no longer gates and is
+    # NOT carried on the money-only review-queue row.
+    assert "supplier_uncertain" not in reasons
 
     stmt = select(ExpenseReviewQueue).where(
         ExpenseReviewQueue.expense_id == uuid.UUID(body["expense"]["expense_id"])
     )
     queue = (await db_session.execute(stmt)).scalar_one()
     assert ReviewReasonCode.amount_uncertain in queue.review_reasons
-    assert ReviewReasonCode.supplier_uncertain in queue.review_reasons
+    assert ReviewReasonCode.supplier_uncertain not in queue.review_reasons
 
 
 @pytest.mark.asyncio
@@ -2173,3 +2176,99 @@ async def test_chp5_year_2099_rejected(client, db_session, chp_world, admin_toke
     )
     assert r.status_code == 422, r.text
     assert "future" in r.json().get("detail", "").lower()
+
+
+# ---------------------------------------------------------------------------
+# A1b — exception-based ROUTING e2e: enrichment-only uncertainty does NOT
+# gate. Inputs are derived from the all-clean "$305 Bunnings Kelly
+# bluemetal" capture (test_create_with_raw_text_high_confidence_is_auto_reviewed)
+# by dropping the supplier and/or category tokens, leaving only
+# supplier/category uncertainty.
+# ---------------------------------------------------------------------------
+
+
+async def _no_open_queue_row(db_session, expense_id_str: str) -> bool:
+    stmt = select(ExpenseReviewQueue).where(
+        ExpenseReviewQueue.expense_id == uuid.UUID(expense_id_str),
+        ExpenseReviewQueue.status == ReviewQueueStatus.open,
+    )
+    return (await db_session.execute(stmt)).scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_create_supplier_only_uncertain_is_reviewed_no_queue(
+    client, db_session, world, admin_token
+):
+    """Supplier unknown but amount/job/category clean → reviewed, no queue row."""
+    r = await client.post(
+        "/expenses",
+        headers=_auth(admin_token),
+        json={"raw_input_text": "$305 Kelly bluemetal", "expense_date": _today_iso()},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    # supplier_uncertain is enrichment → not a gating reason.
+    assert "supplier_uncertain" not in body["parse"]["review_reasons"]
+    assert body["parse"]["review_reasons"] == []
+    assert body["expense"]["review_status"] == "reviewed"
+    assert await _no_open_queue_row(db_session, body["expense"]["expense_id"])
+
+
+@pytest.mark.asyncio
+async def test_create_category_only_uncertain_is_reviewed_no_queue(
+    client, db_session, world, admin_token
+):
+    """Category unknown but amount/job/supplier clean → reviewed, no queue row."""
+    r = await client.post(
+        "/expenses",
+        headers=_auth(admin_token),
+        json={"raw_input_text": "$305 Bunnings Kelly", "expense_date": _today_iso()},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert "category_uncertain" not in body["parse"]["review_reasons"]
+    assert body["parse"]["review_reasons"] == []
+    assert body["expense"]["review_status"] == "reviewed"
+    assert await _no_open_queue_row(db_session, body["expense"]["expense_id"])
+
+
+@pytest.mark.asyncio
+async def test_create_supplier_and_category_only_uncertain_is_reviewed_no_queue(
+    client, db_session, world, admin_token
+):
+    """Both supplier+category unknown but amount/job clean → reviewed, no queue row."""
+    r = await client.post(
+        "/expenses",
+        headers=_auth(admin_token),
+        json={"raw_input_text": "$305 Kelly", "expense_date": _today_iso()},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["parse"]["review_reasons"] == []
+    assert body["expense"]["review_status"] == "reviewed"
+    assert await _no_open_queue_row(db_session, body["expense"]["expense_id"])
+
+
+@pytest.mark.asyncio
+async def test_supplier_category_only_reviewed_is_in_default_reviewed_set(
+    client, db_session, world, admin_token
+):
+    """A supplier/category-only capture lands review_status=reviewed and therefore
+    appears in the default reviewed-only set the accountant export + dashboard
+    use (both filter Expense.review_status; reviewed is the shared inclusion key).
+    """
+    r = await client.post(
+        "/expenses",
+        headers=_auth(admin_token),
+        json={"raw_input_text": "$305 Kelly bluemetal", "expense_date": _today_iso()},
+    )
+    assert r.status_code == 201, r.text
+    expense_id = r.json()["expense"]["expense_id"]
+    assert r.json()["expense"]["review_status"] == "reviewed"
+
+    # GET /expenses?status=reviewed is the same review_status filter the
+    # export default (reviewed-only) and dashboard apply.
+    listing = await client.get("/expenses?status=reviewed", headers=_auth(admin_token))
+    assert listing.status_code == 200
+    ids = {x["expense_id"] for x in listing.json()["items"]}
+    assert expense_id in ids

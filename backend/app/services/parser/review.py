@@ -93,3 +93,43 @@ def derive_review_reasons(parts: ParsePartial) -> list[ReviewReasonCode]:
         reasons.append(ReviewReasonCode.unsupported_currency)
 
     return reasons
+
+
+# A1b (exception-based review routing). Only MONEY-integrity reasons gate
+# an expense to ``pending`` + an open review-queue row. The ENRICHMENT
+# subset (supplier / category uncertainty) is non-blocking: the expense
+# saves as ``reviewed`` (amount + job are trusted enough for the default
+# dashboard / accountant-export set), and the gap is surfaced later as
+# non-blocking enrichment (unknown supplier / uncategorised) — NEVER
+# silently auto-assigned.
+#
+# These two sets MUST jointly cover every ReviewReasonCode; the parser
+# review-reasons test asserts the partition is total, so a future reason
+# code cannot be added without classifying it here.
+MONEY_INTEGRITY_REASONS: frozenset[ReviewReasonCode] = frozenset(
+    {
+        ReviewReasonCode.amount_uncertain,
+        ReviewReasonCode.job_uncertain,
+        ReviewReasonCode.duplicate_suspected,
+        ReviewReasonCode.unsupported_currency,
+    }
+)
+
+ENRICHMENT_REASONS: frozenset[ReviewReasonCode] = frozenset(
+    {
+        ReviewReasonCode.supplier_uncertain,
+        ReviewReasonCode.category_uncertain,
+    }
+)
+
+
+def gating_reasons(reasons: list[ReviewReasonCode]) -> list[ReviewReasonCode]:
+    """The money-integrity subset of ``reasons`` that gates review.
+
+    Preserves the input (canonical) order. A1b routing: an expense is
+    held at ``pending`` with an open review-queue row IFF this list is
+    non-empty; the queue row, when opened, carries exactly these reasons.
+    Enrichment-only uncertainty returns ``[]`` here, so the expense saves
+    as ``reviewed`` with no queue row.
+    """
+    return [r for r in reasons if r in MONEY_INTEGRITY_REASONS]

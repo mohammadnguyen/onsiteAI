@@ -277,10 +277,12 @@ async def test_spec_anchor_two_pending(db_session, seeded_pipeline_world):
     assert p.category_id == w["plumbing"].category_id
     assert p.category_conf == 0.85
 
+    # A1b: amount_uncertain (MONEY) gates -> pending. supplier_uncertain
+    # (ENRICHMENT) is non-blocking and is NOT carried on the money-driven
+    # result reasons; the expense still routes to pending because of amount.
     assert result.review_status == ReviewStatus.pending
-    # At minimum, amount_uncertain + supplier_uncertain fire.
     assert ReviewReasonCode.amount_uncertain in result.review_reasons
-    assert ReviewReasonCode.supplier_uncertain in result.review_reasons
+    assert ReviewReasonCode.supplier_uncertain not in result.review_reasons
 
 
 @pytest.mark.asyncio
