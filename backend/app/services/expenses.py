@@ -61,6 +61,7 @@ from app.models import (
     PaymentMethod,
     ReceiptStatus,
     ReviewQueueStatus,
+    ReviewReasonCode,
     ReviewStatus,
     Supplier,
     User,
@@ -962,6 +963,89 @@ def _coerce_audit_value(value: Any) -> Any:
     return value
 
 
+# A1b (review-queue lifecycle): which MONEY-integrity reason each
+# explicitly-patched field resolves. A human setting the field is a
+# trusted, deterministic correction — the parser is NOT re-run.
+# ``duplicate_suspected`` is deliberately absent: a suspected duplicate
+# is only cleared by an explicit resolve/reject, never by a field edit.
+def _money_reasons_cleared_by_patch(patch_set: set[str]) -> set[ReviewReasonCode]:
+    cleared: set[ReviewReasonCode] = set()
+    if "amount_inc_gst" in patch_set:
+        # A human-entered amount is trusted; Phase 2 is AUD-only, so a
+        # corrected amount also resolves an unsupported-currency flag.
+        cleared.add(ReviewReasonCode.amount_uncertain)
+        cleared.add(ReviewReasonCode.unsupported_currency)
+    if "job_id" in patch_set:
+        cleared.add(ReviewReasonCode.job_uncertain)
+    return cleared
+
+
+async def _reconcile_open_review_after_edit(
+    db: AsyncSession,
+    *,
+    expense: Expense,
+    patch_set: set[str],
+    actor: User,
+    reason: str | None,
+) -> None:
+    """Close or shrink an open review-queue row after a trusted admin edit.
+
+    A1b dangling-row fix: when an admin corrects the field(s) behind an
+    open row's money reasons, drop those reasons. If none remain, close
+    the row (``resolved``) and mark the expense ``reviewed``; otherwise
+    keep it open with the still-unresolved reasons. Every change writes an
+    audit row (review_reasons before/after + any review_status transition).
+    No-ops when there is no open row or the edit touched no row reason.
+    Callers gate this to admin edits of still-pending expenses (a
+    contributor is not a reviewer; reviewed expenses are never reopened).
+    """
+    cleared = _money_reasons_cleared_by_patch(patch_set)
+    if not cleared:
+        return
+    queue_row = await _get_open_queue_row(db, expense.expense_id)
+    if queue_row is None:
+        return
+    before = list(queue_row.review_reasons)
+    remaining = [r for r in before if r not in cleared]
+    if remaining == before:
+        return
+
+    changed_fields: dict[str, dict[str, Any]] = {
+        "review_reasons": {
+            "old": [_coerce_audit_value(r) for r in before],
+            "new": [_coerce_audit_value(r) for r in remaining],
+        }
+    }
+    if remaining:
+        # Money reasons remain → keep the row open, shrink its reasons.
+        queue_row.review_reasons = remaining
+    else:
+        # Last money reason resolved → close the row + mark reviewed. The
+        # closed row keeps its original reasons array for history (the
+        # cardinality>0 CHECK is never violated — we don't empty it).
+        from datetime import UTC, datetime
+
+        queue_row.status = ReviewQueueStatus.resolved
+        queue_row.resolved_by_user_id = actor.user_id
+        queue_row.resolved_at = datetime.now(UTC)
+        changed_fields["review_status"] = {
+            "old": _coerce_audit_value(expense.review_status),
+            "new": _coerce_audit_value(ReviewStatus.reviewed),
+        }
+        expense.review_status = ReviewStatus.reviewed
+    await db.flush()
+
+    audit = ExpenseAuditLog(
+        audit_id=uuid.uuid4(),
+        expense_id=expense.expense_id,
+        edited_by_user_id=actor.user_id,
+        changed_fields=changed_fields,
+        reason=reason,
+    )
+    db.add(audit)
+    await db.flush()
+
+
 async def update_expense(
     db: AsyncSession,
     *,
@@ -1084,6 +1168,26 @@ async def update_expense(
             )
             db.add(audit)
             await db.flush()
+
+    # A1b lifecycle: a trusted ADMIN edit to a still-pending expense that
+    # resolves the money reason(s) behind its open review-queue row closes
+    # (or shrinks) that row, so the active queue never carries reasons the
+    # correction already fixed — the dangling-row fix. Contributor edits
+    # never auto-close (a contributor is not a reviewer); reviewed expenses
+    # are never auto-reopened (D2). Skipped when the admin explicitly set
+    # review_status (they have taken manual control of the transition).
+    if (
+        is_admin
+        and pre_status == ReviewStatus.pending
+        and "review_status" not in patch_set
+    ):
+        await _reconcile_open_review_after_edit(
+            db,
+            expense=expense,
+            patch_set=patch_set,
+            actor=current_user,
+            reason=patch.reason,
+        )
 
     return expense
 

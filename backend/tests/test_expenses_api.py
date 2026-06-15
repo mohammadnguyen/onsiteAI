@@ -2179,6 +2179,207 @@ async def test_chp5_year_2099_rejected(client, db_session, chp_world, admin_toke
 
 
 # ---------------------------------------------------------------------------
+# A1b — exception-based review-queue lifecycle (admin edit re-derivation)
+#
+# These exercise the dangling-row fix: a trusted ADMIN edit that resolves
+# the money reason behind an open queue row closes (or shrinks) that row
+# and syncs review_status, with an audit row. (The routing partition
+# itself is unit-tested in tests/parser/test_review_reasons.py.)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_pending_with_queue(
+    db_session,
+    *,
+    job_id,
+    entered_by_user_id,
+    reasons,
+    amount: str = "100",
+):
+    """Seed a pending expense + its single open review-queue row."""
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=job_id,
+        entered_by_user_id=entered_by_user_id,
+        amount=amount,
+        review_status=ReviewStatus.pending,
+    )
+    queue = ExpenseReviewQueue(
+        review_id=uuid.uuid4(),
+        expense_id=exp.expense_id,
+        review_reasons=list(reasons),
+        status=ReviewQueueStatus.open,
+    )
+    db_session.add(queue)
+    await db_session.flush()
+    return exp, queue
+
+
+@pytest.mark.asyncio
+async def test_edit_pending_amount_clears_reason_and_closes_row(
+    client, db_session, world, admin_token
+):
+    """Admin sets amount on an amount_uncertain pending row → row closes, reviewed."""
+    exp, queue = await _seed_pending_with_queue(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        reasons=[ReviewReasonCode.amount_uncertain],
+    )
+    r = await client.patch(
+        f"/expenses/{exp.expense_id}",
+        headers=_auth(admin_token),
+        json={"amount_inc_gst": "250"},
+    )
+    assert r.status_code == 200, r.text
+
+    await db_session.refresh(exp)
+    await db_session.refresh(queue)
+    assert exp.review_status == ReviewStatus.reviewed
+    assert queue.status == ReviewQueueStatus.resolved
+    assert queue.resolved_by_user_id == world["admin"].user_id
+
+
+@pytest.mark.asyncio
+async def test_edit_pending_job_clears_reason_and_closes_row(
+    client, db_session, world, admin_token
+):
+    """Admin reassigns an active job on a job_uncertain pending row → row closes."""
+    exp, queue = await _seed_pending_with_queue(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        reasons=[ReviewReasonCode.job_uncertain],
+    )
+    r = await client.patch(
+        f"/expenses/{exp.expense_id}",
+        headers=_auth(admin_token),
+        json={"job_id": str(world["job_b"].job_id)},
+    )
+    assert r.status_code == 200, r.text
+
+    await db_session.refresh(exp)
+    await db_session.refresh(queue)
+    assert exp.review_status == ReviewStatus.reviewed
+    assert queue.status == ReviewQueueStatus.resolved
+
+
+@pytest.mark.asyncio
+async def test_edit_pending_mixed_shrinks_and_stays_open(
+    client, db_session, world, admin_token
+):
+    """Clearing one of two money reasons keeps the row open with the remainder."""
+    exp, queue = await _seed_pending_with_queue(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        reasons=[ReviewReasonCode.job_uncertain, ReviewReasonCode.amount_uncertain],
+    )
+    r = await client.patch(
+        f"/expenses/{exp.expense_id}",
+        headers=_auth(admin_token),
+        json={"amount_inc_gst": "300"},
+    )
+    assert r.status_code == 200, r.text
+
+    await db_session.refresh(exp)
+    await db_session.refresh(queue)
+    # amount cleared; job_uncertain remains → still pending, row still open.
+    assert exp.review_status == ReviewStatus.pending
+    assert queue.status == ReviewQueueStatus.open
+    assert queue.review_reasons == [ReviewReasonCode.job_uncertain]
+
+
+@pytest.mark.asyncio
+async def test_edit_does_not_auto_clear_duplicate_suspected(
+    client, db_session, world, admin_token
+):
+    """A generic amount edit clears amount but never the duplicate flag."""
+    exp, queue = await _seed_pending_with_queue(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        reasons=[
+            ReviewReasonCode.amount_uncertain,
+            ReviewReasonCode.duplicate_suspected,
+        ],
+    )
+    r = await client.patch(
+        f"/expenses/{exp.expense_id}",
+        headers=_auth(admin_token),
+        json={"amount_inc_gst": "275"},
+    )
+    assert r.status_code == 200, r.text
+
+    await db_session.refresh(exp)
+    await db_session.refresh(queue)
+    assert exp.review_status == ReviewStatus.pending
+    assert queue.status == ReviewQueueStatus.open
+    assert queue.review_reasons == [ReviewReasonCode.duplicate_suspected]
+
+
+@pytest.mark.asyncio
+async def test_edit_reviewed_does_not_reopen(client, db_session, world, admin_token):
+    """Editing an already-reviewed expense never reopens review (D2 trusted-edit)."""
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        review_status=ReviewStatus.reviewed,
+    )
+    r = await client.patch(
+        f"/expenses/{exp.expense_id}",
+        headers=_auth(admin_token),
+        json={"amount_inc_gst": "999"},
+    )
+    assert r.status_code == 200, r.text
+
+    await db_session.refresh(exp)
+    assert exp.review_status == ReviewStatus.reviewed
+    stmt = select(ExpenseReviewQueue).where(
+        ExpenseReviewQueue.expense_id == exp.expense_id
+    )
+    assert (await db_session.execute(stmt)).scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_autoclose_writes_audit_with_reason_diff(
+    client, db_session, world, admin_token
+):
+    """The auto-close writes an audit row recording the review_reasons + status diff."""
+    exp, queue = await _seed_pending_with_queue(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=world["admin"].user_id,
+        reasons=[ReviewReasonCode.amount_uncertain],
+    )
+    r = await client.patch(
+        f"/expenses/{exp.expense_id}",
+        headers=_auth(admin_token),
+        json={"amount_inc_gst": "150", "reason": "corrected amount on review"},
+    )
+    assert r.status_code == 200, r.text
+
+    audits = (
+        (
+            await db_session.execute(
+                select(ExpenseAuditLog).where(
+                    ExpenseAuditLog.expense_id == exp.expense_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(audits) == 1
+    changed = audits[0].changed_fields
+    assert "review_reasons" in changed
+    assert changed["review_reasons"]["old"] == ["amount_uncertain"]
+    assert changed["review_reasons"]["new"] == []
+    assert changed["review_status"]["new"] == "reviewed"
+
+
+# ---------------------------------------------------------------------------
 # A1b — exception-based ROUTING e2e: enrichment-only uncertainty does NOT
 # gate. Inputs are derived from the all-clean "$305 Bunnings Kelly
 # bluemetal" capture (test_create_with_raw_text_high_confidence_is_auto_reviewed)
