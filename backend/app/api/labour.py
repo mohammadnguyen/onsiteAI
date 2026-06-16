@@ -19,7 +19,10 @@ Auth policy (operator decisions OD-1..3):
 * Attendance: create/batch any authenticated caller; edit/delete =
   admin always, contributor own+today only (enforced in the service);
   READS any authenticated caller (site presence, not money).
-* Summary: admin-only (it informs payment decisions).
+* Summary: admin-only (it informs payment decisions). A separate
+  per-job ROLLUP (``/labour-rollup``) is contributor-safe — labourers /
+  worker-days / days-on-site for everyone; hours + cost stripped to null
+  for non-admins server-side, so summary auth never has to be loosened.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from app.database import get_db
 from app.deps import get_current_user, require_admin
 from app.models.user import User, UserRole
 from app.schemas.labour import (
+    JobLabourRollup,
     LabourBatchRequest,
     LabourEntryPublic,
     LabourSummary,
@@ -212,3 +216,48 @@ async def labour_summary_endpoint(
         db, from_date=from_date, to_date=to_date, job_id=job_id
     )
     return LabourSummary(**summary)
+
+
+@router.get(
+    "/labour-rollup",
+    response_model=list[JobLabourRollup],
+    status_code=status.HTTP_200_OK,
+)
+async def labour_rollup_endpoint(
+    from_date: date | None = Query(default=None, alias="from"),
+    to_date: date | None = Query(default=None, alias="to"),
+    job_id: uuid.UUID | None = None,
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[JobLabourRollup]:
+    """Contributor-safe per-job labour rollup (any authenticated caller).
+
+    Returns ``labourers`` / ``worker_days`` / ``days_on_site`` for EVERY
+    role. ``total_hours`` and ``labour_cost`` are populated for ADMINS
+    ONLY and stripped to null for contributors server-side (mirroring
+    the ``/workers`` hourly_rate strip in
+    :func:`list_workers_endpoint`). ``hourly_rate`` is never in this
+    shape.
+
+    The admin-only ``/labour-summary`` route — which also carries
+    per-worker cost — is intentionally left unchanged. This is a
+    separate, narrower endpoint precisely so loosening summary auth (and
+    leaking per-worker money) is never required to give contributors a
+    money-free per-job view.
+    """
+    summary = await svc.summarize(
+        db, from_date=from_date, to_date=to_date, job_id=job_id
+    )
+    is_admin = _user.role == UserRole.admin
+    return [
+        JobLabourRollup(
+            job_id=j["job_id"],
+            job_name=j["job_name"],
+            labourers=j["labourers"],
+            worker_days=j["total_days"],
+            days_on_site=j["days_on_site"],
+            total_hours=j["total_hours"] if is_admin else None,
+            labour_cost=j["labour_cost"] if is_admin else None,
+        )
+        for j in summary["jobs"]
+    ]

@@ -440,7 +440,11 @@ async def summarize(
     * ``entries_total`` / ``entries_costed`` — lets the client flag an
       incomplete cost (some entries miss hours or a rate snapshot).
     Per job additionally: ``days_on_site`` — distinct dates anyone was
-    on the job (the job's DURATION, vs worker-days which is INPUT).
+    on the job (the job's DURATION, vs worker-days which is INPUT) —
+    and ``labourers`` — distinct workers on the job (its HEADCOUNT, vs
+    worker-days which sums fractions). The three are deliberately
+    separate so "4 workers x 1 day" reads as 4 labourers / 4
+    worker-days / 1 day on site, not "4 days".
 
     Cost math relies on SQL: ``hours * rate_snapshot`` is null when
     either operand is null, and ``sum``/``count(...) filter`` ignore
@@ -494,6 +498,9 @@ async def summarize(
                     func.count(func.distinct(LabourEntry.work_date)).label(
                         "days_on_site"
                     ),
+                    func.count(func.distinct(LabourEntry.worker_id)).label(
+                        "labourers"
+                    ),
                     _hours.label("total_hours"),
                     _cost.label("labour_cost"),
                     _total_entries.label("entries_total"),
@@ -541,6 +548,7 @@ async def summarize(
                 "job_name": r.job_name,
                 "total_days": r.total_days,
                 "days_on_site": r.days_on_site,
+                "labourers": r.labourers,
                 "total_hours": r.total_hours,
                 "labour_cost": r.labour_cost,
                 "entries_total": r.entries_total,

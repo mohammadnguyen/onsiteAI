@@ -656,11 +656,202 @@ async def test_summary_contributor_403(client, contributor_token):
     assert r.status_code == 403
 
 
+# ---------------------------------------------------------------------------
+# GET /labour-rollup (L-D1) — contributor-safe per-job rollup
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rollup_labourers_distinct_not_entries(
+    client, db_session, seeded_admin, admin_token
+):
+    """labourers = COUNT(DISTINCT worker_id): same worker over many days
+    counts once; two workers count as two; worker-days and days-on-site
+    stay separate numbers (the "4 workers x 1 day" fix)."""
+    solo = await _mk_job(db_session, seeded_admin, name="Solo")
+    pair = await _mk_job(db_session, seeded_admin, name="Pair")
+    w1 = await _mk_worker(db_session, seeded_admin, name="W1")
+    w2 = await _mk_worker(db_session, seeded_admin, name="W2")
+    # Solo: one worker across 3 distinct dates.
+    for d in range(3):
+        await _mk_entry(
+            db_session,
+            worker=w1,
+            job=solo,
+            recorded_by=seeded_admin,
+            work_date=_today() - _datetime.timedelta(days=d),
+            fraction="1.0",
+        )
+    # Pair: two workers on a single (different) date.
+    await _mk_entry(
+        db_session,
+        worker=w1,
+        job=pair,
+        recorded_by=seeded_admin,
+        work_date=_today() - _datetime.timedelta(days=3),
+        fraction="1.0",
+    )
+    await _mk_entry(
+        db_session,
+        worker=w2,
+        job=pair,
+        recorded_by=seeded_admin,
+        work_date=_today() - _datetime.timedelta(days=3),
+        fraction="1.0",
+    )
+
+    solo_row = (
+        await client.get(
+            f"/labour-rollup?job_id={solo.job_id}", headers=_auth(admin_token)
+        )
+    ).json()[0]
+    assert solo_row["labourers"] == 1  # same worker many days -> 1
+    assert Decimal(solo_row["worker_days"]) == Decimal("3.0")  # != labourers
+    assert solo_row["days_on_site"] == 3  # distinct dates
+
+    pair_row = (
+        await client.get(
+            f"/labour-rollup?job_id={pair.job_id}", headers=_auth(admin_token)
+        )
+    ).json()[0]
+    assert pair_row["labourers"] == 2  # two workers -> 2
+    assert Decimal(pair_row["worker_days"]) == Decimal("2.0")
+    assert pair_row["days_on_site"] == 1  # "2 workers x 1 day" -> 1 day
+
+
+@pytest.mark.asyncio
+async def test_rollup_contributor_200_no_money(
+    client, db_session, seeded_admin, seeded_contributor, contributor_token
+):
+    """Contributor gets 200 with the three non-money metrics; hours and
+    cost are null and no rate field exists — money stripped server-side,
+    not merely hidden in the UI."""
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    w = await _mk_worker(db_session, seeded_admin, name="W1", hourly_rate="50")
+    # Costable entry: cost WOULD be present for an admin caller.
+    await _mk_entry(
+        db_session,
+        worker=w,
+        job=job,
+        recorded_by=seeded_admin,
+        hours="8",
+        rate_snapshot="50",
+    )
+
+    r = await client.get(
+        f"/labour-rollup?job_id={job.job_id}", headers=_auth(contributor_token)
+    )
+    assert r.status_code == 200, r.text
+    rows = r.json()
+    assert len(rows) == 1
+    row = rows[0]
+    # Non-money metrics present.
+    assert row["labourers"] == 1
+    assert Decimal(row["worker_days"]) == Decimal("1.0")
+    assert row["days_on_site"] == 1
+    # Money stripped to null for the contributor.
+    assert row["total_hours"] is None
+    assert row["labour_cost"] is None
+    # The shape carries no rate at all, and exactly the expected keys.
+    assert "hourly_rate" not in row
+    assert set(row.keys()) == {
+        "job_id",
+        "job_name",
+        "labourers",
+        "worker_days",
+        "days_on_site",
+        "total_hours",
+        "labour_cost",
+    }
+
+
+@pytest.mark.asyncio
+async def test_rollup_admin_includes_hours_and_cost(
+    client, db_session, seeded_admin, admin_token
+):
+    """Same data, admin caller: hours + cost are populated."""
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    w = await _mk_worker(db_session, seeded_admin, name="W1")
+    await _mk_entry(
+        db_session,
+        worker=w,
+        job=job,
+        recorded_by=seeded_admin,
+        hours="8",
+        rate_snapshot="50",
+    )
+    r = await client.get(
+        f"/labour-rollup?job_id={job.job_id}", headers=_auth(admin_token)
+    )
+    assert r.status_code == 200, r.text
+    row = r.json()[0]
+    assert Decimal(row["total_hours"]) == Decimal("8")
+    assert Decimal(row["labour_cost"]) == Decimal("400")  # 8 * 50
+
+
+@pytest.mark.asyncio
+async def test_rollup_includes_completed_job_history(
+    client, db_session, seeded_admin, admin_token
+):
+    """Archiving a job (status completed) does not hide its labour
+    history — _filtered() never filters on Job.status."""
+    job = await _mk_job(
+        db_session, seeded_admin, name="Old Site", status=JobStatus.completed
+    )
+    w = await _mk_worker(db_session, seeded_admin, name="W1")
+    await _mk_entry(db_session, worker=w, job=job, recorded_by=seeded_admin)
+    r = await client.get(
+        f"/labour-rollup?job_id={job.job_id}", headers=_auth(admin_token)
+    )
+    assert r.status_code == 200, r.text
+    rows = r.json()
+    assert len(rows) == 1
+    assert rows[0]["labourers"] == 1
+
+
+@pytest.mark.asyncio
+async def test_rollup_month_to_date_range(
+    client, db_session, seeded_admin, admin_token
+):
+    """from=<month start> narrows to calendar month-to-date; all-time
+    (no from) includes the earlier entry."""
+    job = await _mk_job(db_session, seeded_admin, name="Site A")
+    w = await _mk_worker(db_session, seeded_admin, name="W1")
+    today = _today()
+    month_start = today.replace(day=1)
+    await _mk_entry(
+        db_session, worker=w, job=job, recorded_by=seeded_admin,
+        work_date=today, fraction="1.0",
+    )
+    # One day before this month's start (last day of the previous month).
+    await _mk_entry(
+        db_session, worker=w, job=job, recorded_by=seeded_admin,
+        work_date=month_start - _datetime.timedelta(days=1), fraction="1.0",
+    )
+
+    all_row = (
+        await client.get(
+            f"/labour-rollup?job_id={job.job_id}", headers=_auth(admin_token)
+        )
+    ).json()[0]
+    assert Decimal(all_row["worker_days"]) == Decimal("2.0")
+
+    mtd_row = (
+        await client.get(
+            f"/labour-rollup?job_id={job.job_id}&from={month_start.isoformat()}",
+            headers=_auth(admin_token),
+        )
+    ).json()[0]
+    assert Decimal(mtd_row["worker_days"]) == Decimal("1.0")
+    assert mtd_row["days_on_site"] == 1
+
+
 @pytest.mark.asyncio
 async def test_requires_auth(client):
     assert (await client.get("/workers")).status_code == 401
     assert (await client.get("/labour-entries")).status_code == 401
     assert (await client.get("/labour-summary")).status_code == 401
+    assert (await client.get("/labour-rollup")).status_code == 401
 
 
 # ---------------------------------------------------------------------------

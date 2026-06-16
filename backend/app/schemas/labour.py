@@ -166,14 +166,17 @@ class JobDaysRow(BaseModel):
 
     ``total_days`` is worker-days (sum of day fractions) — the labour
     INPUT. ``days_on_site`` is the distinct count of dates anyone was on
-    the job — the job's DURATION. Showing both fixes the misleading
-    "4 workers x 1 day = 4 days" reading. v2 also adds hours + cost.
+    the job — the job's DURATION. ``labourers`` is the distinct count of
+    workers on the job — its HEADCOUNT. Showing all three fixes the
+    misleading "4 workers x 1 day = 4 days" reading. v2 also adds
+    hours + cost.
     """
 
     job_id: uuid.UUID
     job_name: str
     total_days: Decimal
     days_on_site: int = 0
+    labourers: int = 0
     total_hours: Decimal | None = None
     labour_cost: Decimal | None = None
     entries_total: int = 0
@@ -196,3 +199,28 @@ class LabourSummary(BaseModel):
     total_labour_cost: Decimal | None = None
     entries_total: int = 0
     entries_costed: int = 0
+
+
+class JobLabourRollup(BaseModel):
+    """Contributor-safe per-job labour rollup (``GET /labour-rollup``).
+
+    Money-free for everyone: ``labourers`` (distinct workers on the
+    job), ``worker_days`` (sum of day fractions — the labour input) and
+    ``days_on_site`` (distinct dates anyone was on the job — its
+    duration) are returned to ANY authenticated caller.
+
+    ``total_hours`` and ``labour_cost`` are populated for ADMINS ONLY
+    and stripped to null for contributors server-side (mirroring the
+    ``/workers`` ``hourly_rate`` strip). ``hourly_rate`` is never part
+    of this shape. The admin-only ``GET /labour-summary`` — which also
+    carries per-worker cost — is intentionally left unchanged; this is a
+    separate, narrower endpoint so contributors never receive money.
+    """
+
+    job_id: uuid.UUID
+    job_name: str
+    labourers: int = 0
+    worker_days: Decimal
+    days_on_site: int = 0
+    total_hours: Decimal | None = None
+    labour_cost: Decimal | None = None
