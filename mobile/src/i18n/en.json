@@ -91,6 +91,7 @@
     "error_session": "Session expired — sign in again, then retry.",
     "error_forbidden": "Only admins can export.",
     "error_dates": "Check the dates and try again.",
+    "error_timeout": "Export timed out. Check your connection and try again.",
     "error_network": "Network error. Check your connection and try again.",
     "error_sharing_unavailable": "Sharing isn't available on this device.",
     "error_generic": "Couldn't export. Please try again."

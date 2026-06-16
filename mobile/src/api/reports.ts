@@ -37,6 +37,7 @@ export type ExportErrorKind =
   | 'session_expired' // 401 — token missing or rejected
   | 'forbidden' // 403 — not an admin
   | 'bad_dates' // 400 — backend rejected the date range
+  | 'timeout' // R2 — the download exceeded EXPORT_DOWNLOAD_TIMEOUT_MS
   | 'network' // request never completed (connectivity / IO)
   | 'generic'; // any other non-200, or no writable cache dir
 
@@ -66,6 +67,12 @@ export type ExportResult = { uri: string; mimeType: string; uti: string };
 const XLSX_MIME =
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const XLSX_UTI = 'org.openxmlformats.spreadsheetml.sheet';
+
+// R2: total wall-clock cap for the export download. The export bypasses the
+// axios client, so R1's 15s request timeout never covered it. 30s — longer
+// than R1's 15s because the workbook is generated server-side and can take
+// longer than a small JSON call, especially on weak network.
+const EXPORT_DOWNLOAD_TIMEOUT_MS = 30000;
 
 function buildUrl(params: ExportParams): string {
   // Built by hand (not URLSearchParams) to avoid RN polyfill quirks.
@@ -106,15 +113,59 @@ export async function downloadExpensesExcel(
   const fileUri = `${dir}sitetracker-expenses-${todayISO()}.xlsx`;
   const url = buildUrl(params);
 
-  let result: FileSystem.FileSystemDownloadResult;
+  // R2: cap the download with a total wall-clock timeout. We race a
+  // cancellable resumable download against a 30s timer. On timeout we throw
+  // ExportError('timeout'); cancelAsync() + the partial-file delete are
+  // BEST-EFFORT cleanup. The THROW is the real guard: the screen only shares
+  // `result.uri` on success, so a native download that finishes AFTER the
+  // timeout can never reach the share sheet — its result is discarded and
+  // this function has already thrown.
+  const task = FileSystem.createDownloadResumable(url, fileUri, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const downloadPromise = task.downloadAsync();
+  // Swallow a late settle so a post-timeout resolve/reject can't surface as
+  // an unhandled promise rejection.
+  void downloadPromise.catch(() => undefined);
+
+  let result: FileSystem.FileSystemDownloadResult | undefined;
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    result = await FileSystem.downloadAsync(url, fileUri, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-  } catch {
-    // A throw here is connectivity / IO — never an HTTP status.
+    result = await Promise.race([
+      downloadPromise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(new ExportError('timeout'));
+        }, EXPORT_DOWNLOAD_TIMEOUT_MS);
+      }),
+    ]);
+  } catch (err) {
+    if (err instanceof ExportError && err.kind === 'timeout') {
+      try {
+        await task.cancelAsync();
+      } catch {
+        /* best-effort stop; never block on it */
+      }
+      try {
+        await FileSystem.deleteAsync(fileUri, { idempotent: true });
+      } catch {
+        /* best-effort cleanup of any partial file */
+      }
+      throw err;
+    }
+    // Any other throw is connectivity / IO — never an HTTP status.
     throw new ExportError('network');
+  } finally {
+    if (timer) clearTimeout(timer);
   }
+
+  // Defensive belt-and-suspenders: never share a success that landed in the
+  // same tick the timer fired (the throw above is the primary guard).
+  if (timedOut) throw new ExportError('timeout');
+  // downloadAsync resolves undefined only when the task was cancelled.
+  if (result === undefined) throw new ExportError('network');
 
   if (result.status === 200) {
     return { uri: result.uri, mimeType: XLSX_MIME, uti: XLSX_UTI };

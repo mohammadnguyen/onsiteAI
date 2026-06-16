@@ -45,6 +45,8 @@ function errorKey(kind: ExportErrorKind): string {
       return 'export.error_forbidden';
     case 'bad_dates':
       return 'export.error_dates';
+    case 'timeout':
+      return 'export.error_timeout';
     case 'network':
       return 'export.error_network';
     default:
