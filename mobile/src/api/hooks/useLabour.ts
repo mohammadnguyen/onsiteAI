@@ -9,6 +9,7 @@ export type WorkerCreateInput = components['schemas']['WorkerCreate'];
 export type WorkerUpdateInput = components['schemas']['WorkerUpdate'];
 export type LabourEntryPublic = components['schemas']['LabourEntryPublic'];
 export type LabourSummary = components['schemas']['LabourSummary'];
+export type JobLabourRollup = components['schemas']['JobLabourRollup'];
 
 /**
  * L-B1 labour attendance hooks (read roster, read day entries, save).
@@ -265,6 +266,41 @@ export function useLabourSummary(
       return r.data;
     },
     enabled: !!accessToken && (!!from || !!jobId),
+    retry: false,
+  });
+}
+
+/**
+ * L-D1 — contributor-safe per-job labour rollup (GET /labour-rollup).
+ *
+ * Unlike {@link useLabourSummary} (admin-only /labour-summary, which a
+ * contributor caller gets 403 on), this endpoint returns 200 for ANY
+ * authenticated caller: labourers / worker_days / days_on_site for
+ * everyone, with total_hours + labour_cost populated for admins only
+ * (stripped to null server-side for contributors). The job-detail
+ * Labour section uses this so contributors finally get a per-job
+ * rollup. `from`/`to` drive the All-time (null) vs This-month
+ * (calendar month start) toggle; totals are server-computed.
+ */
+export function useJobLabourRollup(
+  jobId: string | null,
+  from: string | null,
+  to: string | null,
+) {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  return useQuery<JobLabourRollup[]>({
+    queryKey: ['labour-rollup', { jobId, from, to }],
+    queryFn: async () => {
+      const r = await api.get<JobLabourRollup[]>('/labour-rollup', {
+        params: {
+          ...(jobId ? { job_id: jobId } : {}),
+          ...(from ? { from } : {}),
+          ...(to ? { to } : {}),
+        },
+      });
+      return r.data;
+    },
+    enabled: !!accessToken && !!jobId,
     retry: false,
   });
 }

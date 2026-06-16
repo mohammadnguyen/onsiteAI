@@ -405,7 +405,11 @@
     "worker_days_value": "{{days}} \u7528\u5de5\u5929\u6570",
     "job_days_on_site_label": "\u5728\u573a\u5929\u6570",
     "job_worker_days_label": "\u7528\u5de5\u5929\u6570",
-    "job_cost_label": "\u7528\u5de5\u8d39\u7528"
+    "job_cost_label": "\u7528\u5de5\u8d39\u7528",
+    "job_labourers_label": "\u7528\u5de5\u4eba\u6570",
+    "job_rollup_header": "\u672c\u9879\u76ee\u7528\u5de5",
+    "range_all_time": "\u5168\u90e8",
+    "range_this_month": "\u672c\u6708"
   },
   "review_reason": {
     "amount_uncertain": "\u91d1\u989d\u4e0d\u786e\u5b9a",

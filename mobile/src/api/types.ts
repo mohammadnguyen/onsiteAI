@@ -1563,6 +1563,11 @@ export interface components {
              * @default 0
              */
             days_on_site: number;
+            /**
+             * Labourers
+             * @default 0
+             */
+            labourers: number;
             /** Total Hours */
             total_hours?: string | null;
             /** Labour Cost */
@@ -1577,6 +1582,40 @@ export interface components {
              * @default 0
              */
             entries_costed: number;
+        };
+        /**
+         * JobLabourRollup
+         * @description Contributor-safe per-job labour rollup (``GET /labour-rollup``).
+         *
+         *     Money-free for everyone: ``labourers`` / ``worker_days`` /
+         *     ``days_on_site``. ``total_hours`` and ``labour_cost`` are populated
+         *     for ADMINS ONLY and stripped to null for contributors server-side.
+         *     ``hourly_rate`` is never part of this shape.
+         */
+        JobLabourRollup: {
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /** Job Name */
+            job_name: string;
+            /**
+             * Labourers
+             * @default 0
+             */
+            labourers: number;
+            /** Worker Days */
+            worker_days: string;
+            /**
+             * Days On Site
+             * @default 0
+             */
+            days_on_site: number;
+            /** Total Hours */
+            total_hours?: string | null;
+            /** Labour Cost */
+            labour_cost?: string | null;
         };
         /**
          * JobPublic

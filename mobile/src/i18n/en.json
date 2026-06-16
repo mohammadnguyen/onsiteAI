@@ -405,7 +405,11 @@
     "worker_days_value": "{{days}} worker-days",
     "job_days_on_site_label": "Days on site",
     "job_worker_days_label": "Worker-days",
-    "job_cost_label": "Labour cost"
+    "job_cost_label": "Labour cost",
+    "job_labourers_label": "Labourers",
+    "job_rollup_header": "Labour on this job",
+    "range_all_time": "All-time",
+    "range_this_month": "This month"
   },
   "review_reason": {
     "amount_uncertain": "Amount uncertain",

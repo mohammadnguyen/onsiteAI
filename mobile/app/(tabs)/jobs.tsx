@@ -25,12 +25,28 @@ import {
 } from '../../src/api/hooks/useJobs';
 import { useFocusEffect, useRouter, type Href } from 'expo-router';
 import { useJobExpenses } from '../../src/api/hooks/useExpenses';
-import { useLabourSummary } from '../../src/api/hooks/useLabour';
+import {
+  useJobLabourRollup,
+  type JobLabourRollup,
+} from '../../src/api/hooks/useLabour';
 import { useMe } from '../../src/api/hooks/useAuth';
 import { NewJobModal } from '../../src/components/NewJobModal';
 import { RecentCapturesList } from '../../src/components/RecentCapturesList';
 import { useSelectedJobStore } from '../../src/store/selectedJob';
 import { formatDays, formatMoney } from '../../src/util/format';
+
+/**
+ * L-D1: calendar month-to-date start ("YYYY-MM-01", device-local) for
+ * the job-detail labour "This month" toggle. `to` is left open so the
+ * range runs to today. Kept local to this screen (one small function)
+ * rather than refactored into a shared util — matches the existing
+ * per-screen preset pattern (dashboard, expenses list).
+ */
+function isoMonthStart(): string {
+  const now = new Date();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  return `${now.getFullYear()}-${m}-01`;
+}
 
 /**
  * Mobile Polish slice (Half A): map the backend's job-status enum
@@ -217,11 +233,17 @@ function JobDetailModal({
   // scanned identity rows. Endpoint is admin-only; contributors get 403
   // and the section hides silently (see SpendingSection below).
   const summary = useJobBudgetSummary(jobId);
-  // L-B2: all-time labour days for this job (admin-only endpoint —
-  // contributors get 403 and the row hides silently, exactly like
-  // SpendingSection). One small server-computed total; no per-day
-  // drilldown by design.
-  const labourDays = useLabourSummary(null, null, jobId);
+  // L-D1: per-job labour rollup. Contributor-safe endpoint (200 for all
+  // roles; hours + cost stripped server-side for non-admins), so
+  // contributors now get a per-job rollup too — labourers / worker-days
+  // / days-on-site. The range toggle switches all-time (null) vs
+  // calendar month-to-date; no per-day drilldown by design.
+  const [labourRange, setLabourRange] = useState<'all' | 'month'>('all');
+  const labourRollup = useJobLabourRollup(
+    jobId,
+    labourRange === 'month' ? isoMonthStart() : null,
+    null,
+  );
 
   // Tier 1B: navigate to the job edit screen. selectedJobId stays in
   // the store, so when the user returns via router.back() the modal
@@ -400,7 +422,12 @@ function JobDetailModal({
               ))
             )}
             <SpendingSection summary={summary} />
-            <LabourDaysSection summary={labourDays} />
+            <LabourDaysSection
+              rollup={labourRollup}
+              isAdmin={isAdmin}
+              range={labourRange}
+              onRangeChange={setLabourRange}
+            />
             {/* Per-job expense list (correction-loop slice): show
                 the recent expenses for this job below spending, so
                 admins can drill into individual rows to correct
@@ -533,54 +560,99 @@ function SpendingSection({
 }
 
 /**
- * L-B2: one all-time "Labour days" row in the job detail modal.
+ * L-D1: per-job labour rollup in the job detail modal.
  *
- * Mirrors SpendingSection's error semantics exactly: 403 (admin-only
- * endpoint, contributor caller) hides silently; other failures show a
- * small non-blocking message; loading is a tiny inline indicator. The
- * value is the server-computed total — attendance days, never pay.
+ * Contributor-safe: the /labour-rollup endpoint returns 200 for every
+ * role with three money-free metrics — Labourers (distinct workers),
+ * Worker-days (labour input), Days on site (distinct dates / duration) —
+ * so "4 workers x 1 day" reads as 4 / 4 / 1, not "4 days". Total hours
+ * and Labour cost are admin-only: the server already strips them to null
+ * for contributors, and this UI ALSO gates them on `isAdmin` (defence in
+ * depth — money never renders on a non-admin device). An All-time /
+ * This-month toggle replaces date/week stepping. Empty data renders
+ * zeros (no labour yet), never a hidden section.
  */
 function LabourDaysSection({
-  summary,
+  rollup,
+  isAdmin,
+  range,
+  onRangeChange,
 }: {
-  summary: ReturnType<typeof useLabourSummary>;
+  rollup: ReturnType<typeof useJobLabourRollup>;
+  isAdmin: boolean;
+  range: 'all' | 'month';
+  onRangeChange: (next: 'all' | 'month') => void;
 }) {
   const { t } = useTranslation();
-  const is403 =
-    axios.isAxiosError(summary.error) &&
-    summary.error.response?.status === 403;
-  if (is403) return null;
+  const row: JobLabourRollup | undefined = rollup.data?.[0];
 
   return (
     <View testID="job-labour-days">
-      {summary.isLoading ? (
+      <Text style={s.sectionHeader}>{t('labour.job_rollup_header')}</Text>
+      <View style={s.labourRangeRow}>
+        {(['all', 'month'] as const).map((opt) => (
+          <TouchableOpacity
+            key={opt}
+            testID={`job-labour-range-${opt}`}
+            onPress={() => onRangeChange(opt)}
+            style={[s.labourRangeChip, range === opt && s.labourRangeChipActive]}
+          >
+            <Text
+              style={[
+                s.labourRangeText,
+                range === opt && s.labourRangeTextActive,
+              ]}
+            >
+              {t(
+                opt === 'all'
+                  ? 'labour.range_all_time'
+                  : 'labour.range_this_month',
+              )}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {rollup.isLoading ? (
         <View style={s.spendingLoading} testID="job-labour-loading">
           <ActivityIndicator size="small" color="#64748b" />
         </View>
-      ) : summary.isError ? (
+      ) : rollup.isError ? (
         <Text style={s.spendingError} testID="job-labour-error">
           {t('labour.job_days_error')}
         </Text>
-      ) : summary.data ? (
+      ) : (
         <>
-          {/* Distinguish the job's DURATION (distinct dates on site)
-              from its labour INPUT (worker-days), then the cost. */}
+          {/* Three money-free metrics, shown to every role. */}
           <DetailRow
-            label={t('labour.job_days_on_site_label')}
-            value={String(summary.data.jobs[0]?.days_on_site ?? 0)}
+            label={t('labour.job_labourers_label')}
+            value={String(row?.labourers ?? 0)}
           />
           <DetailRow
             label={t('labour.job_worker_days_label')}
-            value={formatDays(summary.data.jobs[0]?.total_days ?? 0)}
+            value={formatDays(row?.worker_days ?? 0)}
           />
-          {summary.data.jobs[0]?.labour_cost != null ? (
+          <DetailRow
+            label={t('labour.job_days_on_site_label')}
+            value={String(row?.days_on_site ?? 0)}
+          />
+          {/* Admin-only money rows. The server already nulls these for
+              contributors; gating on isAdmin too means cost/hours can
+              never render on a non-admin device. */}
+          {isAdmin && row?.total_hours != null ? (
+            <DetailRow
+              label={t('labour.total_hours')}
+              value={t('labour.hours_value', { hours: row.total_hours })}
+            />
+          ) : null}
+          {isAdmin && row?.labour_cost != null ? (
             <DetailRow
               label={t('labour.job_cost_label')}
-              value={formatMoney(summary.data.jobs[0].labour_cost)}
+              value={formatMoney(row.labour_cost)}
             />
           ) : null}
         </>
-      ) : null}
+      )}
     </View>
   );
 }
@@ -701,6 +773,16 @@ const s = StyleSheet.create({
   detailLabel: { flex: 1, color: '#64748b' },
   detailValue: { flex: 2, color: '#0f172a' },
   sectionHeader: { fontSize: 15, fontWeight: '600', marginTop: 20, marginBottom: 8, color: '#0f172a' },
+  labourRangeRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
+  labourRangeChip: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    backgroundColor: '#f1f5f9',
+  },
+  labourRangeChipActive: { backgroundColor: '#0f172a' },
+  labourRangeText: { fontSize: 13, color: '#475569' },
+  labourRangeTextActive: { color: '#ffffff', fontWeight: '600' },
   muted: { color: '#94a3b8' },
   aliasRow: { paddingVertical: 4, color: '#0f172a' },
   budgetRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
