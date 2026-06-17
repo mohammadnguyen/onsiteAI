@@ -120,7 +120,6 @@
     "date_custom_hint": "\u793a\u4f8b\uff1a22/05 \u6216 22/05/2026",
     "date_invalid": "\u65e5\u671f\u683c\u5f0f\u65e0\u6548\u2014\u2014\u8bf7\u4f7f\u7528 DD/MM \u6216 DD/MM/YYYY",
     "payment_label": "\u4ed8\u6b3e\uff1a",
-    "payment_auto": "\u81ea\u52a8\u8bc6\u522b",
     "payment_cash": "\u73b0\u91d1",
     "payment_transfer": "\u94f6\u884c\u8f6c\u8d26",
     "payment_unknown": "\u672a\u77e5",

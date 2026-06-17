@@ -120,7 +120,6 @@
     "date_custom_hint": "e.g. 22/05 or 22/05/2026",
     "date_invalid": "Invalid date — try DD/MM or DD/MM/YYYY",
     "payment_label": "Payment:",
-    "payment_auto": "Auto",
     "payment_cash": "Cash",
     "payment_transfer": "Bank transfer",
     "payment_unknown": "Unknown",

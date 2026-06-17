@@ -45,7 +45,12 @@ import { todayISO } from '../../src/util/dates';
  * the parser's value, causing spurious "Amount is required" 422s.
  */
 
-type PaymentSel = 'auto' | 'cash' | 'transfer';
+// F4: payment selection. `null` = nothing picked -> payment_method is
+// OMITTED from the POST so the backend parser infers it (fallback
+// 'unknown'). We deliberately never default to 'cash' (cash forces
+// gst=0). "Auto" is gone from the UI; the parser still infers under
+// the hood when the user leaves it unset.
+type PaymentSel = 'cash' | 'transfer' | null;
 
 /**
  * Aggregated result of a multi-item capture submission.
@@ -99,7 +104,7 @@ export default function ExpensesScreen() {
   const textareaRef = useRef<TextInput>(null);
 
   const [rawInputText, setRawInputText] = useState('');
-  const [paymentSel, setPaymentSel] = useState<PaymentSel>('auto');
+  const [paymentSel, setPaymentSel] = useState<PaymentSel>(null);
   const [receiptLater, setReceiptLater] = useState(false);
   // P3: expense_date is always set client-side (defaults to today's
   // local ISO) and always sent in the body, so the backend never has
@@ -146,7 +151,9 @@ export default function ExpensesScreen() {
         : 'no_receipt') as ReceiptStatus,
       expense_date: expenseDate,
     };
-    if (paymentSel !== 'auto') body.payment_method = paymentSel as PaymentMethod;
+    // Unset (null) -> omit payment_method so the parser decides (fallback
+    // 'unknown'); never coerce to a default like cash.
+    if (paymentSel !== null) body.payment_method = paymentSel;
     return body;
   };
 
@@ -238,7 +245,7 @@ export default function ExpensesScreen() {
 
   const onReset = () => {
     setRawInputText('');
-    setPaymentSel('auto');
+    setPaymentSel(null);
     setReceiptLater(false);
     // P3: reset the date back to today on a fresh capture — anchoring
     // the form on "now" matches the iOS-first on-site flow.
@@ -347,13 +354,6 @@ export default function ExpensesScreen() {
 
           <View style={s.paymentRow}>
             <Text style={s.paymentLabel}>{t('capture.payment_label')}</Text>
-            <PaymentOption
-              label={t('capture.payment_auto')}
-              active={paymentSel === 'auto'}
-              disabled={inFlight}
-              onPress={() => setPaymentSel('auto')}
-              testID="payment-auto"
-            />
             <PaymentOption
               label={t('capture.payment_cash')}
               active={paymentSel === 'cash'}
