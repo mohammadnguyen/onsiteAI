@@ -18,7 +18,15 @@ import { useLabourSummary } from '../../src/api/hooks/useLabour';
 import { useJobs } from '../../src/api/hooks/useJobs';
 import { useMe } from '../../src/api/hooks/useAuth';
 import { OptionPickerModal } from '../../src/components/OptionPickerModal';
-import { dateToISO, formatDateAU, todayISO } from '../../src/util/dates';
+import {
+  dateToISO,
+  formatDateAU,
+  formatMonthLabel,
+  monthEnd,
+  monthStart,
+  shiftMonthISO,
+  todayISO,
+} from '../../src/util/dates';
 import { formatDays, formatMoney } from '../../src/util/format';
 
 /**
@@ -59,18 +67,26 @@ function mondayOf(iso: string): string {
 
 export default function LabourSummaryScreen() {
   const router = useRouter();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const me = useMe();
   const jobs = useJobs();
 
   const today = todayISO();
   const thisMonday = mondayOf(today);
+  const thisMonthStart = monthStart(today);
+  // F5: Month is the default view; Week is preserved via the toggle.
+  const [mode, setMode] = useState<'month' | 'week'>('month');
   const [weekStart, setWeekStart] = useState<string>(thisMonday);
+  const [monthAnchor, setMonthAnchor] = useState<string>(thisMonthStart);
   const [jobId, setJobId] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
 
+  // Derive [from, to] from the active mode — useLabourSummary already
+  // accepts any range, so the data path is identical for week/month.
   const weekEnd = shiftISO(weekStart, 6);
-  const summary = useLabourSummary(weekStart, weekEnd, jobId);
+  const rangeFrom = mode === 'month' ? monthAnchor : weekStart;
+  const rangeTo = mode === 'month' ? monthEnd(monthAnchor) : weekEnd;
+  const summary = useLabourSummary(rangeFrom, rangeTo, jobId);
 
   const isAdmin = me.data?.role === 'admin';
   const isForbidden =
@@ -78,7 +94,38 @@ export default function LabourSummaryScreen() {
     axios.isAxiosError(summary.error) &&
     summary.error.response?.status === 403;
 
-  const atThisWeek = weekStart >= thisMonday;
+  const atCurrent =
+    mode === 'month' ? monthAnchor >= thisMonthStart : weekStart >= thisMonday;
+
+  const onPrevRange = () => {
+    if (mode === 'month') setMonthAnchor((p) => shiftMonthISO(p, -1));
+    else setWeekStart((p) => shiftISO(p, -7));
+  };
+  // Clamp forward nav so we never step into a future range (a stale
+  // anchor across a midnight/period rollover could otherwise land on a
+  // period with no possible data).
+  const onNextRange = () => {
+    if (mode === 'month') {
+      setMonthAnchor((p) => {
+        const next = shiftMonthISO(p, 1);
+        const cur = monthStart(todayISO());
+        return next > cur ? cur : next;
+      });
+    } else {
+      setWeekStart((p) => {
+        const next = shiftISO(p, 7);
+        const cur = mondayOf(todayISO());
+        return next > cur ? cur : next;
+      });
+    }
+  };
+  const onResetRange = () =>
+    mode === 'month' ? setMonthAnchor(thisMonthStart) : setWeekStart(thisMonday);
+  const rangeLabel =
+    mode === 'month'
+      ? formatMonthLabel(monthAnchor, i18n.language)
+      : `${formatDateAU(weekStart)} – ${formatDateAU(weekEnd)}`;
+
   const selectedJob =
     jobId === null
       ? null
@@ -161,9 +208,27 @@ export default function LabourSummaryScreen() {
           contentContainerStyle={s.scroll}
           refreshControl={refreshControl}
         >
+          <View style={s.modeRow}>
+            {(['month', 'week'] as const).map((opt) => (
+              <TouchableOpacity
+                key={opt}
+                onPress={() => setMode(opt)}
+                style={[s.modeChip, mode === opt && s.modeChipActive]}
+                accessibilityRole="button"
+                testID={`summary-mode-${opt}`}
+              >
+                <Text
+                  style={[s.modeChipText, mode === opt && s.modeChipTextActive]}
+                >
+                  {t(opt === 'month' ? 'labour.range_month' : 'labour.range_week')}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
           <View style={s.rangeRow}>
             <TouchableOpacity
-              onPress={() => setWeekStart((prev) => shiftISO(prev, -7))}
+              onPress={onPrevRange}
               style={s.chevronBtn}
               accessibilityRole="button"
               accessibilityLabel={t('labour.range_earlier')}
@@ -172,21 +237,12 @@ export default function LabourSummaryScreen() {
               <Text style={s.chevronText}>{'‹'}</Text>
             </TouchableOpacity>
             <Text style={s.rangeLabel} testID="summary-range">
-              {formatDateAU(weekStart)} – {formatDateAU(weekEnd)}
+              {rangeLabel}
             </Text>
             <TouchableOpacity
-              onPress={() =>
-                // Clamp so we never step into a future week (a stale
-                // weekStart across a midnight/week rollover otherwise
-                // could land on a week with no possible data).
-                setWeekStart((prev) => {
-                  const next = shiftISO(prev, 7);
-                  const cur = mondayOf(todayISO());
-                  return next > cur ? cur : next;
-                })
-              }
-              disabled={atThisWeek}
-              style={[s.chevronBtn, atThisWeek && s.chevronDisabled]}
+              onPress={onNextRange}
+              disabled={atCurrent}
+              style={[s.chevronBtn, atCurrent && s.chevronDisabled]}
               accessibilityRole="button"
               accessibilityLabel={t('labour.range_later')}
               testID="summary-next"
@@ -196,15 +252,19 @@ export default function LabourSummaryScreen() {
           </View>
 
           <View style={s.filterRow}>
-            {!atThisWeek ? (
+            {!atCurrent ? (
               <TouchableOpacity
-                onPress={() => setWeekStart(thisMonday)}
+                onPress={onResetRange}
                 style={s.resetPill}
                 accessibilityRole="button"
                 testID="summary-reset-range"
               >
                 <Text style={s.resetPillText}>
-                  {t('labour.range_this_week')}
+                  {t(
+                    mode === 'month'
+                      ? 'labour.range_this_month'
+                      : 'labour.range_this_week',
+                  )}
                 </Text>
               </TouchableOpacity>
             ) : null}
@@ -241,12 +301,12 @@ export default function LabourSummaryScreen() {
           ) : summary.data ? (
             <>
               <View style={s.totalCard} testID="summary-total">
+                {/* F5: admin-first hierarchy — labour cost is the hero
+                    number, then hours, then worker-days. */}
                 <View style={s.totalRow}>
-                  <Text style={s.totalLabel}>{t('labour.total_days')}</Text>
-                  <Text style={s.totalValue}>
-                    {t('labour.days_value', {
-                      days: formatDays(summary.data.total_days),
-                    })}
+                  <Text style={s.totalLabel}>{t('labour.total_cost')}</Text>
+                  <Text style={s.totalValue} testID="summary-total-cost">
+                    {formatMoney(summary.data.total_labour_cost)}
                   </Text>
                 </View>
                 <View style={s.totalRow}>
@@ -258,9 +318,11 @@ export default function LabourSummaryScreen() {
                   </Text>
                 </View>
                 <View style={s.totalRow}>
-                  <Text style={s.totalLabel}>{t('labour.total_cost')}</Text>
-                  <Text style={s.totalValue} testID="summary-total-cost">
-                    {formatMoney(summary.data.total_labour_cost)}
+                  <Text style={s.totalLabel}>
+                    {t('labour.job_worker_days_label')}
+                  </Text>
+                  <Text style={s.totalValue}>
+                    {formatDays(summary.data.total_days)}
                   </Text>
                 </View>
                 {summary.data.entries_costed < summary.data.entries_total ? (
@@ -396,6 +458,19 @@ const s = StyleSheet.create({
   },
   headerSpacer: { minWidth: 72 },
   scroll: { padding: 16, gap: 12 },
+  modeRow: { flexDirection: 'row', gap: 8 },
+  modeChip: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 6,
+    backgroundColor: '#f8fafc',
+  },
+  modeChipActive: { backgroundColor: '#0f172a', borderColor: '#0f172a' },
+  modeChipText: { color: '#475569', fontSize: 14, fontWeight: '600' },
+  modeChipTextActive: { color: '#ffffff' },
   state: { alignItems: 'center', padding: 24, gap: 12 },
   stateText: { color: '#64748b', fontSize: 15, textAlign: 'center' },
   errorText: { color: '#b91c1c' },

@@ -133,3 +133,50 @@ export function formatDateAU(iso: string | null | undefined): string {
   if (!m) return iso;
   return `${m[3]}/${m[2]}/${m[1]}`;
 }
+
+/**
+ * First day (local) of the month containing the given ISO date, as
+ * ``YYYY-MM-DD``. Local components only, matching :func:`dateToISO`.
+ */
+export function monthStart(iso: string): string {
+  const [y, m] = iso.split('-').map(Number);
+  return dateToISO(new Date(y, m - 1, 1));
+}
+
+/**
+ * Last day (local) of the month containing the given ISO date, as
+ * ``YYYY-MM-DD``. ``new Date(y, m, 0)`` is day 0 of the next month =
+ * the last day of month ``m`` (handles 28/29/30/31 automatically).
+ */
+export function monthEnd(iso: string): string {
+  const [y, m] = iso.split('-').map(Number);
+  return dateToISO(new Date(y, m, 0));
+}
+
+/**
+ * Shift an ISO date by whole months (local), anchored to the 1st so a
+ * long month never overflows (e.g. Jan 31 + 1 month stays in Feb).
+ * Returns the first-of-month ISO of the resulting month.
+ */
+export function shiftMonthISO(iso: string, months: number): string {
+  const [y, m] = iso.split('-').map(Number);
+  return dateToISO(new Date(y, m - 1 + months, 1));
+}
+
+/**
+ * Long, localized month label for the month containing ``iso`` — e.g.
+ * "June 2026" (en) / "2026年6月" (zh). Uses on-device ``Intl`` (full
+ * locale data on iOS); falls back to numeric ``MM/YYYY`` if ``Intl`` is
+ * unavailable so a label never crashes the screen.
+ */
+export function formatMonthLabel(iso: string, locale?: string): string {
+  const [y, m] = iso.split('-').map(Number);
+  try {
+    return new Intl.DateTimeFormat(locale, {
+      month: 'long',
+      year: 'numeric',
+    }).format(new Date(y, m - 1, 1));
+  } catch {
+    return `${String(m).padStart(2, '0')}/${y}`;
+  }
+}
