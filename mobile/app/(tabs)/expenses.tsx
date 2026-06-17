@@ -328,7 +328,11 @@ export default function ExpensesScreen() {
             placeholder={t('capture.textarea_placeholder')}
             placeholderTextColor="#94a3b8"
             multiline
-            autoFocus
+            // F3: no autoFocus — the Capture tab is the post-login landing
+            // screen, so auto-focusing here forced the keyboard up on every
+            // app launch. The user taps to type; the deferred focus calls in
+            // onReset ("capture another") and onRefillFailure (retry) still
+            // re-focus the textarea after user-initiated actions.
             editable={!inFlight}
             style={s.textarea}
             testID="capture-textarea"
