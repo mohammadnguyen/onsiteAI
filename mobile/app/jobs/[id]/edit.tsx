@@ -138,6 +138,33 @@ function isMoneyValid(current: string): boolean {
   return true;
 }
 
+/**
+ * F1 margin %: like diffNumeric but bounded 0 <= n < 100 to match the DB
+ * CHECK ck_jobs_target_profit_ratio_pct_range (and Pydantic ge=0,lt=100).
+ * Exactly 100 is rejected. Blank = explicit clear (null).
+ */
+function diffPercent(
+  current: string,
+  initial: string,
+): number | null | undefined {
+  if (current === initial) return undefined;
+  const trimmed = current.trim();
+  if (trimmed.length === 0) return null;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n)) return undefined;
+  if (n < 0 || n >= 100) return undefined;
+  return n;
+}
+
+function isPercentValid(current: string): boolean {
+  const trimmed = current.trim();
+  if (trimmed.length === 0) return true;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n)) return false;
+  if (n < 0 || n >= 100) return false;
+  return true;
+}
+
 export default function JobEditScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -159,6 +186,7 @@ export default function JobEditScreen() {
   const [address, setAddress] = useState<string>('');
   const [contractText, setContractText] = useState<string>('');
   const [budgetText, setBudgetText] = useState<string>('');
+  const [marginText, setMarginText] = useState<string>('');
   const [newAliasText, setNewAliasText] = useState<string>('');
   const [formError, setFormError] = useState<string | null>(null);
   const [initialized, setInitialized] = useState<boolean>(false);
@@ -172,6 +200,7 @@ export default function JobEditScreen() {
     address: string;
     contractText: string;
     budgetText: string;
+    marginText: string;
   } | null>(null);
 
   // Slice B (Tier 1C) — category budgets editing state.
@@ -203,6 +232,7 @@ export default function JobEditScreen() {
       address: j.site_address ?? '',
       contractText: moneyToText(j.contract_value_ex_gst),
       budgetText: moneyToText(j.total_budget_ex_gst),
+      marginText: moneyToText(j.target_profit_ratio_pct),
     };
     setName(seed.name);
     setCode(seed.code);
@@ -210,12 +240,14 @@ export default function JobEditScreen() {
     setAddress(seed.address);
     setContractText(seed.contractText);
     setBudgetText(seed.budgetText);
+    setMarginText(seed.marginText);
     setInitialSeed(seed);
     setInitialized(true);
   }, [job.data, initialized]);
 
   const contractValid = useMemo(() => isMoneyValid(contractText), [contractText]);
   const budgetValid = useMemo(() => isMoneyValid(budgetText), [budgetText]);
+  const marginValid = useMemo(() => isPercentValid(marginText), [marginText]);
 
   // Conditional-spread PATCH body. Each helper returns undefined when
   // the field is unchanged, null when the user explicitly cleared it,
@@ -238,6 +270,10 @@ export default function JobEditScreen() {
       const budgetDiff = diffNumeric(budgetText, initialSeed.budgetText);
       if (budgetDiff !== undefined) out.total_budget_ex_gst = budgetDiff;
     }
+    if (marginValid) {
+      const marginDiff = diffPercent(marginText, initialSeed.marginText);
+      if (marginDiff !== undefined) out.target_profit_ratio_pct = marginDiff;
+    }
     return Object.keys(out).length === 0 ? null : out;
   }, [
     initialSeed,
@@ -247,8 +283,10 @@ export default function JobEditScreen() {
     address,
     contractText,
     budgetText,
+    marginText,
     contractValid,
     budgetValid,
+    marginValid,
   ]);
 
   const onBack = () => {
@@ -450,7 +488,7 @@ export default function JobEditScreen() {
     !isMoneyValid(newBudgetAmount);
 
   const saveDisabled =
-    update.isPending || !contractValid || !budgetValid;
+    update.isPending || !contractValid || !budgetValid || !marginValid;
 
   return (
     <SafeAreaView style={s.safe} edges={['top', 'left', 'right']}>
@@ -589,6 +627,21 @@ export default function JobEditScreen() {
               <Text style={s.fieldError}>
                 {t('jobs_edit.amount_invalid')}
               </Text>
+            ) : null}
+
+            <Text style={s.label}>{t('job.target_margin_pct')}</Text>
+            <TextInput
+              value={marginText}
+              onChangeText={setMarginText}
+              keyboardType="decimal-pad"
+              placeholder={t('job.margin_percent_hint')}
+              placeholderTextColor="#94a3b8"
+              editable={!update.isPending}
+              style={[s.input, !marginValid ? s.inputError : null]}
+              testID="job-edit-margin-percent"
+            />
+            {!marginValid ? (
+              <Text style={s.fieldError}>{t('jobs_edit.amount_invalid')}</Text>
             ) : null}
 
             <Text style={s.sectionHeader}>{t('job.aliases')}</Text>

@@ -402,14 +402,21 @@ function JobDetailModal({
             <Text style={s.detailTitle}>{data.job_name}</Text>
             <DetailRow label={t('job.code')} value={data.job_code ?? '-'} />
             <DetailRow label={t('job.status')} value={localizeJobStatus(data.status, t)} />
-            <DetailRow
-              label={t('job.contract')}
-              value={data.contract_value_ex_gst ?? '-'}
-            />
-            <DetailRow
-              label={t('job.budget')}
-              value={data.total_budget_ex_gst ?? '-'}
-            />
+            {/* F1/Q1 money-visibility: contract value + budget are
+                admin-only. Contributors must never see contract / budget
+                / margin / cost. Narrow gate — no redesign. */}
+            {isAdmin ? (
+              <>
+                <DetailRow
+                  label={t('job.contract')}
+                  value={data.contract_value_ex_gst ?? '-'}
+                />
+                <DetailRow
+                  label={t('job.budget')}
+                  value={data.total_budget_ex_gst ?? '-'}
+                />
+              </>
+            ) : null}
             <DetailRow label={t('job.address')} value={data.site_address ?? '-'} />
             <Text style={s.sectionHeader}>{t('job.aliases')}</Text>
             {data.aliases.length === 0 ? (
@@ -422,6 +429,7 @@ function JobDetailModal({
               ))
             )}
             <SpendingSection summary={summary} />
+            {isAdmin ? <MarginSection job={data} summary={summary} /> : null}
             <LabourDaysSection
               rollup={labourRollup}
               isAdmin={isAdmin}
@@ -689,8 +697,89 @@ function SpendingBody({ data }: { data: JobBudgetSummary }) {
   );
 }
 
+/**
+ * F1: admin-only expected-margin readout in the job detail modal.
+ *
+ * Shows Target margin % (the stored target_profit_ratio_pct), Current
+ * margin (to date) = (contract - cost-so-far)/contract x100, and a
+ * +/- vs-target indicator (green above / red below). "To date" is
+ * deliberate: it is contract minus cost INCURRED so far, NOT realised
+ * profit (future costs are excluded). Admin-only: the budget-summary
+ * endpoint 403-hides for contributors so summary.data is present only
+ * for admins, and the call site also gates on isAdmin (defence in
+ * depth). Renders nothing when contract is missing/zero (can't compute).
+ */
+function MarginSection({
+  job,
+  summary,
+}: {
+  job: NonNullable<ReturnType<typeof useJob>['data']>;
+  summary: ReturnType<typeof useJobBudgetSummary>;
+}) {
+  const { t } = useTranslation();
+  const data = summary.data;
+  if (!data) return null; // admin-only (contributor gets 403 -> no data)
+
+  const contract =
+    job.contract_value_ex_gst != null
+      ? Number(job.contract_value_ex_gst)
+      : null;
+  const target =
+    job.target_profit_ratio_pct != null
+      ? Number(job.target_profit_ratio_pct)
+      : null;
+
+  // Current margin (to date) = (contract - cost-so-far)/contract, only
+  // when a positive contract exists. No contract -> Current is hidden
+  // (never a "--%" placeholder); zero cost yields 100.0%, a correct
+  // "to date" value. Target still shows on its own if configured.
+  const current =
+    contract != null && contract > 0
+      ? ((contract - Number(data.actual_ex_gst)) / contract) * 100
+      : null;
+
+  // Show the section if EITHER a target is configured OR a current
+  // margin is computable; otherwise render nothing.
+  if (target == null && current == null) return null;
+
+  const delta = current != null && target != null ? current - target : null;
+
+  return (
+    <View testID="job-margin">
+      <Text style={s.sectionHeader}>{t('job.margin_header')}</Text>
+      {target != null ? (
+        <DetailRow
+          label={t('job.target_margin_pct')}
+          value={`${target.toFixed(1)}%`}
+        />
+      ) : null}
+      {current != null ? (
+        <DetailRow
+          label={t('job.current_margin_to_date')}
+          value={`${current.toFixed(1)}%`}
+        />
+      ) : null}
+      {delta != null ? (
+        <View style={s.detailRow}>
+          <Text style={s.detailLabel}>{t('job.margin_vs_target')}</Text>
+          <Text
+            style={[s.detailValue, delta >= 0 ? s.marginAbove : s.marginBelow]}
+            testID="job-margin-delta"
+          >
+            {delta >= 0
+              ? `▲ +${delta.toFixed(1)}%`
+              : `▼ ${delta.toFixed(1)}%`}
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#ffffff' },
+  marginAbove: { color: '#16a34a', fontWeight: '600' },
+  marginBelow: { color: '#dc2626', fontWeight: '600' },
   header: {
     paddingHorizontal: 16,
     paddingTop: 16,

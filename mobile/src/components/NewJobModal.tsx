@@ -52,15 +52,26 @@ export function NewJobModal({
   const [jobCode, setJobCode] = useState('');
   const [siteAddress, setSiteAddress] = useState('');
   const [aliasesText, setAliasesText] = useState('');
+  const [marginText, setMarginText] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [partialMessage, setPartialMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // F1: target margin % is optional at create; when present it must be
+  // 0 <= n < 100 (matches the backend CHECK). Blank = omit.
+  const marginValid = (() => {
+    const tr = marginText.trim();
+    if (tr.length === 0) return true;
+    const n = Number(tr);
+    return Number.isFinite(n) && n >= 0 && n < 100;
+  })();
 
   const reset = () => {
     setJobName('');
     setJobCode('');
     setSiteAddress('');
     setAliasesText('');
+    setMarginText('');
     setFormError(null);
     setPartialMessage(null);
     setSubmitting(false);
@@ -92,6 +103,9 @@ export function NewJobModal({
     const body: JobCreateInput = { job_name: trimmedName, status: 'active' };
     if (jobCode.trim()) body.job_code = jobCode.trim();
     if (siteAddress.trim()) body.site_address = siteAddress.trim();
+    if (marginText.trim()) {
+      body.target_profit_ratio_pct = Number(marginText.trim());
+    }
 
     let newJobId: string;
     try {
@@ -140,7 +154,8 @@ export function NewJobModal({
     }
   };
 
-  const submitDisabled = submitting || jobName.trim().length === 0;
+  const submitDisabled =
+    submitting || jobName.trim().length === 0 || !marginValid;
 
   return (
     <Modal
@@ -205,6 +220,25 @@ export function NewJobModal({
                 testID="newjob-address"
                 returnKeyType="next"
               />
+            </Field>
+
+            <Field label={t('job.target_margin_pct')}>
+              <TextInput
+                value={marginText}
+                onChangeText={setMarginText}
+                style={[s.input, !marginValid ? s.inputError : null]}
+                keyboardType="decimal-pad"
+                editable={!submitting}
+                placeholder={t('job.margin_percent_hint')}
+                placeholderTextColor="#94a3b8"
+                testID="newjob-margin"
+                returnKeyType="next"
+              />
+              {!marginValid ? (
+                <Text style={s.fieldErrorText}>
+                  {t('jobs_edit.amount_invalid')}
+                </Text>
+              ) : null}
             </Field>
 
             <Field label={t('jobs.field_aliases')}>
@@ -366,6 +400,8 @@ const s = StyleSheet.create({
     textAlignVertical: 'top',
   },
   hint: { fontSize: 12, color: '#64748b' },
+  inputError: { borderColor: '#dc2626' },
+  fieldErrorText: { color: '#dc2626', fontSize: 12 },
   errorBanner: {
     backgroundColor: '#fef2f2',
     borderWidth: 1,
