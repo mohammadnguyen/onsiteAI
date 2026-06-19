@@ -27,12 +27,19 @@ import {
   useDeleteJobCategoryBudget,
   type JobUpdateInput,
   type JobStatus,
+  type GstMode,
   type JobCategoryBudgetPublic,
 } from '../../../src/api/hooks/useJobs';
 import {
   useCategories,
   type CategoryPublic,
 } from '../../../src/api/hooks/useCategories';
+import {
+  formatMoney,
+  contractExGstFromEntered,
+  contractEnteredFromExGst,
+  contractGstFromEntered,
+} from '../../../src/util/format';
 
 /**
  * Tier 1B: Mobile Job Edit screen.
@@ -187,6 +194,7 @@ export default function JobEditScreen() {
   const [contractText, setContractText] = useState<string>('');
   const [budgetText, setBudgetText] = useState<string>('');
   const [marginText, setMarginText] = useState<string>('');
+  const [gstMode, setGstMode] = useState<GstMode>('exclusive');
   const [newAliasText, setNewAliasText] = useState<string>('');
   const [formError, setFormError] = useState<string | null>(null);
   const [initialized, setInitialized] = useState<boolean>(false);
@@ -201,6 +209,8 @@ export default function JobEditScreen() {
     contractText: string;
     budgetText: string;
     marginText: string;
+    gstMode: GstMode;
+    contractStoredExGst: number | null;
   } | null>(null);
 
   // Slice B (Tier 1C) — category budgets editing state.
@@ -230,9 +240,23 @@ export default function JobEditScreen() {
       code: j.job_code ?? '',
       status: (j.status ?? 'active') as StatusSel,
       address: j.site_address ?? '',
-      contractText: moneyToText(j.contract_value_ex_gst),
+      // F2: the input shows the AS-ENTERED amount (gross for inclusive),
+      // while the stored value stays ex-GST. Un-convert for display here.
+      contractText: moneyToText(
+        j.contract_value_ex_gst != null
+          ? contractEnteredFromExGst(
+              Number(j.contract_value_ex_gst),
+              j.gst_mode === 'inclusive',
+            )
+          : null,
+      ),
       budgetText: moneyToText(j.total_budget_ex_gst),
       marginText: moneyToText(j.target_profit_ratio_pct),
+      gstMode: (j.gst_mode ?? 'exclusive') as GstMode,
+      contractStoredExGst:
+        j.contract_value_ex_gst != null
+          ? Math.round(Number(j.contract_value_ex_gst) * 100) / 100
+          : null,
     };
     setName(seed.name);
     setCode(seed.code);
@@ -241,6 +265,7 @@ export default function JobEditScreen() {
     setContractText(seed.contractText);
     setBudgetText(seed.budgetText);
     setMarginText(seed.marginText);
+    setGstMode(seed.gstMode);
     setInitialSeed(seed);
     setInitialized(true);
   }, [job.data, initialized]);
@@ -248,6 +273,12 @@ export default function JobEditScreen() {
   const contractValid = useMemo(() => isMoneyValid(contractText), [contractText]);
   const budgetValid = useMemo(() => isMoneyValid(budgetText), [budgetText]);
   const marginValid = useMemo(() => isPercentValid(marginText), [marginText]);
+  // F2: live recalc inputs. Entered contract is GROSS for "Including GST",
+  // the revenue directly for "No GST (Cash)".
+  const inclusive = gstMode === 'inclusive';
+  const contractEntered =
+    contractText.trim() === '' ? null : Number(contractText.trim());
+  const showRecalc = contractEntered !== null && contractValid;
 
   // Conditional-spread PATCH body. Each helper returns undefined when
   // the field is unchanged, null when the user explicitly cleared it,
@@ -262,10 +293,19 @@ export default function JobEditScreen() {
     if (statusSel !== initialSeed.status) out.status = statusSel as JobStatus;
     const addressDiff = diffText(address, initialSeed.address);
     if (addressDiff !== undefined) out.site_address = addressDiff;
-    if (contractValid) {
-      const contractDiff = diffNumeric(contractText, initialSeed.contractText);
-      if (contractDiff !== undefined) out.contract_value_ex_gst = contractDiff;
+    // F2: contract diff is gst_mode-aware. Send the canonical ex-GST value
+    // when EITHER the entered amount OR the GST mode changed (toggling mode
+    // re-derives the stored value). A no-op open+save sends nothing, so the
+    // stored value never drifts on round-trip.
+    const contractChanged =
+      contractText.trim() !== initialSeed.contractText.trim();
+    const modeChanged = gstMode !== initialSeed.gstMode;
+    if (contractValid && (contractChanged || modeChanged)) {
+      const tr = contractText.trim();
+      out.contract_value_ex_gst =
+        tr === '' ? null : contractExGstFromEntered(Number(tr), inclusive);
     }
+    if (modeChanged) out.gst_mode = gstMode;
     if (budgetValid) {
       const budgetDiff = diffNumeric(budgetText, initialSeed.budgetText);
       if (budgetDiff !== undefined) out.total_budget_ex_gst = budgetDiff;
@@ -284,6 +324,8 @@ export default function JobEditScreen() {
     contractText,
     budgetText,
     marginText,
+    gstMode,
+    inclusive,
     contractValid,
     budgetValid,
     marginValid,
@@ -595,7 +637,7 @@ export default function JobEditScreen() {
               testID="job-edit-address"
             />
 
-            <Text style={s.label}>{t('job.contract')}</Text>
+            <Text style={s.label}>{t('job.contract_value')}</Text>
             <TextInput
               value={contractText}
               onChangeText={setContractText}
@@ -610,6 +652,48 @@ export default function JobEditScreen() {
               <Text style={s.fieldError}>
                 {t('jobs_edit.amount_invalid')}
               </Text>
+            ) : null}
+
+            <Text style={s.label}>{t('job.gst_mode_label')}</Text>
+            <View style={s.gstRow}>
+              <TouchableOpacity
+                onPress={() => setGstMode('inclusive')}
+                disabled={update.isPending}
+                style={[s.gstChip, inclusive && s.gstChipActive]}
+                accessibilityRole="button"
+                testID="job-edit-gst-inclusive"
+              >
+                <Text style={[s.gstChipText, inclusive && s.gstChipTextActive]}>
+                  {t('job.gst_including')}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => setGstMode('exclusive')}
+                disabled={update.isPending}
+                style={[s.gstChip, !inclusive && s.gstChipActive]}
+                accessibilityRole="button"
+                testID="job-edit-gst-none"
+              >
+                <Text style={[s.gstChipText, !inclusive && s.gstChipTextActive]}>
+                  {t('job.gst_none_cash')}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            {showRecalc ? (
+              <View style={s.gstRecalc} testID="job-edit-gst-recalc">
+                <Text style={s.gstRecalcText}>
+                  {t('job.ex_gst_revenue')}:{' '}
+                  {formatMoney(
+                    contractExGstFromEntered(contractEntered, inclusive),
+                  )}
+                </Text>
+                <Text style={s.gstRecalcText}>
+                  {t('job.gst_amount')}:{' '}
+                  {formatMoney(
+                    contractGstFromEntered(contractEntered, inclusive),
+                  )}
+                </Text>
+              </View>
             ) : null}
 
             <Text style={s.label}>{t('job.budget')}</Text>
@@ -994,6 +1078,25 @@ const s = StyleSheet.create({
   inputError: { borderColor: '#dc2626' },
   fieldError: { color: '#b91c1c', fontSize: 13 },
   statusRow: { flexDirection: 'row', gap: 8 },
+  gstRow: { flexDirection: 'row', gap: 8 },
+  gstChip: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 8,
+    backgroundColor: '#ffffff',
+  },
+  gstChipActive: { backgroundColor: '#1e293b', borderColor: '#1e293b' },
+  gstChipText: { color: '#334155', fontSize: 14, fontWeight: '600' },
+  gstChipTextActive: { color: '#ffffff' },
+  gstRecalc: { marginTop: 6, gap: 2 },
+  gstRecalcText: {
+    fontSize: 13,
+    color: '#475569',
+    fontVariant: ['tabular-nums'],
+  },
   statusOption: {
     paddingHorizontal: 14,
     paddingVertical: 10,

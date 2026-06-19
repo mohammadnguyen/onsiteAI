@@ -12,6 +12,7 @@ export type JobAliasPublic = components['schemas']['JobAliasPublic'];
 export type JobBudgetSummary = components['schemas']['JobBudgetSummary'];
 export type CategoryBudgetRow = components['schemas']['CategoryBudgetRow'];
 export type JobStatus = components['schemas']['JobStatus'];
+export type GstMode = components['schemas']['GstMode'];
 export type JobCategoryBudgetPublic = components['schemas']['JobCategoryBudgetPublic'];
 export type JobCategoryBudgetCreateInput = components['schemas']['JobCategoryBudgetCreate'];
 

@@ -33,7 +33,12 @@ import { useMe } from '../../src/api/hooks/useAuth';
 import { NewJobModal } from '../../src/components/NewJobModal';
 import { RecentCapturesList } from '../../src/components/RecentCapturesList';
 import { useSelectedJobStore } from '../../src/store/selectedJob';
-import { formatDays, formatMoney } from '../../src/util/format';
+import {
+  formatDays,
+  formatMoney,
+  contractEnteredFromExGst,
+  contractGstFromEntered,
+} from '../../src/util/format';
 
 /**
  * L-D1: calendar month-to-date start ("YYYY-MM-01", device-local) for
@@ -402,15 +407,51 @@ function JobDetailModal({
             <Text style={s.detailTitle}>{data.job_name}</Text>
             <DetailRow label={t('job.code')} value={data.job_code ?? '-'} />
             <DetailRow label={t('job.status')} value={localizeJobStatus(data.status, t)} />
-            {/* F1/Q1 money-visibility: contract value + budget are
-                admin-only. Contributors must never see contract / budget
-                / margin / cost. Narrow gate — no redesign. */}
+            {/* F1/Q1 + F2 money-visibility: contract / budget / GST /
+                revenue are admin-only — contributors never see them.
+                F2: contract shows the AS-ENTERED amount (gross for
+                "Including GST") plus the derived ex-GST revenue + GST. */}
             {isAdmin ? (
               <>
-                <DetailRow
-                  label={t('job.contract')}
-                  value={data.contract_value_ex_gst ?? '-'}
-                />
+                {(() => {
+                  const storedEx =
+                    data.contract_value_ex_gst != null
+                      ? Number(data.contract_value_ex_gst)
+                      : null;
+                  const incl = data.gst_mode === 'inclusive';
+                  const entered =
+                    storedEx != null
+                      ? contractEnteredFromExGst(storedEx, incl)
+                      : null;
+                  return (
+                    <>
+                      <DetailRow
+                        label={t('job.contract_value')}
+                        value={entered != null ? formatMoney(entered) : '-'}
+                      />
+                      <DetailRow
+                        label={t('job.gst_mode_label')}
+                        value={t(
+                          incl ? 'job.gst_including' : 'job.gst_none_cash',
+                        )}
+                      />
+                      {storedEx != null ? (
+                        <DetailRow
+                          label={t('job.ex_gst_revenue')}
+                          value={formatMoney(storedEx)}
+                        />
+                      ) : null}
+                      {entered != null ? (
+                        <DetailRow
+                          label={t('job.gst_amount')}
+                          value={formatMoney(
+                            contractGstFromEntered(entered, incl),
+                          )}
+                        />
+                      ) : null}
+                    </>
+                  );
+                })()}
                 <DetailRow
                   label={t('job.budget')}
                   value={data.total_budget_ex_gst ?? '-'}

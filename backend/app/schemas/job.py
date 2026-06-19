@@ -21,7 +21,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models.job import JobStatus
+from app.models.job import GstMode, JobStatus
 from app.models.user import LanguageCode
 from app.schemas.budget_summary import JobSummary
 from app.schemas.category import CategoryPublic
@@ -60,6 +60,7 @@ class JobCreate(BaseModel):
     warning_amber_pct: Decimal | None = Field(default=None, ge=0)
     warning_red_pct: Decimal | None = Field(default=None, gt=0)
     status: JobStatus = JobStatus.active
+    gst_mode: GstMode = GstMode.exclusive
 
     @model_validator(mode="after")
     def _amber_lt_red(self) -> "JobCreate":
@@ -89,6 +90,7 @@ class JobUpdate(BaseModel):
     warning_amber_pct: Decimal | None = Field(default=None, ge=0)
     warning_red_pct: Decimal | None = Field(default=None, gt=0)
     status: JobStatus | None = None
+    gst_mode: GstMode | None = None
 
     @model_validator(mode="after")
     def _amber_lt_red(self) -> "JobUpdate":
@@ -183,6 +185,7 @@ class JobPublic(BaseModel):
     warning_amber_pct: Decimal | None = None
     warning_red_pct: Decimal | None = None
     status: JobStatus
+    gst_mode: GstMode = GstMode.exclusive
     created_by: uuid.UUID
     summary: JobSummary | None = None
 

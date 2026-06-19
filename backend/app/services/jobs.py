@@ -135,6 +135,7 @@ async def create_job(
     warning_amber_pct: Decimal | None = None,
     warning_red_pct: Decimal | None = None,
     status=None,
+    gst_mode=None,
 ) -> Job:
     """Insert a new :class:`Job` owned by ``created_by``.
 
@@ -158,6 +159,8 @@ async def create_job(
     }
     if status is not None:
         kwargs["status"] = status
+    if gst_mode is not None:
+        kwargs["gst_mode"] = gst_mode
     job = Job(**kwargs)
     db.add(job)
     await db.flush()
@@ -284,6 +287,7 @@ async def update_job(
     warning_amber_pct: Decimal | None | object = _UNSET,
     warning_red_pct: Decimal | None | object = _UNSET,
     status: object = _UNSET,
+    gst_mode: object = _UNSET,
 ) -> Job:
     """Partial update of a :class:`Job`. Two distinct caller intents:
 
@@ -364,6 +368,7 @@ async def update_job(
         "warning_amber_pct": warning_amber_pct,
         "warning_red_pct": warning_red_pct,
         "status": status,
+        "gst_mode": gst_mode,
     }
     for k, v in candidates.items():
         if v is _UNSET:

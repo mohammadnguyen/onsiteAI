@@ -18,7 +18,13 @@ import {
   useCreateJob,
   useCreateJobAlias,
   type JobCreateInput,
+  type GstMode,
 } from '../api/hooks/useJobs';
+import {
+  formatMoney,
+  contractExGstFromEntered,
+  contractGstFromEntered,
+} from '../util/format';
 
 /**
  * Mobile Job Management Lite — admin-only modal that creates a job
@@ -53,6 +59,8 @@ export function NewJobModal({
   const [siteAddress, setSiteAddress] = useState('');
   const [aliasesText, setAliasesText] = useState('');
   const [marginText, setMarginText] = useState('');
+  const [contractText, setContractText] = useState('');
+  const [gstMode, setGstMode] = useState<GstMode>('exclusive');
   const [formError, setFormError] = useState<string | null>(null);
   const [partialMessage, setPartialMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -66,12 +74,25 @@ export function NewJobModal({
     return Number.isFinite(n) && n >= 0 && n < 100;
   })();
 
+  // F2: contract value is optional at create. The entered amount is the
+  // GROSS for "Including GST" and the revenue directly for "No GST (Cash)";
+  // the live recalc + on-save conversion (entered -> ex-GST) handle it.
+  const contractEntered =
+    contractText.trim() === '' ? null : Number(contractText.trim());
+  const contractValid =
+    contractEntered === null ||
+    (Number.isFinite(contractEntered) && contractEntered >= 0);
+  const inclusive = gstMode === 'inclusive';
+  const showRecalc = contractEntered !== null && contractValid;
+
   const reset = () => {
     setJobName('');
     setJobCode('');
     setSiteAddress('');
     setAliasesText('');
     setMarginText('');
+    setContractText('');
+    setGstMode('exclusive');
     setFormError(null);
     setPartialMessage(null);
     setSubmitting(false);
@@ -100,11 +121,23 @@ export function NewJobModal({
     // openapi schema marks it required (Pydantic's default doesn't
     // collapse to optional in the typescript surface), and 'active' is
     // the only sane value mobile creation can produce in Lite scope.
-    const body: JobCreateInput = { job_name: trimmedName, status: 'active' };
+    const body: JobCreateInput = {
+      job_name: trimmedName,
+      status: 'active',
+      gst_mode: gstMode,
+    };
     if (jobCode.trim()) body.job_code = jobCode.trim();
     if (siteAddress.trim()) body.site_address = siteAddress.trim();
     if (marginText.trim()) {
       body.target_profit_ratio_pct = Number(marginText.trim());
+    }
+    // F2: store the canonical ex-GST value (inclusive -> entered / 1.1).
+    // gst_mode is set in the body literal above (required on JobCreate).
+    if (contractEntered !== null) {
+      body.contract_value_ex_gst = contractExGstFromEntered(
+        contractEntered,
+        inclusive,
+      );
     }
 
     let newJobId: string;
@@ -155,7 +188,7 @@ export function NewJobModal({
   };
 
   const submitDisabled =
-    submitting || jobName.trim().length === 0 || !marginValid;
+    submitting || jobName.trim().length === 0 || !marginValid || !contractValid;
 
   return (
     <Modal
@@ -220,6 +253,70 @@ export function NewJobModal({
                 testID="newjob-address"
                 returnKeyType="next"
               />
+            </Field>
+
+            <Field label={t('job.contract_value')}>
+              <TextInput
+                value={contractText}
+                onChangeText={setContractText}
+                style={[s.input, !contractValid ? s.inputError : null]}
+                keyboardType="decimal-pad"
+                editable={!submitting}
+                testID="newjob-contract"
+                returnKeyType="next"
+              />
+              {!contractValid ? (
+                <Text style={s.fieldErrorText}>
+                  {t('jobs_edit.amount_invalid')}
+                </Text>
+              ) : null}
+            </Field>
+
+            <Field label={t('job.gst_mode_label')}>
+              <View style={s.gstRow}>
+                <TouchableOpacity
+                  onPress={() => setGstMode('inclusive')}
+                  disabled={submitting}
+                  style={[s.gstChip, inclusive && s.gstChipActive]}
+                  accessibilityRole="button"
+                  testID="newjob-gst-inclusive"
+                >
+                  <Text
+                    style={[s.gstChipText, inclusive && s.gstChipTextActive]}
+                  >
+                    {t('job.gst_including')}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setGstMode('exclusive')}
+                  disabled={submitting}
+                  style={[s.gstChip, !inclusive && s.gstChipActive]}
+                  accessibilityRole="button"
+                  testID="newjob-gst-none"
+                >
+                  <Text
+                    style={[s.gstChipText, !inclusive && s.gstChipTextActive]}
+                  >
+                    {t('job.gst_none_cash')}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              {showRecalc ? (
+                <View style={s.gstRecalc} testID="newjob-gst-recalc">
+                  <Text style={s.gstRecalcText}>
+                    {t('job.ex_gst_revenue')}:{' '}
+                    {formatMoney(
+                      contractExGstFromEntered(contractEntered, inclusive),
+                    )}
+                  </Text>
+                  <Text style={s.gstRecalcText}>
+                    {t('job.gst_amount')}:{' '}
+                    {formatMoney(
+                      contractGstFromEntered(contractEntered, inclusive),
+                    )}
+                  </Text>
+                </View>
+              ) : null}
             </Field>
 
             <Field label={t('job.target_margin_pct')}>
@@ -402,6 +499,25 @@ const s = StyleSheet.create({
   hint: { fontSize: 12, color: '#64748b' },
   inputError: { borderColor: '#dc2626' },
   fieldErrorText: { color: '#dc2626', fontSize: 12 },
+  gstRow: { flexDirection: 'row', gap: 8 },
+  gstChip: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 8,
+    backgroundColor: '#ffffff',
+  },
+  gstChipActive: { backgroundColor: '#1e293b', borderColor: '#1e293b' },
+  gstChipText: { color: '#334155', fontSize: 14, fontWeight: '600' },
+  gstChipTextActive: { color: '#ffffff' },
+  gstRecalc: { marginTop: 6, gap: 2 },
+  gstRecalcText: {
+    fontSize: 13,
+    color: '#475569',
+    fontVariant: ['tabular-nums'],
+  },
   errorBanner: {
     backgroundColor: '#fef2f2',
     borderWidth: 1,

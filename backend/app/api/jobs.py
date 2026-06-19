@@ -98,6 +98,7 @@ async def create_job_endpoint(
             warning_amber_pct=body.warning_amber_pct,
             warning_red_pct=body.warning_red_pct,
             status=body.status,
+            gst_mode=body.gst_mode,
         )
     except IntegrityError as exc:
         err_text = str(exc.orig).lower()

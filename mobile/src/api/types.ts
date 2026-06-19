@@ -1538,6 +1538,8 @@ export interface components {
             warning_red_pct?: number | string | null;
             /** @default active */
             status: components["schemas"]["JobStatus"];
+            /** @default exclusive */
+            gst_mode: components["schemas"]["GstMode"];
         };
         /**
          * JobDaysRow
@@ -1652,6 +1654,8 @@ export interface components {
             /** Warning Red Pct */
             warning_red_pct?: string | null;
             status: components["schemas"]["JobStatus"];
+            /** @default exclusive */
+            gst_mode: components["schemas"]["GstMode"];
             /**
              * Created By
              * Format: uuid
@@ -1668,6 +1672,13 @@ export interface components {
          * @enum {string}
          */
         JobStatus: "active" | "completed";
+        /**
+         * GstMode
+         * @description Per-job contract GST basis. UI labels only —
+         *     "Including GST" (inclusive) / "No GST (Cash)" (exclusive).
+         * @enum {string}
+         */
+        GstMode: "inclusive" | "exclusive";
         /**
          * JobSummary
          * @description Per-job aggregate; embedded in :class:`JobPublic` on ``GET /jobs``.
@@ -1734,6 +1745,7 @@ export interface components {
             /** Warning Red Pct */
             warning_red_pct?: number | string | null;
             status?: components["schemas"]["JobStatus"] | null;
+            gst_mode?: components["schemas"]["GstMode"] | null;
         };
         /**
          * JobWithDetailPublic
@@ -1765,6 +1777,8 @@ export interface components {
             /** Warning Red Pct */
             warning_red_pct?: string | null;
             status: components["schemas"]["JobStatus"];
+            /** @default exclusive */
+            gst_mode: components["schemas"]["GstMode"];
             /**
              * Created By
              * Format: uuid

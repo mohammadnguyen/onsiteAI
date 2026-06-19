@@ -46,6 +46,24 @@ class JobStatus(str, enum.Enum):
     completed = "completed"
 
 
+class GstMode(str, enum.Enum):
+    """How a job's contract amount is entered/displayed for GST.
+
+    ``inclusive`` -> UI "Including GST" (GST job; the entered amount is
+    gross, ex-GST revenue = amount / 1.1). ``exclusive`` -> UI "No GST
+    (Cash)" (cash / no-GST job; the entered amount IS the revenue,
+    GST = 0). The internal term "exclusive" is NEVER shown to users.
+
+    Display-hint only: ``contract_value_ex_gst`` stays the canonical
+    ex-GST basis in BOTH modes (inclusive stores entered/1.1; exclusive
+    stores the entered amount as-is). The backend runs NO GST math on
+    gst_mode — the mobile client converts on entry/display.
+    """
+
+    inclusive = "inclusive"
+    exclusive = "exclusive"
+
+
 class Job(Base, TimestampMixin):
     """A building site / contract that aggregates expenses and budgets."""
 
@@ -91,6 +109,16 @@ class Job(Base, TimestampMixin):
         nullable=False,
         default=JobStatus.active,
         server_default=JobStatus.active.value,
+    )
+    # F2 — per-job contract GST basis (additive). Existing rows default to
+    # ``exclusive`` ("No GST (Cash)"), preserving today's behaviour exactly.
+    # The backend never branches on this: ``contract_value_ex_gst`` stays
+    # the ex-GST basis; gst_mode is a mobile display/interpretation hint.
+    gst_mode: Mapped[GstMode] = mapped_column(
+        SqlaEnum(GstMode, name="gst_mode", native_enum=True, create_type=True),
+        nullable=False,
+        default=GstMode.exclusive,
+        server_default=GstMode.exclusive.value,
     )
     # The admin who created the job. V1 does not delete users, so a plain
     # NOT NULL FK with no ondelete is sufficient — see Task 7 plan.

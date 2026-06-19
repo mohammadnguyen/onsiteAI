@@ -49,6 +49,92 @@ async def test_create_job_admin_returns_201(client, admin_token):
     assert uuid.UUID(body["created_by"])  # parses
 
 
+# ---------------------------------------------------------------------------
+# F2 — per-job contract GST basis (gst_mode). Display-hint only:
+# contract_value_ex_gst stays the canonical ex-GST basis; gst_mode just
+# records how the mobile entered/displays it. Backend does no GST math.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_job_defaults_gst_mode_exclusive(client, admin_token):
+    """F2: gst_mode omitted -> defaults to 'exclusive' (UI 'No GST (Cash)').
+    Preserves today's behaviour for every existing/new job that doesn't set it."""
+    body = await _create_job(client, admin_token, name="No-GST Job")
+    assert body["gst_mode"] == "exclusive"
+
+
+@pytest.mark.asyncio
+async def test_create_job_with_inclusive_gst_mode(client, admin_token):
+    """F2: gst_mode 'inclusive' (UI 'Including GST') persists on create + read."""
+    body = await _create_job(
+        client, admin_token, name="GST Job", gst_mode="inclusive"
+    )
+    assert body["gst_mode"] == "inclusive"
+    r = await client.get(
+        f"/jobs/{body['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["gst_mode"] == "inclusive"  # JobWithDetailPublic serialises it
+
+
+@pytest.mark.asyncio
+async def test_patch_job_toggles_gst_mode_without_touching_contract(
+    client, admin_token
+):
+    """F2: PATCH toggles gst_mode; the toggle alone never rewrites the stored
+    contract_value_ex_gst (the mobile re-derives it; the backend stores what it
+    is sent). Here we send only gst_mode and assert the contract is unchanged."""
+    body = await _create_job(
+        client,
+        admin_token,
+        name="Toggle Job",
+        contract_value_ex_gst="1000.00",
+        gst_mode="exclusive",
+    )
+    r = await client.patch(
+        f"/jobs/{body['job_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"gst_mode": "inclusive"},
+    )
+    assert r.status_code == 200, r.text
+    patched = r.json()
+    assert patched["gst_mode"] == "inclusive"
+    assert Decimal(str(patched["contract_value_ex_gst"])) == Decimal("1000.00")
+
+
+@pytest.mark.asyncio
+async def test_gst_mode_does_not_affect_expense_gst_split():
+    """F2 HARD GUARD (operator): a job's gst_mode must NEVER change any
+    expense-level GST calculation. compute_gst_split is driven solely by
+    payment_method and takes no job / gst_mode argument — asserted directly so
+    a future refactor that tries to wire gst_mode into the split breaks here."""
+    import inspect
+
+    from app.models.expense import PaymentMethod, compute_gst_split
+
+    # cash -> no GST extracted (ex == inc, gst == 0)
+    assert compute_gst_split(Decimal("110.00"), PaymentMethod.cash) == (
+        Decimal("110.00"),
+        Decimal("0.00"),
+    )
+    # transfer -> standard 1/11 split
+    assert compute_gst_split(Decimal("110.00"), PaymentMethod.transfer) == (
+        Decimal("100.00"),
+        Decimal("10.00"),
+    )
+    # unknown -> same 1/11 split (not cash)
+    assert compute_gst_split(Decimal("110.00"), PaymentMethod.unknown) == (
+        Decimal("100.00"),
+        Decimal("10.00"),
+    )
+    # Structural lock: the split's only inputs are amount + payment_method;
+    # there is no job/gst_mode parameter, so a job's GST mode cannot reach it.
+    params = set(inspect.signature(compute_gst_split).parameters)
+    assert params == {"amount_inc_gst", "payment_method"}
+
+
 @pytest.mark.asyncio
 async def test_create_job_contributor_forbidden(client, contributor_token):
     r = await client.post(
