@@ -12,6 +12,14 @@ This document is NOT executed by Slice 2-B1, Slice 2-B2, or Slice 2-B3
 (the doc + deploy + rehearsal slices). It is consulted reactively
 when something is broken.
 
+> **Fly Managed Postgres (MPG).** All database commands below use
+> `fly mpg …`; the legacy `flyctl postgres …` surface does NOT apply to
+> this project's MPG cluster (see the legacy→MPG mapping table at the
+> bottom of `staging-backup-restore.md`). Per ADR 0003, these are dated
+> examples — re-run `<command> --help` before any stateful step, as
+> `fly mpg` flags drift. App-level commands (`flyctl releases …`,
+> `flyctl status`, `flyctl ssh console`) are unchanged.
+
 ## Operator decision gates
 
 Every rollback has FOUR mandatory operator decision gates:
@@ -98,7 +106,7 @@ typically < 60 seconds.
 2. **Gate Roll-4.** Verify schema returned to the previous head.
 
    ```
-   flyctl postgres connect --app sitetracker-pg-staging
+   fly mpg connect <CLUSTER_ID>
    SELECT version_num FROM alembic_version;
    ```
 
@@ -122,7 +130,7 @@ is needed).
 1. **Gate Roll-1.** Identify the target snapshot.
 
    ```
-   flyctl postgres backup list --app sitetracker-pg-staging
+   fly mpg backup list <CLUSTER_ID> --json
    ```
 
    Note the snapshot ID + timestamp. Operator confirms the target.
@@ -133,16 +141,22 @@ is needed).
 
    Operator explicitly confirms before proceeding.
 
-3. Execute restore:
+3. Execute restore. **SYNTAX UNVERIFIED.** Native Fly MPG restore
+   (Path B) has NOT been exercised — its source/target semantics are
+   ambiguous (which backup restores into which cluster), so getting it
+   wrong risks touching the wrong cluster. Re-run `fly mpg restore
+   --help` and confirm the semantics BEFORE running this against the
+   live staging cluster. Prefer Scenario B (alembic downgrade) when the
+   offending migration has a clean `downgrade()`.
 
    ```
-   flyctl postgres backup restore <snapshot-id> --app sitetracker-pg-staging
+   fly mpg restore <CLUSTER_ID> --backup-id <BACKUP_ID>
    ```
 
 4. **Gate Roll-4.** Verify.
 
    ```
-   flyctl postgres connect --app sitetracker-pg-staging
+   fly mpg connect <CLUSTER_ID>
    SELECT version_num FROM alembic_version;
    SELECT COUNT(*) FROM jobs;
    SELECT COUNT(*) FROM expenses;

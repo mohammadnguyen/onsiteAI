@@ -392,8 +392,7 @@ exit
 Per ADR 0003: manual alembic for V1 — operator observes the migration
 output on first run.
 
-**Post-step verification.** `flyctl postgres connect --app
-sitetracker-pg-staging` → `\dt` shows expected tables (`jobs`,
+**Post-step verification.** `fly mpg connect <CLUSTER_ID>` → `\dt` shows expected tables (`jobs`,
 `expenses`, `expense_review_queue`, `job_audit_log`, etc.). `SELECT
 version_num FROM alembic_version;` returns the current head SHA.
 
@@ -417,8 +416,7 @@ The generated password prints once to the operator's terminal; record
 it ONCE in the operator's password manager. Idempotent — re-running
 this command resets the named admin.
 
-**Post-step verification.** `flyctl postgres connect --app
-sitetracker-pg-staging` → `SELECT email, role FROM users WHERE
+**Post-step verification.** `fly mpg connect <CLUSTER_ID>` → `SELECT email, role FROM users WHERE
 role='admin';` returns the seeded admin.
 
 ## Gate D-9: Smoke
