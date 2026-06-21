@@ -41,9 +41,14 @@ const REASON_COLORS: Record<ReviewReasonCode, { bg: string; fg: string }> = {
 export function CaptureResultCard({
   result,
   onReset,
+  isAdmin,
 }: {
   result: ExpenseCreateResponse;
   onReset: () => void;
+  // O1-S1: ex-GST / GST breakdown is admin-only. Contributors never
+  // render those rows — defence-in-depth on top of the backend
+  // server-strip, which already nulls them for non-admin callers.
+  isAdmin: boolean;
 }) {
   const { t } = useTranslation();
   const expense = result.expense;
@@ -83,11 +88,21 @@ export function CaptureResultCard({
       ) : null}
 
       <View style={s.fields}>
+        {/* #3 saved-vs-typed: amount_inc_gst is the SAVED amount; the
+            "You typed" row below echoes the original input so a parser
+            misread is visible. Read-only — no re-parse / diff logic. */}
         <FieldRow label={t('expense.amount_inc_gst')} value={formatMoney(expense.amount_inc_gst)} />
-        <FieldRow label={t('expense.amount_ex_gst')} value={formatMoney(expense.amount_ex_gst)} />
-        <FieldRow label={t('expense.gst')} value={formatMoney(expense.gst_amount)} />
+        {isAdmin ? (
+          <>
+            <FieldRow label={t('expense.amount_ex_gst')} value={formatMoney(expense.amount_ex_gst)} />
+            <FieldRow label={t('expense.gst')} value={formatMoney(expense.gst_amount)} />
+          </>
+        ) : null}
         <FieldRow label={t('expense.payment')} value={t(`capture.payment_${expense.payment_method}`, { defaultValue: expense.payment_method })} />
         <FieldRow label={t('expense.date')} value={formatDateAU(expense.expense_date)} />
+        {expense.raw_input_text ? (
+          <FieldRow label={t('capture.you_typed')} value={expense.raw_input_text} />
+        ) : null}
         {expense.description ? (
           <FieldRow label={t('expense.description')} value={expense.description} />
         ) : null}

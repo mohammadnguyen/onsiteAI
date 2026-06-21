@@ -1168,6 +1168,121 @@ async def test_patch_contributor_own_reviewed_403(
     assert r.status_code == 403
 
 
+# ---------------------------------------------------------------------------
+# O1-S1: contributor money-visibility — ex-GST / GST breakdown is admin-only.
+# The /expenses routes server-strip amount_ex_gst / gst_amount to null for
+# non-admin callers (amount_inc_gst stays visible). Admin responses are
+# unchanged. GST split math itself is untouched (see compute_gst_split guard
+# in test_jobs.py); this is response shaping only.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_response_strips_gst_breakdown_for_contributor(
+    client, world, contributor_token
+):
+    """Contributor create response carries inc-GST only — no ex-GST / GST."""
+    r = await client.post(
+        "/expenses",
+        headers=_auth(contributor_token),
+        json={
+            "job_id": str(world["job_a"].job_id),
+            "amount_inc_gst": "110",
+            "expense_date": _today_iso(),
+            "description": "contributor capture",
+        },
+    )
+    assert r.status_code == 201, r.text
+    exp = r.json()["expense"]
+    assert exp["amount_inc_gst"] is not None
+    assert exp["amount_ex_gst"] is None
+    assert exp["gst_amount"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_response_keeps_gst_breakdown_for_admin(client, world, admin_token):
+    """Admin create response is unchanged — ex-GST / GST present."""
+    r = await client.post(
+        "/expenses",
+        headers=_auth(admin_token),
+        json={
+            "job_id": str(world["job_a"].job_id),
+            "amount_inc_gst": "110",
+            "expense_date": _today_iso(),
+            "description": "admin capture",
+        },
+    )
+    assert r.status_code == 201, r.text
+    exp = r.json()["expense"]
+    assert exp["amount_inc_gst"] is not None
+    assert exp["amount_ex_gst"] is not None
+    assert exp["gst_amount"] is not None
+
+
+@pytest.mark.asyncio
+async def test_detail_and_list_strip_gst_breakdown_for_contributor(
+    client, world, contributor_token, admin_token
+):
+    """Contributor detail + list strip ex-GST / GST; admin detail keeps them."""
+    created = await client.post(
+        "/expenses",
+        headers=_auth(contributor_token),
+        json={
+            "job_id": str(world["job_a"].job_id),
+            "amount_inc_gst": "110",
+            "expense_date": _today_iso(),
+            "description": "own row",
+        },
+    )
+    assert created.status_code == 201, created.text
+    expense_id = created.json()["expense"]["expense_id"]
+
+    # Detail (contributor owns it) — stripped.
+    d = await client.get(f"/expenses/{expense_id}", headers=_auth(contributor_token))
+    assert d.status_code == 200, d.text
+    assert d.json()["amount_inc_gst"] is not None
+    assert d.json()["amount_ex_gst"] is None
+    assert d.json()["gst_amount"] is None
+
+    # List (contributor) — stripped on every item.
+    lst = await client.get("/expenses", headers=_auth(contributor_token))
+    assert lst.status_code == 200, lst.text
+    items = lst.json()["items"]
+    assert items, "contributor should see their own row"
+    for it in items:
+        assert it["amount_ex_gst"] is None
+        assert it["gst_amount"] is None
+
+    # Detail (admin sees all) — unchanged.
+    a = await client.get(f"/expenses/{expense_id}", headers=_auth(admin_token))
+    assert a.status_code == 200, a.text
+    assert a.json()["amount_ex_gst"] is not None
+    assert a.json()["gst_amount"] is not None
+
+
+@pytest.mark.asyncio
+async def test_patch_response_strips_gst_breakdown_for_contributor(
+    client, db_session, world, seeded_contributor, contributor_token
+):
+    """Contributor PATCH response (own pending row) strips ex-GST / GST."""
+    exp = await _seed_structured_expense(
+        db_session,
+        job_id=world["job_a"].job_id,
+        entered_by_user_id=seeded_contributor.user_id,
+        review_status=ReviewStatus.pending,
+    )
+    r = await client.patch(
+        f"/expenses/{exp.expense_id}",
+        headers=_auth(contributor_token),
+        json={"amount_inc_gst": "220"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["amount_inc_gst"] is not None
+    assert body["amount_ex_gst"] is None
+    assert body["gst_amount"] is None
+
+
 @pytest.mark.asyncio
 async def test_patch_contributor_others_pending_403(client, db_session, world, contributor_token):
     exp = await _seed_structured_expense(

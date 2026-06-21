@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from typing import TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.deps import get_current_user, require_admin
 from app.models import ReceiptStatus, ReviewStatus, User
+from app.models.user import UserRole
 from app.schemas.expense import (
     AuditRow,
     ExpenseCreate,
@@ -56,6 +58,29 @@ def _map_job_not_found(exc: svc.JobNotFoundForExpense) -> HTTPException:
     )
 
 
+_ExpensePublicT = TypeVar("_ExpensePublicT", bound=ExpensePublic)
+
+
+def _strip_contributor_money(
+    public: _ExpensePublicT, user: User
+) -> _ExpensePublicT:
+    """Null the admin-only GST breakdown for non-admin callers (O1-S1).
+
+    Contributors must not receive ``amount_ex_gst`` / ``gst_amount``
+    (admin-only money fields). Operates on a COPY of the response model
+    via ``model_copy`` — never the ORM row or a shared instance — so
+    stored expenses are untouched. ``amount_inc_gst`` is preserved
+    (contributors need it for capture + correction). Admins get the
+    object unchanged. This is response shaping only; GST calculation is
+    not involved.
+    """
+    if user.role == UserRole.admin:
+        return public
+    return public.model_copy(
+        update={"amount_ex_gst": None, "gst_amount": None}
+    )
+
+
 @router.post(
     "",
     response_model=ExpenseCreateResponse,
@@ -80,7 +105,9 @@ async def create_expense_endpoint(
         raise _map_job_not_found(exc) from exc
 
     return ExpenseCreateResponse(
-        expense=ExpensePublic.model_validate(expense),
+        expense=_strip_contributor_money(
+            ExpensePublic.model_validate(expense), current_user
+        ),
         parse=diagnostics,
     )
 
@@ -151,7 +178,12 @@ async def list_expenses_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST, detail=exc.detail
         ) from exc
     return ExpenseListResponse(
-        items=[ExpensePublic.model_validate(r) for r in rows],
+        items=[
+            _strip_contributor_money(
+                ExpensePublic.model_validate(r), current_user
+            )
+            for r in rows
+        ],
         next_cursor=next_cursor,
     )
 
@@ -190,12 +222,13 @@ async def get_expense_endpoint(
         ) from exc
     except svc.EditForbidden as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.detail) from exc
-    return ExpenseDetailPublic.model_validate(expense).model_copy(
+    detail = ExpenseDetailPublic.model_validate(expense).model_copy(
         update={
             "review_reasons": reasons,
             "pending_review_queue_id": pending_review_queue_id,
         }
     )
+    return _strip_contributor_money(detail, current_user)
 
 
 @router.patch(
@@ -227,7 +260,9 @@ async def update_expense_endpoint(
         raise _map_validation(exc) from exc
     except svc.JobNotFoundForExpense as exc:
         raise _map_job_not_found(exc) from exc
-    return ExpensePublic.model_validate(expense)
+    return _strip_contributor_money(
+        ExpensePublic.model_validate(expense), current_user
+    )
 
 
 @router.delete(

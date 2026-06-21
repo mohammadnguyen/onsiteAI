@@ -149,7 +149,7 @@ function AdminDashboard() {
     const items = monthExpenses.data?.items ?? [];
     return items
       .filter((e) => e.review_status !== 'rejected')
-      .reduce((acc, e) => acc + parseFloat(e.amount_ex_gst), 0);
+      .reduce((acc, e) => acc + parseFloat(e.amount_ex_gst ?? '0'), 0);
   }, [monthExpenses.data]);
 
   const pendingCount = queue.data?.length ?? null;

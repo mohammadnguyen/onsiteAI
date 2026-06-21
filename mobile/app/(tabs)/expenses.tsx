@@ -297,7 +297,7 @@ export default function ExpensesScreen() {
           refreshControl={refreshControl}
         >
           <Text style={s.title}>{t('capture.title')}</Text>
-          <CaptureResultCard result={result} onReset={onReset} />
+          <CaptureResultCard result={result} onReset={onReset} isAdmin={isAdmin} />
           <RecentCapturesList
             query={recentExpenses}
             showViewAll
@@ -369,6 +369,16 @@ export default function ExpensesScreen() {
               testID="payment-transfer"
             />
           </View>
+
+          {/* O1-S1 #2: when no payment method is picked, make the default
+              GST treatment explicit. We keep null -> omit (parser infers
+              'unknown' = Including-GST split); we never auto-default to
+              Cash and the field stays optional. */}
+          {paymentSel === null ? (
+            <Text style={s.paymentHint} testID="payment-default-hint">
+              {t('capture.payment_default_hint')}
+            </Text>
+          ) : null}
 
           <TouchableOpacity
             style={s.checkboxRow}
@@ -600,6 +610,7 @@ const s = StyleSheet.create({
   paymentOptionDisabled: { opacity: 0.5 },
   paymentOptionText: { color: '#0f172a', fontSize: 14, fontWeight: '500' },
   paymentOptionTextActive: { color: '#ffffff' },
+  paymentHint: { color: '#64748b', fontSize: 12, lineHeight: 16 },
   checkboxRow: {
     flexDirection: 'row',
     alignItems: 'center',

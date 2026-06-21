@@ -192,8 +192,14 @@ class ExpensePublic(BaseModel):
     raw_input_text: str | None
     description: str | None
     amount_inc_gst: Decimal
-    amount_ex_gst: Decimal
-    gst_amount: Decimal
+    # O1-S1 financial-visibility hardening: amount_ex_gst / gst_amount are
+    # admin-only. The /expenses routes server-strip these to None for
+    # contributor callers, so the wire shape must permit null. The DB
+    # columns stay NOT NULL — this is an API response-contract change
+    # only, NOT a DB schema change or migration. amount_inc_gst stays
+    # visible (contributors need it for capture + correction).
+    amount_ex_gst: Decimal | None
+    gst_amount: Decimal | None
     payment_method: PaymentMethod
     expense_date: date
     category_id: uuid.UUID | None

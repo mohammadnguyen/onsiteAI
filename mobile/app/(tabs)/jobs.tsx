@@ -454,7 +454,11 @@ function JobDetailModal({
                 })()}
                 <DetailRow
                   label={t('job.budget')}
-                  value={data.total_budget_ex_gst ?? '-'}
+                  value={
+                    data.total_budget_ex_gst != null
+                      ? formatMoney(data.total_budget_ex_gst)
+                      : t('job.no_budget_set')
+                  }
                 />
               </>
             ) : null}

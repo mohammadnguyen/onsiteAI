@@ -356,6 +356,7 @@ export default function ExpenseDetailScreen() {
             onApprove={onApprove}
             onReject={onReject}
             approveRejectEnabled={approveRejectEnabled}
+            isAdmin={isAdmin}
           />
         </ScrollView>
       ) : null}
@@ -385,6 +386,7 @@ function DetailBody({
   onApprove,
   onReject,
   approveRejectEnabled,
+  isAdmin,
 }: {
   data: ExpenseDetailPublic;
   jobName: string | undefined;
@@ -395,6 +397,7 @@ function DetailBody({
   onApprove: () => void;
   onReject: () => void;
   approveRejectEnabled: boolean;
+  isAdmin: boolean;
 }) {
   const { t } = useTranslation();
   const statusColor = STATUS_COLORS[data.review_status];
@@ -499,8 +502,14 @@ function DetailBody({
       ) : null}
 
       <View style={s.grid}>
-        <Field label={t('expense.amount_ex_gst')} value={formatMoney(data.amount_ex_gst)} />
-        <Field label={t('expense.gst')} value={formatMoney(data.gst_amount)} />
+        {/* O1-S1: ex-GST / GST are admin-only. Contributors never render
+            them (the backend also server-strips them to null). */}
+        {isAdmin ? (
+          <>
+            <Field label={t('expense.amount_ex_gst')} value={formatMoney(data.amount_ex_gst)} />
+            <Field label={t('expense.gst')} value={formatMoney(data.gst_amount)} />
+          </>
+        ) : null}
         <Field label={t('expense.payment')} value={paymentLabel} />
         <Field label={t('expense.supplier')} value={supplierName} />
         <Field label={t('expense.category')} value={categoryName} />

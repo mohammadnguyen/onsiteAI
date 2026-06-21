@@ -1179,9 +1179,9 @@ export interface components {
             /** Amount Inc Gst */
             amount_inc_gst: string;
             /** Amount Ex Gst */
-            amount_ex_gst: string;
+            amount_ex_gst: string | null;
             /** Gst Amount */
-            gst_amount: string;
+            gst_amount: string | null;
             payment_method: components["schemas"]["PaymentMethod"];
             /**
              * Expense Date
@@ -1247,9 +1247,9 @@ export interface components {
             /** Amount Inc Gst */
             amount_inc_gst: string;
             /** Amount Ex Gst */
-            amount_ex_gst: string;
+            amount_ex_gst: string | null;
             /** Gst Amount */
-            gst_amount: string;
+            gst_amount: string | null;
             payment_method: components["schemas"]["PaymentMethod"];
             /**
              * Expense Date
