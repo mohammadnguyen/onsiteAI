@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -10,7 +10,7 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, type Href } from 'expo-router';
+import { useFocusEffect, useRouter, type Href } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { useMe } from '../../src/api/hooks/useAuth';
 import { resolveApiErrorMessage } from '../../src/api/errors';
@@ -29,6 +29,7 @@ import {
   type ChecklistRowState,
 } from '../../src/components/WorkerChecklist';
 import { todayISO } from '../../src/util/dates';
+import { useLabourEditTargetStore } from '../../src/store/labourEditTarget';
 import { formatDays } from '../../src/util/format';
 import { computeTimeRange, formatHoursShort, hhmmFromServer } from '../../src/util/time';
 
@@ -89,6 +90,20 @@ export default function LabourScreen() {
 
   const entries = useLabourEntries(jobId, date);
   const save = useSaveAttendance();
+
+  // L-E1: consume an "edit this day" handoff from the records screen.
+  // One-shot — cleared immediately so a later tab focus can't re-apply
+  // a stale target.
+  useFocusEffect(
+    useCallback(() => {
+      const target = useLabourEditTargetStore.getState().target;
+      if (!target) return;
+      useLabourEditTargetStore.getState().clear();
+      setDate(target.date);
+      setJobId(target.jobId);
+      lastUsedJobId = target.jobId;
+    }, []),
+  );
 
   const isAdmin = me.data?.role === 'admin';
   const myId = me.data?.user_id;
@@ -487,30 +502,44 @@ export default function LabourScreen() {
               attendance summary. useMe drives VISIBILITY only — both
               destinations re-gate themselves and the backend write/
               summary routes are require_admin (fails closed). */}
-          {isAdmin ? (
-            <View style={s.headerBtns}>
-              <TouchableOpacity
-                onPress={() =>
-                  router.push('/labour/workers' as unknown as Href)
-                }
-                style={s.headerBtn}
-                accessibilityRole="button"
-                testID="labour-workers-btn"
-              >
-                <Text style={s.headerBtnText}>{t('labour.workers_entry')}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() =>
-                  router.push('/labour/summary' as unknown as Href)
-                }
-                style={s.headerBtn}
-                accessibilityRole="button"
-                testID="labour-summary-btn"
-              >
-                <Text style={s.headerBtnText}>{t('labour.summary_entry')}</Text>
-              </TouchableOpacity>
-            </View>
-          ) : null}
+          <View style={s.headerBtns}>
+            {/* L-E1: records browser — BOTH roles (attendance identity
+                only; per-row delete self-gates to the backend rule). */}
+            <TouchableOpacity
+              onPress={() =>
+                router.push('/labour/records' as unknown as Href)
+              }
+              style={s.headerBtn}
+              accessibilityRole="button"
+              testID="labour-records-btn"
+            >
+              <Text style={s.headerBtnText}>{t('labour.records_entry')}</Text>
+            </TouchableOpacity>
+            {isAdmin ? (
+              <>
+                <TouchableOpacity
+                  onPress={() =>
+                    router.push('/labour/workers' as unknown as Href)
+                  }
+                  style={s.headerBtn}
+                  accessibilityRole="button"
+                  testID="labour-workers-btn"
+                >
+                  <Text style={s.headerBtnText}>{t('labour.workers_entry')}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() =>
+                    router.push('/labour/summary' as unknown as Href)
+                  }
+                  style={s.headerBtn}
+                  accessibilityRole="button"
+                  testID="labour-summary-btn"
+                >
+                  <Text style={s.headerBtnText}>{t('labour.summary_entry')}</Text>
+                </TouchableOpacity>
+              </>
+            ) : null}
+          </View>
         </View>
 
         <DatePills value={date} onChange={setDate} disabled={save.isPending} />
@@ -532,6 +561,16 @@ export default function LabourScreen() {
 
         {isFuture ? (
           <Text style={s.warnText}>{t('labour.error_future_date')}</Text>
+        ) : null}
+
+        {/* L-E1: the saved-day banner — the missing signal that made
+            attendance FEEL write-once. The ticks below are already
+            seeded from this day's saved entries; changing + saving
+            updates them (untick = delete). */}
+        {(entries.data?.length ?? 0) > 0 ? (
+          <Text style={s.savedDayBanner} testID="labour-saved-day-banner">
+            {t('labour.saved_day_banner', { count: entries.data!.length })}
+          </Text>
         ) : null}
 
         {initialLoading ? (
@@ -687,6 +726,15 @@ const s = StyleSheet.create({
   errorCenter: { color: '#b91c1c', fontSize: 14, textAlign: 'center', paddingVertical: 16 },
   emptyText: { color: '#64748b', fontSize: 14, textAlign: 'center', paddingVertical: 16 },
   warnText: { color: '#92400e', fontSize: 13 },
+  // L-E1: editing-a-saved-day indicator.
+  savedDayBanner: {
+    color: '#075985',
+    fontSize: 13,
+    backgroundColor: '#e0f2fe',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
   banner: { borderRadius: 6, borderWidth: 1, padding: 12 },
   bannerOk: { backgroundColor: '#ecfdf5', borderColor: '#a7f3d0' },
   bannerError: { backgroundColor: '#fef2f2', borderColor: '#fecaca' },

@@ -53,6 +53,60 @@ export function useWorkers(includeInactive = false) {
  * staleTime 0 (default): several recorders can write the same morning;
  * always refetch on mount/refocus rather than trusting a cached day.
  */
+/**
+ * L-E1: attendance entries over a date RANGE, optionally filtered to a
+ * job — the records screen's listing query. Server returns newest
+ * first; limit 500 (API max) covers a month of records for a small
+ * crew many times over. Attendance identity only (worker/job/date/
+ * fraction/times) — no rates or cost ride on this shape, so the
+ * screen is contributor-safe by construction.
+ */
+export function useLabourEntriesRange(
+  jobId: string | null,
+  from: string,
+  to: string,
+) {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  return useQuery<LabourEntryPublic[]>({
+    queryKey: ['labour-entries', { range: true, jobId, from, to }],
+    queryFn: async () => {
+      const r = await api.get<LabourEntryPublic[]>('/labour-entries', {
+        params: {
+          ...(jobId ? { job_id: jobId } : {}),
+          from,
+          to,
+          limit: 500,
+        },
+      });
+      return r.data;
+    },
+    enabled: !!accessToken && !!from && !!to,
+    retry: false,
+  });
+}
+
+/**
+ * L-E1: delete one attendance entry from the records screen.
+ *
+ * Authorization lives on the backend (admin: any entry; contributor:
+ * own entries, today only) — the screen additionally hides the button
+ * where the rule would reject, but the server stays authoritative.
+ * Invalidates the entries root (covers both the tick screen's
+ * single-day query and the records range query) plus the summary.
+ */
+export function useDeleteLabourEntry() {
+  const qc = useQueryClient();
+  return useMutation<void, unknown, { entryId: string }>({
+    mutationFn: async ({ entryId }) => {
+      await api.delete(`/labour-entries/${entryId}`);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['labour-entries'] });
+      void qc.invalidateQueries({ queryKey: ['labour-summary'] });
+    },
+  });
+}
+
 export function useLabourEntries(jobId: string | null, date: string | null) {
   const accessToken = useAuthStore((s) => s.accessToken);
   return useQuery<LabourEntryPublic[]>({
