@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -24,7 +24,13 @@ import {
 } from '../../src/api/hooks/useExpenses';
 import { resolveApiErrorMessage } from '../../src/api/errors';
 import { useMe } from '../../src/api/hooks/useAuth';
+import {
+  useJobs,
+  useJobZhAliasMap,
+  type JobPublic,
+} from '../../src/api/hooks/useJobs';
 import { CaptureResultCard } from '../../src/components/CaptureResultCard';
+import { JobPickerSheet } from '../../src/components/JobPickerSheet';
 import { RecentCapturesList } from '../../src/components/RecentCapturesList';
 import { RecentFailuresList } from '../../src/components/RecentFailuresList';
 import { DatePills } from '../../src/components/DatePills';
@@ -77,7 +83,7 @@ type MultiCaptureResult = {
 };
 
 export default function ExpensesScreen() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const createExpense = useCreateExpense();
   // Mobile Capture v1 Sub-batch A: "My Captures" list query lives on
   // the parent screen so the same RefreshControl can drive pull-to-
@@ -105,6 +111,13 @@ export default function ExpensesScreen() {
 
   const [rawInputText, setRawInputText] = useState('');
   const [paymentSel, setPaymentSel] = useState<PaymentSel>(null);
+  // O2-A (feedback #1): explicit job selection. `null` = nothing picked
+  // -> job_id is OMITTED from the POST so the backend parser matches the
+  // job from the text exactly as before (job_uncertain review still
+  // fires on ambiguity). A picked job is sent as an explicit job_id and
+  // wins over the parser via the existing structured-wins merge.
+  const [jobSel, setJobSel] = useState<string | null>(null);
+  const [jobPickerOpen, setJobPickerOpen] = useState(false);
   const [receiptLater, setReceiptLater] = useState(false);
   // P3: expense_date is always set client-side (defaults to today's
   // local ISO) and always sent in the body, so the backend never has
@@ -122,6 +135,54 @@ export default function ExpensesScreen() {
     null,
   );
   const [multiPending, setMultiPending] = useState(false);
+
+  // O2-A job chips: recent-first active jobs, capped small so the row
+  // stays scannable (recent-N + "More…", never a wall of chips).
+  const jobsQuery = useJobs();
+  const activeJobs = useMemo(
+    () => (jobsQuery.data ?? []).filter((j) => j.status === 'active'),
+    [jobsQuery.data],
+  );
+  const chipJobs = useMemo(() => {
+    const byId = new Map(activeJobs.map((j) => [j.job_id, j]));
+    const ordered: JobPublic[] = [];
+    // Most-recently-captured jobs first (from the My Captures query).
+    for (const e of recentExpenses.data?.items ?? []) {
+      const j = byId.get(e.job_id);
+      if (j && !ordered.includes(j)) ordered.push(j);
+    }
+    for (const j of activeJobs) {
+      if (!ordered.includes(j)) ordered.push(j);
+    }
+    return ordered.slice(0, 4);
+  }, [activeJobs, recentExpenses.data]);
+  // zh alias labels (e.g. "工地1") for the chips + the selected job.
+  // Only fetched when the app language is Chinese — English users see
+  // job names, which the list response already carries.
+  const aliasIds = useMemo(() => {
+    const ids = chipJobs.map((j) => j.job_id);
+    if (jobSel && !ids.includes(jobSel)) ids.push(jobSel);
+    return ids;
+  }, [chipJobs, jobSel]);
+  const zhAliasMap = useJobZhAliasMap(aliasIds, i18n.language === 'zh');
+  const jobLabelFor = (job: JobPublic): string =>
+    zhAliasMap[job.job_id] ?? job.job_name;
+  // Chips actually rendered: if the sheet picked a job outside the
+  // recent-N, surface it as an (active) chip so the selection is visible.
+  const displayChips = useMemo(() => {
+    if (jobSel === null || chipJobs.some((j) => j.job_id === jobSel)) {
+      return chipJobs;
+    }
+    const selected = activeJobs.find((j) => j.job_id === jobSel);
+    return selected ? [selected, ...chipJobs.slice(0, 3)] : chipJobs;
+  }, [chipJobs, activeJobs, jobSel]);
+  // Result-card job echo: alias (if loaded) else name else short id.
+  const jobNameFor = (jobId: string): string => {
+    const alias = zhAliasMap[jobId];
+    if (alias) return alias;
+    const j = jobsQuery.data?.find((x) => x.job_id === jobId);
+    return j?.job_name ?? jobId.slice(0, 8);
+  };
 
   // RefreshControl reads `isRefetching` (not `isFetching`) so the
   // spinner only shows on manual pull-to-refresh, not on initial
@@ -154,6 +215,10 @@ export default function ExpensesScreen() {
     // Unset (null) -> omit payment_method so the parser decides (fallback
     // 'unknown'); never coerce to a default like cash.
     if (paymentSel !== null) body.payment_method = paymentSel;
+    // O2-A: explicit job selection wins over the parser (existing
+    // structured-wins merge server-side). Unset -> omit so the parser
+    // matches from text exactly as before.
+    if (jobSel !== null) body.job_id = jobSel;
     return body;
   };
 
@@ -246,6 +311,10 @@ export default function ExpensesScreen() {
   const onReset = () => {
     setRawInputText('');
     setPaymentSel(null);
+    // O2-A: job selection resets with the rest of the form (mirrors
+    // payment) — a stale job silently attached to the NEXT capture is
+    // exactly the wrong-job risk the chips must not amplify.
+    setJobSel(null);
     setReceiptLater(false);
     // P3: reset the date back to today on a fresh capture — anchoring
     // the form on "now" matches the iOS-first on-site flow.
@@ -277,6 +346,7 @@ export default function ExpensesScreen() {
           <MultiCaptureResultCard
             result={multiResult}
             onReset={onReset}
+            jobNameFor={jobNameFor}
           />
           <RecentCapturesList
             query={recentExpenses}
@@ -297,7 +367,12 @@ export default function ExpensesScreen() {
           refreshControl={refreshControl}
         >
           <Text style={s.title}>{t('capture.title')}</Text>
-          <CaptureResultCard result={result} onReset={onReset} isAdmin={isAdmin} />
+          <CaptureResultCard
+            result={result}
+            onReset={onReset}
+            isAdmin={isAdmin}
+            jobName={jobNameFor(result.expense.job_id)}
+          />
           <RecentCapturesList
             query={recentExpenses}
             showViewAll
@@ -327,6 +402,43 @@ export default function ExpensesScreen() {
           refreshControl={refreshControl}
         >
           <Text style={s.title}>{t('capture.title')}</Text>
+
+          {/* O2-A (feedback #1): tap a job instead of spelling it. Chips
+              are recent-first active jobs, labelled with the zh alias
+              when one exists. Tapping the active chip deselects (back to
+              parser matching). "More…" opens the searchable full list.
+              Identity only — no money ever renders here. */}
+          {activeJobs.length > 0 ? (
+            <View style={s.jobRow}>
+              <Text style={s.paymentLabel}>{t('capture.job_label')}</Text>
+              {displayChips.map((job) => (
+                <PaymentOption
+                  key={job.job_id}
+                  label={jobLabelFor(job)}
+                  active={jobSel === job.job_id}
+                  disabled={inFlight}
+                  onPress={() =>
+                    setJobSel((prev) =>
+                      prev === job.job_id ? null : job.job_id,
+                    )
+                  }
+                  testID={`job-chip-${job.job_id}`}
+                />
+              ))}
+              <PaymentOption
+                label={t('capture.job_more')}
+                active={false}
+                disabled={inFlight}
+                onPress={() => setJobPickerOpen(true)}
+                testID="job-more"
+              />
+            </View>
+          ) : null}
+          {activeJobs.length > 0 && jobSel === null ? (
+            <Text style={s.paymentHint} testID="job-default-hint">
+              {t('capture.job_hint')}
+            </Text>
+          ) : null}
 
           <TextInput
             ref={textareaRef}
@@ -434,6 +546,18 @@ export default function ExpensesScreen() {
           />
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* O2-A: searchable full job list behind the "More…" chip. */}
+      <JobPickerSheet
+        visible={jobPickerOpen}
+        jobs={activeJobs}
+        labelFor={jobLabelFor}
+        onSelect={(jobId) => {
+          setJobSel(jobId);
+          setJobPickerOpen(false);
+        }}
+        onClose={() => setJobPickerOpen(false)}
+      />
     </SafeAreaView>
   );
 }
@@ -481,9 +605,13 @@ function PaymentOption({
 function MultiCaptureResultCard({
   result,
   onReset,
+  jobNameFor,
 }: {
   result: MultiCaptureResult;
   onReset: () => void;
+  /** O2-A: resolve a job_id to its display label (zh alias else name)
+   * so each saved row echoes WHICH job it landed on. */
+  jobNameFor: (jobId: string) => string;
 }) {
   const { t } = useTranslation();
   const total = result.items.length;
@@ -541,7 +669,10 @@ function MultiCaptureResultCard({
               </Text>
               {item.success && item.expense ? (
                 <Text style={s.multiItemMeta}>
-                  ${Number(item.expense.amount_inc_gst).toFixed(2)}
+                  {/* O2-A: echo the assigned job so a mis-match is
+                      visible per row, not just per capture. */}
+                  {jobNameFor(item.expense.job_id)}
+                  {' · '}${Number(item.expense.amount_inc_gst).toFixed(2)}
                   {item.reviewPending
                     ? ` · ${t('capture.result_pending_review')}`
                     : ''}
@@ -611,6 +742,14 @@ const s = StyleSheet.create({
   paymentOptionText: { color: '#0f172a', fontSize: 14, fontWeight: '500' },
   paymentOptionTextActive: { color: '#ffffff' },
   paymentHint: { color: '#64748b', fontSize: 12, lineHeight: 16 },
+  // O2-A job chips row — mirrors paymentRow so the two selector rows
+  // read as one visual family.
+  jobRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+  },
   checkboxRow: {
     flexDirection: 'row',
     alignItems: 'center',

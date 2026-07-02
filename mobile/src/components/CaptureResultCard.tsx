@@ -42,6 +42,7 @@ export function CaptureResultCard({
   result,
   onReset,
   isAdmin,
+  jobName,
 }: {
   result: ExpenseCreateResponse;
   onReset: () => void;
@@ -49,6 +50,12 @@ export function CaptureResultCard({
   // render those rows — defence-in-depth on top of the backend
   // server-strip, which already nulls them for non-admin callers.
   isAdmin: boolean;
+  // O2-A (feedback #1): the assigned job's display label (zh alias when
+  // present, else job name), resolved by the parent. Closes the
+  // verification loop — the user sees WHICH job the expense landed on,
+  // whether it came from an explicit chip pick or the parser. Job
+  // identity is not financial data (contributor-safe).
+  jobName?: string;
 }) {
   const { t } = useTranslation();
   const expense = result.expense;
@@ -100,6 +107,9 @@ export function CaptureResultCard({
         ) : null}
         <FieldRow label={t('expense.payment')} value={t(`capture.payment_${expense.payment_method}`, { defaultValue: expense.payment_method })} />
         <FieldRow label={t('expense.date')} value={formatDateAU(expense.expense_date)} />
+        {jobName ? (
+          <FieldRow label={t('expense.job')} value={jobName} />
+        ) : null}
         {expense.raw_input_text ? (
           <FieldRow label={t('capture.you_typed')} value={expense.raw_input_text} />
         ) : null}

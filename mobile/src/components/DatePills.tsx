@@ -34,15 +34,31 @@ import {
  * re-normalizes any string via the schema's ``ExpenseDateField``
  * BeforeValidator.
  *
- * Pinned to a TextInput rather than a native date picker because:
- *  - the AU short-date shapes the operator specified
- *    (``22/05``, ``22-05``, ``22/05/26`` etc.) are typed inputs the
- *    native picker doesn't surface,
- *  - no ``@react-native-community/datetimepicker`` dependency churn,
- *  - identical behaviour across iOS / Android / web.
+ * O2-A (dogfood feedback #4): "Other" now defaults to a native calendar
+ * picker — language-neutral, no typing — with the original TextInput
+ * retained behind a "type instead" toggle. The typed AU short-date
+ * shapes (``22/05``, ``22-05``, ``22/05/26`` etc.) remain a deliberate
+ * operator fast path and are NOT removed; the backend's loose-date
+ * parsing is untouched. On web (where the native picker module is
+ * unavailable) the typed path stays the only custom mode, preserving
+ * the pre-O2 behaviour exactly.
  */
 
+// Native-only module, lazily required so the web bundle never
+// EVALUATES the native picker (Metro may still include the file, but
+// it only executes on iOS/Android). Web keeps the typed path.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let NativeDateTimePicker: any = null;
+if (Platform.OS !== 'web') {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  NativeDateTimePicker = require('@react-native-community/datetimepicker').default;
+}
+
 type Mode = 'today' | 'yesterday' | 'custom';
+
+/** How the "Other" date is being entered: native calendar (default on
+ * iOS/Android) or the original typed TextInput (only option on web). */
+type CustomEntry = 'picker' | 'typed';
 
 export type DatePillsProps = {
   /** Current value as an ISO ``YYYY-MM-DD`` string. */
@@ -91,17 +107,29 @@ export function DatePills({
     initialMode === 'custom' ? formatDateAU(value) : '',
   );
   const [customError, setCustomError] = useState<string | null>(null);
+  // O2-A: calendar-first "Other" entry. Web has no native picker module,
+  // so it stays on the typed path (pre-O2 behaviour).
+  const [customEntry, setCustomEntry] = useState<CustomEntry>(
+    Platform.OS === 'web' || !NativeDateTimePicker ? 'typed' : 'picker',
+  );
+  // Android's picker is a system dialog: rendering the component opens
+  // it once. This flag controls that render; iOS shows an inline
+  // calendar instead and never uses it.
+  const [showAndroidPicker, setShowAndroidPicker] = useState(false);
 
   const customInputRef = useRef<TextInput>(null);
 
   // Validity model (see prop docs above). The edit screen (PD-7=B) gates
-  // Save on this. Today/Yesterday are always valid; Custom is valid only
-  // when there is text AND it parsed cleanly.
+  // Save on this. Today/Yesterday are always valid. Custom in PICKER
+  // entry is always valid — the calendar can only emit a real date, and
+  // `value` always holds the last good ISO. Custom in TYPED entry is
+  // valid only when there is text AND it parsed cleanly (unchanged).
   const isValid = useMemo<boolean>(() => {
     if (mode !== 'custom') return true;
+    if (customEntry === 'picker' && NativeDateTimePicker) return true;
     if (customError !== null) return false;
     return customText.trim().length > 0;
-  }, [mode, customError, customText]);
+  }, [mode, customEntry, customError, customText]);
 
   // Emit validity changes. Kept in a separate effect so consumers that
   // don't pass onValidityChange (e.g. the Capture screen) pay nothing.
@@ -152,14 +180,51 @@ export function DatePills({
   const selectCustom = () => {
     if (disabled) return;
     setMode('custom');
-    // Seed the input with the current value so the user can edit
-    // rather than retype from scratch.
+    setCustomError(null);
+    if (customEntry === 'picker' && NativeDateTimePicker) {
+      // Calendar-first: on Android pop the system dialog immediately;
+      // on iOS the inline calendar renders below the pills.
+      if (Platform.OS === 'android') setShowAndroidPicker(true);
+      return;
+    }
+    // Typed entry (web, or user preference): seed the input with the
+    // current value so the user can edit rather than retype.
+    if (customText.trim().length === 0) {
+      setCustomText(formatDateAU(value));
+    }
+    setTimeout(() => customInputRef.current?.focus(), 0);
+  };
+
+  // O2-A: picker emission. The native calendar can only produce a real
+  // date; normalize to ISO and emit. Android also closes its dialog
+  // (dismiss = keep the last good value, emit nothing).
+  const onPickerChange = (_event: unknown, picked?: Date) => {
+    if (Platform.OS === 'android') setShowAndroidPicker(false);
+    if (picked) onChange(dateToISO(picked));
+  };
+
+  const switchToTyped = () => {
+    if (disabled) return;
+    setCustomEntry('typed');
+    setShowAndroidPicker(false);
     if (customText.trim().length === 0) {
       setCustomText(formatDateAU(value));
     }
     setCustomError(null);
     setTimeout(() => customInputRef.current?.focus(), 0);
   };
+
+  const switchToPicker = () => {
+    if (disabled || !NativeDateTimePicker) return;
+    setCustomEntry('picker');
+    setCustomError(null);
+    if (Platform.OS === 'android') setShowAndroidPicker(true);
+  };
+
+  // Date object for the native picker: `value` always holds the last
+  // good ISO, so this parse cannot fail in practice; today is the
+  // defensive fallback.
+  const pickerDate = parseLooseDate(value) ?? new Date();
 
   const onCustomChange = (text: string) => {
     setCustomText(text);
@@ -205,7 +270,43 @@ export function DatePills({
           testID="date-custom"
         />
       </View>
-      {mode === 'custom' ? (
+      {mode === 'custom' && customEntry === 'picker' && NativeDateTimePicker ? (
+        <View style={s.customWrap}>
+          {Platform.OS === 'android' ? (
+            <TouchableOpacity
+              onPress={() => !disabled && setShowAndroidPicker(true)}
+              disabled={disabled}
+              style={s.pickerValueRow}
+              testID="date-picker-open"
+              accessibilityRole="button"
+              accessibilityLabel={t('capture.date_custom')}
+            >
+              <Text style={s.pickerValueText}>{formatDateAU(value)}</Text>
+            </TouchableOpacity>
+          ) : null}
+          {Platform.OS === 'ios' || showAndroidPicker ? (
+            <NativeDateTimePicker
+              value={pickerDate}
+              mode="date"
+              display={Platform.OS === 'ios' ? 'inline' : 'default'}
+              onChange={onPickerChange}
+              themeVariant="light"
+              testID="date-picker-native"
+            />
+          ) : null}
+          <TouchableOpacity
+            onPress={switchToTyped}
+            disabled={disabled}
+            testID="date-type-instead"
+            accessibilityRole="button"
+          >
+            <Text style={s.entryToggleText}>
+              {t('capture.date_type_instead')}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+      {mode === 'custom' && (customEntry === 'typed' || !NativeDateTimePicker) ? (
         <View style={s.customWrap}>
           <TextInput
             ref={customInputRef}
@@ -230,6 +331,18 @@ export function DatePills({
           ) : (
             <Text style={s.hintText}>{t('capture.date_custom_hint')}</Text>
           )}
+          {NativeDateTimePicker ? (
+            <TouchableOpacity
+              onPress={switchToPicker}
+              disabled={disabled}
+              testID="date-use-calendar"
+              accessibilityRole="button"
+            >
+              <Text style={s.entryToggleText}>
+                {t('capture.date_use_calendar')}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
       ) : null}
     </View>
@@ -293,4 +406,15 @@ const s = StyleSheet.create({
   customInputError: { borderColor: '#dc2626' },
   hintText: { color: '#64748b', fontSize: 12 },
   errorText: { color: '#b91c1c', fontSize: 13 },
+  // O2-A calendar entry styles.
+  pickerValueRow: {
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#ffffff',
+  },
+  pickerValueText: { fontSize: 16, color: '#0f172a' },
+  entryToggleText: { color: '#2563eb', fontSize: 13, fontWeight: '500' },
 });

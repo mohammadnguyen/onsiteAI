@@ -86,3 +86,26 @@ export function contractGstFromEntered(
     ? round2(entered - contractExGstFromEntered(entered, inclusive))
     : 0;
 }
+
+/**
+ * O2-A: suggested total budget from contract + target margin %.
+ *
+ * Client-side mirror of the backend's canonical margin math
+ * (`backend/app/services/budget_summary.py:_compute_margin_fields`):
+ * ``target_cost_limit_ex_gst = contract_ex_gst × (100 − target%) / 100``,
+ * quantized to the cent. Margin is profit-on-REVENUE, not markup-on-cost.
+ *
+ * ``enteredContract`` is the AS-DISPLAYED contract figure (gross when the
+ * job is "Including GST"), so we convert to the canonical ex-GST basis
+ * first — the suggestion is therefore GST-mode independent, exactly like
+ * the stored math. Pure convenience prefill: the caller lets the admin
+ * overwrite freely (target cost limit is informational, never enforced).
+ */
+export function budgetFromContractAndMargin(
+  enteredContract: number,
+  inclusive: boolean,
+  marginPct: number,
+): number {
+  const exGst = contractExGstFromEntered(enteredContract, inclusive);
+  return round2((exGst * (100 - marginPct)) / 100);
+}

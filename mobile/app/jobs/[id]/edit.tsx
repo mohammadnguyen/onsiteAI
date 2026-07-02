@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -39,6 +39,7 @@ import {
   contractExGstFromEntered,
   contractEnteredFromExGst,
   contractGstFromEntered,
+  budgetFromContractAndMargin,
 } from '../../../src/util/format';
 
 /**
@@ -279,6 +280,38 @@ export default function JobEditScreen() {
   const contractEntered =
     contractText.trim() === '' ? null : Number(contractText.trim());
   const showRecalc = contractEntered !== null && contractValid;
+
+  // O2-A (feedback #2): suggested budget = contract_ex_gst × (100 −
+  // margin%) / 100 — the client-side mirror of the backend's canonical
+  // _compute_margin_fields math (profit-on-revenue). GST-mode
+  // independent because the entered contract converts to ex-GST first.
+  const budgetSuggestion = useMemo<string | null>(() => {
+    if (!contractValid || !marginValid) return null;
+    const c = contractText.trim();
+    const m = marginText.trim();
+    if (c === '' || m === '') return null;
+    return String(budgetFromContractAndMargin(Number(c), inclusive, Number(m)));
+  }, [contractValid, marginValid, contractText, marginText, inclusive]);
+  // ARMED only once the admin actually edits contract/margin/GST-mode
+  // in this session — the suggestion must never rewrite the budget just
+  // because the screen opened. And it only ever replaces an EMPTY
+  // budget or its own previous suggestion; an admin-typed value is
+  // never overwritten (target cost limit stays informational — the
+  // operator-frozen non-enforcement rule).
+  const budgetAutoFillArmed = useRef(false);
+  const lastBudgetSuggestion = useRef<string | null>(null);
+  useEffect(() => {
+    if (!budgetAutoFillArmed.current) return;
+    if (budgetSuggestion === null) return; // cleared/invalid inputs never wipe the budget
+    const cur = budgetText.trim();
+    if (cur === '' || cur === lastBudgetSuggestion.current) {
+      setBudgetText(budgetSuggestion);
+      lastBudgetSuggestion.current = budgetSuggestion;
+    }
+    // Deliberately NOT keyed on budgetText: reacting to budget edits
+    // would fight the admin's typing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [budgetSuggestion]);
 
   // Conditional-spread PATCH body. Each helper returns undefined when
   // the field is unchanged, null when the user explicitly cleared it,
@@ -640,7 +673,10 @@ export default function JobEditScreen() {
             <Text style={s.label}>{t('job.contract_value')}</Text>
             <TextInput
               value={contractText}
-              onChangeText={setContractText}
+              onChangeText={(v) => {
+                budgetAutoFillArmed.current = true;
+                setContractText(v);
+              }}
               keyboardType="decimal-pad"
               placeholder={t('jobs_edit.numeric_blank_hint')}
               placeholderTextColor="#94a3b8"
@@ -657,7 +693,10 @@ export default function JobEditScreen() {
             <Text style={s.label}>{t('job.gst_mode_label')}</Text>
             <View style={s.gstRow}>
               <TouchableOpacity
-                onPress={() => setGstMode('inclusive')}
+                onPress={() => {
+                  budgetAutoFillArmed.current = true;
+                  setGstMode('inclusive');
+                }}
                 disabled={update.isPending}
                 style={[s.gstChip, inclusive && s.gstChipActive]}
                 accessibilityRole="button"
@@ -668,7 +707,10 @@ export default function JobEditScreen() {
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                onPress={() => setGstMode('exclusive')}
+                onPress={() => {
+                  budgetAutoFillArmed.current = true;
+                  setGstMode('exclusive');
+                }}
                 disabled={update.isPending}
                 style={[s.gstChip, !inclusive && s.gstChipActive]}
                 accessibilityRole="button"
@@ -712,11 +754,22 @@ export default function JobEditScreen() {
                 {t('jobs_edit.amount_invalid')}
               </Text>
             ) : null}
+            {/* O2-A: informational only — the budget stays freely
+                editable and is never enforced against the suggestion. */}
+            {budgetSuggestion !== null &&
+            budgetText.trim() === budgetSuggestion ? (
+              <Text style={s.suggestHint} testID="job-edit-budget-suggested">
+                {t('jobs_edit.budget_suggested_hint')}
+              </Text>
+            ) : null}
 
             <Text style={s.label}>{t('job.target_margin_pct')}</Text>
             <TextInput
               value={marginText}
-              onChangeText={setMarginText}
+              onChangeText={(v) => {
+                budgetAutoFillArmed.current = true;
+                setMarginText(v);
+              }}
               keyboardType="decimal-pad"
               placeholder={t('job.margin_percent_hint')}
               placeholderTextColor="#94a3b8"
@@ -1077,6 +1130,7 @@ const s = StyleSheet.create({
   },
   inputError: { borderColor: '#dc2626' },
   fieldError: { color: '#b91c1c', fontSize: 13 },
+  suggestHint: { color: '#64748b', fontSize: 12 },
   statusRow: { flexDirection: 'row', gap: 8 },
   gstRow: { flexDirection: 'row', gap: 8 },
   gstChip: {

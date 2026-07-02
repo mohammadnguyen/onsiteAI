@@ -1,4 +1,10 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMemo } from 'react';
+import {
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { api } from '../client';
 import { useAuthStore } from '../../store/auth';
 import type { components } from '../types';
@@ -40,6 +46,50 @@ export function useJob(jobId: string | null) {
     enabled: !!accessToken && !!jobId,
     retry: false,
   });
+}
+
+/**
+ * O2-A (job chips): Chinese alias labels for a small set of jobs.
+ *
+ * ``GET /jobs`` (list) returns compact ``JobPublic`` rows WITHOUT
+ * aliases — only ``GET /jobs/{id}`` carries them. The capture-screen
+ * chips want zh alias labels (e.g. "工地1") for low-English users, so
+ * this hook lazily fetches the details of just the chip jobs (≤ ~5).
+ * Query keys match ``useJob`` (['jobs', id]) so the cache is shared
+ * with the job detail modal; staleTime keeps repeat capture-tab visits
+ * from refetching on every mount. ``enabled=false`` (e.g. app language
+ * is English, where job_name labels suffice) makes this hook free.
+ *
+ * Returns ``{ [job_id]: zhAliasText }`` for jobs that have a zh alias;
+ * callers fall back to ``job_name`` for everything else.
+ */
+export function useJobZhAliasMap(jobIds: string[], enabled: boolean) {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  const results = useQueries({
+    queries: jobIds.map((id) => ({
+      queryKey: ['jobs', id],
+      queryFn: async () => {
+        const r = await api.get<JobWithDetailPublic>(`/jobs/${id}`);
+        return r.data;
+      },
+      enabled: enabled && !!accessToken && !!id,
+      staleTime: 10 * 60 * 1000,
+      retry: false,
+    })),
+  });
+  // useQueries returns a fresh array each render; the map rebuild is
+  // O(chips) and cheap. Keyed on the joined data identity via results.
+  return useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const q of results) {
+      const d = q.data;
+      if (!d) continue;
+      const zh = d.aliases?.find((a) => a.language_code === 'zh');
+      if (zh) map[d.job_id] = zh.alias_text;
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [results.map((q) => q.dataUpdatedAt).join(',')]);
 }
 
 /**
