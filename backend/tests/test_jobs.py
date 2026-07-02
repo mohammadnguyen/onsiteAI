@@ -246,6 +246,129 @@ async def test_get_job_returns_aliases_and_budgets(
     ) == Decimal("25000.00")
 
 
+# ---------------------------------------------------------------------------
+# Jobs money strip — contract/budget/margin/thresholds/summary/category
+# budgets are admin-only on the wire. Mirrors the O1-S1 expense strip
+# (test_expenses_api.py): contributors receive job IDENTITY (id, code,
+# name, address, status, aliases — the mobile capture job picker depends
+# on these) with money fields nulled server-side; admin responses are
+# unchanged. Response shaping only — no DB schema change.
+# ---------------------------------------------------------------------------
+
+
+_MONEY_JOB_KWARGS = {
+    "contract_value_ex_gst": "500000.00",
+    "total_budget_ex_gst": "400000.00",
+    "target_profit_ratio_pct": "20",
+    "warning_amber_pct": "75",
+    "warning_red_pct": "95",
+}
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_strips_money_for_contributor(
+    client, admin_token, contributor_token, seeded_contributor
+):
+    """Contributor list rows carry identity only — money + summary nulled."""
+    await _create_job(
+        client, admin_token, name="Strip List Job", job_code="SL-01",
+        **_MONEY_JOB_KWARGS,
+    )
+    r = await client.get(
+        "/jobs", headers={"Authorization": f"Bearer {contributor_token}"}
+    )
+    assert r.status_code == 200
+    row = next(j for j in r.json() if j["job_name"] == "Strip List Job")
+    # Identity stays (the capture job picker reads these).
+    assert row["job_code"] == "SL-01"
+    assert row["status"] == "active"
+    # Money is server-stripped.
+    assert row["contract_value_ex_gst"] is None
+    assert row["total_budget_ex_gst"] is None
+    assert row["target_profit_ratio_pct"] is None
+    assert row["warning_amber_pct"] is None
+    assert row["warning_red_pct"] is None
+    assert row["summary"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_keeps_money_for_admin(client, admin_token):
+    """Admin list rows are unchanged — money fields + summary present."""
+    await _create_job(
+        client, admin_token, name="Keep List Job", **_MONEY_JOB_KWARGS
+    )
+    r = await client.get(
+        "/jobs", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert r.status_code == 200
+    row = next(j for j in r.json() if j["job_name"] == "Keep List Job")
+    assert Decimal(str(row["contract_value_ex_gst"])) == Decimal("500000.00")
+    assert Decimal(str(row["total_budget_ex_gst"])) == Decimal("400000.00")
+    assert Decimal(str(row["target_profit_ratio_pct"])) == Decimal("20")
+    # Phase 3 Lite: every admin row carries a populated summary.
+    assert row["summary"] is not None
+
+
+@pytest.mark.asyncio
+async def test_get_job_strips_money_but_keeps_aliases_for_contributor(
+    client, admin_token, contributor_token, seeded_contributor, seed_categories
+):
+    """Contributor detail: aliases stay; money + category_budgets stripped."""
+    job = await _create_job(
+        client, admin_token, name="Strip Detail Job", **_MONEY_JOB_KWARGS
+    )
+    job_id = job["job_id"]
+    alias_r = await client.post(
+        f"/jobs/{job_id}/aliases",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"alias_text": "工地9", "language_code": "zh"},
+    )
+    assert alias_r.status_code == 201, alias_r.text
+    plumbing = seed_categories[8]
+    budget_r = await client.post(
+        f"/jobs/{job_id}/category-budgets",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "category_id": str(plumbing.category_id),
+            "budget_amount_ex_gst": "25000.00",
+        },
+    )
+    assert budget_r.status_code == 201, budget_r.text
+
+    r = await client.get(
+        f"/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {contributor_token}"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    # Identity + aliases survive (capture picker / zh chip labels).
+    assert body["job_name"] == "Strip Detail Job"
+    assert len(body["aliases"]) == 1
+    assert body["aliases"][0]["alias_text"] == "工地9"
+    # Money is server-stripped, including the per-category budget rows.
+    assert body["contract_value_ex_gst"] is None
+    assert body["total_budget_ex_gst"] is None
+    assert body["target_profit_ratio_pct"] is None
+    assert body["warning_amber_pct"] is None
+    assert body["warning_red_pct"] is None
+    assert body["summary"] is None
+    assert body["category_budgets"] == []
+
+    # Admin detail on the SAME job is unchanged.
+    a = await client.get(
+        f"/jobs/{job_id}", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert a.status_code == 200
+    admin_body = a.json()
+    assert Decimal(str(admin_body["contract_value_ex_gst"])) == Decimal(
+        "500000.00"
+    )
+    assert len(admin_body["category_budgets"]) == 1
+    assert Decimal(
+        str(admin_body["category_budgets"][0]["budget_amount_ex_gst"])
+    ) == Decimal("25000.00")
+
+
 @pytest.mark.asyncio
 async def test_get_job_404(client, admin_token):
     random_id = uuid.uuid4()

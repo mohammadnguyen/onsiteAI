@@ -18,6 +18,7 @@ Auth policy:
 from __future__ import annotations
 
 import uuid
+from typing import TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.exc import IntegrityError
@@ -26,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.deps import get_current_user, require_admin
 from app.models.job import Job
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.budget_summary import JobBudgetSummary
 from app.schemas.job import (
     JobAliasCreate,
@@ -62,6 +63,45 @@ from app.services.jobs import (
 )
 
 router = APIRouter(tags=["jobs"])
+
+
+_JobPublicT = TypeVar("_JobPublicT", bound=JobPublic)
+
+
+def _strip_contributor_money(public: _JobPublicT, user: User) -> _JobPublicT:
+    """Null the admin-only money fields for non-admin callers.
+
+    Jobs mirror of the O1-S1 expense strip
+    (:func:`app.api.expenses._strip_contributor_money`): operates on a
+    COPY of the response model via ``model_copy`` — never the ORM row —
+    so stored jobs are untouched. Contributors keep job IDENTITY
+    (``job_id``, ``job_code``, ``job_name``, ``site_address``,
+    ``status``, ``aliases``) — the mobile capture job picker depends on
+    those — but never receive ``contract_value_ex_gst``,
+    ``total_budget_ex_gst``, ``target_profit_ratio_pct``, the warning
+    thresholds, the embedded budget ``summary``, or per-category budget
+    rows. Admins get the object unchanged. This is API response shaping
+    only — NOT a DB schema change (every stripped field is already
+    nullable on the wire).
+
+    ``gst_mode`` is deliberately NOT stripped: it is a required
+    (non-nullable) field on the wire shape both clients type against,
+    and without any amounts it discloses no financial figure. Flagged
+    for the operator in the review rather than silently changed.
+    """
+    if user.role == UserRole.admin:
+        return public
+    update: dict[str, object] = {
+        "contract_value_ex_gst": None,
+        "total_budget_ex_gst": None,
+        "target_profit_ratio_pct": None,
+        "warning_amber_pct": None,
+        "warning_red_pct": None,
+        "summary": None,
+    }
+    if isinstance(public, JobWithDetailPublic):
+        update["category_budgets"] = []
+    return public.model_copy(update=update)
 
 
 @router.post(
@@ -119,20 +159,28 @@ async def create_job_endpoint(
     status_code=status.HTTP_200_OK,
 )
 async def list_jobs_endpoint(
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[JobPublic]:
-    """List all jobs (any authenticated caller).
+    """List all jobs (any authenticated caller; contributors get identity only).
 
-    Phase 3 Lite: each row carries a ``summary`` field with the per-job
-    ex-GST aggregates used by the dashboard. The summary is populated
-    for every row — jobs with no expenses get an all-zero summary so
-    the UI never has to special-case missing data. The auth posture is
-    unchanged from Phase 1 (any authenticated user can list jobs); the
-    dashboard surface that consumes ``summary`` is admin-only by route
-    composition (admin nav), not by route auth.
+    Phase 3 Lite: each ADMIN row carries a ``summary`` field with the
+    per-job ex-GST aggregates used by the dashboard. Jobs with no
+    expenses get an all-zero summary so the UI never has to
+    special-case missing data.
+
+    Jobs money strip (post-O1-S1): contributor responses carry job
+    identity only — contract/budget/margin/threshold fields and the
+    ``summary`` are nulled server-side (previously this was a
+    client-side hide only). The money aggregation is skipped entirely
+    for contributors rather than computed-then-stripped.
     """
     jobs = await list_jobs(db)
+    if user.role != UserRole.admin:
+        return [
+            _strip_contributor_money(JobPublic.model_validate(j), user)
+            for j in jobs
+        ]
     summaries = await summarize_jobs(db, job_ids=[j.job_id for j in jobs])
     return [
         JobPublic.model_validate(j).model_copy(
@@ -149,16 +197,24 @@ async def list_jobs_endpoint(
 )
 async def get_job_endpoint(
     job_id: uuid.UUID,
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> Job:
-    """Fetch a job with its aliases + category budgets eager-loaded."""
+) -> JobWithDetailPublic:
+    """Fetch a job with its aliases eager-loaded.
+
+    Admins additionally receive the money fields + ``category_budgets``;
+    contributor responses have those stripped server-side (jobs money
+    strip — aliases stay, the mobile capture job picker reads them).
+    """
     try:
-        return await get_job(db, job_id)
+        job = await get_job(db, job_id)
     except JobNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
         ) from exc
+    return _strip_contributor_money(
+        JobWithDetailPublic.model_validate(job), user
+    )
 
 
 @router.get(

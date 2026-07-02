@@ -169,14 +169,18 @@ async def test_list_jobs_summary_zero_for_empty_job(
 
 
 @pytest.mark.asyncio
-async def test_list_jobs_summary_present_for_contributor_too(
+async def test_list_jobs_summary_stripped_for_contributor(
     client, db_session, seeded_admin, contributor_token
 ):
-    """Phase 1 RBAC unchanged: contributors still see ``GET /jobs``.
+    """Jobs money strip (supersedes the Phase 3 Lite decision).
 
-    The summary field is populated — it is not sensitive (it sums the
-    contributor's own work plus their peers), and gating it would only
-    add a server branch with no UI consumer to justify it.
+    Contributors still see ``GET /jobs`` (Phase 1 RBAC unchanged), but
+    the ``summary`` field is now nulled server-side for them: the
+    operator's conservative money-visibility rule classifies the
+    budget/spend aggregates as admin-only, and the strip skips
+    ``summarize_jobs`` entirely for contributor callers. Admin
+    behaviour is covered by test_list_jobs_summary_* above and
+    test_jobs.py::test_list_jobs_keeps_money_for_admin.
     """
     await _mk_job(db_session, seeded_admin, name="Contrib View")
     r = await client.get(
@@ -184,7 +188,7 @@ async def test_list_jobs_summary_present_for_contributor_too(
     )
     assert r.status_code == 200
     row = next(j for j in r.json() if j["job_name"] == "Contrib View")
-    assert row["summary"] is not None
+    assert row["summary"] is None
 
 
 # ---------------------------------------------------------------------------
