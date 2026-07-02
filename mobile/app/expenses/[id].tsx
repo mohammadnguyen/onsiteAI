@@ -30,6 +30,7 @@ import { ReviewCorrectionsSheet } from '../../src/components/ReviewCorrectionsSh
 import { formatMoney } from '../../src/util/format';
 import { formatDateAU } from '../../src/util/dates';
 import { localizeCategoryName } from '../../src/util/category';
+import { useScaledStyles } from '../../src/ui/type';
 
 /**
  * Mobile Expense Detail (v1) — read-only.
@@ -81,6 +82,7 @@ function isMissing(error: unknown): boolean {
 }
 
 export default function ExpenseDetailScreen() {
+  const s = useScaledStyles(base);
   const { id, from, jobId } = useLocalSearchParams<{
     id: string;
     from?: string;
@@ -423,6 +425,7 @@ function DetailBody({
   approveRejectEnabled: boolean;
   isAdmin: boolean;
 }) {
+  const s = useScaledStyles(base);
   const { t } = useTranslation();
   const statusColor = STATUS_COLORS[data.review_status];
   const reasons = data.review_reasons ?? [];
@@ -634,6 +637,7 @@ function DetailBody({
 }
 
 function Field({ label, value }: { label: string; value: string }) {
+  const s = useScaledStyles(base);
   return (
     <View style={s.field}>
       <Text style={s.fieldLabel}>{label}</Text>
@@ -644,7 +648,7 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
-const s = StyleSheet.create({
+const base = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#ffffff' },
   // O2-B polish #10: transient approve/reject confirmation pill.
   actionToast: {

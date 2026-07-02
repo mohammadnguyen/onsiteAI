@@ -18,6 +18,7 @@ import {
 import { useAuthStore } from '../src/store/auth';
 import i18n, { initI18n } from '../src/i18n';
 import { useFailuresStore } from '../src/store/failures';
+import { useFontScaleStore } from '../src/store/fontScale';
 
 const qc = new QueryClient({
   defaultOptions: {
@@ -159,6 +160,9 @@ export default function RootLayout() {
       } catch {
         // i18n failure is non-fatal; continue with defaults.
       }
+      // O3 (U5): restore the font-size preference alongside language.
+      // Non-fatal — the store defaults to 'standard'.
+      await useFontScaleStore.getState().hydrate();
       await hydrate();
       setReady(true);
     })();

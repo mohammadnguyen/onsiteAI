@@ -10,7 +10,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, type Href } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
 
@@ -28,6 +28,7 @@ import {
   todayISO,
 } from '../../src/util/dates';
 import { formatDays, formatMoney } from '../../src/util/format';
+import { useScaledStyles } from '../../src/ui/type';
 
 /**
  * L-C2: weekly labour summary (admin-only) — labour cost CAPTURE,
@@ -66,6 +67,7 @@ function mondayOf(iso: string): string {
 }
 
 export default function LabourSummaryScreen() {
+  const s = useScaledStyles(base);
   const router = useRouter();
   const { t, i18n } = useTranslation();
   const me = useMe();
@@ -337,12 +339,26 @@ export default function LabourSummaryScreen() {
                   {t('labour.days_metrics_hint')}
                 </Text>
                 {summary.data.entries_costed < summary.data.entries_total ? (
-                  <Text style={s.incompleteNote} testID="summary-incomplete">
-                    {t('labour.cost_incomplete', {
-                      costed: summary.data.entries_costed,
-                      total: summary.data.entries_total,
-                    })}
-                  </Text>
+                  /* O2-C (U9): the incomplete-cost warning now says WHERE
+                     to fix it and takes you there (worker rates). */
+                  <Pressable
+                    onPress={() =>
+                      router.push('/labour/workers' as unknown as Href)
+                    }
+                    accessibilityRole="button"
+                    testID="summary-incomplete"
+                    style={({ pressed }) => [pressed && { opacity: 0.6 }]}
+                  >
+                    <Text style={s.incompleteNote}>
+                      {t('labour.cost_incomplete', {
+                        costed: summary.data.entries_costed,
+                        total: summary.data.entries_total,
+                      })}
+                    </Text>
+                    <Text style={s.modeHint}>
+                      {t('labour.set_rates_hint')}
+                    </Text>
+                  </Pressable>
                 ) : null}
               </View>
 
@@ -440,7 +456,7 @@ export default function LabourSummaryScreen() {
   );
 }
 
-const s = StyleSheet.create({
+const base = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#ffffff' },
   header: {
     flexDirection: 'row',

@@ -6,6 +6,7 @@ import type {
 } from '../api/hooks/useExpenses';
 import { formatMoney } from '../util/format';
 import { formatDateAU } from '../util/dates';
+import { useScaledStyles } from '../ui/type';
 
 /**
  * Mobile Capture v0: post-submit result card.
@@ -57,6 +58,7 @@ export function CaptureResultCard({
   // identity is not financial data (contributor-safe).
   jobName?: string;
 }) {
+  const s = useScaledStyles(base);
   const { t } = useTranslation();
   const expense = result.expense;
   const diagnostics = result.parse;
@@ -140,6 +142,7 @@ export function CaptureResultCard({
 }
 
 function FieldRow({ label, value }: { label: string; value: string | null | undefined }) {
+  const s = useScaledStyles(base);
   return (
     <View style={s.fieldRow}>
       <Text style={s.fieldLabel}>{label}</Text>
@@ -150,7 +153,7 @@ function FieldRow({ label, value }: { label: string; value: string | null | unde
   );
 }
 
-const s = StyleSheet.create({
+const base = StyleSheet.create({
   card: {
     backgroundColor: '#ffffff',
     borderRadius: 8,

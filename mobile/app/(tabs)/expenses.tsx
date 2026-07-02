@@ -36,6 +36,8 @@ import { RecentFailuresList } from '../../src/components/RecentFailuresList';
 import { DatePills } from '../../src/components/DatePills';
 import { useFailuresStore } from '../../src/store/failures';
 import { todayISO } from '../../src/util/dates';
+import { hasCJK } from '../../src/util/text';
+import { useScaledStyles } from '../../src/ui/type';
 
 /**
  * Mobile Capture v0: natural-language expense capture screen.
@@ -83,6 +85,7 @@ type MultiCaptureResult = {
 };
 
 export default function ExpensesScreen() {
+  const s = useScaledStyles(base);
   const { t, i18n } = useTranslation();
   const createExpense = useCreateExpense();
   // Mobile Capture v1 Sub-batch A: "My Captures" list query lives on
@@ -165,8 +168,18 @@ export default function ExpensesScreen() {
     return ids;
   }, [chipJobs, jobSel]);
   const zhAliasMap = useJobZhAliasMap(aliasIds, i18n.language === 'zh');
-  const jobLabelFor = (job: JobPublic): string =>
-    zhAliasMap[job.job_id] ?? job.job_name;
+  // O2-C (U1): the operator's real Chinese identity often lives in the
+  // job CODE ("晶晶"). Label chain for zh users: zh alias → CJK job
+  // code → English name. English users keep job_name (the alias fetch
+  // is zh-gated, so the map is empty for them).
+  const jobLabelFor = (job: JobPublic): string => {
+    const alias = zhAliasMap[job.job_id];
+    if (alias) return alias;
+    if (i18n.language === 'zh' && job.job_code && hasCJK(job.job_code)) {
+      return job.job_code;
+    }
+    return job.job_name;
+  };
   // Chips actually rendered: if the sheet picked a job outside the
   // recent-N, surface it as an (active) chip so the selection is visible.
   const displayChips = useMemo(() => {
@@ -176,12 +189,12 @@ export default function ExpensesScreen() {
     const selected = activeJobs.find((j) => j.job_id === jobSel);
     return selected ? [selected, ...chipJobs.slice(0, 3)] : chipJobs;
   }, [chipJobs, activeJobs, jobSel]);
-  // Result-card job echo: alias (if loaded) else name else short id.
+  // Result-card job echo: same label chain as the chips (U1) so what
+  // the user tapped is what the card echoes back.
   const jobNameFor = (jobId: string): string => {
-    const alias = zhAliasMap[jobId];
-    if (alias) return alias;
     const j = jobsQuery.data?.find((x) => x.job_id === jobId);
-    return j?.job_name ?? jobId.slice(0, 8);
+    if (j) return jobLabelFor(j);
+    return zhAliasMap[jobId] ?? jobId.slice(0, 8);
   };
 
   // RefreshControl reads `isRefetching` (not `isFetching`) so the
@@ -575,6 +588,7 @@ function PaymentOption({
   onPress: () => void;
   testID: string;
 }) {
+  const s = useScaledStyles(base);
   return (
     <TouchableOpacity
       onPress={onPress}
@@ -613,6 +627,7 @@ function MultiCaptureResultCard({
    * so each saved row echoes WHICH job it landed on. */
   jobNameFor: (jobId: string) => string;
 }) {
+  const s = useScaledStyles(base);
   const { t } = useTranslation();
   const total = result.items.length;
   const saved = result.items.filter((i) => i.success).length;
@@ -697,7 +712,7 @@ function MultiCaptureResultCard({
   );
 }
 
-const s = StyleSheet.create({
+const base = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#ffffff' },
   flex: { flex: 1 },
   scroll: { padding: 16, gap: 14 },

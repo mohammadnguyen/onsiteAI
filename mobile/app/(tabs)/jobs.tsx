@@ -45,6 +45,7 @@ import {
   contractEnteredFromExGst,
   contractGstFromEntered,
 } from '../../src/util/format';
+import { useScaledStyles } from '../../src/ui/type';
 
 /**
  * O2-B (Dashboard→Jobs merge): the retired Dashboard tab's banding +
@@ -127,6 +128,7 @@ function localizeJobStatus(status: string, t: TFunction): string {
 }
 
 export default function JobsScreen() {
+  const s = useScaledStyles(base);
   const { t } = useTranslation();
   const { data, isLoading, isError } = useJobs();
   // O2-B: role drives the merged-dashboard surfaces. VISIBILITY ONLY —
@@ -273,6 +275,7 @@ type JobListItem = { kind: 'job'; job: JobPublic } | { kind: 'archived-header' }
  * for contributors (the parent renders it only when isAdmin).
  */
 function AdminStatsHeader() {
+  const s = useScaledStyles(base);
   const { t } = useTranslation();
   const router = useRouter();
   const jobs = useJobs();
@@ -382,6 +385,7 @@ function JobRow({
   pressure?: boolean;
   onPress: () => void;
 }) {
+  const s = useScaledStyles(base);
   const { t } = useTranslation();
   const sum = job.summary;
   const band = pressure && !archived ? bandFor(job) : 'none';
@@ -437,6 +441,15 @@ function JobRow({
           </Text>
         </View>
       ) : null}
+      {/* O2-C (U8): budget-less ACTIVE jobs still get spend context on
+          admin rows — data is already on the summary; no extra query. */}
+      {pressure && !archived && band === 'none' && sum ? (
+        <Text style={s.metricHint} testID={`job-spent-${job.job_id}`}>
+          {t('dashboard.spent_label', {
+            spent: formatMoney(sum.actual_ex_gst ?? '0'),
+          })}
+        </Text>
+      ) : null}
     </TouchableOpacity>
   );
 }
@@ -448,6 +461,7 @@ function JobDetailModal({
   jobId: string | null;
   onClose: () => void;
 }) {
+  const s = useScaledStyles(base);
   const { t } = useTranslation();
   const router = useRouter();
   const { data, isLoading, isError } = useJob(jobId);
@@ -773,6 +787,7 @@ function JobDetailModal({
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {
+  const s = useScaledStyles(base);
   return (
     <View style={s.detailRow}>
       <Text style={s.detailLabel}>{label}</Text>
@@ -804,6 +819,7 @@ function SpendingSection({
 }: {
   summary: ReturnType<typeof useJobBudgetSummary>;
 }) {
+  const s = useScaledStyles(base);
   const { t } = useTranslation();
   const is403 =
     axios.isAxiosError(summary.error) &&
@@ -858,6 +874,7 @@ function LabourDaysSection({
   range: 'all' | 'month';
   onRangeChange: (next: 'all' | 'month') => void;
 }) {
+  const s = useScaledStyles(base);
   const { t } = useTranslation();
   const row: JobLabourRollup | undefined = rollup.data?.[0];
 
@@ -938,6 +955,7 @@ function LabourDaysSection({
 }
 
 function SpendingBody({ data }: { data: JobBudgetSummary }) {
+  const s = useScaledStyles(base);
   const { t } = useTranslation();
   const budget = data.total_budget_ex_gst;
   const remaining = data.remaining_ex_gst;
@@ -988,6 +1006,7 @@ function MarginSection({
   job: NonNullable<ReturnType<typeof useJob>['data']>;
   summary: ReturnType<typeof useJobBudgetSummary>;
 }) {
+  const s = useScaledStyles(base);
   const { t } = useTranslation();
   const data = summary.data;
   if (!data) return null; // admin-only (contributor gets 403 -> no data)
@@ -1044,11 +1063,19 @@ function MarginSection({
           </Text>
         </View>
       ) : null}
+      {/* O2-C (U3): early in a job, "current margin" reads as a huge
+          beat of target when it only means most costs haven't landed
+          yet. One qualifier line; the math is untouched. */}
+      {current != null ? (
+        <Text style={s.metricHint} testID="job-margin-todate-hint">
+          {t('job.margin_todate_hint')}
+        </Text>
+      ) : null}
     </View>
   );
 }
 
-const s = StyleSheet.create({
+const base = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#ffffff' },
   marginAbove: { color: '#16a34a', fontWeight: '600' },
   marginBelow: { color: '#dc2626', fontWeight: '600' },

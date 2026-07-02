@@ -6,11 +6,21 @@ import { useRouter, type Href } from 'expo-router';
 import Constants from 'expo-constants';
 import i18n, { setLanguage, type Lang } from '../../src/i18n';
 import { useAuthStore } from '../../src/store/auth';
+import {
+  useFontScaleStore,
+  type FontScaleLevel,
+} from '../../src/store/fontScale';
+import { useScaledStyles } from '../../src/ui/type';
 import { api, apiUrl } from '../../src/api/client';
 import { useMe } from '../../src/api/hooks/useAuth';
 
 export default function SettingsScreen() {
   const { t } = useTranslation();
+  // O3 (U5): this screen both hosts the font-size control and scales
+  // itself, so the choice is visible the moment it's tapped.
+  const s = useScaledStyles(base);
+  const fontLevel = useFontScaleStore((st) => st.level);
+  const setFontLevel = useFontScaleStore((st) => st.setLevel);
   const router = useRouter();
   const clear = useAuthStore((s) => s.clear);
   const { data: me, isLoading } = useMe();
@@ -101,6 +111,35 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        {/* O3 (U5): in-app font size — the app does not follow the OS
+            text-size setting, and field users need bigger text without
+            digging through iOS settings. Applies instantly. */}
+        <View style={s.card}>
+          <Text style={s.cardLabel}>{t('settings.font_size')}</Text>
+          <View style={s.langRow}>
+            {(['standard', 'large', 'xlarge'] as FontScaleLevel[]).map(
+              (level) => (
+                <TouchableOpacity
+                  key={level}
+                  style={[s.langBtn, fontLevel === level && s.langBtnActive]}
+                  onPress={() => void setFontLevel(level)}
+                  testID={`settings-font-${level}`}
+                  accessibilityRole="button"
+                >
+                  <Text
+                    style={[
+                      s.langBtnText,
+                      fontLevel === level && s.langBtnTextActive,
+                    ]}
+                  >
+                    {t(`settings.font_${level}`)}
+                  </Text>
+                </TouchableOpacity>
+              ),
+            )}
+          </View>
+        </View>
+
         {isAdmin ? (
           <TouchableOpacity
             style={s.card}
@@ -174,7 +213,7 @@ export default function SettingsScreen() {
   );
 }
 
-const s = StyleSheet.create({
+const base = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#ffffff' },
   wrap: { flex: 1, padding: 20 },
   title: { fontSize: 22, fontWeight: '600', color: '#0f172a', marginBottom: 20 },

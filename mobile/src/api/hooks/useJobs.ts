@@ -7,6 +7,7 @@ import {
 } from '@tanstack/react-query';
 import { api } from '../client';
 import { useAuthStore } from '../../store/auth';
+import { hasCJK } from '../../util/text';
 import type { components } from '../types';
 
 export type JobPublic = components['schemas']['JobPublic'];
@@ -84,7 +85,15 @@ export function useJobZhAliasMap(jobIds: string[], enabled: boolean) {
     for (const q of results) {
       const d = q.data;
       if (!d) continue;
-      const zh = d.aliases?.find((a) => a.language_code === 'zh');
+      // O2-C (U1): mobile-created aliases historically carry
+      // language_code=null, so a zh-only match missed the operator's
+      // real Chinese aliases ("晶晶家"). Accept an explicit zh alias
+      // first, else any alias whose TEXT reads as Chinese.
+      const zh =
+        d.aliases?.find((a) => a.language_code === 'zh') ??
+        d.aliases?.find(
+          (a) => a.language_code == null && hasCJK(a.alias_text),
+        );
       if (zh) map[d.job_id] = zh.alias_text;
     }
     return map;
@@ -192,7 +201,13 @@ export function useCreateJobAlias() {
     { jobId: string; alias_text: string }
   >({
     mutationFn: async ({ jobId, alias_text }) => {
-      const body: JobAliasCreateInput = { alias_text };
+      // O2-C (U1): infer the language so zh-label lookups can find
+      // mobile-created aliases. Latin-only text keeps the historical
+      // null (no behaviour change for the parser, which matches all
+      // aliases regardless of language).
+      const body: JobAliasCreateInput = hasCJK(alias_text)
+        ? { alias_text, language_code: 'zh' }
+        : { alias_text };
       const { data } = await api.post<JobAliasPublic>(
         `/jobs/${jobId}/aliases`,
         body,

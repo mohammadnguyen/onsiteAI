@@ -42,6 +42,7 @@ import {
   budgetFromContractAndMargin,
 } from '../../../src/util/format';
 import { resolveApiErrorMessage } from '../../../src/api/errors';
+import { localizeCategoryName } from '../../../src/util/category';
 
 /**
  * Tier 1B: Mobile Job Edit screen.
@@ -758,6 +759,18 @@ export default function JobEditScreen() {
                 {t('jobs_edit.budget_suggested_hint')}
               </Text>
             ) : null}
+            {/* O2-C (E5): when the admin keeps a DIFFERENT budget, show
+                the formula's reference value passively so the numbers'
+                relationship stays visible. Informational only. */}
+            {budgetSuggestion !== null &&
+            budgetText.trim() !== '' &&
+            budgetText.trim() !== budgetSuggestion ? (
+              <Text style={s.suggestHint} testID="job-edit-budget-suggestion-ref">
+                {t('jobs_edit.budget_suggestion_ref', {
+                  amount: formatMoney(budgetSuggestion),
+                })}
+              </Text>
+            ) : null}
 
             <Text style={s.label}>{t('job.target_margin_pct')}</Text>
             <TextInput
@@ -854,7 +867,8 @@ export default function JobEditScreen() {
                       style={s.budgetCategoryName}
                       numberOfLines={1}
                     >
-                      {b.category.category_name}
+                      {/* O2-C (U2): localized category label. */}
+                      {localizeCategoryName(b.category.category_name, t)}
                     </Text>
                     <TextInput
                       value={getBudgetText(b)}
@@ -966,7 +980,8 @@ export default function JobEditScreen() {
                             s.budgetCategoryChipTextActive,
                         ]}
                       >
-                        {c.category_name}
+                        {/* O2-C (U2): localized category label. */}
+                        {localizeCategoryName(c.category_name, t)}
                       </Text>
                     </TouchableOpacity>
                   ))}

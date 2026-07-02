@@ -3,6 +3,7 @@ import {
   View,
   Text,
   TextInput,
+  Platform,
   Pressable,
   StyleSheet,
   Switch,
@@ -15,7 +16,18 @@ import { useTranslation } from 'react-i18next';
 import * as Sharing from 'expo-sharing';
 
 import { useMe } from '../src/api/hooks/useAuth';
-import { parseLooseDate, dateToISO } from '../src/util/dates';
+import { parseLooseDate, dateToISO, formatDateAU } from '../src/util/dates';
+
+// O3: native calendar assist for the From/To fields. Lazily required so
+// the web export never evaluates the native module (same pattern as
+// DatePills). Typed entry stays the primary path — the picker only
+// FILLS the text field.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let NativeDateTimePicker: any = null;
+if (Platform.OS !== 'web') {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  NativeDateTimePicker = require('@react-native-community/datetimepicker').default;
+}
 import {
   downloadExpensesExcel,
   ExportError,
@@ -67,6 +79,22 @@ export default function ExportScreen() {
   const [error, setError] = useState<string | null>(null);
   const [fromError, setFromError] = useState(false);
   const [toError, setToError] = useState(false);
+  // O3: which field (if any) the native calendar is currently filling.
+  const [pickerFor, setPickerFor] = useState<'from' | 'to' | null>(null);
+
+  const onPicked = (_event: unknown, picked?: Date) => {
+    const target = pickerFor;
+    setPickerFor(null);
+    if (!picked || !target) return;
+    const text = formatDateAU(dateToISO(picked));
+    if (target === 'from') {
+      setFrom(text);
+      setFromError(false);
+    } else {
+      setTo(text);
+      setToError(false);
+    }
+  };
 
   const onBack = () => {
     if (router.canGoBack()) router.back();
@@ -190,6 +218,17 @@ export default function ExportScreen() {
             keyboardType="numbers-and-punctuation"
             testID="export-from"
           />
+          {NativeDateTimePicker ? (
+            <Pressable
+              onPress={() => !busy && setPickerFor('from')}
+              testID="export-from-calendar"
+              accessibilityRole="button"
+            >
+              <Text style={s.calendarLink}>
+                {t('capture.date_use_calendar')}
+              </Text>
+            </Pressable>
+          ) : null}
 
           <Text style={s.label}>{t('export.to_label')}</Text>
           <TextInput
@@ -204,6 +243,29 @@ export default function ExportScreen() {
             keyboardType="numbers-and-punctuation"
             testID="export-to"
           />
+          {NativeDateTimePicker ? (
+            <Pressable
+              onPress={() => !busy && setPickerFor('to')}
+              testID="export-to-calendar"
+              accessibilityRole="button"
+            >
+              <Text style={s.calendarLink}>
+                {t('capture.date_use_calendar')}
+              </Text>
+            </Pressable>
+          ) : null}
+          {pickerFor && NativeDateTimePicker ? (
+            <NativeDateTimePicker
+              value={
+                parseLooseDate(pickerFor === 'from' ? from : to) ?? new Date()
+              }
+              mode="date"
+              display={Platform.OS === 'ios' ? 'inline' : 'default'}
+              onChange={onPicked}
+              themeVariant="light"
+              testID="export-date-picker"
+            />
+          ) : null}
           <Text style={s.fieldHint}>{t('export.date_hint')}</Text>
 
           <View style={s.toggleRow}>
@@ -300,6 +362,8 @@ const s = StyleSheet.create({
   },
   inputError: { borderColor: '#b91c1c' },
   fieldHint: { fontSize: 12, color: '#94a3b8', marginTop: -6, marginBottom: 16 },
+  // O3: calendar-assist link under each date field.
+  calendarLink: { fontSize: 13, color: '#2563eb', fontWeight: '500', marginBottom: 12 },
   toggleRow: {
     flexDirection: 'row',
     alignItems: 'center',
