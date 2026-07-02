@@ -18,9 +18,12 @@ export default function TabsLayout() {
         tabBarIcon: () => null,
       }}
     >
+      {/* O2-B: the Dashboard tab is retired — its cards + pressure
+          ranking now live at the top of the Jobs tab (admin-only). The
+          tab slot is reserved for a future dashboard; the dashboard.*
+          i18n keys are kept for the same reason. */}
       <Tabs.Screen name="expenses" options={{ title: t('tabs.expenses') }} />
       <Tabs.Screen name="jobs" options={{ title: t('tabs.jobs') }} />
-      <Tabs.Screen name="dashboard" options={{ title: t('tabs.dashboard') }} />
       <Tabs.Screen name="labour" options={{ title: t('tabs.labour') }} />
       <Tabs.Screen name="settings" options={{ title: t('tabs.settings') }} />
     </Tabs>

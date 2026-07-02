@@ -14,6 +14,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
+import { resolveApiErrorMessage } from '../api/errors';
 import {
   useCreateJob,
   useCreateJobAlias,
@@ -301,6 +302,14 @@ export function NewJobModal({
                   </Text>
                 </TouchableOpacity>
               </View>
+              {/* O2-B polish #5: standing reinforcement of the chosen
+                  mode near the contract field — the chip highlight
+                  alone was missed once focus moved on. */}
+              <Text style={s.gstStandingText} testID="newjob-gst-standing">
+                {t('job.gst_standing', {
+                  mode: t(inclusive ? 'job.gst_including' : 'job.gst_none_cash'),
+                })}
+              </Text>
               {showRecalc ? (
                 <View style={s.gstRecalc} testID="newjob-gst-recalc">
                   <Text style={s.gstRecalcText}>
@@ -434,19 +443,13 @@ function extractCreateError(
     ) {
       return t('jobs.create_error_duplicate_code');
     }
-    if (typeof detail === 'string') return detail;
-    if (Array.isArray(detail) && detail.length > 0) {
-      return detail
-        .map((d: { msg?: string; loc?: (string | number)[] }) => {
-          const loc = Array.isArray(d.loc) ? d.loc.join('.') : '';
-          return loc ? `${loc}: ${d.msg ?? ''}` : (d.msg ?? '');
-        })
-        .join('; ');
-    }
-    if (error.message) return error.message;
   }
-  if (error instanceof Error && error.message) return error.message;
-  return t('jobs.create_error_generic');
+  // O2-B polish #8: everything else routes through the shared
+  // classifier — timeout/offline render localized copy, HTTP errors
+  // surface the server detail, and the raw axios `error.message`
+  // ("Network Error", "timeout of 15000ms exceeded") can never leak
+  // into the UI again.
+  return resolveApiErrorMessage(error, t, t('jobs.create_error_generic'));
 }
 
 const s = StyleSheet.create({
@@ -513,6 +516,7 @@ const s = StyleSheet.create({
   gstChipText: { color: '#334155', fontSize: 14, fontWeight: '600' },
   gstChipTextActive: { color: '#ffffff' },
   gstRecalc: { marginTop: 6, gap: 2 },
+  gstStandingText: { fontSize: 12, color: '#64748b', marginTop: 6 },
   gstRecalcText: {
     fontSize: 13,
     color: '#475569',

@@ -41,6 +41,7 @@ import {
   contractGstFromEntered,
   budgetFromContractAndMargin,
 } from '../../../src/util/format';
+import { resolveApiErrorMessage } from '../../../src/api/errors';
 
 /**
  * Tier 1B: Mobile Job Edit screen.
@@ -73,24 +74,6 @@ import {
 
 const MAX_AMOUNT = 10_000_000;
 type StatusSel = 'active' | 'completed';
-
-function extractErrorMessage(error: unknown, fallback: string): string {
-  if (axios.isAxiosError(error)) {
-    const detail = error.response?.data?.detail;
-    if (typeof detail === 'string') return detail;
-    if (Array.isArray(detail) && detail.length > 0) {
-      return detail
-        .map((d: { msg?: string; loc?: (string | number)[] }) => {
-          const loc = Array.isArray(d.loc) ? d.loc.join('.') : '';
-          return loc ? `${loc}: ${d.msg ?? ''}` : (d.msg ?? '');
-        })
-        .join('; ');
-    }
-    if (error.message) return error.message;
-  }
-  if (error instanceof Error && error.message) return error.message;
-  return fallback;
-}
 
 function isMissing(error: unknown): boolean {
   if (axios.isAxiosError(error)) {
@@ -177,6 +160,12 @@ export default function JobEditScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { t } = useTranslation();
+  // O2-B polish #8: errors route through the shared classifier —
+  // timeout/offline render localized copy and the server's `detail`
+  // still surfaces; the old raw `.message` fallback (untranslated
+  // "Network Error" / "timeout of 15000ms exceeded") is gone.
+  const extractErrorMessage = (error: unknown, fallback: string): string =>
+    resolveApiErrorMessage(error, t, fallback);
   const job = useJob(id ?? null);
   const update = useUpdateJob(id ?? '');
   const addAlias = useCreateJobAlias();
@@ -721,6 +710,13 @@ export default function JobEditScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
+            {/* O2-B polish #5: standing reinforcement of the chosen
+                mode near the contract field. */}
+            <Text style={s.gstStandingText} testID="job-edit-gst-standing">
+              {t('job.gst_standing', {
+                mode: t(inclusive ? 'job.gst_including' : 'job.gst_none_cash'),
+              })}
+            </Text>
             {showRecalc ? (
               <View style={s.gstRecalc} testID="job-edit-gst-recalc">
                 <Text style={s.gstRecalcText}>
@@ -1146,6 +1142,7 @@ const s = StyleSheet.create({
   gstChipText: { color: '#334155', fontSize: 14, fontWeight: '600' },
   gstChipTextActive: { color: '#ffffff' },
   gstRecalc: { marginTop: 6, gap: 2 },
+  gstStandingText: { fontSize: 12, color: '#64748b', marginTop: 6 },
   gstRecalcText: {
     fontSize: 13,
     color: '#475569',

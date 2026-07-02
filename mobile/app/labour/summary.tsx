@@ -225,6 +225,13 @@ export default function LabourSummaryScreen() {
               </TouchableOpacity>
             ))}
           </View>
+          {/* O2-B polish #6: "Week" is a 7-day window, not a pay week —
+              admins kept reading it as a payroll period. */}
+          {mode === 'week' ? (
+            <Text style={s.modeHint} testID="summary-week-hint">
+              {t('labour.range_week_hint')}
+            </Text>
+          ) : null}
 
           <View style={s.rangeRow}>
             <TouchableOpacity
@@ -325,6 +332,10 @@ export default function LabourSummaryScreen() {
                     {formatDays(summary.data.total_days)}
                   </Text>
                 </View>
+                {/* O2-B polish #6: define the metric inline. */}
+                <Text style={s.modeHint} testID="summary-days-hint">
+                  {t('labour.days_metrics_hint')}
+                </Text>
                 {summary.data.entries_costed < summary.data.entries_total ? (
                   <Text style={s.incompleteNote} testID="summary-incomplete">
                     {t('labour.cost_incomplete', {
@@ -471,6 +482,7 @@ const s = StyleSheet.create({
   modeChipActive: { backgroundColor: '#0f172a', borderColor: '#0f172a' },
   modeChipText: { color: '#475569', fontSize: 14, fontWeight: '600' },
   modeChipTextActive: { color: '#ffffff' },
+  modeHint: { fontSize: 12, color: '#64748b', marginTop: 6 },
   state: { alignItems: 'center', padding: 24, gap: 12 },
   stateText: { color: '#64748b', fontSize: 15, textAlign: 'center' },
   errorText: { color: '#b91c1c' },

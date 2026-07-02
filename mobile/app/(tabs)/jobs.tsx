@@ -7,6 +7,7 @@ import {
   StyleSheet,
   TouchableOpacity,
   Modal,
+  Pressable,
   ScrollView,
   Alert,
 } from 'react-native';
@@ -24,7 +25,12 @@ import {
   type JobBudgetSummary,
 } from '../../src/api/hooks/useJobs';
 import { useFocusEffect, useRouter, type Href } from 'expo-router';
-import { useJobExpenses } from '../../src/api/hooks/useExpenses';
+import {
+  useJobExpenses,
+  useExpensesSince,
+} from '../../src/api/hooks/useExpenses';
+import { useOpenReviewQueue } from '../../src/api/hooks/useReviewQueue';
+import { monthStart, monthEnd, todayISO } from '../../src/util/dates';
 import {
   useJobLabourRollup,
   type JobLabourRollup,
@@ -41,16 +47,64 @@ import {
 } from '../../src/util/format';
 
 /**
- * L-D1: calendar month-to-date start ("YYYY-MM-01", device-local) for
- * the job-detail labour "This month" toggle. `to` is left open so the
- * range runs to today. Kept local to this screen (one small function)
- * rather than refactored into a shared util — matches the existing
- * per-screen preset pattern (dashboard, expenses list).
+ * O2-B (Dashboard→Jobs merge): the retired Dashboard tab's banding +
+ * ranking logic, carried verbatim so the admin Jobs list preserves the
+ * red/amber/green at-a-glance value. Banding uses the SERVER-computed
+ * thresholds on each `JobSummary` row; contributors receive
+ * `summary=null` (server-stripped), so every contributor row bands to
+ * 'none' and their list stays money-free by construction.
  */
-function isoMonthStart(): string {
-  const now = new Date();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  return `${now.getFullYear()}-${m}-01`;
+type Band = 'red' | 'amber' | 'green' | 'none';
+
+function bandFor(job: JobPublic): Band {
+  const sum = job.summary;
+  if (!sum) return 'none';
+  if (sum.percent_consumed == null) return 'none';
+  const pct = parseFloat(sum.percent_consumed);
+  if (sum.overspend || pct >= parseFloat(sum.effective_warning_red_pct)) {
+    return 'red';
+  }
+  if (pct >= parseFloat(sum.effective_warning_amber_pct)) return 'amber';
+  return 'green';
+}
+
+const BAND_ORDER: Record<Band, number> = { red: 0, amber: 1, green: 2, none: 3 };
+const BAND_COLORS: Record<Exclude<Band, 'none'>, string> = {
+  red: '#dc2626',
+  amber: '#d97706',
+  green: '#16a34a',
+};
+
+/** Budget-pressure ordering (ex-Dashboard): red → amber → green by
+ * consumed % desc, then budget-less jobs by spend desc. */
+function rankByPressure(jobs: JobPublic[]): JobPublic[] {
+  return [...jobs].sort((a, b) => {
+    const ba = bandFor(a);
+    const bb = bandFor(b);
+    if (BAND_ORDER[ba] !== BAND_ORDER[bb]) {
+      return BAND_ORDER[ba] - BAND_ORDER[bb];
+    }
+    if (ba === 'none') {
+      return (
+        parseFloat(b.summary?.actual_ex_gst ?? '0') -
+        parseFloat(a.summary?.actual_ex_gst ?? '0')
+      );
+    }
+    return (
+      parseFloat(b.summary?.percent_consumed ?? '0') -
+      parseFloat(a.summary?.percent_consumed ?? '0')
+    );
+  });
+}
+
+/**
+ * R1 (ex-Dashboard): map a stat query's status to a render state so a
+ * failed fetch NEVER coalesces to a real-looking value.
+ */
+type StatState = 'loading' | 'value' | 'stale' | 'error';
+function statState(isError: boolean, hasData: boolean): StatState {
+  if (hasData) return isError ? 'stale' : 'value';
+  return isError ? 'error' : 'loading';
 }
 
 /**
@@ -75,6 +129,12 @@ function localizeJobStatus(status: string, t: TFunction): string {
 export default function JobsScreen() {
   const { t } = useTranslation();
   const { data, isLoading, isError } = useJobs();
+  // O2-B: role drives the merged-dashboard surfaces. VISIBILITY ONLY —
+  // the backend strips job money for contributors regardless (jobs
+  // money strip), and the admin-only queries live inside
+  // AdminStatsHeader so they never fire for contributors.
+  const me = useMe();
+  const isAdmin = me.data?.role === 'admin';
   // Persist the selected job id across React mount/unmount cycles via
   // the global store. Local useState was lost when JobsScreen unmounted
   // during navigation to /expenses/{id}, which made multi-delete loops
@@ -118,8 +178,12 @@ export default function JobsScreen() {
   // M5: active jobs first; archived (status=completed) jobs sit
   // below a labelled divider with muted styling — still visible and
   // tappable for history, out of the way for daily use.
+  // O2-B: for ADMINS the active slice is ordered by budget pressure
+  // (worst first — the retired Dashboard's ranking). Contributors keep
+  // the plain order (their rows carry no summary anyway).
   const listData = useMemo<JobListItem[]>(() => {
-    const active = jobs.filter((j) => j.status === 'active');
+    const activeRaw = jobs.filter((j) => j.status === 'active');
+    const active = isAdmin ? rankByPressure(activeRaw) : activeRaw;
     const archived = jobs.filter((j) => j.status !== 'active');
     const out: JobListItem[] = active.map((job) => ({ kind: 'job', job }));
     if (archived.length > 0) {
@@ -127,7 +191,7 @@ export default function JobsScreen() {
       archived.forEach((job) => out.push({ kind: 'job', job }));
     }
     return out;
-  }, [jobs]);
+  }, [jobs, isAdmin]);
 
   return (
     <SafeAreaView style={s.safe} edges={['bottom', 'left', 'right']}>
@@ -143,6 +207,10 @@ export default function JobsScreen() {
           <Text style={s.newBtnText}>{t('jobs.new')}</Text>
         </TouchableOpacity>
       </View>
+      {/* O2-B: admin-only stats header (ex-Dashboard cards). Rendered
+          for admins even while the list loads; COMPLETELY ABSENT for
+          contributors — no placeholder that advertises hidden money. */}
+      {isAdmin ? <AdminStatsHeader /> : null}
       {isLoading ? (
         <View style={s.center}>
           <ActivityIndicator size="large" color="#1e293b" />
@@ -167,6 +235,7 @@ export default function JobsScreen() {
               <JobRow
                 job={item.job}
                 archived={item.job.status !== 'active'}
+                pressure={isAdmin}
                 onPress={() => setSelectedId(item.job.job_id)}
               />
             ) : (
@@ -196,29 +265,178 @@ export default function JobsScreen() {
 // divider injected between active and archived groups.
 type JobListItem = { kind: 'job'; job: JobPublic } | { kind: 'archived-header' };
 
+/**
+ * O2-B: admin-only stats header — the retired Dashboard's three cards
+ * (this-month spend → expense list; pending-review count → review
+ * queue; active-jobs count), with the same R1 degraded-state handling.
+ * Lives in its own component so its admin-flavoured queries NEVER fire
+ * for contributors (the parent renders it only when isAdmin).
+ */
+function AdminStatsHeader() {
+  const { t } = useTranslation();
+  const router = useRouter();
+  const jobs = useJobs();
+  const queue = useOpenReviewQueue();
+  // Month-to-date window, recomputed per render so a month rollover
+  // picks up the new window on the next refresh (ex-Dashboard pattern).
+  const monthExpenses = useExpensesSince(monthStart(todayISO()));
+
+  const activeCount = useMemo(
+    () => (jobs.data ?? []).filter((j) => j.status === 'active').length,
+    [jobs.data],
+  );
+  const monthTotalExGst = useMemo(() => {
+    const items = monthExpenses.data?.items ?? [];
+    return items
+      .filter((e) => e.review_status !== 'rejected')
+      .reduce((acc, e) => acc + parseFloat(e.amount_ex_gst ?? '0'), 0);
+  }, [monthExpenses.data]);
+  const pendingCount = queue.data?.length ?? null;
+
+  const monthStat = statState(
+    monthExpenses.isError,
+    monthExpenses.data !== undefined,
+  );
+  const jobsStat = statState(jobs.isError, jobs.data !== undefined);
+  const queueStat = statState(queue.isError, queue.data !== undefined);
+
+  return (
+    <View style={s.statRow} testID="jobs-stats-header">
+      <Pressable
+        style={({ pressed }) => [s.statCard, pressed && s.statCardPressed]}
+        onPress={() => router.push('/expenses/list' as unknown as Href)}
+        accessibilityRole="button"
+        testID="jobs-stat-month-spend"
+      >
+        <Text style={s.statLabel}>{t('dashboard.month_spend')}</Text>
+        <Text
+          style={[s.statValue, monthStat === 'error' && s.statValueError]}
+          numberOfLines={1}
+        >
+          {monthStat === 'loading'
+            ? '…'
+            : monthStat === 'error'
+              ? '—'
+              : formatMoney(monthTotalExGst.toFixed(2))}
+        </Text>
+        {monthStat === 'stale' ? (
+          <Text style={s.statTag}>{t('dashboard.stale')}</Text>
+        ) : null}
+      </Pressable>
+      <Pressable
+        style={({ pressed }) => [
+          s.statCard,
+          s.statCardPending,
+          pressed && s.statCardPressed,
+        ]}
+        onPress={() => router.push('/review-queue' as unknown as Href)}
+        accessibilityRole="button"
+        testID="jobs-stat-pending"
+      >
+        <Text style={s.statLabel}>{t('dashboard.pending_review')}</Text>
+        <Text
+          style={[
+            s.statValue,
+            s.statValuePending,
+            queueStat === 'error' && s.statValueError,
+          ]}
+        >
+          {queueStat === 'loading'
+            ? '…'
+            : queueStat === 'error'
+              ? '—'
+              : `${pendingCount} ›`}
+        </Text>
+        {queueStat === 'stale' ? (
+          <Text style={s.statTag}>{t('dashboard.stale')}</Text>
+        ) : null}
+      </Pressable>
+      <View style={s.statCard} testID="jobs-stat-active">
+        <Text style={s.statLabel}>{t('dashboard.active_jobs')}</Text>
+        <Text style={[s.statValue, jobsStat === 'error' && s.statValueError]}>
+          {jobsStat === 'loading'
+            ? '…'
+            : jobsStat === 'error'
+              ? '—'
+              : activeCount}
+        </Text>
+        {jobsStat === 'stale' ? (
+          <Text style={s.statTag}>{t('dashboard.stale')}</Text>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
 function JobRow({
   job,
   archived,
+  pressure,
   onPress,
 }: {
   job: JobPublic;
   archived?: boolean;
+  /** O2-B: admin rows render the budget-pressure bar + remaining line
+   * (ex-Dashboard). Contributor rows never do — and their summary is
+   * server-stripped to null anyway. */
+  pressure?: boolean;
   onPress: () => void;
 }) {
   const { t } = useTranslation();
+  const sum = job.summary;
+  const band = pressure && !archived ? bandFor(job) : 'none';
+  const pct =
+    sum?.percent_consumed != null ? parseFloat(sum.percent_consumed) : null;
+  const barWidth = pct != null ? Math.min(pct, 100) : 0;
+  const remaining =
+    sum?.remaining_ex_gst != null ? parseFloat(sum.remaining_ex_gst) : null;
+
   return (
     <TouchableOpacity
       onPress={onPress}
       style={[s.row, archived && s.rowArchived]}
       testID={`job-row-${job.job_id}`}
     >
-      <View style={s.rowMain}>
-        <Text style={s.rowName}>{job.job_name}</Text>
-        {job.job_code ? <Text style={s.rowCode}>{job.job_code}</Text> : null}
+      <View style={s.rowTop}>
+        <View style={s.rowMain}>
+          <Text style={s.rowName}>{job.job_name}</Text>
+          {job.job_code ? <Text style={s.rowCode}>{job.job_code}</Text> : null}
+        </View>
+        <Text style={[s.badge, job.status === 'active' ? s.badgeActive : s.badgeCompleted]}>
+          {localizeJobStatus(job.status, t)}
+        </Text>
       </View>
-      <Text style={[s.badge, job.status === 'active' ? s.badgeActive : s.badgeCompleted]}>
-        {localizeJobStatus(job.status, t)}
-      </Text>
+      {band !== 'none' ? (
+        <View style={s.pressureWrap} testID={`job-pressure-${job.job_id}`}>
+          <View style={s.barTrack}>
+            <View
+              style={[
+                s.barFill,
+                { width: `${barWidth}%`, backgroundColor: BAND_COLORS[band] },
+              ]}
+            />
+          </View>
+          <Text
+            style={[
+              s.pressureText,
+              band === 'red'
+                ? s.pressureRed
+                : band === 'amber'
+                  ? s.pressureAmber
+                  : s.pressureGreen,
+            ]}
+            numberOfLines={1}
+          >
+            {remaining != null && remaining < 0
+              ? t('dashboard.over_by', {
+                  amount: formatMoney(Math.abs(remaining).toFixed(2)),
+                })
+              : t('dashboard.left', {
+                  amount: formatMoney((remaining ?? 0).toFixed(2)),
+                })}
+          </Text>
+        </View>
+      ) : null}
     </TouchableOpacity>
   );
 }
@@ -244,10 +462,14 @@ function JobDetailModal({
   // / days-on-site. The range toggle switches all-time (null) vs
   // calendar month-to-date; no per-day drilldown by design.
   const [labourRange, setLabourRange] = useState<'all' | 'month'>('all');
+  // O2-B polish #7: "This month" now uses the FULL calendar-month window
+  // (from + to), matching the Labour summary's month view exactly — the
+  // two surfaces previously disagreed (1st→today here vs 1st→month-end
+  // there), which made identical labels show different totals.
   const labourRollup = useJobLabourRollup(
     jobId,
-    labourRange === 'month' ? isoMonthStart() : null,
-    null,
+    labourRange === 'month' ? monthStart(todayISO()) : null,
+    labourRange === 'month' ? monthEnd(todayISO()) : null,
   );
 
   // Tier 1B: navigate to the job edit screen. selectedJobId stays in
@@ -689,6 +911,11 @@ function LabourDaysSection({
             label={t('labour.job_days_on_site_label')}
             value={String(row?.days_on_site ?? 0)}
           />
+          {/* O2-B polish #6: one-line definition — admins kept
+              misreading "worker-days 4 / days on site 1". */}
+          <Text style={s.metricHint} testID="labour-days-hint">
+            {t('labour.days_metrics_hint')}
+          </Text>
           {/* Admin-only money rows. The server already nulls these for
               contributors; gating on isAdmin too means cost/hours can
               never render on a non-admin device. */}
@@ -848,14 +1075,56 @@ const s = StyleSheet.create({
   emptyText: { color: '#64748b', fontSize: 16 },
   errText: { color: '#b91c1c', fontSize: 16 },
   listContent: { paddingBottom: 24 },
+  // O2-B: row is now a column (top line + optional pressure block);
+  // rowTop carries the original horizontal name/code/badge layout.
   row: {
-    flexDirection: 'row',
-    alignItems: 'center',
     paddingVertical: 14,
     paddingHorizontal: 16,
     backgroundColor: '#ffffff',
+    gap: 8,
+  },
+  rowTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   rowMain: { flex: 1 },
+  // O2-B: ex-Dashboard stats header + pressure bar styles.
+  statRow: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+  },
+  statCard: {
+    flex: 1,
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    gap: 2,
+  },
+  statCardPending: { backgroundColor: '#fffbeb', borderColor: '#fde68a' },
+  statCardPressed: { opacity: 0.7 },
+  statLabel: { fontSize: 11, color: '#64748b' },
+  statValue: { fontSize: 17, fontWeight: '600', color: '#0f172a' },
+  statValuePending: { color: '#92400e' },
+  statValueError: { color: '#94a3b8' },
+  statTag: { fontSize: 10, color: '#b45309' },
+  pressureWrap: { gap: 4 },
+  barTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#e2e8f0',
+    overflow: 'hidden',
+  },
+  barFill: { height: 6, borderRadius: 3 },
+  pressureText: { fontSize: 12, fontWeight: '500' },
+  pressureRed: { color: '#dc2626' },
+  pressureAmber: { color: '#b45309' },
+  pressureGreen: { color: '#15803d' },
+  metricHint: { fontSize: 12, color: '#64748b', paddingVertical: 2 },
   rowName: { fontSize: 16, color: '#0f172a', fontWeight: '500' },
   rowCode: { fontSize: 13, color: '#64748b', marginTop: 2 },
   badge: {
