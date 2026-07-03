@@ -17,12 +17,24 @@ type LabourEditTarget = { jobId: string; date: string };
 
 type State = {
   target: LabourEditTarget | null;
+  /** In-session memory of the last job picked on the Labour tab's
+   *  tick screen. Previously a module-level `let` inside the tab
+   *  screen; moved here (audit B-02) so logout can reset it. Read
+   *  via getState() — it is a selection DEFAULT, not reactive UI
+   *  state. */
+  lastUsedJobId: string | null;
   setTarget: (target: LabourEditTarget) => void;
+  setLastUsedJobId: (id: string | null) => void;
+  /** Clears the one-shot target ONLY — lastUsedJobId survives so the
+   *  tick screen keeps its job default. Session reset (store/session)
+   *  clears both. */
   clear: () => void;
 };
 
 export const useLabourEditTargetStore = create<State>((set) => ({
   target: null,
+  lastUsedJobId: null,
   setTarget: (target) => set({ target }),
+  setLastUsedJobId: (id) => set({ lastUsedJobId: id }),
   clear: () => set({ target: null }),
 }));

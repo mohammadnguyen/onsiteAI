@@ -29,6 +29,7 @@ import {
 } from '../../src/util/dates';
 import { formatDays, formatMoney } from '../../src/util/format';
 import { useScaledStyles } from '../../src/ui/type';
+import { useOneShotBack } from '../../src/util/navigation';
 
 /**
  * L-C2: weekly labour summary (admin-only) — labour cost CAPTURE,
@@ -141,10 +142,7 @@ export default function LabourSummaryScreen() {
     [jobs.data, t],
   );
 
-  const onBack = () => {
-    if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)/labour');
-  };
+  const onBack = useOneShotBack('/(tabs)/labour');
 
   const refreshControl = (
     <RefreshControl

@@ -10,7 +10,6 @@ import {
   ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -31,6 +30,7 @@ import {
   useExpenseListFiltersStore,
   type ExpenseListDatePreset,
 } from '../../src/store/expenseListFilters';
+import { useOneShotBack } from '../../src/util/navigation';
 
 /**
  * M2-B: full expenses list.
@@ -86,13 +86,12 @@ function presetFromDate(preset: ExpenseListDatePreset): string | undefined {
 }
 
 export default function ExpenseListScreen() {
-  const router = useRouter();
   const { t } = useTranslation();
 
   // M2-B review fix: filters live in a store, NOT component state —
-  // the root Slot navigator fully unmounts this screen on every
-  // drill-in to the detail route, so useState selections would reset
-  // on each row-tap round trip (see store/expenseListFilters.ts).
+  // originally because the old root Slot navigator fully unmounted
+  // this screen on every drill-in to the detail route; the store also
+  // gets reset on logout (see store/expenseListFilters.ts).
   const jobId = useExpenseListFiltersStore((st) => st.jobId);
   const status = useExpenseListFiltersStore((st) => st.status);
   const datePreset = useExpenseListFiltersStore((st) => st.datePreset);
@@ -157,10 +156,7 @@ export default function ExpenseListScreen() {
     return status ? all : all.filter((e) => e.review_status !== 'rejected');
   }, [list.data, status]);
 
-  const onBack = () => {
-    if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)/expenses');
-  };
+  const onBack = useOneShotBack('/(tabs)/expenses');
 
   // M2-B review fix: the error gate matters. Without it, a failed
   // next-page fetch (weak field network, backend 5xx) re-arms

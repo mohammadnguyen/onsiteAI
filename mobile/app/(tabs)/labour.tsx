@@ -59,9 +59,9 @@ import { computeTimeRange, formatHoursShort, hhmmFromServer } from '../../src/ut
  * Attendance/hours/days language only. No payroll concepts anywhere.
  */
 
-/** In-session memory of the last job picked (module-level on purpose —
- * survives the root Slot unmounting the tab screen on drill-ins). */
-let lastUsedJobId: string | null = null;
+// In-session memory of the last job picked lives in the
+// labourEditTarget store (was a module-level `let` here) so logout
+// can reset it alongside the rest of the session state (audit B-02).
 
 type RowEdit = {
   ticked: boolean;
@@ -101,7 +101,7 @@ export default function LabourScreen() {
       useLabourEditTargetStore.getState().clear();
       setDate(target.date);
       setJobId(target.jobId);
-      lastUsedJobId = target.jobId;
+      useLabourEditTargetStore.getState().setLastUsedJobId(target.jobId);
     }, []),
   );
 
@@ -126,6 +126,7 @@ export default function LabourScreen() {
       return;
     }
     if (jobId && activeJobs.some((j) => j.job_id === jobId)) return;
+    const lastUsedJobId = useLabourEditTargetStore.getState().lastUsedJobId;
     const candidate =
       lastUsedJobId && activeJobs.some((j) => j.job_id === lastUsedJobId)
         ? lastUsedJobId
@@ -680,7 +681,7 @@ export default function LabourScreen() {
         onSelect={(v) => {
           if (v) {
             setJobId(v);
-            lastUsedJobId = v;
+            useLabourEditTargetStore.getState().setLastUsedJobId(v);
           }
         }}
         onClose={() => setPickerOpen(false)}

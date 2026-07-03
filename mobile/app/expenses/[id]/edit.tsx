@@ -13,7 +13,7 @@ import {
   Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
 
@@ -26,6 +26,7 @@ import {
 } from '../../../src/api/hooks/useExpenses';
 import { useMe } from '../../../src/api/hooks/useAuth';
 import { DatePills } from '../../../src/components/DatePills';
+import { useOneShotBack } from '../../../src/util/navigation';
 
 /**
  * P4: Mobile Expense Edit screen.
@@ -103,7 +104,6 @@ function isMissing(error: unknown): boolean {
 
 export default function ExpenseEditScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const router = useRouter();
   const { t } = useTranslation();
   const expense = useExpense(id);
   const update = useUpdateExpense(id ?? '');
@@ -198,16 +198,13 @@ export default function ExpenseEditScreen() {
     !!expense.data &&
     expense.data.review_status !== 'pending';
 
-  const onBack = () => {
-    if (router.canGoBack()) router.back();
-    // Deep-link / cold-launch fallback: there's no detail-back history
-    // to consume, so we route back to the expenses tab list rather
-    // than to /expenses/{id} (the latter would also be valid but
-    // requires the typed-routes manifest cast pattern used elsewhere,
-    // and the tab-list fallback matches the detail screen's behaviour
-    // verbatim — same UX, no cast).
-    else router.replace('/(tabs)/expenses');
-  };
+  // One-shot back (util/navigation): also covers onSave's post-PATCH
+  // back racing a manual chevron tap. Deep-link / cold-launch fallback:
+  // there's no detail-back history to consume, so we route to the
+  // expenses tab rather than to /expenses/{id} (the latter would also
+  // be valid but requires the typed-routes manifest cast pattern used
+  // elsewhere — same UX, no cast).
+  const onBack = useOneShotBack('/(tabs)/expenses');
 
   const onSave = async () => {
     if (update.isPending) return;

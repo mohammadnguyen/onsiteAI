@@ -34,6 +34,11 @@ const REASON_COLORS: Record<ReviewReasonCode, { bg: string; fg: string }> = {
   duplicate_suspected: { bg: '#fee2e2', fg: '#991b1b' },
 };
 
+// Audit C-04: neutral fallback for reason codes THIS build doesn't
+// know — a newer backend enum must degrade to a grey chip, not crash
+// the result card mid-capture.
+const FALLBACK_COLOR = { bg: '#f1f5f9', fg: '#475569' };
+
 // formatMoney moved to mobile/src/util/format.ts and imported above so
 // the same helper is used on RecentCapturesList + Expense Detail; the
 // shared helper also tightens the non-numeric path to return "—"
@@ -80,7 +85,7 @@ export function CaptureResultCard({
       {reasons.length > 0 ? (
         <View style={s.chipsRow}>
           {reasons.map((code) => {
-            const colors = REASON_COLORS[code];
+            const colors = REASON_COLORS[code] ?? FALLBACK_COLOR;
             return (
               <View
                 key={code}
@@ -88,7 +93,7 @@ export function CaptureResultCard({
                 testID={`review-reason-${code}`}
               >
                 <Text style={[s.chipText, { color: colors.fg }]}>
-                  {t(`review_reason.${code}`)}
+                  {t(`review_reason.${code}`, { defaultValue: code })}
                 </Text>
               </View>
             );

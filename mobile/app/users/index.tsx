@@ -21,6 +21,7 @@ import {
   type UserRole,
 } from '../../src/api/hooks/useUsers';
 import { useMe } from '../../src/api/hooks/useAuth';
+import { useOneShotBack } from '../../src/util/navigation';
 
 /**
  * M4: user/team management list (admin-only).
@@ -47,10 +48,7 @@ export default function UsersScreen() {
   const update = useUpdateUser();
   const [userRefreshing, setUserRefreshing] = useState(false);
 
-  const onBack = () => {
-    if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)/settings');
-  };
+  const onBack = useOneShotBack('/(tabs)/settings');
 
   const onRefresh = () => {
     setUserRefreshing(true);

@@ -30,6 +30,11 @@ const STATUS_COLORS = {
   rejected: { bg: '#fee2e2', fg: '#991b1b' },
 } as const;
 
+// Audit C-04: neutral fallback for a review_status THIS build doesn't
+// know — a newer backend enum must degrade to a grey pill, not crash
+// every expense row in the list.
+const FALLBACK_COLOR = { bg: '#f1f5f9', fg: '#475569' };
+
 const PREVIEW_MAX = 60;
 
 function truncate(s: string, max: number): string {
@@ -47,7 +52,7 @@ export function ExpenseRow({
   fromJobId?: string;
 }) {
   const { t } = useTranslation();
-  const statusColor = STATUS_COLORS[expense.review_status];
+  const statusColor = STATUS_COLORS[expense.review_status] ?? FALLBACK_COLOR;
   const statusKey = `expense.status_${expense.review_status}`;
   const previewSource = expense.raw_input_text || expense.description || '';
   const preview = truncate(previewSource, PREVIEW_MAX);
@@ -70,7 +75,7 @@ export function ExpenseRow({
           <Text style={s.amount}>{formatMoney(expense.amount_inc_gst)}</Text>
           <View style={[s.pill, { backgroundColor: statusColor.bg }]}>
             <Text style={[s.pillText, { color: statusColor.fg }]}>
-              {t(statusKey)}
+              {t(statusKey, { defaultValue: expense.review_status })}
             </Text>
           </View>
         </View>

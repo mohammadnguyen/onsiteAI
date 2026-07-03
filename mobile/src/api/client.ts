@@ -80,7 +80,13 @@ type RetryableConfig = InternalAxiosRequestConfig & {
  *   5. Otherwise → POST stored refresh_token to `/auth/refresh`,
  *      single-flight so concurrent 401s share one call. On success,
  *      update access token in SecureStore + store + retry original
- *      request once. On failure, terminal logout.
+ *      request once. On a definitive auth rejection (400/401/403/422),
+ *      terminal logout. On a TRANSPORT or transient failure (timeout,
+ *      offline, 5xx, 408/429) the tokens are kept: the original
+ *      request still fails, and the next 401 starts a fresh refresh
+ *      attempt (audit A1 — clearing on any error destroyed a valid
+ *      30-day refresh token on a network blip and force-logged the
+ *      user out mid-shift).
  *
  * The refresh token is NOT rotated client-side; backend's `/refresh`
  * route returns only a new access token, leaving the existing
@@ -125,8 +131,26 @@ api.interceptors.response.use(
           }>('/auth/refresh', { refresh_token: refreshToken });
           await useAuthStore.getState().setAccessToken(r.data.access_token);
           return r.data.access_token;
-        } catch {
-          await useAuthStore.getState().clear();
+        } catch (refreshErr) {
+          // Terminal logout ONLY when the refresh endpoint itself
+          // answered with a status that means the token is dead,
+          // revoked, or malformed. NOT the whole 4xx range: 429
+          // (rate limit) and 408 (proxy timeout) are transient and
+          // must keep the session — see behaviour note 5. A
+          // no-response error or 5xx also keeps the session. (The
+          // 401 case also runs through the interceptor's
+          // `/auth/refresh` branch above, which already clears.)
+          const refreshStatus = axios.isAxiosError(refreshErr)
+            ? refreshErr.response?.status
+            : undefined;
+          const authFatal =
+            refreshStatus === 400 ||
+            refreshStatus === 401 ||
+            refreshStatus === 403 ||
+            refreshStatus === 422;
+          if (authFatal) {
+            await useAuthStore.getState().clear();
+          }
           return null;
         } finally {
           refreshInFlight = null;

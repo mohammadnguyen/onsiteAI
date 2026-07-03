@@ -141,10 +141,12 @@ export function DatePills({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isValid]);
 
-  // Reflect external value changes (e.g. parent reset) into our local
-  // mode + text state. We deliberately do NOT auto-flip into custom on
-  // an external change; only sync the displayed text when we're
-  // already in custom mode.
+  // Reflect external value changes (parent reset, or a records→labour
+  // edit handoff seeding a past date) into our local mode + text
+  // state. When the external value is neither Today nor Yesterday we
+  // MUST flip into custom mode: before this else-branch existed
+  // (audit X-1) the "Today" pill stayed lit while a past date was
+  // actually loaded — the user saved to a day the pills lied about.
   useEffect(() => {
     if (value === today) {
       setMode('today');
@@ -152,12 +154,13 @@ export function DatePills({
     } else if (value === yesterday) {
       setMode('yesterday');
       setCustomError(null);
-    } else if (mode === 'custom') {
+    } else {
+      setMode('custom');
       setCustomText(formatDateAU(value));
       setCustomError(null);
     }
-    // `mode` is intentionally excluded — this effect should only run
-    // when the value (or today/yesterday rollover) changes externally.
+    // Deps are value + rollover only — this effect syncs EXTERNAL
+    // changes; pill taps set mode directly in their handlers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, today, yesterday]);
 

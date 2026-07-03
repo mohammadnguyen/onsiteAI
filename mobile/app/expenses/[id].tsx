@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -73,6 +73,11 @@ const REASON_COLORS: Record<ReviewReasonCode, ReasonColor> = {
   duplicate_suspected: { bg: '#fee2e2', fg: '#991b1b' },
 };
 
+// Audit C-04: neutral fallback for enum values THIS build doesn't
+// know. A newer backend adding a status/reason must degrade to a
+// grey chip, not crash the screen on `color.bg` of undefined.
+const FALLBACK_COLOR: ReasonColor = { bg: '#f1f5f9', fg: '#475569' };
+
 function isMissing(error: unknown): boolean {
   if (axios.isAxiosError(error)) {
     const status = error.response?.status;
@@ -104,19 +109,34 @@ export default function ExpenseDetailScreen() {
     return jobs.data?.find((j) => j.job_id === expense.data!.job_id)?.job_name;
   }, [expense.data, jobs.data]);
 
+  // One-shot back guard: unlike the old idempotent replace(), a
+  // second router.back() after this screen already popped is handled
+  // by the TAB router (backBehavior firstRoute) and yanks the user to
+  // the Expenses tab. Two real double-fire windows: confirmThenBack's
+  // 900ms timer racing a manual back-chevron tap, and a slow-network
+  // delete resolving after the user backed out. First call wins.
+  const backFiredRef = useRef(false);
   const onBack = () => {
+    if (backFiredRef.current) return;
+    backFiredRef.current = true;
     // Job-modal return path: ONLY triggered when the URL explicitly
     // carries from=job&jobId=... (operator guardrail — don't infer
     // job-return behaviour from the global store alone, since the
     // store may hold a stale modal id from a different workflow).
-    // We set the store so JobsScreen re-opens the modal on mount,
-    // then replace to /(tabs)/jobs so the user lands back in the
-    // job context they came from. This unblocks the multi-delete
-    // loop: Job modal → expense → Delete → Job modal (same job) →
-    // tap next expense → repeat.
+    // We set the store so JobsScreen re-opens the modal on focus,
+    // then pop with back(): from=job is only ever appended when this
+    // screen was pushed FROM the Jobs tab's modal, so back() returns
+    // to that exact (tabs) entry with the Jobs tab still selected.
+    // Do NOT use navigate/replace here — under expo-router v6 both
+    // create a SECOND (tabs) instance (navigate pushes when the
+    // target name differs from the top route; replace swaps the top
+    // route), growing the stack every loop iteration. This keeps the
+    // multi-delete loop flat: Job modal → expense → Delete → Job
+    // modal (same job) → tap next expense → repeat.
     if (from === 'job' && jobId) {
       setSelectedJobId(jobId);
-      router.replace('/(tabs)/jobs');
+      if (router.canGoBack()) router.back();
+      else router.replace('/(tabs)/jobs');
       return;
     }
     if (router.canGoBack()) router.back();
@@ -130,10 +150,19 @@ export default function ExpenseDetailScreen() {
   const [actionDone, setActionDone] = useState<'approved' | 'rejected' | null>(
     null,
   );
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const confirmThenBack = (kind: 'approved' | 'rejected') => {
     setActionDone(kind);
-    setTimeout(() => onBack(), 900);
+    confirmTimerRef.current = setTimeout(() => onBack(), 900);
   };
+  // Clear a pending confirm timer on unmount (the one-shot guard
+  // already makes a late fire harmless; this is hygiene).
+  useEffect(
+    () => () => {
+      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    },
+    [],
+  );
 
   const onEdit = () => {
     if (!id) return;
@@ -427,7 +456,7 @@ function DetailBody({
 }) {
   const s = useScaledStyles(base);
   const { t } = useTranslation();
-  const statusColor = STATUS_COLORS[data.review_status];
+  const statusColor = STATUS_COLORS[data.review_status] ?? FALLBACK_COLOR;
   const reasons = data.review_reasons ?? [];
   const showReasons =
     (data.review_status === 'pending' || data.review_status === 'rejected') &&
@@ -466,7 +495,9 @@ function DetailBody({
         </View>
         <View style={[s.pill, { backgroundColor: statusColor.bg }]}>
           <Text style={[s.pillText, { color: statusColor.fg }]}>
-            {t(`expense.status_${data.review_status}`)}
+            {t(`expense.status_${data.review_status}`, {
+              defaultValue: data.review_status,
+            })}
           </Text>
         </View>
       </View>
@@ -560,7 +591,7 @@ function DetailBody({
           </Text>
           <View style={s.chipsRow}>
             {reasons.map((code) => {
-              const color = REASON_COLORS[code];
+              const color = REASON_COLORS[code] ?? FALLBACK_COLOR;
               return (
                 <View
                   key={code}
@@ -568,7 +599,7 @@ function DetailBody({
                   testID={`detail-reason-${code}`}
                 >
                   <Text style={[s.chipText, { color: color.fg }]}>
-                    {t(`review_reason.${code}`)}
+                    {t(`review_reason.${code}`, { defaultValue: code })}
                   </Text>
                 </View>
               );

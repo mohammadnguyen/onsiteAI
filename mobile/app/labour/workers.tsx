@@ -14,7 +14,6 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
 
@@ -27,6 +26,7 @@ import {
 } from '../../src/api/hooks/useLabour';
 import { useMe } from '../../src/api/hooks/useAuth';
 import { formatMoney } from '../../src/util/format';
+import { useOneShotBack } from '../../src/util/navigation';
 
 /**
  * L-B2: worker roster management (admin-only).
@@ -64,7 +64,6 @@ function parseRate(text: string): { value: number | null; valid: boolean } {
 }
 
 export default function WorkersScreen() {
-  const router = useRouter();
   const { t } = useTranslation();
   const me = useMe();
   // Always fetch the full roster; "show deactivated" filters DISPLAY
@@ -91,10 +90,7 @@ export default function WorkersScreen() {
     [workers.data, showInactive],
   );
 
-  const onBack = () => {
-    if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)/labour');
-  };
+  const onBack = useOneShotBack('/(tabs)/labour');
 
   const onRefresh = () => {
     setRefreshing(true);

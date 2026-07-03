@@ -235,89 +235,101 @@ export default function ExpensesScreen() {
     return body;
   };
 
+  // Synchronous double-tap guard (audit X-3, mirrors the Labour tab's
+  // onSave): isPending/multiPending only flip after a re-render, so
+  // two rapid taps could both enter onSubmit and double-POST the same
+  // capture — creating two stored rows that evade the backend's
+  // duplicate flag on the second insert's race window.
+  const savingRef = useRef(false);
+
   const onSubmit = async () => {
-    if (createExpense.isPending || multiPending) return;
+    if (createExpense.isPending || multiPending || savingRef.current) return;
     const trimmed = rawInputText.trim();
     if (trimmed.length === 0) return;
-    setFormError(null);
-    Keyboard.dismiss();
-
-    // Multi-item detection: split on newlines, filter empty lines.
-    const lines = trimmed
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-
-    if (lines.length <= 1) {
-      // Single-item path — unchanged behaviour.
-      const body = buildBody(trimmed);
-      try {
-        const resp = await createExpense.mutateAsync(body as ExpenseCreateInput);
-        setResult(resp);
-      } catch (err) {
-        const msg = resolveApiErrorMessage(err, t, t('capture.error_network'));
-        setFormError(msg);
-        // M0: persist the failed capture (typed text + error message)
-        // so it survives reset/restart and can be refilled for retry.
-        recordFailure({ inputText: trimmed, errorMessage: msg, context: 'single' });
-      }
-      return;
-    }
-
-    // Multi-item path. First-line preamble detection: a line is a
-    // preamble if it has no `$` (operator's pattern is a bare job
-    // ref like `003` on line 1). The preamble is prepended to each
-    // subsequent item line so the backend parser still receives a
-    // complete single-item string with the job context attached.
-    // If the first line itself contains `$`, every line is treated
-    // as an independent complete item.
-    const firstLine = lines[0];
-    const hasPreamble = !firstLine.includes('$');
-    const itemLines = hasPreamble ? lines.slice(1) : lines;
-    const preamble = hasPreamble ? firstLine : null;
-
-    if (itemLines.length === 0) {
-      // Preamble-only input — nothing to submit.
-      setFormError(t('capture.multi_no_items'));
-      return;
-    }
-
-    const itemTexts = itemLines.map((line) =>
-      preamble ? `${preamble} ${line}` : line,
-    );
-
-    setMultiPending(true);
+    savingRef.current = true;
     try {
-      // Parallel POSTs. Promise.allSettled-equivalent via per-item
-      // try/catch so one failure doesn't drop the entire batch.
-      const results = await Promise.all(
-        itemTexts.map(async (text): Promise<MultiCaptureItem> => {
-          try {
-            const resp = await createExpense.mutateAsync(
-              buildBody(text) as ExpenseCreateInput,
-            );
-            return {
-              text,
-              success: true,
-              expense: resp.expense,
-              reviewPending: resp.expense.review_status === 'pending',
-            };
-          } catch (err) {
-            const msg = resolveApiErrorMessage(err, t, t('capture.error_network'));
-            // M0: persist each failed item for visibility/retry after
-            // the result card is dismissed or the app restarts.
-            recordFailure({ inputText: text, errorMessage: msg, context: 'multi' });
-            return {
-              text,
-              success: false,
-              error: msg,
-            };
-          }
-        }),
+      setFormError(null);
+      Keyboard.dismiss();
+
+      // Multi-item detection: split on newlines, filter empty lines.
+      const lines = trimmed
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
+
+      if (lines.length <= 1) {
+        // Single-item path — unchanged behaviour.
+        const body = buildBody(trimmed);
+        try {
+          const resp = await createExpense.mutateAsync(body as ExpenseCreateInput);
+          setResult(resp);
+        } catch (err) {
+          const msg = resolveApiErrorMessage(err, t, t('capture.error_network'));
+          setFormError(msg);
+          // M0: persist the failed capture (typed text + error message)
+          // so it survives reset/restart and can be refilled for retry.
+          recordFailure({ inputText: trimmed, errorMessage: msg, context: 'single' });
+        }
+        return;
+      }
+
+      // Multi-item path. First-line preamble detection: a line is a
+      // preamble if it has no `$` (operator's pattern is a bare job
+      // ref like `003` on line 1). The preamble is prepended to each
+      // subsequent item line so the backend parser still receives a
+      // complete single-item string with the job context attached.
+      // If the first line itself contains `$`, every line is treated
+      // as an independent complete item.
+      const firstLine = lines[0];
+      const hasPreamble = !firstLine.includes('$');
+      const itemLines = hasPreamble ? lines.slice(1) : lines;
+      const preamble = hasPreamble ? firstLine : null;
+
+      if (itemLines.length === 0) {
+        // Preamble-only input — nothing to submit.
+        setFormError(t('capture.multi_no_items'));
+        return;
+      }
+
+      const itemTexts = itemLines.map((line) =>
+        preamble ? `${preamble} ${line}` : line,
       );
-      setMultiResult({ items: results, preamble });
+
+      setMultiPending(true);
+      try {
+        // Parallel POSTs. Promise.allSettled-equivalent via per-item
+        // try/catch so one failure doesn't drop the entire batch.
+        const results = await Promise.all(
+          itemTexts.map(async (text): Promise<MultiCaptureItem> => {
+            try {
+              const resp = await createExpense.mutateAsync(
+                buildBody(text) as ExpenseCreateInput,
+              );
+              return {
+                text,
+                success: true,
+                expense: resp.expense,
+                reviewPending: resp.expense.review_status === 'pending',
+              };
+            } catch (err) {
+              const msg = resolveApiErrorMessage(err, t, t('capture.error_network'));
+              // M0: persist each failed item for visibility/retry after
+              // the result card is dismissed or the app restarts.
+              recordFailure({ inputText: text, errorMessage: msg, context: 'multi' });
+              return {
+                text,
+                success: false,
+                error: msg,
+              };
+            }
+          }),
+        );
+        setMultiResult({ items: results, preamble });
+      } finally {
+        setMultiPending(false);
+      }
     } finally {
-      setMultiPending(false);
+      savingRef.current = false;
     }
   };
 

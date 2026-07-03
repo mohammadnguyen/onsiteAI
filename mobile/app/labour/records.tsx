@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -111,11 +111,25 @@ export default function LabourRecordsScreen() {
   const canDelete = (e: LabourEntryPublic): boolean =>
     isAdmin || (e.recorded_by_user_id === myId && e.work_date >= today);
 
+  // One shared one-shot guard for BOTH exits (row tap → Labour tab,
+  // back chevron): a second GO_BACK after this screen has popped is
+  // handled by the tab navigator (backBehavior firstRoute) and would
+  // jump the user to the Expenses tab. First exit wins.
+  const navFiredRef = useRef(false);
+
   const onEditDay = (e: LabourEntryPublic) => {
+    if (navFiredRef.current) return;
+    navFiredRef.current = true;
     // Hand the job+date to the Labour tab's tick screen — the existing
-    // pre-seed + diff-save flow IS the editor.
+    // pre-seed + diff-save flow IS the editor. Pop with back(): this
+    // screen is only ever pushed FROM the Labour tab, so back()
+    // returns to that exact (tabs) entry (Labour still selected) and
+    // its focus effect consumes the target. Do NOT use navigate/push
+    // here — under expo-router v6 both would stack a SECOND whole
+    // tabs navigator on top of this screen.
     setTarget({ jobId: e.job_id, date: e.work_date });
-    router.push('/(tabs)/labour' as unknown as Href);
+    if (router.canGoBack()) router.back();
+    else router.replace('/(tabs)/labour' as unknown as Href);
   };
 
   const onDelete = (e: LabourEntryPublic) => {
@@ -145,6 +159,8 @@ export default function LabourRecordsScreen() {
   };
 
   const onBack = () => {
+    if (navFiredRef.current) return;
+    navFiredRef.current = true;
     if (router.canGoBack()) router.back();
     else router.replace('/(tabs)/labour' as unknown as Href);
   };

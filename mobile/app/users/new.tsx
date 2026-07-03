@@ -13,7 +13,6 @@ import {
   Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
 
@@ -22,6 +21,7 @@ import {
   type UserInviteInput,
   type UserRole,
 } from '../../src/api/hooks/useUsers';
+import { useOneShotBack } from '../../src/util/navigation';
 
 /**
  * M4: create-user form (admin-only).
@@ -60,7 +60,6 @@ function extractErrorMessage(error: unknown, fallback: string): string {
 }
 
 export default function NewUserScreen() {
-  const router = useRouter();
   const { t } = useTranslation();
   const invite = useInviteUser();
 
@@ -72,10 +71,7 @@ export default function NewUserScreen() {
   const [language, setLanguage] = useState<'en' | 'zh'>('en');
   const [formError, setFormError] = useState<string | null>(null);
 
-  const onBack = () => {
-    if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)/settings');
-  };
+  const onBack = useOneShotBack('/(tabs)/settings');
 
   // Light client-side gate only — the backend validates properly
   // (EmailStr etc.). Password is NOT trimmed: leading/trailing

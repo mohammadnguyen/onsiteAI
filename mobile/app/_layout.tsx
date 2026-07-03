@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import {
-  Slot,
+  Stack,
   useRouter,
   useSegments,
   type ErrorBoundaryProps,
 } from 'expo-router';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import {
@@ -19,15 +19,8 @@ import { useAuthStore } from '../src/store/auth';
 import i18n, { initI18n } from '../src/i18n';
 import { useFailuresStore } from '../src/store/failures';
 import { useFontScaleStore } from '../src/store/fontScale';
-
-const qc = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: false,
-      refetchOnWindowFocus: false,
-    },
-  },
-});
+import { queryClient } from '../src/api/queryClient';
+import { resetSessionState } from '../src/store/session';
 
 /**
  * M0: global JS error hook.
@@ -173,6 +166,25 @@ export default function RootLayout() {
     const first = segments[0];
     const inAuth = first === '(auth)';
     if (!accessToken && !inAuth) {
+      // Audit B-02: crossing the auth boundary — manual logout,
+      // terminal 401, dead refresh token — wipes user-scoped state
+      // (React Query cache, cross-screen selections) so the next
+      // login on a shared device can't read the previous user's
+      // data. This is the single choke point every logout path
+      // funnels through. Failed-capture texts are deliberately NOT
+      // wiped here: an involuntary logout (token death mid-shift) is
+      // almost certainly the SAME user, whose typed-but-unsent
+      // capture texts must survive; the explicit Settings logout
+      // wipes them separately. On a logged-out cold start this fires
+      // once as a no-op on empty state.
+      resetSessionState();
+      // dismissAll pops the root stack to its base entry before the
+      // replace. Without it, replace() only swaps the FOCUSED route:
+      // a terminal 401 on a pushed screen would leave the old
+      // session's (tabs) — component state included — mounted UNDER
+      // the login screen, reachable by iOS edge-swipe and surviving
+      // into the next login as a stale duplicate stack entry.
+      if (router.canDismiss()) router.dismissAll();
       router.replace('/(auth)/login');
     } else if (accessToken && (inAuth || first === undefined)) {
       router.replace('/(tabs)/expenses');
@@ -189,9 +201,16 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
-      <QueryClientProvider client={qc}>
+      <QueryClientProvider client={queryClient}>
         <StatusBar style="auto" />
-        <Slot />
+        {/* Root Stack (was Slot — back-nav fix): a Stack keeps the
+            screens BENEATH a pushed route mounted, so (tabs) preserves
+            the active tab across drill-ins. With Slot, every sibling
+            unmounted on push and the tab bar remounted on its first
+            tab — back from any pushed screen landed on Expenses
+            regardless of where the user came from. Headers stay off:
+            every pushed screen renders its own back button. */}
+        <Stack screenOptions={{ headerShown: false }} />
       </QueryClientProvider>
     </SafeAreaProvider>
   );

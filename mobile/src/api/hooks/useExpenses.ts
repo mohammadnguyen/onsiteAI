@@ -43,6 +43,12 @@ export function useCreateExpense() {
       void qc.invalidateQueries({ queryKey: ['expenses'] });
       // M3: a new capture can open a review-queue row.
       void qc.invalidateQueries({ queryKey: ['review-queue'] });
+      // Audit A2: job money counts PENDING spend (backend
+      // budget_summary sums non-rejected rows), so every capture
+      // moves the Jobs tab's spent-to-date + pressure ranking.
+      // Create and update were the two expense mutations missing
+      // the ['jobs'] root (delete/resolve/reject already had it).
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
     },
   });
 }
@@ -298,6 +304,10 @@ export function useUpdateExpense(expenseId: string) {
       void qc.invalidateQueries({ queryKey: ['expenses'] });
       // M3: an edit can change what the triage row shows.
       void qc.invalidateQueries({ queryKey: ['review-queue'] });
+      // Audit A2 (review follow-up): an amount edit or an admin job
+      // REASSIGNMENT moves job money, so the Jobs tab + job budget
+      // summary must refetch after a PATCH exactly as after a create.
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
     },
   });
 }
@@ -388,11 +398,12 @@ export function useExpensesList(filters: ExpenseListFilters) {
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? null,
     enabled: !!accessToken,
-    // 30s rather than 0: the list screen remounts on every detail
-    // round trip (root Slot navigator unmounts siblings), and
-    // staleTime 0 would re-fire a sequential refetch of EVERY cached
-    // page each time — an N-request chain on a field network.
-    // Mutation freshness is unaffected: invalidateQueries(['expenses'])
+    // 30s rather than 0: originally because the root Slot navigator
+    // remounted this screen on every detail round trip, re-firing a
+    // sequential refetch of EVERY cached page — an N-request chain on
+    // a field network. The root Stack now keeps the list mounted, but
+    // 30s stays correct: it still absorbs focus churn, and mutation
+    // freshness is unaffected — invalidateQueries(['expenses'])
     // marks the data stale and refetches regardless of staleTime.
     staleTime: 30_000,
     retry: false,

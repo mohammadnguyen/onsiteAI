@@ -8,21 +8,18 @@ export type ExpenseListDatePreset = 'all' | 'week' | 'month';
 /**
  * M2-B: in-memory filter selections for the full expenses list.
  *
- * The root layout renders a plain `Slot`, so `/expenses/list` is
- * UNMOUNTED whenever the user drills into `/expenses/[id]` and
- * remounted on return (expo-router's SlotNavigator renders only the
- * focused sibling). Component-local useState would therefore lose
- * every filter selection on each row tap. Keeping the selections in
- * a tiny store (same pattern as `store/selectedJob`) preserves them
- * across that round trip; React Query's cached pages make the
- * remount cheap.
+ * Originally required because the root layout rendered a plain
+ * `Slot`, which UNMOUNTED `/expenses/list` on every drill-in to
+ * `/expenses/[id]` — component-local useState lost every filter
+ * selection on each row tap. The root Stack (back-nav fix) now keeps
+ * the list mounted across that round trip, but the store stays: it
+ * still covers app-level remounts, and logout resets it via
+ * `store/session.ts` (audit B-02) so one user's filters can't leak
+ * to the next.
  *
  * Deliberately NOT persisted: filters are session-scoped workflow
  * state, not durable user data — an app restart opening the default
- * view is correct. Scroll position is still lost on remount
- * (FlatList component state); a navigation-architecture change
- * (Stack layout keeping the list mounted) is out of M2-B scope and
- * would need its own approval.
+ * view is correct.
  */
 type ExpenseListFiltersState = {
   jobId: string | null;

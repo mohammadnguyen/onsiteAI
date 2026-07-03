@@ -13,6 +13,7 @@ import {
 import { useScaledStyles } from '../../src/ui/type';
 import { api, apiUrl } from '../../src/api/client';
 import { useMe } from '../../src/api/hooks/useAuth';
+import { resetSessionState, wipeFailures } from '../../src/store/session';
 
 export default function SettingsScreen() {
   const { t } = useTranslation();
@@ -50,6 +51,13 @@ export default function SettingsScreen() {
       // logout is best-effort — clear local state regardless.
     }
     await clear();
+    // Audit B-02: explicit logout is a deliberate device handoff —
+    // wipe user-scoped caches AND the persisted failed-capture
+    // texts here, deterministically (the root layout's auth-redirect
+    // reset also fires, but is idempotent and deliberately preserves
+    // failures for INVOLUNTARY logouts).
+    resetSessionState();
+    wipeFailures();
     router.replace('/(auth)/login');
   };
 

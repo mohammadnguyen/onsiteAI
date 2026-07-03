@@ -163,15 +163,24 @@ export default function JobsScreen() {
   // would cause spurious remounts on row-tap.
   const [modalEpoch, setModalEpoch] = useState(0);
   const firstFocusRef = useRef(true);
+  // Root Stack (back-nav fix): pushed screens no longer unmount this
+  // tab, so without an explicit gate the native <Modal> would stay
+  // presented ON TOP of /jobs/[id]/edit or /expenses/[id] pushed from
+  // inside it, hiding them completely. Track focus: while blurred the
+  // modal receives jobId=null (native dismiss; the zustand store keeps
+  // the job id), and on refocus it re-presents at the same job — the
+  // modalEpoch remount above/below still guarantees a fresh native
+  // present on platforms that need it.
+  const [screenFocused, setScreenFocused] = useState(true);
   useFocusEffect(
     useCallback(() => {
+      setScreenFocused(true);
       if (firstFocusRef.current) {
         firstFocusRef.current = false;
-        return;
-      }
-      if (useSelectedJobStore.getState().selectedJobId != null) {
+      } else if (useSelectedJobStore.getState().selectedJobId != null) {
         setModalEpoch((e) => e + 1);
       }
+      return () => setScreenFocused(false);
     }, []),
   );
 
@@ -252,7 +261,7 @@ export default function JobsScreen() {
       )}
       <JobDetailModal
         key={modalEpoch}
-        jobId={selectedId}
+        jobId={screenFocused ? selectedId : null}
         onClose={() => setSelectedId(null)}
       />
       <NewJobModal

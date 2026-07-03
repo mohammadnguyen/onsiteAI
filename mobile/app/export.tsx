@@ -11,12 +11,12 @@ import {
   ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import * as Sharing from 'expo-sharing';
 
 import { useMe } from '../src/api/hooks/useAuth';
 import { parseLooseDate, dateToISO, formatDateAU } from '../src/util/dates';
+import { useOneShotBack } from '../src/util/navigation';
 
 // O3: native calendar assist for the From/To fields. Lazily required so
 // the web export never evaluates the native module (same pattern as
@@ -67,7 +67,6 @@ function errorKey(kind: ExportErrorKind): string {
 }
 
 export default function ExportScreen() {
-  const router = useRouter();
   const { t } = useTranslation();
   const { data: me, isLoading: meLoading } = useMe();
   const isAdmin = me?.role === 'admin';
@@ -96,10 +95,7 @@ export default function ExportScreen() {
     }
   };
 
-  const onBack = () => {
-    if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)/settings');
-  };
+  const onBack = useOneShotBack('/(tabs)/settings');
 
   const onExport = async () => {
     if (busy) return;

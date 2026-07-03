@@ -9,7 +9,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Link, useRouter, type Href } from 'expo-router';
+import { Link, type Href } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
 
@@ -22,6 +22,7 @@ import { useJobs } from '../src/api/hooks/useJobs';
 import type { ExpensePublic } from '../src/api/hooks/useExpenses';
 import { formatMoney } from '../src/util/format';
 import { formatDateAU } from '../src/util/dates';
+import { useOneShotBack } from '../src/util/navigation';
 
 /**
  * M3: mobile review queue / pending triage (admin-only).
@@ -48,7 +49,6 @@ import { formatDateAU } from '../src/util/dates';
  */
 
 export default function ReviewQueueScreen() {
-  const router = useRouter();
   const { t } = useTranslation();
 
   const queue = useOpenReviewQueue();
@@ -68,10 +68,7 @@ export default function ReviewQueueScreen() {
     return m;
   }, [summaries.data]);
 
-  const onBack = () => {
-    if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)/expenses');
-  };
+  const onBack = useOneShotBack('/(tabs)/expenses');
 
   const onRefresh = () => {
     setUserRefreshing(true);
@@ -243,7 +240,11 @@ function TriageRow({
         <View style={s.reasonRow}>
           {item.review_reasons.map((code) => (
             <View key={code} style={s.reasonPill}>
-              <Text style={s.reasonText}>{t(`review_reason.${code}`)}</Text>
+              {/* Audit C-04: defaultValue so a NEW backend reason code
+                  degrades to the raw code, not an i18n key string. */}
+              <Text style={s.reasonText}>
+                {t(`review_reason.${code}`, { defaultValue: code })}
+              </Text>
             </View>
           ))}
         </View>
