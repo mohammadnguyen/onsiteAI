@@ -343,7 +343,16 @@ async def _fetch_expenses(
             # supplier, category, entered_by are lazy="joined" on the model.
         )
         .where(Expense.review_status.in_(statuses))
-        .order_by(Expense.expense_date.asc(), Expense.created_at.asc())
+        # Total order for a REPRODUCIBLE export: expense_date + created_at can
+        # tie (multiple same-day captures share the transaction timestamp), so
+        # add expense_id as a final tiebreak — otherwise row order falls to
+        # Postgres heap order and the same export can differ run-to-run /
+        # host-to-host.
+        .order_by(
+            Expense.expense_date.asc(),
+            Expense.created_at.asc(),
+            Expense.expense_id.asc(),
+        )
     )
     if from_date is not None:
         q = q.where(Expense.expense_date >= from_date)
