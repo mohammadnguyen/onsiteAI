@@ -41,11 +41,11 @@ routed through :func:`_safe_excel_text`.
 
 from __future__ import annotations
 
+import datetime as _datetime
 import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-import datetime as _datetime
 from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
@@ -367,7 +367,7 @@ def _to_naive_utc(dt: datetime | None) -> datetime | None:
         return None
     if dt.tzinfo is None:
         return dt
-    return dt.astimezone(tz=_datetime.timezone.utc).replace(tzinfo=None)
+    return dt.astimezone(tz=_datetime.UTC).replace(tzinfo=None)
 
 
 def _row_for_expense(
@@ -547,7 +547,8 @@ async def _build_job_sheet(
     italic_muted = Font(italic=True, color="606060")
 
     # Row 1: title
-    ws.cell(row=1, column=1, value=_safe_excel_text(f"Job: {job.job_name}")).font = Font(bold=True, size=14)
+    _title_cell = ws.cell(row=1, column=1, value=_safe_excel_text(f"Job: {job.job_name}"))
+    _title_cell.font = Font(bold=True, size=14)
     # Row 2: code + site
     code = job.job_code or "—"
     site = job.site_address or "—"

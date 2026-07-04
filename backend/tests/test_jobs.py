@@ -637,8 +637,14 @@ async def test_patch_partial_threshold_violating_db_check_returns_422(
         json={"warning_red_pct": "60.00"},  # < stored amber 70
     )
     assert r.status_code == 422, r.text
+    # Audit E4: the response must NOT leak the raw Postgres constraint text
+    # (constraint name, row-value fragments) — it returns a generic message
+    # and logs the driver detail server-side.
     detail = r.json()["detail"]
-    assert "ck_jobs_warning_amber_lt_red" in detail
+    assert "ck_jobs" not in detail
+    assert "check constraint" not in detail.lower()
+    assert "failing row" not in detail.lower()
+    assert detail == "Request violates a data constraint"
 
 
 @pytest.mark.asyncio
@@ -1070,6 +1076,7 @@ async def test_delete_empty_job_succeeds_writes_audit_and_cascades(
     config; and one new audit row is written with action='delete'.
     """
     from sqlalchemy import select
+
     from app.models import JobAlias, JobAuditLog, JobCategoryBudget
 
     job = await _create_job(
@@ -1159,6 +1166,7 @@ async def test_delete_empty_job_audit_row_survives_with_job_id_null(
     job_id column is NULL, and the snapshot columns retain the
     human-meaningful identifier."""
     from sqlalchemy import select
+
     from app.models import JobAuditLog
 
     job = await _create_job(
@@ -1214,9 +1222,11 @@ async def test_delete_job_blocked_by_existing_expense_returns_409(
     here rather than write a contrived test.
     """
     import uuid as _uuid
-    from decimal import Decimal
     from datetime import date
+    from decimal import Decimal
+
     from sqlalchemy import select
+
     from app.models import (
         Expense,
         ExpenseType,

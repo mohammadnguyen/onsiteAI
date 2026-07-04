@@ -5,7 +5,7 @@ The engine and sessionmaker are constructed lazily so that tests can override
 before any connection is opened.
 """
 
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -29,6 +29,14 @@ def get_engine() -> AsyncEngine:
             settings.database_url,
             echo=(settings.environment == "development"),
             future=True,
+            # Audit D-7: managed Postgres (Fly MPG) drops idle connections.
+            # pool_pre_ping issues a cheap liveness check on checkout and
+            # transparently reconnects a dead connection; pool_recycle caps
+            # connection age below the provider's idle-kill window. Without
+            # these, the first request after an idle period fails with a
+            # connection-reset 500 — exactly the weak-network field scenario.
+            pool_pre_ping=True,
+            pool_recycle=1800,
         )
     return _engine
 

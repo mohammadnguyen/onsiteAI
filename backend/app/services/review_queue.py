@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
@@ -54,11 +53,12 @@ from app.models import (
 from app.schemas.expense import ExpenseUpdate
 from app.services.expenses import (
     _AUDITABLE_FIELDS,
-    _coerce_audit_value,
-    _validate_job_active_for_reassign,
-    _validate_save,
     ExpenseValidationError,
     JobNotFoundForExpense,
+    _coerce_audit_value,
+    _compute_gst_split,
+    _validate_job_active_for_reassign,
+    _validate_save,
 )
 
 # ---------------------------------------------------------------------------
@@ -86,9 +86,6 @@ class ReviewQueueAlreadyClosed(Exception):
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-_GST_DIVISOR = Decimal("1.1")
 
 
 async def _get_queue_row_or_404(db: AsyncSession, review_id: uuid.UUID) -> ExpenseReviewQueue:
@@ -286,16 +283,21 @@ async def resolve(
             if field in patch_set:
                 setattr(expense, field, getattr(expense_patch, field))
 
-        # Keep the GST split consistent when amount_inc_gst moves. Mirrors
-        # the T-M PATCH handler.
-        if (
-            "amount_inc_gst" in patch_set
-            and "amount_ex_gst" not in patch_set
-            and "gst_amount" not in patch_set
-        ):
-            ex = (expense.amount_inc_gst / _GST_DIVISOR).quantize(Decimal("0.01"))
-            expense.amount_ex_gst = ex
-            expense.gst_amount = expense.amount_inc_gst - ex
+        # Re-reconcile the GST split whenever ANY money field moves on the
+        # reviewer path (audit X-1 / X-2). The previous hardcoded 1/11 divisor
+        # ignored payment_method (giving cash rows a phantom GST) and skipped
+        # lone-component patches. Delegating to the shared reconciler makes
+        # this path payment-aware and consistent with PATCH /expenses.
+        money_fields = {"amount_inc_gst", "payment_method", "amount_ex_gst", "gst_amount"}
+        if patch_set & money_fields:
+            ex_override = expense.amount_ex_gst if "amount_ex_gst" in patch_set else None
+            gst_override = expense.gst_amount if "gst_amount" in patch_set else None
+            expense.amount_ex_gst, expense.gst_amount = _compute_gst_split(
+                expense.amount_inc_gst,
+                ex_override,
+                gst_override,
+                expense.payment_method,
+            )
 
         # Re-run save-time validation on the post-patch state.
         _validate_save(

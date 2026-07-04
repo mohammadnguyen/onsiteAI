@@ -18,9 +18,11 @@ from __future__ import annotations
 import uuid
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
+from app.core.rate_limit import auth_rate_limiter
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -41,15 +43,30 @@ from app.services.auth import authenticate_user
 router = APIRouter(tags=["auth"])
 
 
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _enforce_auth_rate_limit(key: str) -> None:
+    """Raise 429 if ``key`` exceeds the configured per-minute auth cap (E2)."""
+    limit = get_settings().auth_rate_limit_per_minute
+    if not auth_rate_limiter.hit_and_check(key, limit):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many attempts. Please wait a minute and try again.",
+        )
+
+
 @router.post(
     "/login",
     response_model=TokenPair,
     status_code=status.HTTP_200_OK,
 )
 async def login(
-    body: LoginRequest, db: AsyncSession = Depends(get_db)
+    request: Request, body: LoginRequest, db: AsyncSession = Depends(get_db)
 ) -> TokenPair:
     """Exchange email + password for an access/refresh token pair."""
+    _enforce_auth_rate_limit(f"login:{_client_ip(request)}:{body.email.strip().lower()}")
     user = await authenticate_user(db, body.email, body.password)
     if user is None:
         raise HTTPException(
@@ -81,9 +98,10 @@ async def me(current_user: User = Depends(get_current_user)) -> UserPublic:
     status_code=status.HTTP_200_OK,
 )
 async def refresh(
-    body: RefreshRequest, db: AsyncSession = Depends(get_db)
+    request: Request, body: RefreshRequest, db: AsyncSession = Depends(get_db)
 ) -> AccessToken:
     """Issue a new access token given a valid, unexpired refresh token."""
+    _enforce_auth_rate_limit(f"refresh:{_client_ip(request)}")
     try:
         payload = decode_token(body.refresh_token)
     except jwt.PyJWTError as exc:

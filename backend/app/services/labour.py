@@ -27,6 +27,7 @@ Core rules enforced here (operator decisions 1-10, L-A plan):
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import date, time, timedelta
 from decimal import Decimal
@@ -35,6 +36,19 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Job, JobStatus, LabourEntry, User, UserRole, Worker
+
+
+def _day_lock_key(worker_id: uuid.UUID, work_date: date) -> int:
+    """Stable signed 64-bit key for a per-(worker, date) advisory lock.
+
+    Postgres advisory-lock keys are bigints (signed 64-bit); we hash the
+    ``worker_id + work_date`` pair into that domain so the key is stable
+    across processes and collision-resistant.
+    """
+    digest = hashlib.blake2b(
+        f"{worker_id}:{work_date.isoformat()}".encode(), digest_size=8
+    ).digest()
+    return int.from_bytes(digest, "big", signed=True)
 
 # ---------------------------------------------------------------------------
 # Domain exceptions
@@ -275,6 +289,17 @@ async def batch_upsert_entries(
         item = next(i for i in items if i.worker_id == worker_id)
         worker = workers_by_id[worker_id]
         fraction = Decimal(item.day_fraction)
+
+        # Take a per-(worker, date) transaction-scoped advisory lock BEFORE
+        # reading the day's rows (audit D-2). The row-level FOR UPDATE below
+        # locks nothing when the worker has no rows for this date yet, so two
+        # concurrent FIRST inserts into DIFFERENT jobs would both read
+        # other_total=0 and both commit -> a 2.0-day total. The advisory lock
+        # covers the not-yet-existing rows, forcing the second batch to block
+        # until the first commits and then recompute against the new row.
+        # Acquired in the same sorted-worker order as the row locks, so two
+        # batches touching overlapping workers cannot deadlock.
+        await db.execute(select(func.pg_advisory_xact_lock(_day_lock_key(worker_id, work_date))))
 
         # Lock every existing row this worker has on this date — across
         # ALL jobs — so the <=1.0 total is computed against stable rows.

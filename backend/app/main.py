@@ -1,6 +1,7 @@
 """FastAPI application factory and module-level ``app`` instance."""
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +11,41 @@ from app.api.router import api_router
 from app.config import get_settings, resolved_env_file_path
 
 logger = logging.getLogger("app.startup")
+
+
+@asynccontextmanager
+async def _lifespan(app: "FastAPI"):
+    """Startup/shutdown hook.
+
+    Audit E6: migrations are manual for V1 (ADR 0003), so a deploy can ship
+    app code expecting a migration a human forgot to run. This emits a single
+    non-fatal ``schema_head_check`` line comparing the packaged Alembic head
+    to the DB's current head so drift is observable in logs. It NEVER blocks
+    startup — any failure (DB down, table absent) degrades to a skipped log.
+    """
+    try:
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+        from sqlalchemy import text
+
+        from app.database import get_engine
+
+        packaged_head = ScriptDirectory.from_config(
+            Config("alembic.ini")
+        ).get_current_head()
+        async with get_engine().connect() as conn:
+            db_head = (
+                await conn.execute(text("SELECT version_num FROM alembic_version"))
+            ).scalar_one_or_none()
+        logger.info(
+            "schema_head_check packaged_head=%s db_head=%s schema_head_matches=%s",
+            packaged_head,
+            db_head,
+            packaged_head == db_head,
+        )
+    except Exception as exc:  # never block startup on an observability check
+        logger.warning("schema_head_check_skipped error=%s", type(exc).__name__)
+    yield
 
 # M0 observability: dedicated logger for unhandled request exceptions.
 # Lives beside the startup logger so log filtering can target either
@@ -41,10 +77,19 @@ def create_app() -> FastAPI:
         len(settings.cors_allowed_origins),
     )
 
+    # Audit E5: the API is internal-only ("Proprietary - Internal Use Only");
+    # expose the interactive docs / raw OpenAPI schema only in dev + test, not
+    # on the public staging/production URL where they hand an attacker the full
+    # route + schema map for free.
+    _docs_enabled = settings.app_env in {"development", "test"}
     app = FastAPI(
         title="SiteTracker API",
         version="0.1.0",
         description="Internal cost control API for small residential builders",
+        lifespan=_lifespan,
+        docs_url="/docs" if _docs_enabled else None,
+        redoc_url="/redoc" if _docs_enabled else None,
+        openapi_url="/openapi.json" if _docs_enabled else None,
         contact={
             "name": "SiteTracker Engineering",
             "email": "engineering@sitetracker.internal",

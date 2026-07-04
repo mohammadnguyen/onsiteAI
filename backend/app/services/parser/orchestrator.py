@@ -42,6 +42,7 @@ row after inspecting the :class:`ParseResult`.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import date
@@ -64,6 +65,12 @@ from app.services.parser import review as _review
 from app.services.parser import suppliers as _suppliers
 from app.services.parser import tokens as _tokens
 from app.services.parser.llm_adapter import LLMParser, MockLLMParser, ParsePartial
+
+# Pipeline observability (audit C-4). One structured decision line per parse —
+# confidences + review decision + reason codes only. NEVER logs the raw user
+# text (it can carry business content); confidences and reason codes are enough
+# to debug a real mis-parse or a wrongly-(un)gated review.
+_log = logging.getLogger("app.parser")
 
 
 @dataclass(frozen=True)
@@ -270,6 +277,18 @@ async def parse(
     # reasons, so the active review queue is money-driven.
     gating = _review.gating_reasons(reasons)
     review_status = ReviewStatus.pending if gating else ReviewStatus.reviewed
+
+    _log.info(
+        "parse_complete review_status=%s amount_conf=%.2f job_conf=%.2f "
+        "supplier_conf=%.2f category_conf=%.2f duplicate=%s reasons=%s",
+        review_status.value,
+        partial.amount_conf,
+        partial.job_conf,
+        partial.supplier_conf,
+        partial.category_conf,
+        partial.duplicate_flag,
+        [r.value for r in gating],
+    )
 
     # Step 13: assemble + return.
     return ParseResult(

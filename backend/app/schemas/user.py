@@ -36,15 +36,16 @@ class UserPublic(BaseModel):
 class UserInvite(BaseModel):
     """Request body for ``POST /users/invite`` (admin only).
 
-    The admin supplies ``initial_password`` directly in Phase 1.
-    No password-strength rules are applied here — that lands in
-    Phase 6 alongside email-based reset.
+    The admin supplies ``initial_password`` directly in Phase 1. A minimum
+    length of 12 is enforced (audit E3) so a trivially-guessable credential
+    (``"a"``) can't be created against a public login endpoint; richer
+    complexity rules and email-based reset are a Phase 6 concern.
     """
 
     full_name: str = Field(min_length=1, max_length=255)
     email: EmailStr
     role: UserRole
-    initial_password: str = Field(min_length=1, max_length=255)
+    initial_password: str = Field(min_length=12, max_length=255)
     language_preference: LanguageCode = LanguageCode.en
 
 

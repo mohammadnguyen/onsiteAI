@@ -47,6 +47,22 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+# Rules the project deliberately opts out of (not bugs):
+#  - UP037: quoted annotations are load-bearing for SQLAlchemy ``Mapped["X"]``
+#    and Pydantic forward refs whose targets are TYPE_CHECKING-only imports;
+#    unquoting them breaks runtime mapper/model resolution.
+#  - UP042: ``class X(str, Enum)`` -> ``StrEnum`` changes ``str(member)``
+#    semantics; the native-enum mappings and audit serialization rely on the
+#    current form.
+#  - UP047: the existing ``TypeVar``-based generic response-strip helpers are
+#    intentional and clear; PEP-695 syntax is not required.
+ignore = ["UP037", "UP042", "UP047"]
+
+[tool.ruff.lint.per-file-ignores]
+# ``Depends(...)`` / ``Query(...)`` in argument defaults is the canonical
+# FastAPI idiom, only used in the route handlers and the shared deps module.
+"app/api/*.py" = ["B008"]
+"app/deps.py" = ["B008"]
 
 [tool.black]
 line-length = 100

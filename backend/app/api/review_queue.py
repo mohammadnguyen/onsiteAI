@@ -127,6 +127,13 @@ async def resolve_queue(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Review queue entry already {exc.current_status.value}",
         ) from exc
+    except svc.ExpenseValidationError as exc:
+        # Save-time validation on the patched expense (amount/date/job) OR a
+        # GST-split reconciliation failure (audit X-1/X-2) -> 422, not 500.
+        raise HTTPException(
+            status_code=422,
+            detail=exc.detail,
+        ) from exc
     except ValueError as exc:
         # Bad FK reference in expense_patch -> 422.
         raise HTTPException(
