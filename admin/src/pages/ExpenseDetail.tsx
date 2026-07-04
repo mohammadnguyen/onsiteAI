@@ -45,9 +45,10 @@ export function ExpenseDetail() {
   // form fields — initialised on entering edit mode
   const [supplierId, setSupplierId] = useState<string>('')
   const [categoryId, setCategoryId] = useState<string>('')
+  // Only amount_inc_gst is editable; the backend derives amount_ex_gst /
+  // gst_amount from it + payment_method (see B-1/B-2). Sending a stale
+  // ex/gst breakdown would violate the inc = ex + gst DB CHECK.
   const [amountIncGst, setAmountIncGst] = useState<string>('')
-  const [amountExGst, setAmountExGst] = useState<string>('')
-  const [gstAmount, setGstAmount] = useState<string>('')
   const [description, setDescription] = useState<string>('')
   const [notes, setNotes] = useState<string>('')
   const [expenseDate, setExpenseDate] = useState<string>('')
@@ -63,8 +64,6 @@ export function ExpenseDetail() {
     setSupplierId(e.supplier_id ?? '')
     setCategoryId(e.category_id ?? '')
     setAmountIncGst(e.amount_inc_gst)
-    setAmountExGst(e.amount_ex_gst)
-    setGstAmount(e.gst_amount)
     setDescription(e.description ?? '')
     setNotes(e.notes ?? '')
     setExpenseDate(e.expense_date)
@@ -85,8 +84,6 @@ export function ExpenseDetail() {
       supplier_id: supplierId || null,
       category_id: categoryId || null,
       amount_inc_gst: amountIncGst || null,
-      amount_ex_gst: amountExGst || null,
-      gst_amount: gstAmount || null,
       description: description || null,
       notes: notes || null,
       expense_date: expenseDate || null,
@@ -353,24 +350,6 @@ export function ExpenseDetail() {
                     step="0.01"
                     value={amountIncGst}
                     onChange={(e) => setAmountIncGst(e.target.value)}
-                    className={inputClass}
-                  />
-                </Field>
-                <Field label={t('expense.amount_ex_gst')}>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={amountExGst}
-                    onChange={(e) => setAmountExGst(e.target.value)}
-                    className={inputClass}
-                  />
-                </Field>
-                <Field label={t('expense.gst')}>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={gstAmount}
-                    onChange={(e) => setGstAmount(e.target.value)}
                     className={inputClass}
                   />
                 </Field>
