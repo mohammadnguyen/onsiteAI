@@ -71,9 +71,16 @@ from decimal import Decimal
 from app.models import ExpenseType, PaymentMethod
 
 
-@dataclass
+@dataclass(frozen=True)
 class ParsePartial:
     """Partial parse result with per-field values + confidences.
+
+    ``frozen=True`` enforces the mutation contract below in the type system
+    (audit C-3): no stage — orchestrator or LLM adapter — can reassign a
+    field in place; an updated partial is produced only via
+    :func:`dataclasses.replace`. This is the guardrail the Phase 2.5 real
+    LLM seam relies on, so a future ``ClaudeLLMParser`` cannot silently
+    corrupt the rules-derived partial.
 
     Phase 2 T-D ships this as a scaffold; later parser tasks flesh out
     the population logic (rules pass) and the consumers (orchestrator,

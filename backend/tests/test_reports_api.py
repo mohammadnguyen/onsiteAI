@@ -38,7 +38,6 @@ from app.models.expense import (
 )
 from app.models.job import Job, JobStatus
 
-
 _XLSX_MIME = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )

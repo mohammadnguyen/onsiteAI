@@ -44,7 +44,30 @@ Fly).
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, datetime
+
+try:  # pragma: no cover - exercised only where the tz database is present
+    from zoneinfo import ZoneInfo
+
+    _SYDNEY: ZoneInfo | None = ZoneInfo("Australia/Sydney")
+except Exception:  # ZoneInfoNotFoundError on a host without the tz database
+    _SYDNEY = None
+
+
+def _app_today() -> date:
+    """Today's date in the app's operating timezone (Australia/Sydney).
+
+    Year-less dates default their year from this. Using Sydney rather than the
+    server's UTC clock avoids a new-year edge (audit C-5): a Sydney-morning
+    capture on 1 Jan — when UTC is still 31 Dec — would otherwise default a
+    year-less date to the previous year. Falls back to the server-local date
+    when the IANA tz database is unavailable (e.g. a minimal host without
+    ``tzdata``); on the Linux deploy target Sydney resolves normally.
+    """
+    if _SYDNEY is not None:
+        return datetime.now(_SYDNEY).date()
+    return date.today()
+
 
 # ISO fast path: YYYY-MM-DD.
 _ISO_RE = re.compile(r"^\s*(\d{4}-\d{2}-\d{2})\s*$")
@@ -110,7 +133,7 @@ def parse_loose_date(s: str, *, today: date | None = None) -> date:
     year_str = loose_match.group("year")
 
     if year_str is None:
-        year = (today or date.today()).year
+        year = (today or _app_today()).year
     elif len(year_str) == 2:
         year = 2000 + int(year_str)
     else:

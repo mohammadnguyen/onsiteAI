@@ -46,7 +46,6 @@ from app.services.excel_export import (
 )
 from app.services.jobs import JobNotFound
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -795,6 +794,10 @@ async def test_workbook_full_smoke(db_session, seeded_admin):
         contract_value_ex_gst=Decimal("12000.00"),
     )
     sup = await _mk_supplier(db_session, name="Bunnings")
+    # Distinct expense_dates so the export's (date, created_at, id) order is
+    # deterministic on the assertions below — both rows would otherwise tie on
+    # date AND on created_at (same transaction timestamp), leaving row order to
+    # Postgres heap order (flaky across hosts).
     await _mk_expense(
         db_session,
         job=job,
@@ -802,6 +805,7 @@ async def test_workbook_full_smoke(db_session, seeded_admin):
         amount_inc_gst=Decimal("110.00"),
         supplier=sup,
         description="bag of cement",
+        expense_date=_datetime.date.today() - _datetime.timedelta(days=1),
     )
     await _mk_expense(
         db_session,
@@ -810,6 +814,7 @@ async def test_workbook_full_smoke(db_session, seeded_admin):
         amount_inc_gst=Decimal("550.00"),
         payment_method=PaymentMethod.cash,
         description="skip bin",
+        expense_date=_datetime.date.today(),
     )
     body = await build_workbook(db_session)
     wb = _open(body)

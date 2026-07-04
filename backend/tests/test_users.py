@@ -70,7 +70,7 @@ async def test_invite_duplicate_email_409(client, admin_token, seeded_admin):
             "full_name": "Duplicate",
             "email": "admin@example.com",
             "role": "contributor",
-            "initial_password": "secret-pw",
+            "initial_password": "secret-password",
         },
     )
     assert r.status_code == 409
@@ -85,7 +85,7 @@ async def test_invite_contributor_403(client, contributor_token):
             "full_name": "Nope",
             "email": "nope@example.com",
             "role": "contributor",
-            "initial_password": "secret",
+            "initial_password": "secret-password",
         },
     )
     assert r.status_code == 403

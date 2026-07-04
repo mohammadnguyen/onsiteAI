@@ -3,8 +3,9 @@
 Two tables:
 
 * :class:`ExpenseReviewQueue` — an open/resolved/rejected queue of
-  expense rows that need admin eyes. One row per open review per
-  expense (enforced by a UNIQUE constraint on ``expense_id``). The
+  expense rows that need admin eyes. At most one OPEN row per expense
+  (enforced by a partial unique index on ``expense_id`` WHERE
+  ``status='open'``); resolved/rejected history rows may accumulate. The
   reasons the row landed in the queue are modeled as a Postgres
   ``review_reason_code[]`` array with a CHECK that the array is
   non-empty.
@@ -28,9 +29,8 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import UUID, CheckConstraint, DateTime
+from sqlalchemy import UUID, CheckConstraint, DateTime, ForeignKey, Index, Text, func, text
 from sqlalchemy import Enum as SqlaEnum
-from sqlalchemy import ForeignKey, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -116,7 +116,20 @@ class ExpenseReviewQueue(Base):
     resolved_by: Mapped["User | None"] = relationship(lazy="joined")
 
     __table_args__ = (
-        UniqueConstraint("expense_id", name="uq_expense_review_queue_expense_id"),
+        # Audit D-6 / T-2: one OPEN row per expense (matching ADR 0001's
+        # stated "one open row per expense"), NOT one row for all time. A
+        # plain UNIQUE(expense_id) made the review lifecycle a one-way dead
+        # end — once any row existed (even resolved/rejected), an expense
+        # could never be re-queued, so a future "send back to review" or a
+        # re-flag on edit would hit an IntegrityError and 500. A partial
+        # unique index preserves history (closed rows stay) while still
+        # forbidding two simultaneously-open rows.
+        Index(
+            "uq_expense_review_queue_one_open",
+            "expense_id",
+            unique=True,
+            postgresql_where=text("status = 'open'"),
+        ),
         CheckConstraint(
             "cardinality(review_reasons) > 0",
             name="ck_expense_review_queue_reasons_non_empty",

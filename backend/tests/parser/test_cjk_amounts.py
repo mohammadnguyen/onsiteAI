@@ -27,7 +27,6 @@ from app.services.parser.cjk_amounts import (
 )
 from app.services.parser.tokens import tokenize
 
-
 # ---------------------------------------------------------------------------
 # cjk_to_decimal — positive cases
 # ---------------------------------------------------------------------------

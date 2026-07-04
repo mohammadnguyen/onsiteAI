@@ -36,6 +36,10 @@ os.environ.setdefault(
 )
 os.environ.setdefault("JWT_SECRET", "test-secret-for-sitetracker-phase1-never-production")
 os.environ.setdefault("CORS_ALLOWED_ORIGINS", "https://localhost.test")
+# Disable the auth rate limiter during the suite (audit E2): many tests share
+# the same client IP + admin email and would otherwise trip a per-minute cap.
+# The focused test in test_auth_rate_limit.py re-enables it explicitly.
+os.environ.setdefault("AUTH_RATE_LIMIT_PER_MINUTE", "0")
 
 import uuid  # noqa: E402
 
@@ -88,7 +92,18 @@ async def db_session(_test_engine):
     """
     async with _test_engine.connect() as conn:
         trans = await conn.begin()
-        session = AsyncSession(bind=conn, expire_on_commit=False)
+        # Audit D-5: ``join_transaction_mode="create_savepoint"`` makes the
+        # session operate inside a SAVEPOINT of the outer transaction. A
+        # mid-test IntegrityError (duplicate key, CHECK violation) then rolls
+        # back only the savepoint, leaving the outer transaction alive for the
+        # teardown ``trans.rollback()`` — which previously warned "transaction
+        # already deassociated from connection" because the failed statement
+        # had aborted the whole DB transaction.
+        session = AsyncSession(
+            bind=conn,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
 
         async def _override_get_db():
             # Do NOT close the session here — the fixture owns its lifecycle.

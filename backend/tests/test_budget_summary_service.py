@@ -28,7 +28,6 @@ import uuid
 from decimal import Decimal
 
 import pytest
-
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
@@ -49,7 +48,6 @@ from app.services.budget_summary import (
     summarize_jobs,
 )
 from app.services.jobs import JobNotFound
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -921,7 +919,9 @@ async def test_margin_budget_delta_null_when_any_input_missing(
         target_profit_ratio_pct=None,
         total_budget_ex_gst=Decimal("188000.00"),
     )
-    assert (await summarize_job(db_session, job_a.job_id)).budget_delta_vs_target_cost_ex_gst is None
+    assert (
+        await summarize_job(db_session, job_a.job_id)
+    ).budget_delta_vs_target_cost_ex_gst is None
 
     # Missing budget
     job_b = await _mk_job(
@@ -931,7 +931,9 @@ async def test_margin_budget_delta_null_when_any_input_missing(
         target_profit_ratio_pct=Decimal("15.00"),
         total_budget_ex_gst=None,
     )
-    assert (await summarize_job(db_session, job_b.job_id)).budget_delta_vs_target_cost_ex_gst is None
+    assert (
+        await summarize_job(db_session, job_b.job_id)
+    ).budget_delta_vs_target_cost_ex_gst is None
 
     # Missing contract
     job_c = await _mk_job(
@@ -941,7 +943,9 @@ async def test_margin_budget_delta_null_when_any_input_missing(
         target_profit_ratio_pct=Decimal("15.00"),
         total_budget_ex_gst=Decimal("188000.00"),
     )
-    assert (await summarize_job(db_session, job_c.job_id)).budget_delta_vs_target_cost_ex_gst is None
+    assert (
+        await summarize_job(db_session, job_c.job_id)
+    ).budget_delta_vs_target_cost_ex_gst is None
 
 
 @pytest.mark.asyncio
@@ -1010,8 +1014,9 @@ async def _try_violation(db, **bad_kwargs):
         bad_kwargs.setdefault("status", JobStatus.active)
         # created_by must satisfy the FK; pull any user from the session.
         if "created_by" not in bad_kwargs:
-            from app.models.user import User
             from sqlalchemy import select as _sel
+
+            from app.models.user import User
             u = (await db.execute(_sel(User).limit(1))).scalar_one()
             bad_kwargs["created_by"] = u.user_id
         db.add(Job(**bad_kwargs))

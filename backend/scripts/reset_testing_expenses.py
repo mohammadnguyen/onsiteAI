@@ -49,6 +49,20 @@ async def _reset(db: AsyncSession) -> tuple[int, int, int]:
 
 
 async def _main() -> None:
+    # Audit E1: refuse to run this irreversible DELETE against anything but a
+    # development/test database. Without this guard, a misconfigured or
+    # exported DATABASE_URL (e.g. during a fly console session) would wipe
+    # every expense + its cascaded review-queue and append-only audit rows
+    # from production.
+    from app.config import get_settings
+
+    env = get_settings().app_env
+    if env not in {"development", "test"}:
+        raise SystemExit(
+            f"refusing to run destructive reset against APP_ENV={env!r}; "
+            "this script is for development/test databases only"
+        )
+
     Session = get_sessionmaker()
     try:
         async with Session() as db:

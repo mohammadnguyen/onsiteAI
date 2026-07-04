@@ -21,8 +21,6 @@ teardown). The seed function is NEVER invoked against the live DB.
 
 from __future__ import annotations
 
-from decimal import Decimal
-
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
@@ -32,7 +30,6 @@ from app.core.text import normalize_alias
 from app.models.supplier import Supplier
 from app.services.parser.suppliers import match_supplier
 from app.services.parser.tokens import tokenize
-
 
 # ---------------------------------------------------------------------------
 # Idempotency + insert behaviour

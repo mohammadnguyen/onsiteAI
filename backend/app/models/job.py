@@ -21,9 +21,8 @@ import uuid
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import UUID, CheckConstraint
+from sqlalchemy import UUID, CheckConstraint, ForeignKey, Numeric, String, UniqueConstraint, event
 from sqlalchemy import Enum as SqlaEnum
-from sqlalchemy import ForeignKey, Numeric, String, UniqueConstraint, event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.text import normalize_alias
@@ -162,6 +161,17 @@ class Job(Base, TimestampMixin):
             "warning_amber_pct < warning_red_pct",
             name="ck_jobs_warning_amber_lt_red",
         ),
+        # Audit B-4: the DB must enforce the non-negative money guards the
+        # Pydantic layer implies, so a non-Pydantic writer (SQL script,
+        # future import) cannot persist negative contract/budget money.
+        CheckConstraint(
+            "contract_value_ex_gst IS NULL OR contract_value_ex_gst >= 0",
+            name="ck_jobs_contract_value_nonneg",
+        ),
+        CheckConstraint(
+            "total_budget_ex_gst IS NULL OR total_budget_ex_gst >= 0",
+            name="ck_jobs_total_budget_nonneg",
+        ),
     )
 
 
@@ -247,6 +257,11 @@ class JobCategoryBudget(Base, TimestampMixin):
             "job_id",
             "category_id",
             name="uq_job_category_budgets_job_category",
+        ),
+        # Audit B-4: DB-level non-negative guard mirroring the Pydantic ge=0.
+        CheckConstraint(
+            "budget_amount_ex_gst >= 0",
+            name="ck_job_category_budgets_amount_nonneg",
         ),
     )
 

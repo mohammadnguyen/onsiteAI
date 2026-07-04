@@ -9,11 +9,16 @@ No DB, no network. Covers the full trigger truth-table for
 * canonical (enum-declaration) order of the output
 * payment method variation has no effect
 * the input ``ParsePartial`` is not mutated
+
+``ParsePartial`` is frozen (audit C-3), so tests build variants with the
+keyword-override helper below (``dataclasses.replace`` under the hood) rather
+than mutating a shared instance in place.
 """
 
 from __future__ import annotations
 
 import copy
+import dataclasses
 import uuid
 from dataclasses import asdict
 from decimal import Decimal
@@ -34,11 +39,14 @@ from app.services.parser.review import (
 # ---------------------------------------------------------------------------
 
 
-def _all_high_conf() -> ParsePartial:
-    """Build a :class:`ParsePartial` with every primary/secondary signal confidently
-    above threshold — baseline with zero triggers firing.
+def _all_high_conf(**overrides) -> ParsePartial:
+    """Build a :class:`ParsePartial` with every primary/secondary signal
+    confidently above threshold — baseline with zero triggers firing.
+
+    Keyword overrides replace individual fields, e.g.
+    ``_all_high_conf(amount_conf=0.79)``.
     """
-    return ParsePartial(
+    base = ParsePartial(
         raw_text="$305 Bunnings Kelly",
         amount_value=Decimal("305.00"),
         amount_conf=0.95,
@@ -57,6 +65,7 @@ def _all_high_conf() -> ParsePartial:
         duplicate_of_expense_id=None,
         source_per_field={},
     )
+    return dataclasses.replace(base, **overrides) if overrides else base
 
 
 # The canonical order the deriver emits matches
@@ -88,23 +97,19 @@ def test_all_high_confidence_returns_empty():
 
 def test_amount_conf_below_threshold():
     """``amount_conf=0.79`` < 0.8 → amount_uncertain."""
-    parts = _all_high_conf()
-    parts.amount_conf = 0.79
+    parts = _all_high_conf(amount_conf=0.79)
     assert derive_review_reasons(parts) == [ReviewReasonCode.amount_uncertain]
 
 
 def test_amount_conf_on_threshold_no_trigger():
     """``amount_conf=0.8`` is NOT less than 0.8 → no trigger (boundary)."""
-    parts = _all_high_conf()
-    parts.amount_conf = 0.8
+    parts = _all_high_conf(amount_conf=0.8)
     assert derive_review_reasons(parts) == []
 
 
 def test_amount_value_none_fires_regardless_of_conf():
     """``amount_value=None`` fires ``amount_uncertain`` even at conf=1.0."""
-    parts = _all_high_conf()
-    parts.amount_value = None
-    parts.amount_conf = 1.0
+    parts = _all_high_conf(amount_value=None, amount_conf=1.0)
     assert derive_review_reasons(parts) == [ReviewReasonCode.amount_uncertain]
 
 
@@ -115,8 +120,7 @@ def test_amount_value_none_fires_regardless_of_conf():
 
 def test_unsupported_currency_fires():
     """``unsupported_currency=True`` fires its reason and nothing else."""
-    parts = _all_high_conf()
-    parts.unsupported_currency = True
+    parts = _all_high_conf(unsupported_currency=True)
     assert derive_review_reasons(parts) == [ReviewReasonCode.unsupported_currency]
 
 
@@ -126,9 +130,7 @@ def test_unsupported_currency_and_low_amount_conf_both_fire():
     Canonical order places ``amount_uncertain`` before
     ``unsupported_currency`` per the enum declaration.
     """
-    parts = _all_high_conf()
-    parts.amount_conf = 0.3
-    parts.unsupported_currency = True
+    parts = _all_high_conf(amount_conf=0.3, unsupported_currency=True)
     assert derive_review_reasons(parts) == [
         ReviewReasonCode.amount_uncertain,
         ReviewReasonCode.unsupported_currency,
@@ -142,23 +144,19 @@ def test_unsupported_currency_and_low_amount_conf_both_fire():
 
 def test_job_conf_below_threshold():
     """``job_conf=0.69`` < 0.7 → job_uncertain."""
-    parts = _all_high_conf()
-    parts.job_conf = 0.69
+    parts = _all_high_conf(job_conf=0.69)
     assert derive_review_reasons(parts) == [ReviewReasonCode.job_uncertain]
 
 
 def test_job_conf_on_threshold_no_trigger():
     """``job_conf=0.7`` is NOT less than 0.7 → no trigger (boundary)."""
-    parts = _all_high_conf()
-    parts.job_conf = 0.7
+    parts = _all_high_conf(job_conf=0.7)
     assert derive_review_reasons(parts) == []
 
 
 def test_job_id_none_fires_regardless_of_conf():
     """``job_id=None`` fires job_uncertain regardless of conf."""
-    parts = _all_high_conf()
-    parts.job_id = None
-    parts.job_conf = 1.0
+    parts = _all_high_conf(job_id=None, job_conf=1.0)
     assert derive_review_reasons(parts) == [ReviewReasonCode.job_uncertain]
 
 
@@ -169,32 +167,27 @@ def test_job_id_none_fires_regardless_of_conf():
 
 def test_supplier_conf_low_on_supplier_expense_fires():
     """Low ``supplier_conf`` on a supplier_expense row fires."""
-    parts = _all_high_conf()
-    parts.supplier_conf = 0.69
-    parts.expense_type = ExpenseType.supplier_expense
+    parts = _all_high_conf(
+        supplier_conf=0.69, expense_type=ExpenseType.supplier_expense
+    )
     assert derive_review_reasons(parts) == [ReviewReasonCode.supplier_uncertain]
 
 
 def test_supplier_conf_low_on_labour_does_not_fire():
     """Low ``supplier_conf`` on a labour row does NOT fire (gate)."""
-    parts = _all_high_conf()
-    parts.supplier_conf = 0.69
-    parts.expense_type = ExpenseType.labour
+    parts = _all_high_conf(supplier_conf=0.69, expense_type=ExpenseType.labour)
     assert derive_review_reasons(parts) == []
 
 
 def test_supplier_conf_low_on_adjustment_does_not_fire():
     """Low ``supplier_conf`` on an adjustment row does NOT fire (gate)."""
-    parts = _all_high_conf()
-    parts.supplier_conf = 0.69
-    parts.expense_type = ExpenseType.adjustment
+    parts = _all_high_conf(supplier_conf=0.69, expense_type=ExpenseType.adjustment)
     assert derive_review_reasons(parts) == []
 
 
 def test_supplier_conf_on_threshold_no_trigger():
     """``supplier_conf=0.7`` is NOT less than 0.7 → no trigger (boundary)."""
-    parts = _all_high_conf()
-    parts.supplier_conf = 0.7
+    parts = _all_high_conf(supplier_conf=0.7)
     assert derive_review_reasons(parts) == []
 
 
@@ -205,15 +198,13 @@ def test_supplier_conf_on_threshold_no_trigger():
 
 def test_category_conf_below_threshold():
     """``category_conf=0.59`` < 0.6 → category_uncertain."""
-    parts = _all_high_conf()
-    parts.category_conf = 0.59
+    parts = _all_high_conf(category_conf=0.59)
     assert derive_review_reasons(parts) == [ReviewReasonCode.category_uncertain]
 
 
 def test_category_conf_on_threshold_no_trigger():
     """``category_conf=0.6`` is NOT less than 0.6 → no trigger (boundary)."""
-    parts = _all_high_conf()
-    parts.category_conf = 0.6
+    parts = _all_high_conf(category_conf=0.6)
     assert derive_review_reasons(parts) == []
 
 
@@ -224,8 +215,7 @@ def test_category_conf_on_threshold_no_trigger():
 
 def test_duplicate_flag_fires():
     """``duplicate_flag=True`` fires ``duplicate_suspected``."""
-    parts = _all_high_conf()
-    parts.duplicate_flag = True
+    parts = _all_high_conf(duplicate_flag=True)
     assert derive_review_reasons(parts) == [ReviewReasonCode.duplicate_suspected]
 
 
@@ -266,10 +256,7 @@ def test_three_triggers_canonical_order():
     and ``amount_uncertain`` after ``category_uncertain`` per the
     :class:`ReviewReasonCode` declaration. This test pins that order.
     """
-    parts = _all_high_conf()
-    parts.amount_conf = 0.5
-    parts.job_id = None
-    parts.category_conf = 0.2
+    parts = _all_high_conf(amount_conf=0.5, job_id=None, category_conf=0.2)
 
     assert derive_review_reasons(parts) == [
         ReviewReasonCode.job_uncertain,
@@ -289,20 +276,17 @@ def test_three_triggers_canonical_order():
 )
 def test_payment_method_does_not_drive_triggers(method: PaymentMethod):
     """No ``PaymentMethod`` variation changes the output vs. the high-conf baseline."""
-    parts = _all_high_conf()
-    parts.payment_method = method
+    parts = _all_high_conf(payment_method=method)
     assert derive_review_reasons(parts) == []
 
 
 def test_payment_method_change_does_not_add_reasons_when_others_fire():
     """Varying payment method doesn't add a reason on top of an existing trigger set."""
-    base = _all_high_conf()
-    base.amount_conf = 0.5
-    base.payment_method = PaymentMethod.cash
-    cash_reasons = derive_review_reasons(base)
+    cash = _all_high_conf(amount_conf=0.5, payment_method=PaymentMethod.cash)
+    cash_reasons = derive_review_reasons(cash)
 
-    base.payment_method = PaymentMethod.transfer
-    transfer_reasons = derive_review_reasons(base)
+    transfer = dataclasses.replace(cash, payment_method=PaymentMethod.transfer)
+    transfer_reasons = derive_review_reasons(transfer)
 
     assert cash_reasons == transfer_reasons == [ReviewReasonCode.amount_uncertain]
 
@@ -316,14 +300,10 @@ def test_derive_is_pure_and_deterministic():
     """Calling ``derive`` twice on the same ``ParsePartial`` yields equal lists,
     and the input is unchanged.
     """
-    parts = _all_high_conf()
-    parts.amount_conf = 0.5
-    parts.job_conf = 0.5
-    parts.duplicate_flag = True
+    parts = _all_high_conf(amount_conf=0.5, job_conf=0.5, duplicate_flag=True)
 
-    # Deep-copy the underlying state (``ParsePartial`` is a mutable
-    # dataclass; the purity assertion is that ``derive`` does not
-    # alter any field on the passed instance).
+    # ``ParsePartial`` is frozen; the purity assertion is that ``derive``
+    # returns equal lists and reads (never writes) the passed instance.
     before = copy.deepcopy(asdict(parts))
 
     r1 = derive_review_reasons(parts)
@@ -335,8 +315,7 @@ def test_derive_is_pure_and_deterministic():
 
 def test_returned_list_is_fresh_instance():
     """Each call returns a new list — callers can mutate it freely."""
-    parts = _all_high_conf()
-    parts.amount_conf = 0.5
+    parts = _all_high_conf(amount_conf=0.5)
     r1 = derive_review_reasons(parts)
     r2 = derive_review_reasons(parts)
     assert r1 is not r2
@@ -346,11 +325,9 @@ def test_returned_list_is_fresh_instance():
 
 def test_returned_list_elements_are_enum_members():
     """Every element of the result is a :class:`ReviewReasonCode` enum (not a string)."""
-    parts = _all_high_conf()
-    parts.amount_conf = 0.5
-    parts.job_id = None
-    parts.duplicate_flag = True
-    parts.unsupported_currency = True
+    parts = _all_high_conf(
+        amount_conf=0.5, job_id=None, duplicate_flag=True, unsupported_currency=True
+    )
 
     for reason in derive_review_reasons(parts):
         assert isinstance(reason, ReviewReasonCode)
@@ -367,22 +344,22 @@ def test_money_enrichment_partition_is_total_and_disjoint():
     Guards A1b routing against a future reason code being added without
     being classified as money-integrity or enrichment.
     """
-    assert MONEY_INTEGRITY_REASONS | ENRICHMENT_REASONS == set(ReviewReasonCode)
-    assert MONEY_INTEGRITY_REASONS & ENRICHMENT_REASONS == set()
+    assert set(ReviewReasonCode) == MONEY_INTEGRITY_REASONS | ENRICHMENT_REASONS
+    assert set() == MONEY_INTEGRITY_REASONS & ENRICHMENT_REASONS
 
 
 def test_money_integrity_membership():
     """The four amount/job-affecting reasons gate; the two label reasons do not."""
-    assert MONEY_INTEGRITY_REASONS == {
+    assert {
         ReviewReasonCode.amount_uncertain,
         ReviewReasonCode.job_uncertain,
         ReviewReasonCode.duplicate_suspected,
         ReviewReasonCode.unsupported_currency,
-    }
-    assert ENRICHMENT_REASONS == {
+    } == MONEY_INTEGRITY_REASONS
+    assert {
         ReviewReasonCode.supplier_uncertain,
         ReviewReasonCode.category_uncertain,
-    }
+    } == ENRICHMENT_REASONS
 
 
 def test_gating_reasons_filters_enrichment_and_preserves_order():

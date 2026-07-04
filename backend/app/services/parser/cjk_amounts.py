@@ -55,6 +55,7 @@ review via the existing ``amount_uncertain`` reason.
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 
 from app.services.parser.tokens import Token
@@ -179,6 +180,13 @@ def _parse_sub_wan(text: str) -> int | None:
                 pending_digit = digit
         elif ch in _CJK_SUB_WAN_PLACES:
             place = _CJK_SUB_WAN_PLACES[ch]
+            if last_place is not None and place >= last_place:
+                # A place marker must be strictly smaller than the previous
+                # one. A repeated or ascending place (``十十``, ``千千``,
+                # ``十百``) is malformed grammar — reject rather than
+                # silently accumulate a plausible-looking value that would
+                # then skip the review queue at high confidence (audit C-1).
+                return None
             if pending_digit is None:
                 # Bare ``十`` / ``百`` / ``千`` — implicit leading 1.
                 # ``十二`` → 1*10 + 2 = 12; ``十`` → 10; ``百`` → 100.
@@ -212,6 +220,56 @@ def _parse_sub_wan(text: str) -> int | None:
             accumulator += pending_digit * shift_place
 
     return accumulator
+
+
+# Mixed Arabic-digit + CJK forms (audit C-2): the common bilingual way an
+# operator types an amount — an Arabic number with a Chinese magnitude/suffix.
+# Only fires as a FALLBACK when the pure-CJK parser returns None, and (on the
+# no-suffix path) only when a CJK magnitude marker is present, so pure-Arabic
+# tokens keep their existing (numeric-like) handling untouched.
+_MIXED_MAGNITUDES: dict[str, int] = {"万": 10000, "千": 1000, "百": 100, "十": 10}
+_MIXED_ARABIC_MAG_RE = re.compile(r"^(\d+)([万千百十])$")
+_MIXED_ARABIC_WAN_TAIL_RE = re.compile(r"^(\d+)万(\d+)([千百十])?$")
+
+
+def _parse_mixed_amount(text: str) -> Decimal | None:
+    """Parse a mixed Arabic+CJK amount (``100``, ``5千``, ``3万5``, ``10万5千``).
+
+    Returns ``None`` for anything not in the small, unambiguous set below —
+    ambiguous multi-digit tails (``3万50``) fall through to ``None`` so they
+    stay routed to review rather than guessed.
+    """
+    if text.isdigit():
+        value = int(text)
+        return Decimal(value) if 1 <= value <= _MAX_CJK_VALUE else None
+
+    m = _MIXED_ARABIC_MAG_RE.match(text)
+    if m:
+        value = int(m.group(1)) * _MIXED_MAGNITUDES[m.group(2)]
+        return Decimal(value) if 1 <= value <= _MAX_CJK_VALUE else None
+
+    m = _MIXED_ARABIC_WAN_TAIL_RE.match(text)
+    if m:
+        high = int(m.group(1))
+        low = int(m.group(2))
+        tail_mag = m.group(3)
+        if tail_mag is not None:
+            low_value = low * _MIXED_MAGNITUDES[tail_mag]
+        elif low <= 9:
+            # A bare single trailing digit shifts one place below 万 (千).
+            # ``3万5`` → 30000 + 5*1000 = 35000.
+            low_value = low * 1000
+        else:
+            # Ambiguous multi-digit tail with no magnitude — do not guess.
+            return None
+        value = high * 10000 + low_value
+        return Decimal(value) if 1 <= value <= _MAX_CJK_VALUE else None
+
+    return None
+
+
+def _has_cjk_magnitude(text: str) -> bool:
+    return any(ch in _CJK_SUB_WAN_PLACES or ch == _WAN for ch in text)
 
 
 def _parse_cjk_numeral(text: str) -> Decimal | None:
@@ -267,6 +325,12 @@ def _parse_cjk_numeral(text: str) -> Decimal | None:
         # bare digit (``三万二`` → 30000 + 2*1000 = 32000).
         if not low_text:
             low_value = 0
+        elif low_text[0] in _CJK_SUB_WAN_PLACES:
+            # A low part that starts with a bare place marker (``一万千``,
+            # ``三万千``) is malformed — a valid remainder after ``万``
+            # begins with a digit (``三万五千``) or the ``零`` skip
+            # (``一万零五百``). Reject rather than silently accept (C-1).
+            return None
         else:
             sub = _parse_sub_wan(low_text)
             if sub is None:
@@ -335,11 +399,20 @@ def cjk_to_decimal(text: str) -> tuple[Decimal | None, bool]:
         # because no place marker is present.
         value = _parse_cjk_numeral(stripped)
         if value is None:
+            # C-2 fallback: mixed Arabic+CJK or Arabic-only with a money
+            # suffix (``100元`` → 100, ``3万5块`` → 35000).
+            value = _parse_mixed_amount(stripped)
+        if value is None:
             return None, False
         return value, True
 
     # No suffix path — gate 2 enforces "must have place marker".
     value = _parse_cjk_numeral(stripped)
+    if value is None and _has_cjk_magnitude(stripped):
+        # C-2 fallback for mixed Arabic+CJK magnitudes (``5千`` → 5000,
+        # ``3万5`` → 35000). Gated on a CJK magnitude char so pure-Arabic
+        # tokens keep their existing numeric-like handling.
+        value = _parse_mixed_amount(stripped)
     if value is None:
         return None, False
     return value, False

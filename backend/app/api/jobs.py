@@ -17,6 +17,7 @@ Auth policy:
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import TypeVar
 
@@ -63,6 +64,19 @@ from app.services.jobs import (
 )
 
 router = APIRouter(tags=["jobs"])
+
+# Audit E4: raw driver error text (column/constraint names, row-value
+# fragments) must not cross the API boundary. Log it server-side; return a
+# generic 422 to the client.
+_errlog = logging.getLogger("app.errors")
+
+
+def _constraint_violation(exc: IntegrityError) -> HTTPException:
+    _errlog.warning("job_constraint_violation orig=%s", exc.orig)
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail="Request violates a data constraint",
+    )
 
 
 _JobPublicT = TypeVar("_JobPublicT", bound=JobPublic)
@@ -147,10 +161,7 @@ async def create_job_endpoint(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Job code already exists",
             ) from exc
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Database constraint violated: {exc.orig}",
-        ) from exc
+        raise _constraint_violation(exc) from exc
 
 
 @router.get(
@@ -304,10 +315,7 @@ async def update_job_endpoint(
         # lifecycle handles via ``get_db``). Calling rollback
         # explicitly collides with the test fixture's outer transaction
         # wrapper and surfaces a confusing SAWarning.
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Database constraint violated: {exc.orig}",
-        ) from exc
+        raise _constraint_violation(exc) from exc
 
 
 @router.delete(

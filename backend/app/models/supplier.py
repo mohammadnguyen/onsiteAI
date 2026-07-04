@@ -29,9 +29,8 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import UUID, Boolean
+from sqlalchemy import UUID, Boolean, ForeignKey, String, UniqueConstraint, event
 from sqlalchemy import Enum as SqlaEnum
-from sqlalchemy import ForeignKey, String, UniqueConstraint, event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.text import normalize_alias

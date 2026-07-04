@@ -49,9 +49,8 @@ async def raw_client():
 
 @pytest.mark.asyncio
 async def test_unhandled_exception_logs_method_path_and_type(raw_client, caplog):
-    with caplog.at_level(logging.ERROR, logger="app.errors"):
-        with pytest.raises(RuntimeError):
-            await raw_client.get("/_test/boom?reason=SENSITIVE_QUERY_VALUE")
+    with caplog.at_level(logging.ERROR, logger="app.errors"), pytest.raises(RuntimeError):
+        await raw_client.get("/_test/boom?reason=SENSITIVE_QUERY_VALUE")
 
     records = [r for r in caplog.records if r.name == "app.errors"]
     assert len(records) == 1
@@ -67,11 +66,10 @@ async def test_unhandled_exception_logs_method_path_and_type(raw_client, caplog)
 
 @pytest.mark.asyncio
 async def test_request_body_never_logged(raw_client, caplog):
-    with caplog.at_level(logging.ERROR, logger="app.errors"):
-        with pytest.raises(RuntimeError):
-            await raw_client.post(
-                "/_test/boom-post", json={"note": "SENSITIVE_BODY_VALUE"}
-            )
+    with caplog.at_level(logging.ERROR, logger="app.errors"), pytest.raises(RuntimeError):
+        await raw_client.post(
+            "/_test/boom-post", json={"note": "SENSITIVE_BODY_VALUE"}
+        )
 
     assert any(r.name == "app.errors" for r in caplog.records)
     # Privacy: request bodies must never appear in the log output.

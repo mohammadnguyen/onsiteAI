@@ -24,7 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.core.security import hash_password
+from app.core.security import hash_password_async
 from app.models.user import LanguageCode, User, UserRole
 
 
@@ -59,8 +59,27 @@ class LastAdminProtected(Exception):
         super().__init__("Cannot deactivate or demote the last active admin")
 
 
-async def _count_active_admins(db: AsyncSession) -> int:
-    """Count users that are currently active admins (role=admin AND is_active)."""
+async def _count_active_admins(db: AsyncSession, *, for_update: bool = False) -> int:
+    """Count users that are currently active admins (role=admin AND is_active).
+
+    With ``for_update=True`` the active-admin rows are locked
+    (``SELECT ... FOR UPDATE``) so a concurrent invite / demotion /
+    deactivation serialises against this transaction instead of both reading
+    the same stale count and both proceeding — the read-then-write race that
+    could otherwise drop the system to zero admins or exceed the cap (audit
+    A-1 / D-3). A plain aggregate ``COUNT`` cannot be row-locked, so the
+    locking path selects the ids (ordered, for a stable lock acquisition
+    order that avoids deadlocks between two concurrent demotions) and counts
+    them in Python.
+    """
+    if for_update:
+        stmt = (
+            select(User.user_id)
+            .where(User.role == UserRole.admin, User.is_active.is_(True))
+            .order_by(User.user_id)
+            .with_for_update()
+        )
+        return len((await db.execute(stmt)).scalars().all())
     stmt = (
         select(func.count())
         .select_from(User)
@@ -98,13 +117,13 @@ async def invite_user(
         raise DuplicateEmail(email)
     if role == UserRole.admin:
         limit = get_settings().max_active_admins
-        if await _count_active_admins(db) >= limit:
+        if await _count_active_admins(db, for_update=True) >= limit:
             raise AdminLimitReached(limit)
     user = User(
         user_id=uuid.uuid4(),
         full_name=full_name,
         email=email,
-        password_hash=hash_password(initial_password),
+        password_hash=await hash_password_async(initial_password),
         role=role,
         language_preference=language_preference,
         is_active=True,
@@ -152,12 +171,14 @@ async def update_user(
     if new_active_admin and not old_active_admin:
         # Joining the active-admin set (promotion or reactivation).
         limit = get_settings().max_active_admins
-        if await _count_active_admins(db) >= limit:
+        if await _count_active_admins(db, for_update=True) >= limit:
             raise AdminLimitReached(limit)
     elif old_active_admin and not new_active_admin:
         # Leaving the active-admin set (demotion or deactivation). The
         # target is still counted, so a count of 1 means it is the last.
-        if await _count_active_admins(db) <= 1:
+        # FOR UPDATE serialises two concurrent demotions so they cannot both
+        # observe count==2 and both proceed to zero admins (audit A-1).
+        if await _count_active_admins(db, for_update=True) <= 1:
             raise LastAdminProtected()
 
     for k, v in fields.items():

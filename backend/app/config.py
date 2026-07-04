@@ -164,6 +164,14 @@ class Settings(BaseSettings):
     # The app is single-tenant, so this is a global cap.
     max_active_admins: int = 3
 
+    # Audit E2: per-minute cap on auth attempts, keyed on (client IP, email)
+    # for login and on client IP for refresh. 0 disables the limiter (the
+    # test suite sets 0 so shared-client login flows stay deterministic; a
+    # focused test re-enables it). The default throttles online password
+    # brute-force against the public login endpoint without a datastore —
+    # the app is single-node so an in-process counter is sufficient for V1.
+    auth_rate_limit_per_minute: int = 10
+
     # Comma-separated list of allowed origins. Example value:
     #   CORS_ALLOWED_ORIGINS=https://admin.example.com,https://app.example.com
     # ``NoDecode`` tells pydantic-settings not to JSON-decode the env-var

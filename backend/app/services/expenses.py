@@ -67,7 +67,7 @@ from app.models import (
     User,
     UserRole,
 )
-from app.models.expense import compute_gst_split
+from app.models.expense import GstSplitError, reconcile_gst_split
 from app.schemas.expense import (
     ExpenseCreate,
     ExpenseUpdate,
@@ -248,17 +248,16 @@ def _compute_gst_split(
     return consistent values in the wire response without waiting for
     a ``db.refresh`` round trip.
 
-    The payment-method-aware rule lives in
-    :func:`app.models.expense.compute_gst_split`; this wrapper only
-    honors structured overrides (caller-supplied ex or gst figures).
+    The payment-method-aware rule and the ``inc = ex + gst`` invariant live
+    in :func:`app.models.expense.reconcile_gst_split`; this thin wrapper only
+    maps its :class:`GstSplitError` onto the service's
+    :class:`ExpenseValidationError` so an inconsistent caller-supplied triple
+    (audit B-1) surfaces as a 422, not a 500.
     """
-    if amount_ex is None and gst is None:
-        return compute_gst_split(amount_inc, payment_method)
-    if amount_ex is None:
-        return amount_inc - gst, gst  # type: ignore[operator]
-    if gst is None:
-        return amount_ex, amount_inc - amount_ex
-    return amount_ex, gst
+    try:
+        return reconcile_gst_split(amount_inc, amount_ex, gst, payment_method)
+    except GstSplitError as exc:
+        raise ExpenseValidationError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +492,12 @@ def _validate_save(
         raise ExpenseValidationError(
             f"Amount exceeds maximum (${_MAX_AMOUNT_INC_GST:,.0f})"
         )
+    # C-6: reject sub-cent precision on both the structured and parser-driven
+    # paths. amount_inc_gst is stored in NUMERIC(12,2), so a 3+-decimal value
+    # (``$305.999``) would otherwise be silently rounded on insert with no
+    # review flag — the stored figure would differ from what the user typed.
+    if amount_inc_gst.as_tuple().exponent < -2:
+        raise ExpenseValidationError("Amount cannot have more than 2 decimal places")
     if job_id is None:
         raise ExpenseValidationError("Job is required")
 
@@ -899,18 +904,26 @@ async def get_expense_with_reasons(
         visibility on this — stale resolved/rejected queue rows must
         NOT surface as actionable.
 
-    The unique constraint on ``expense_review_queue.expense_id``
-    guarantees at most one row per expense, so a single SELECT
-    returning ``(review_id, status, reasons)`` is sufficient and
-    avoids a second round-trip.
+    Since the one-open-row constraint is now a partial unique index
+    (audit D-6/T-2), an expense may have at most one OPEN row but could
+    accumulate closed (resolved/rejected) history rows in future flows.
+    The query therefore orders the OPEN row first (then most-recent) and
+    takes one, so the actionable row is preferred over stale history.
     """
     expense = await get_expense(db, current_user=current_user, expense_id=expense_id)
 
-    queue_stmt = select(
-        ExpenseReviewQueue.review_id,
-        ExpenseReviewQueue.status,
-        ExpenseReviewQueue.review_reasons,
-    ).where(ExpenseReviewQueue.expense_id == expense_id)
+    queue_stmt = (
+        select(
+            ExpenseReviewQueue.review_id,
+            ExpenseReviewQueue.status,
+            ExpenseReviewQueue.review_reasons,
+        )
+        .where(ExpenseReviewQueue.expense_id == expense_id)
+        .order_by(
+            (ExpenseReviewQueue.status == ReviewQueueStatus.open).desc(),
+            ExpenseReviewQueue.opened_at.desc(),
+        )
+    )
     row = (await db.execute(queue_stmt)).first()
     if row is None:
         return expense, [], None
@@ -1110,20 +1123,22 @@ async def update_expense(
         if field in patch_set:
             setattr(expense, field, getattr(patch, field))
 
-    # Recompute the split whenever amount_inc_gst OR payment_method
-    # changed AND neither split component was explicitly set in the
-    # patch. payment_method matters because `cash` uses a different
-    # rule (GST-exclusive) than other methods — flipping between them
-    # would otherwise leave the stored split inconsistent with the
-    # rule documented on :func:`compute_gst_split`.
-    if (
-        ("amount_inc_gst" in patch_set or "payment_method" in patch_set)
-        and "amount_ex_gst" not in patch_set
-        and "gst_amount" not in patch_set
-    ):
-        ex, gst = compute_gst_split(expense.amount_inc_gst, expense.payment_method)
-        expense.amount_ex_gst = ex
-        expense.gst_amount = gst
+    # Re-reconcile the GST split whenever ANY money field moves (audit B-2).
+    # A lone-component patch (only gst_amount, or only amount_ex_gst) must
+    # re-derive its sibling so the triple stays consistent; a supplied pair
+    # is validated; cash is forced GST-exclusive. Passing the patched value
+    # (or None to re-derive) preserves the legitimate structured-override
+    # case while making an inconsistent triple impossible.
+    money_fields = {"amount_inc_gst", "payment_method", "amount_ex_gst", "gst_amount"}
+    if patch_set & money_fields:
+        ex_override = expense.amount_ex_gst if "amount_ex_gst" in patch_set else None
+        gst_override = expense.gst_amount if "gst_amount" in patch_set else None
+        expense.amount_ex_gst, expense.gst_amount = _compute_gst_split(
+            expense.amount_inc_gst,
+            ex_override,
+            gst_override,
+            expense.payment_method,
+        )
 
     # Re-validate the post-update expense state.
     _validate_save(

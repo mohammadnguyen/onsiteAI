@@ -34,6 +34,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import anyio
 import jwt
 from passlib.handlers import bcrypt as _passlib_bcrypt
 
@@ -57,6 +58,23 @@ def hash_password(pw: str) -> str:
 def verify_password(pw: str, h: str) -> bool:
     """Return ``True`` iff ``pw`` matches the hash ``h``."""
     return _pwd.verify(pw, h)
+
+
+async def hash_password_async(pw: str) -> str:
+    """Async :func:`hash_password` — runs the CPU-bound bcrypt hash in a worker
+    thread so it never blocks the single asyncio event loop (audit D-1).
+
+    Use this from ``async def`` request handlers/services (login, invite).
+    The sync :func:`hash_password` remains for scripts, tests, and other
+    synchronous contexts.
+    """
+    return await anyio.to_thread.run_sync(hash_password, pw)
+
+
+async def verify_password_async(pw: str, h: str) -> bool:
+    """Async :func:`verify_password` — runs the CPU-bound bcrypt verify off the
+    event loop in a worker thread (audit D-1)."""
+    return await anyio.to_thread.run_sync(verify_password, pw, h)
 
 
 def _encode(data: dict[str, Any], *, kind: str, delta: timedelta) -> str:

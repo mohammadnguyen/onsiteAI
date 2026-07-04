@@ -56,9 +56,19 @@ from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import UUID, Boolean, Date, Index, Numeric, Text
+from sqlalchemy import (
+    UUID,
+    Boolean,
+    CheckConstraint,
+    Date,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    Text,
+    event,
+)
 from sqlalchemy import Enum as SqlaEnum
-from sqlalchemy import ForeignKey, String, event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -217,6 +227,19 @@ class Expense(Base, TimestampMixin):
     )
 
     __table_args__ = (
+        # Money-integrity backstop (audit T-1 / B-4): the GST triple must
+        # reconcile and no money column may go negative, regardless of which
+        # code path wrote the row. Every service reconciler feeds these; the
+        # CHECKs make a violation an IntegrityError (mapped to 422) instead
+        # of silent corruption of job rollups / accountant totals.
+        CheckConstraint(
+            "amount_ex_gst + gst_amount = amount_inc_gst",
+            name="ck_expenses_gst_components_sum",
+        ),
+        CheckConstraint(
+            "amount_inc_gst >= 0 AND amount_ex_gst >= 0 AND gst_amount >= 0",
+            name="ck_expenses_amounts_nonneg",
+        ),
         # Common access pattern: list expenses for a job, newest first.
         Index(
             "ix_expenses_job_id_expense_date",
@@ -273,10 +296,87 @@ def compute_gst_split(
     return ex, amount_inc_gst - ex
 
 
+class GstSplitError(ValueError):
+    """A supplied ``(ex, gst)`` pair does not reconcile to the inclusive total.
+
+    A :class:`ValueError` subclass so the HTTP layer's ``ValueError -> 422``
+    mapping surfaces it as a client validation error, never a 500.
+    """
+
+    def __init__(self, amount_inc: Decimal, amount_ex: Decimal, gst: Decimal):
+        self.amount_inc = amount_inc
+        self.amount_ex = amount_ex
+        self.gst = gst
+        super().__init__(
+            f"amount_ex_gst + gst_amount ({amount_ex} + {gst}) "
+            f"must equal amount_inc_gst ({amount_inc})"
+        )
+
+
+def _payment_is_cash(payment_method: "PaymentMethod | str | None") -> bool:
+    pm = (
+        payment_method.value
+        if isinstance(payment_method, PaymentMethod)
+        else (payment_method or "")
+    )
+    return pm == PaymentMethod.cash.value
+
+
+def reconcile_gst_split(
+    amount_inc_gst: Decimal,
+    amount_ex_gst: Decimal | None,
+    gst_amount: Decimal | None,
+    payment_method: "PaymentMethod | str | None",
+) -> tuple[Decimal, Decimal]:
+    """Return a CONSISTENT ``(amount_ex_gst, gst_amount)`` honouring overrides.
+
+    The single authoritative reconciler for the ``inc = ex + gst`` invariant.
+    Every service write path (create, PATCH, review-resolve) calls this so the
+    split can neither drift nor persist inconsistent (audit findings
+    B-1/B-2/B-3/X-1/X-2/T-1). The DB ``ck_expenses_gst_components_sum`` CHECK
+    is the final backstop behind it.
+
+    Rules, in priority order:
+
+    * ``cash`` → always GST-exclusive ``(inc, 0.00)``, overriding any supplied
+      component (ADR 0001: a cash row can never carry GST).
+    * neither component supplied → the standard payment-aware split.
+    * exactly one component supplied → derive its sibling from the inclusive
+      total (so the pair always sums to ``inc``).
+    * both supplied → validate they sum to ``inc``; if not, raise
+      :class:`GstSplitError`.
+    """
+    if _payment_is_cash(payment_method):
+        return compute_gst_split(amount_inc_gst, payment_method)
+    if amount_ex_gst is None and gst_amount is None:
+        return compute_gst_split(amount_inc_gst, payment_method)
+    if amount_ex_gst is None:
+        return amount_inc_gst - gst_amount, gst_amount
+    if gst_amount is None:
+        return amount_ex_gst, amount_inc_gst - amount_ex_gst
+    if amount_ex_gst + gst_amount != amount_inc_gst:
+        raise GstSplitError(amount_inc_gst, amount_ex_gst, gst_amount)
+    return amount_ex_gst, gst_amount
+
+
 def _compute_gst_split(mapper, connection, target: Expense) -> None:
+    """ORM safety-net: fill/normalise the GST split before flush.
+
+    Primary enforcement is the service-layer :func:`reconcile_gst_split`;
+    this listener is defence-in-depth for any direct-model write. It never
+    raises (a flush-time raise can't map cleanly to 422) — the DB CHECK
+    catches a genuinely inconsistent both-supplied triple instead.
+    """
     if target.amount_inc_gst is None:
         return
     inc = target.amount_inc_gst
+    # Cash is always GST-exclusive — force it regardless of any supplied
+    # component so a cash row can never persist a phantom GST (B-3).
+    if _payment_is_cash(target.payment_method):
+        ex, gst = compute_gst_split(inc, target.payment_method)
+        target.amount_ex_gst = ex
+        target.gst_amount = gst
+        return
     if target.amount_ex_gst is None and target.gst_amount is None:
         ex, gst = compute_gst_split(inc, target.payment_method)
         target.amount_ex_gst = ex

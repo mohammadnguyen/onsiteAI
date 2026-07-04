@@ -41,11 +41,11 @@ routed through :func:`_safe_excel_text`.
 
 from __future__ import annotations
 
+import datetime as _datetime
 import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-import datetime as _datetime
 from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
@@ -343,7 +343,16 @@ async def _fetch_expenses(
             # supplier, category, entered_by are lazy="joined" on the model.
         )
         .where(Expense.review_status.in_(statuses))
-        .order_by(Expense.expense_date.asc(), Expense.created_at.asc())
+        # Total order for a REPRODUCIBLE export: expense_date + created_at can
+        # tie (multiple same-day captures share the transaction timestamp), so
+        # add expense_id as a final tiebreak — otherwise row order falls to
+        # Postgres heap order and the same export can differ run-to-run /
+        # host-to-host.
+        .order_by(
+            Expense.expense_date.asc(),
+            Expense.created_at.asc(),
+            Expense.expense_id.asc(),
+        )
     )
     if from_date is not None:
         q = q.where(Expense.expense_date >= from_date)
@@ -367,7 +376,7 @@ def _to_naive_utc(dt: datetime | None) -> datetime | None:
         return None
     if dt.tzinfo is None:
         return dt
-    return dt.astimezone(tz=_datetime.timezone.utc).replace(tzinfo=None)
+    return dt.astimezone(tz=_datetime.UTC).replace(tzinfo=None)
 
 
 def _row_for_expense(
@@ -547,7 +556,8 @@ async def _build_job_sheet(
     italic_muted = Font(italic=True, color="606060")
 
     # Row 1: title
-    ws.cell(row=1, column=1, value=_safe_excel_text(f"Job: {job.job_name}")).font = Font(bold=True, size=14)
+    _title_cell = ws.cell(row=1, column=1, value=_safe_excel_text(f"Job: {job.job_name}"))
+    _title_cell.font = Font(bold=True, size=14)
     # Row 2: code + site
     code = job.job_code or "—"
     site = job.site_address or "—"

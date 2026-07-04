@@ -16,7 +16,6 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.models import (
