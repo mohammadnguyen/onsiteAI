@@ -23,17 +23,23 @@ import pytest
 from pydantic import ValidationError
 
 from app.models import (
+    AttachmentUploadStatus,
     IssueSeverity,
     IssueStatus,
+    JobChecklistItem,
+    TimelineAttachment,
     TimelineItem,
     TimelineItemType,
 )
 from app.schemas.timeline import (
     AttachmentConfirm,
+    AttachmentPublic,
     AttachmentUploadRequest,
+    ChecklistItemPublic,
     ChecklistToggle,
     IssueStatusUpdate,
     TimelineItemCreate,
+    TimelineItemDetailPublic,
     TimelineItemListResponse,
     TimelineItemPublic,
     TimelineItemUpdate,
@@ -77,6 +83,16 @@ def test_confirm_requires_positive_byte_size():
     assert AttachmentConfirm(byte_size=1).width is None
 
 
+def test_confirm_rejects_values_beyond_int32_columns():
+    # The columns are 32-bit Integer; overflow must 422 at the edge,
+    # not error at the DB.
+    with pytest.raises(ValidationError):
+        AttachmentConfirm(byte_size=2**31)
+    with pytest.raises(ValidationError):
+        AttachmentConfirm(byte_size=1, width=2**31)
+    assert AttachmentConfirm(byte_size=2**31 - 1).byte_size == 2**31 - 1
+
+
 # --------------------------------------------------------------------------- #
 # Issue conditional contract                                                  #
 # --------------------------------------------------------------------------- #
@@ -104,6 +120,18 @@ def test_issue_explicit_status_kept():
         occurred_at=_OCCURRED,
     )
     assert item.status is IssueStatus.resolved
+
+
+def test_issue_cannot_be_created_closed():
+    # closed is the admin verification *transition* (resolved -> closed);
+    # a born-closed issue would bypass that gate entirely.
+    with pytest.raises(ValidationError, match="cannot be created closed"):
+        TimelineItemCreate(
+            item_type=TimelineItemType.issue,
+            title="Leaking pipe",
+            status=IssueStatus.closed,
+            occurred_at=_OCCURRED,
+        )
 
 
 @pytest.mark.parametrize(
@@ -160,6 +188,49 @@ def test_update_has_no_item_type_or_status_fields():
 def test_update_rejects_empty_title():
     with pytest.raises(ValidationError):
         TimelineItemUpdate(title="")
+
+
+@pytest.mark.parametrize("field", ["occurred_at", "requires_evidence"])
+def test_update_rejects_explicit_null_on_not_null_columns(field):
+    # Omitted = untouched (fine); explicit null on a NOT NULL column can
+    # only ever become an IntegrityError 500 downstream -> 422 here.
+    with pytest.raises(ValidationError, match="cannot be set to null"):
+        TimelineItemUpdate(**{field: None})
+    # The same fields omitted entirely are fine.
+    assert TimelineItemUpdate().model_dump(exclude_unset=True) == {}
+
+
+# --------------------------------------------------------------------------- #
+# Aware-datetime enforcement (occurred_at is the timeline sort key)           #
+# --------------------------------------------------------------------------- #
+_NAIVE = datetime(2026, 7, 6, 9, 0)  # no tzinfo
+
+
+def test_create_rejects_naive_occurred_at():
+    with pytest.raises(ValidationError):
+        TimelineItemCreate(
+            item_type=TimelineItemType.daily_note, occurred_at=_NAIVE
+        )
+
+
+def test_update_rejects_naive_occurred_at():
+    with pytest.raises(ValidationError):
+        TimelineItemUpdate(occurred_at=_NAIVE)
+
+
+def test_upload_request_rejects_naive_taken_at():
+    with pytest.raises(ValidationError):
+        AttachmentUploadRequest(
+            filename="f", content_type="image/jpeg", taken_at=_NAIVE
+        )
+
+
+def test_aware_datetimes_accepted():
+    item = TimelineItemCreate(
+        item_type=TimelineItemType.daily_note,
+        occurred_at="2026-07-06T09:00:00+10:00",
+    )
+    assert item.occurred_at.utcoffset() is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -258,6 +329,85 @@ def test_public_from_orm_instance():
     assert pub.item_type is TimelineItemType.issue
     assert pub.status is IssueStatus.open
     assert pub.severity is IssueSeverity.high
+    # Not a column: from_attributes falls back to the default when the
+    # source object lacks the attribute. The list service overrides it.
+    assert pub.attachment_count == 0
+
+
+def _orm_attachment(item_id: uuid.UUID) -> TimelineAttachment:
+    return TimelineAttachment(
+        attachment_id=uuid.uuid4(),
+        timeline_item_id=item_id,
+        storage_key="jobs/kelly/abc.jpg",
+        content_type="image/jpeg",
+        byte_size=384_000,
+        width=1600,
+        height=1200,
+        taken_at=_OCCURRED,
+        gps_lat=-33.8688,
+        gps_lng=151.2093,
+        upload_status=AttachmentUploadStatus.confirmed,
+        created_by=uuid.uuid4(),
+        created_at=_OCCURRED,
+    )
+
+
+def test_attachment_public_from_orm_instance():
+    """Every AttachmentPublic field maps off the ORM row; download_url
+    (not a column) falls back to its None default."""
+    orm = _orm_attachment(uuid.uuid4())
+    pub = AttachmentPublic.model_validate(orm)
+    assert pub.attachment_id == orm.attachment_id
+    assert pub.storage_key == "jobs/kelly/abc.jpg"
+    assert pub.upload_status is AttachmentUploadStatus.confirmed
+    assert pub.gps_lat == pytest.approx(-33.8688)
+    assert pub.download_url is None
+
+
+def test_checklist_item_public_from_orm_instance():
+    orm = JobChecklistItem(
+        checklist_item_id=uuid.uuid4(),
+        job_id=uuid.uuid4(),
+        label="flood test",
+        phase="Waterproofing",
+        sort_order=3,
+        is_done=True,
+        done_at=_OCCURRED,
+        done_by=uuid.uuid4(),
+        requires_evidence=False,
+        created_at=_OCCURRED,
+    )
+    pub = ChecklistItemPublic.model_validate(orm)
+    assert pub.label == "flood test"
+    assert pub.phase == "Waterproofing"
+    assert pub.sort_order == 3
+    assert pub.is_done is True
+
+
+def test_detail_public_with_nested_attachments():
+    item_id = uuid.uuid4()
+    orm = TimelineItem(
+        timeline_item_id=item_id,
+        job_id=uuid.uuid4(),
+        item_type=TimelineItemType.photo,
+        title=None,
+        body=None,
+        status=None,
+        severity=None,
+        checklist_item_id=None,
+        assigned_user_id=None,
+        requires_evidence=False,
+        occurred_at=_OCCURRED,
+        created_by=uuid.uuid4(),
+        created_at=_OCCURRED,
+        updated_at=_OCCURRED,
+    )
+    # Transient instance: assigning the collection needs no DB session
+    # (mirrors what the detail service produces via selectinload).
+    orm.attachments = [_orm_attachment(item_id)]
+    detail = TimelineItemDetailPublic.model_validate(orm)
+    assert len(detail.attachments) == 1
+    assert detail.attachments[0].timeline_item_id == item_id
 
 
 def test_list_response_shape():
