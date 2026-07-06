@@ -24,19 +24,33 @@ from app.models.review_queue import (
     ReviewReasonCode,
 )
 from app.models.supplier import Supplier, SupplierAlias
+from app.models.timeline import (
+    AttachmentUploadStatus,
+    IssueSeverity,
+    IssueStatus,
+    JobChecklistItem,
+    TimelineAttachment,
+    TimelineAuditLog,
+    TimelineItem,
+    TimelineItemType,
+)
 from app.models.user import LanguageCode, User, UserRole
 
 __all__ = [
+    "AttachmentUploadStatus",
     "Base",
     "Category",
     "Expense",
     "ExpenseAuditLog",
     "ExpenseReviewQueue",
     "ExpenseType",
+    "IssueSeverity",
+    "IssueStatus",
     "Job",
     "JobAlias",
     "JobAuditLog",
     "JobCategoryBudget",
+    "JobChecklistItem",
     "JobStatus",
     "LabourEntry",
     "LanguageCode",
@@ -47,6 +61,10 @@ __all__ = [
     "ReviewStatus",
     "Supplier",
     "SupplierAlias",
+    "TimelineAttachment",
+    "TimelineAuditLog",
+    "TimelineItem",
+    "TimelineItemType",
     "User",
     "UserRole",
     "Worker",
