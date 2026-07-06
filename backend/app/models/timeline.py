@@ -22,9 +22,12 @@ Design notes (see the module plan for the full rationale):
   ``users.user_id``. These models follow that convention exactly — a
   ``BIGINT`` key could not reference the existing UUID primary keys.
 * **Soft-delete.** ``timeline_items`` / ``timeline_attachments`` /
-  ``job_checklist_items`` carry a nullable ``deleted_at``; partial
-  indexes (``WHERE deleted_at IS NULL``) keep active-row queries fast.
-  The append-only audit log has no ``deleted_at``.
+  ``job_checklist_items`` inherit :class:`~app.models.mixins.
+  SoftDeleteMixin` (nullable ``deleted_at``); a global query filter
+  (registered in :mod:`app.database`) excludes soft-deleted rows by
+  default, and partial indexes (``WHERE deleted_at IS NULL``) keep
+  active-row queries fast. The append-only audit log has no
+  ``deleted_at`` and does not use the mixin.
 * **Audit idiom reused.** :class:`TimelineAuditLog` mirrors
   :class:`~app.models.job_audit_log.JobAuditLog`: ``clock_timestamp()``
   default so rapid inserts inside one transaction keep a distinct,
@@ -64,6 +67,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
+from app.models.mixins import SoftDeleteMixin
 
 
 class TimelineItemType(str, enum.Enum):
@@ -119,7 +123,7 @@ class AttachmentUploadStatus(str, enum.Enum):
     confirmed = "confirmed"
 
 
-class JobChecklistItem(Base):
+class JobChecklistItem(Base, SoftDeleteMixin):
     """A pre-set, per-job checklist entry (deliberately minimal).
 
     Static definition, distinct from the dynamic timeline event stream,
@@ -159,9 +163,7 @@ class JobChecklistItem(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    deleted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    # deleted_at supplied by SoftDeleteMixin.
 
     __table_args__ = (
         # Full index on the FK column for job-scoped lookups that must
@@ -177,7 +179,7 @@ class JobChecklistItem(Base):
     )
 
 
-class TimelineItem(Base, TimestampMixin):
+class TimelineItem(Base, TimestampMixin, SoftDeleteMixin):
     """A single site-fact record on a job's timeline.
 
     One table, discriminated by ``item_type``. Issue-only columns
@@ -245,10 +247,8 @@ class TimelineItem(Base, TimestampMixin):
     created_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False
     )
-    # created_at / updated_at supplied by TimestampMixin.
-    deleted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    # created_at / updated_at supplied by TimestampMixin;
+    # deleted_at supplied by SoftDeleteMixin.
 
     # One-way navigation to attachments, scoped to this module so no
     # existing model (Job / User) is edited. Richer relationships arrive
@@ -282,7 +282,7 @@ class TimelineItem(Base, TimestampMixin):
     )
 
 
-class TimelineAttachment(Base):
+class TimelineAttachment(Base, SoftDeleteMixin):
     """A photo / file attached to a :class:`TimelineItem`.
 
     ``storage_key`` points at the object-storage object (Tigris, later
@@ -330,9 +330,7 @@ class TimelineAttachment(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    deleted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    # deleted_at supplied by SoftDeleteMixin.
 
     timeline_item: Mapped["TimelineItem"] = relationship(
         back_populates="attachments"
