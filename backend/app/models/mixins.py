@@ -19,6 +19,28 @@ Two important scoping properties:
 
 The audit log is intentionally *not* soft-deletable — it does not use
 this mixin.
+
+Known limitations (inherent to the SQLAlchemy ``do_orm_execute`` +
+``with_loader_criteria`` recipe; call these out so the service layer is
+written correctly):
+
+* **``Session.get`` / identity map.** The filter is a query-level WHERE.
+  ``Session.get`` (and attribute access on an already-resident instance)
+  can return a soft-deleted object straight from the identity map without
+  emitting SQL, so the filter never runs. Use ``select(...)`` for reads
+  that must respect the filter; a plain ``select`` always filters at the
+  database.
+* **Relationship loads must be eager.** Soft-deleted children are
+  excluded from relationship loads via ``propagate_to_loaders=True`` only
+  when the parent was loaded through a filtered ``select``. Because this
+  async codebase has no ``AsyncAttrs`` (direct lazy access raises
+  ``MissingGreenlet``), always eager-load with ``selectinload`` /
+  ``joinedload``; that is the propagation-covered path. To include
+  soft-deleted children, apply ``execution_options(include_deleted=True)``
+  on the eager query itself, not retroactively.
+* **``from_statement``/raw SQL.** ``select().from_statement(...)`` and raw
+  ``text()`` are not rewritten — the filter cannot touch caller-authored
+  SQL. Add ``deleted_at IS NULL`` explicitly in such statements.
 """
 
 from __future__ import annotations
