@@ -643,10 +643,27 @@ async def create_expense(
         merged["payment_method"],
     )
 
-    # Pick review_status + confidence_score from the parse result, if any.
-    review_status = (
-        parse_result.review_status if parse_result is not None else ReviewStatus.reviewed
+    # Determine review routing. Start from the parser's gating reasons
+    # (empty for a structured-only submission).
+    review_reasons: list[ReviewReasonCode] = (
+        list(parse_result.review_reasons) if parse_result is not None else []
     )
+
+    # Audit R1: a contributor's amount must be established by the parser's
+    # confidence pipeline. A structured-only submission (no parser ran) or
+    # a caller override of any money field would otherwise persist as
+    # ``reviewed`` with no queue row — a silent review bypass. Force such
+    # amounts to review. Admins retain the trusted structured path.
+    if entered_by.role != UserRole.admin:
+        money_overridden = bool(
+            {"amount_inc_gst", "amount_ex_gst", "gst_amount"} & caller_set
+        )
+        if (parse_result is None or money_overridden) and (
+            ReviewReasonCode.amount_uncertain not in review_reasons
+        ):
+            review_reasons.append(ReviewReasonCode.amount_uncertain)
+
+    review_status = ReviewStatus.pending if review_reasons else ReviewStatus.reviewed
     duplicate_flag = parse_result.partial.duplicate_flag if parse_result is not None else False
     duplicate_of_expense_id = (
         parse_result.partial.duplicate_of_expense_id if parse_result is not None else None
@@ -687,12 +704,13 @@ async def create_expense(
     db.add(expense)
     await db.flush()
 
-    # Enqueue a review-queue row if the parser produced any reasons.
-    if parse_result is not None and parse_result.review_reasons:
+    # Enqueue a review-queue row whenever there are gating reasons — from
+    # the parser or from the contributor money-review rule above.
+    if review_reasons:
         queue_row = ExpenseReviewQueue(
             review_id=uuid.uuid4(),
             expense_id=expense.expense_id,
-            review_reasons=list(parse_result.review_reasons),
+            review_reasons=review_reasons,
             status=ReviewQueueStatus.open,
         )
         db.add(queue_row)
@@ -727,9 +745,13 @@ async def preview_parse(
     )
 
     # Build a best-guess ExpenseCreate draft from the parser output.
-    # Not persisted — just a structured "here's what we'd write".
+    # Not persisted — just a structured "here's what we'd write". Use
+    # ``model_construct`` so an out-of-range parser amount (``$0``,
+    # ``$20M``) shown for review does not trip ExpenseCreate's field
+    # validators and turn a preview into a 500 (audit R17). Create-time
+    # validation still rejects such values with a clean 422.
     p = result.partial
-    draft = ExpenseCreate(
+    draft = ExpenseCreate.model_construct(
         raw_input_text=raw_text,
         job_id=p.job_id,
         supplier_id=p.supplier_id,

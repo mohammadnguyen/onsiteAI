@@ -307,10 +307,20 @@ class GstSplitError(ValueError):
         self.amount_inc = amount_inc
         self.amount_ex = amount_ex
         self.gst = gst
-        super().__init__(
-            f"amount_ex_gst + gst_amount ({amount_ex} + {gst}) "
-            f"must equal amount_inc_gst ({amount_inc})"
-        )
+        if amount_ex < 0 or gst < 0:
+            # e.g. amount_ex_gst > amount_inc_gst yields a negative GST
+            # component — a client error, not a server fault (audit R16).
+            message = (
+                f"GST split cannot be negative: amount_ex_gst ({amount_ex}) "
+                f"and gst_amount ({gst}) must both be >= 0 for "
+                f"amount_inc_gst ({amount_inc})"
+            )
+        else:
+            message = (
+                f"amount_ex_gst + gst_amount ({amount_ex} + {gst}) "
+                f"must equal amount_inc_gst ({amount_inc})"
+            )
+        super().__init__(message)
 
 
 def _payment_is_cash(payment_method: "PaymentMethod | str | None") -> bool:
@@ -351,12 +361,20 @@ def reconcile_gst_split(
     if amount_ex_gst is None and gst_amount is None:
         return compute_gst_split(amount_inc_gst, payment_method)
     if amount_ex_gst is None:
-        return amount_inc_gst - gst_amount, gst_amount
-    if gst_amount is None:
-        return amount_ex_gst, amount_inc_gst - amount_ex_gst
-    if amount_ex_gst + gst_amount != amount_inc_gst:
-        raise GstSplitError(amount_inc_gst, amount_ex_gst, gst_amount)
-    return amount_ex_gst, gst_amount
+        ex, gst = amount_inc_gst - gst_amount, gst_amount
+    elif gst_amount is None:
+        ex, gst = amount_ex_gst, amount_inc_gst - amount_ex_gst
+    else:
+        if amount_ex_gst + gst_amount != amount_inc_gst:
+            raise GstSplitError(amount_inc_gst, amount_ex_gst, gst_amount)
+        ex, gst = amount_ex_gst, gst_amount
+    # A derived or summing-but-signed triple can still be negative
+    # (e.g. gst_amount > amount_inc_gst, or amount_ex_gst > amount_inc_gst).
+    # Reject as a 422 rather than letting the DB non-negativity CHECK turn
+    # it into a 500 (audit R16).
+    if ex < 0 or gst < 0:
+        raise GstSplitError(amount_inc_gst, ex, gst)
+    return ex, gst
 
 
 def _compute_gst_split(mapper, connection, target: Expense) -> None:

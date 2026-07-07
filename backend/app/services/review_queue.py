@@ -88,11 +88,39 @@ class ReviewQueueAlreadyClosed(Exception):
 # ---------------------------------------------------------------------------
 
 
-async def _get_queue_row_or_404(db: AsyncSession, review_id: uuid.UUID) -> ExpenseReviewQueue:
-    row = await db.get(ExpenseReviewQueue, review_id)
+async def _get_queue_row_or_404(
+    db: AsyncSession, review_id: uuid.UUID, *, for_update: bool = False
+) -> ExpenseReviewQueue:
+    """Load a queue row or raise 404.
+
+    ``for_update=True`` takes a ``SELECT ... FOR UPDATE`` row lock so the
+    resolve / reject transition is check-then-act *serialized* — two
+    concurrent resolves/rejects on the same open row can no longer both
+    pass the ``status == open`` check on stale snapshots and write two
+    contradictory audit rows (audit R18). The read-only detail loader
+    leaves this off.
+    """
+    # ``of`` restricts the lock to the queue row itself. A bare FOR UPDATE
+    # would also target the eager LEFT-JOINed ``users`` row (resolved_by)
+    # and Postgres rejects FOR UPDATE on the nullable side of an outer join.
+    lock = {"of": ExpenseReviewQueue} if for_update else None
+    row = await db.get(ExpenseReviewQueue, review_id, with_for_update=lock)
     if row is None:
         raise ReviewQueueNotFound(review_id)
     return row
+
+
+def _require_expense(expense: Expense | None, expense_id: uuid.UUID) -> Expense:
+    """Return ``expense`` or raise on the queue→expense FK invariant.
+
+    The FK guarantees the expense exists; an explicit raise (rather than
+    ``assert``, which ``python -O`` strips) turns a would-be invariant
+    violation into a clear error instead of a later ``AttributeError``
+    (audit R31).
+    """
+    if expense is None:
+        raise RuntimeError(f"Review queue references missing expense {expense_id}")
+    return expense
 
 
 async def _validate_patch_fk_refs(
@@ -162,8 +190,7 @@ async def get(
     # category, and entered_by — so a plain ``db.get`` suffices to
     # satisfy ExpenseDetailPublic. We still issue an explicit select on
     # the duplicate-of row so it's eagerly populated.
-    expense = await db.get(Expense, row.expense_id)
-    assert expense is not None  # FK constraint guarantees this.
+    expense = _require_expense(await db.get(Expense, row.expense_id), row.expense_id)
 
     duplicate_of: Expense | None = None
     if expense.duplicate_of_expense_id is not None:
@@ -225,13 +252,13 @@ async def resolve(
     raised exception triggers ``get_db``'s rollback path, so the
     transaction aborts and no partial state persists.
     """
-    queue_row = await _get_queue_row_or_404(db, review_id)
+    queue_row = await _get_queue_row_or_404(db, review_id, for_update=True)
     if queue_row.status != ReviewQueueStatus.open:
         raise ReviewQueueAlreadyClosed(review_id, queue_row.status)
 
-    expense = await db.get(Expense, queue_row.expense_id)
-    # FK constraint + queue invariants guarantee this.
-    assert expense is not None
+    expense = _require_expense(
+        await db.get(Expense, queue_row.expense_id), queue_row.expense_id
+    )
 
     # Snapshot pre-image for audit diff computation.
     pre_image: dict[str, Any] = {field: getattr(expense, field) for field in _AUDITABLE_FIELDS}
@@ -372,12 +399,13 @@ async def reject(
     All three DB mutations (expense update, queue close, audit insert)
     are staged on the session and commit together via ``get_db``.
     """
-    queue_row = await _get_queue_row_or_404(db, review_id)
+    queue_row = await _get_queue_row_or_404(db, review_id, for_update=True)
     if queue_row.status != ReviewQueueStatus.open:
         raise ReviewQueueAlreadyClosed(review_id, queue_row.status)
 
-    expense = await db.get(Expense, queue_row.expense_id)
-    assert expense is not None
+    expense = _require_expense(
+        await db.get(Expense, queue_row.expense_id), queue_row.expense_id
+    )
     pre_status = expense.review_status
 
     expense.review_status = ReviewStatus.rejected

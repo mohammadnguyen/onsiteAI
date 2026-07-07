@@ -235,6 +235,92 @@ async def test_create_structured_skips_parser(client, db_session, world, admin_t
 
 
 @pytest.mark.asyncio
+async def test_contributor_structured_only_routes_to_review(
+    client, db_session, world, seeded_contributor, contributor_token
+):
+    """Audit R1: a contributor's structured-only create cannot self-approve.
+
+    Without ``raw_input_text`` the parser never runs, so the amount was
+    never confidence-gated. It must land ``pending`` with an
+    ``amount_uncertain`` queue row rather than auto-``reviewed``.
+    """
+    r = await client.post(
+        "/expenses",
+        headers=_auth(contributor_token),
+        json={
+            "job_id": str(world["job_a"].job_id),
+            "amount_inc_gst": "500",
+            "expense_date": _today_iso(),
+            "description": "manual entry",
+        },
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["expense"]["review_status"] == "pending"
+    stmt = select(ExpenseReviewQueue).where(
+        ExpenseReviewQueue.expense_id == uuid.UUID(body["expense"]["expense_id"])
+    )
+    queue = (await db_session.execute(stmt)).scalar_one_or_none()
+    assert queue is not None
+    assert ReviewReasonCode.amount_uncertain in queue.review_reasons
+
+
+@pytest.mark.asyncio
+async def test_contributor_amount_override_routes_to_review(
+    client, db_session, world, seeded_contributor, contributor_token
+):
+    """Audit R1: a contributor overriding the parsed amount cannot ride the
+    parser's clean verdict on a different value — it routes to review."""
+    r = await client.post(
+        "/expenses",
+        headers=_auth(contributor_token),
+        json={
+            "raw_input_text": "$305 Bunnings Kelly bluemetal",
+            "amount_inc_gst": "9500",
+        },
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["expense"]["review_status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_admin_structured_only_stays_reviewed(
+    client, world, admin_token
+):
+    """Audit R1: the admin structured path stays trusted (auto-reviewed)."""
+    r = await client.post(
+        "/expenses",
+        headers=_auth(admin_token),
+        json={
+            "job_id": str(world["job_a"].job_id),
+            "amount_inc_gst": "500",
+            "expense_date": _today_iso(),
+            "description": "admin manual entry",
+        },
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["expense"]["review_status"] == "reviewed"
+
+
+@pytest.mark.asyncio
+async def test_amount_ex_greater_than_inc_returns_422(client, world, admin_token):
+    """Audit R16: ex > inc implies a negative GST — a clean 422, not a 500."""
+    r = await client.post(
+        "/expenses",
+        headers=_auth(admin_token),
+        json={
+            "job_id": str(world["job_a"].job_id),
+            "amount_inc_gst": "100",
+            "amount_ex_gst": "150",
+            "payment_method": "transfer",
+            "expense_date": _today_iso(),
+            "description": "bad split",
+        },
+    )
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
 async def test_create_missing_amount_422(client, world, admin_token):
     """No amount and no raw_input_text -> 422."""
     r = await client.post(

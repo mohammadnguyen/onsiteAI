@@ -72,6 +72,11 @@ from app.services.parser.llm_adapter import LLMParser, MockLLMParser, ParseParti
 # to debug a real mis-parse or a wrongly-(un)gated review.
 _log = logging.getLogger("app.parser")
 
+# Mirrors the ``description`` column limit (``String(500)``) and the
+# ``ExpenseCreate.description`` Pydantic ``max_length``. Kept local so the
+# parser has no import dependency on the ORM model.
+_MAX_DESCRIPTION_LEN = 500
+
 
 @dataclass(frozen=True)
 class ParseResult:
@@ -108,7 +113,11 @@ def _derive_description(tokens: list[_tokens.Token]) -> str | None:
     parts = [tok.text for tok in tokens if not tok.is_currency_symbol and not tok.is_numeric_like]
     if not parts:
         return None
-    return " ".join(parts)
+    # Bound to the ``description`` column limit (String(500)). Raw input
+    # can be up to 2000 chars, so an un-truncated join would overflow the
+    # column and 500 on write (audit R17). The description is advisory,
+    # so a hard clip is safe.
+    return " ".join(parts)[:_MAX_DESCRIPTION_LEN]
 
 
 async def parse(
