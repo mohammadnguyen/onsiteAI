@@ -4,7 +4,60 @@
 authorship. Goal is *unknown unknowns* — risks the author has not thought to ask
 about. Findings are ranked by Severity × Likelihood, critical first, with
 concrete `file:line` evidence and an action verb (**fix / test / monitor /
-accept**). This is a **report only — nothing was changed** in application code.
+accept**).
+
+> **Remediation update (post-audit):** the register below was the original
+> read-only report. Following a "fix everything" directive, most findings have
+> since been remediated in-repo with regression tests; the full backend suite
+> (1027 tests) is green and `pip-audit` reports zero known backend
+> vulnerabilities. See **Remediation status** immediately below for the
+> per-finding state. Items requiring live infrastructure access (backups/DR)
+> and deliberate architecture decisions (token storage) are called out as
+> operator/ADR follow-ups.
+
+## Remediation status
+
+**Fixed + tested (code merged on this branch):**
+
+- **R1** — contributor structured-only / money-override creates now route to
+  review (`amount_uncertain` queue row); admin structured path stays trusted.
+- **R2** — the three silent parser mis-values fixed: CJK `万+零+digit`
+  (`一万零五`→10005), leading-minus refunds and multi-`$`-amount strings now
+  route to review; full-width IME glyphs (**R21**) fold correctly.
+- **R4/R7** — rate limiter keys on the real client IP (`Fly-Client-IP`/XFF) +
+  uvicorn `--forwarded-allow-ips`, and its memory is bounded (eviction + cap).
+- **R6** — LLM seam hardened: timeout + fall-back to rules, output clamped,
+  non-finite amount discarded, LLM-changed money forced below the review gate.
+- **R8/R26** — vulnerable deps bumped; backend `pip-audit` clean; frontend
+  axios/form-data/react-router patched (dev-server esbuild/vite chain deferred).
+- **R9–R13, R20, R25** — admin app: request timeout, single-flight token
+  refresh, query-cache clear on logout, contributor-edit 403 fixed, RequireAdmin
+  transient-error handling, integer-cent money rounding. (R9 token storage:
+  cache-leak closed; localStorage→httpOnly is a deferred ADR.)
+- **R14/R15/R33** — CI gains least-privilege perms, an Alembic round-trip job,
+  a frontend typecheck matrix, and dep audits; `.dockerignore` added; container
+  runs non-root.
+- **R16/R17/R18/R30** — negative GST → 422 (not 500); `/expenses/parse` and
+  long-description creates no longer 500; review-queue resolve/reject take a row
+  lock; create-race → 409; `include_inactive` gated to admins.
+- **R19** — bare-numeric-only job matches route to review.
+- **R23/R24/R31/R32/R13** — seed-admin password floor + no-echo prompt;
+  security headers; `-O`-safe guards replace asserts; Sydney-tz dates + job-active
+  check on create; deterministic duplicate ordering.
+
+**Deferred (operator action or deliberate decision — NOT code-fixable here):**
+
+- **R3** — automated, verified, off-provider Postgres backup + a rehearsed
+  restore. Requires Fly access; this is the single most important open item.
+- **R27** — mobile offline/queued capture (app is paused).
+- **R29** — pagination caps on list/export endpoints (latent scaling; monitor).
+- **R30c / R31 (partial)** — 403-vs-404 existence oracle, login-timing
+  side-channel, audit-reason-in-URL — accepted low-risk.
+- **A1** — JWT revocation / refresh rotation (documented Phase-6 work).
+- **R28** — European decimal-comma (`$1.500`) is already rejected at save
+  (422); UX-only, accepted.
+
+---
 
 **Scope reviewed:** whole monorepo — `backend/` (FastAPI + SQLAlchemy async +
 Alembic), `admin/` (Vite/React), `mobile/` (Expo, paused), all 15 migrations,
