@@ -1,0 +1,80 @@
+name: db-backup
+
+# Automated off-provider Postgres backup (audit R3). Runs the read-only
+# backend/scripts/backup_db.sh against production on a daily schedule and
+# mirrors the verified dump to off-provider object storage.
+#
+# INERT UNTIL CONFIGURED: the job skips cleanly (no failure noise) until the
+# BACKUP_DATABASE_URL secret is set. To enable, add these repository secrets:
+#   BACKUP_DATABASE_URL   production Postgres connection string (read-only role
+#                         preferred). For Fly Managed Postgres, expose a
+#                         direct connection string or run this from a host that
+#                         can reach the cluster; see
+#                         docs/operations/disaster-recovery.md.
+#   BACKUP_S3_URI         off-provider destination, e.g. s3://bucket/sitetracker
+#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY   creds for that bucket
+#   AWS_DEFAULT_REGION    (and AWS_ENDPOINT_URL for B2 / R2 / MinIO)
+#
+# The dump contains real financial data, so it is uploaded ONLY to the
+# access-controlled offsite bucket — never attached as a workflow artifact.
+
+on:
+  schedule:
+    # 17:00 UTC daily ≈ 03:00–04:00 Australia/Sydney (off-hours for the builder).
+    - cron: "0 17 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: pg_dump + offsite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check configuration
+        id: cfg
+        env:
+          BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+        run: |
+          if [ -z "${BACKUP_DATABASE_URL:-}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::BACKUP_DATABASE_URL not set — skipping backup. Configure repo secrets to enable (see docs/operations/disaster-recovery.md)."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install postgresql-client-16 + awscli
+        if: steps.cfg.outputs.configured == 'true'
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16 awscli
+          pg_dump --version
+
+      - name: Run backup
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+          BACKUP_S3_URI: ${{ secrets.BACKUP_S3_URI }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+          AWS_ENDPOINT_URL: ${{ secrets.AWS_ENDPOINT_URL }}
+          BACKUP_DIR: ${{ runner.temp }}/backups
+          BACKUP_LABEL: prod-ci
+          # Local dir is ephemeral (the runner is torn down); retention is
+          # enforced on the offsite bucket via its lifecycle policy.
+          BACKUP_RETENTION_DAYS: "0"
+        run: bash backend/scripts/backup_db.sh

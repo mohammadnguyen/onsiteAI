@@ -45,10 +45,18 @@ accept**).
   security headers; `-O`-safe guards replace asserts; Sydney-tz dates + job-active
   check on create; deterministic duplicate ordering.
 
-**Deferred (operator action or deliberate decision — NOT code-fixable here):**
+**Automation delivered — operator must configure + rehearse:**
 
-- **R3** — automated, verified, off-provider Postgres backup + a rehearsed
-  restore. Requires Fly access; this is the single most important open item.
+- **R3** — an automated, verified, off-provider backup path is now in-repo: a
+  read-only `backend/scripts/backup_db.sh` (secret-safe `pg_dump` → verify →
+  checksum → offsite upload → retention, tested end-to-end), a daily
+  `db-backup` GitHub Actions workflow (inert until secrets are set), and a
+  production DR runbook (`docs/operations/disaster-recovery.md`) defining
+  RPO ≤ 24 h / RTO ≤ 2 h and the restore procedure. **Operator must** set the
+  backup secrets (offsite bucket + connection string) and run the monthly
+  restore rehearsal to fully close it.
+
+**Deferred (operator action or deliberate decision — NOT code-fixable here):**
 - **R27** — mobile offline/queued capture (app is paused).
 - **R29** — pagination caps on list/export endpoints (latent scaling; monitor).
 - **R30c / R31 (partial)** — 403-vs-404 existence oracle, login-timing
