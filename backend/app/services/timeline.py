@@ -515,6 +515,10 @@ async def update_timeline_item(
             detail=changed,
         )
     await db.flush()
+    # updated_at is server-generated on UPDATE (onupdate=func.now()) and
+    # left expired by the flush; refresh it eagerly here or the router's
+    # serialisation would lazy-load it and raise MissingGreenlet.
+    await db.refresh(item, ["updated_at"])
     await _stamp_attachment_count(db, item)
     return item
 
@@ -617,6 +621,8 @@ async def change_issue_status(
         },
     )
     await db.flush()
+    # Same expired-onupdate refresh as update_timeline_item.
+    await db.refresh(item, ["updated_at"])
     await _stamp_attachment_count(db, item)
     return item
 

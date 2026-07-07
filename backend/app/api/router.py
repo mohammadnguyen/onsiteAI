@@ -16,6 +16,7 @@ from app.api import (
     reports,
     review_queue,
     suppliers,
+    timeline,
     users,
 )
 
@@ -30,4 +31,7 @@ api_router.include_router(labour.router)
 api_router.include_router(reports.router, prefix="/reports")
 api_router.include_router(review_queue.router, prefix="/review-queue")
 api_router.include_router(suppliers.router, prefix="/suppliers")
+# Timeline spans /jobs/{id}/timeline, /timeline and /jobs/{id}/checklist
+# (one feature, three roots) — included unprefixed with absolute paths.
+api_router.include_router(timeline.router)
 api_router.include_router(users.router, prefix="/users")
