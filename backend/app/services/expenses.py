@@ -50,6 +50,7 @@ from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.text import normalize_alias
+from app.core.time import app_today
 from app.models import (
     Category,
     Expense,
@@ -511,7 +512,7 @@ def _validate_save(
         raise ExpenseValidationError("Supplier or description is required for supplier expenses")
 
     # Sanity: reject expense_date more than 5 years in the past.
-    cutoff = date.today() - timedelta(days=365 * _MAX_PAST_YEARS)
+    cutoff = app_today() - timedelta(days=365 * _MAX_PAST_YEARS)
     if expense_date < cutoff:
         raise ExpenseValidationError("Expense date is more than 5 years in the past")
     # CHP-5: reject future-dated expenses. The +1-day tolerance covers
@@ -519,7 +520,7 @@ def _validate_save(
     # capturing at 11pm local on Mon 12 May submits with their local
     # date; the server's UTC clock is already Tue 13 May. We accept
     # that. Anything beyond +1 day is genuinely wrong.
-    future_cutoff = date.today() + timedelta(days=_FUTURE_DATE_TOLERANCE_DAYS)
+    future_cutoff = app_today() + timedelta(days=_FUTURE_DATE_TOLERANCE_DAYS)
     if expense_date > future_cutoff:
         raise ExpenseValidationError("Expense date is in the future")
 
@@ -565,7 +566,7 @@ async def create_expense(
     submission).
     """
     caller_set = _fields_set_by_caller(payload)
-    expense_date = payload.expense_date or date.today()
+    expense_date = payload.expense_date or app_today()
     expense_type = payload.expense_type
     parse_result: ParseResult | None = None
     diagnostics: ParseDiagnostics | None = None
@@ -620,10 +621,18 @@ async def create_expense(
         expense_type=merged["expense_type"],
         description=merged["description"],
     )
-    # Confirm the job id refers to a real row.
+    # Confirm the job id refers to a real, ACTIVE row. The parser only
+    # resolves active jobs, but a structured/override ``job_id`` could
+    # point at an archived/completed job; the PATCH path already forbids
+    # this, so mirror it here (audit R32) — spend can't be booked to a
+    # non-active job on create either.
     job = await db.get(Job, merged["job_id"])
     if job is None:
         raise JobNotFoundForExpense(merged["job_id"])
+    if job.status != JobStatus.active:
+        raise ExpenseValidationError(
+            "Cannot add an expense to an archived or completed job — reopen it first"
+        )
     await _validate_fk_refs(
         db,
         job_id=merged["job_id"],
@@ -734,7 +743,7 @@ async def preview_parse(
     llm_parser: LLMParser | None = None,
 ) -> ParsePreview:
     """Run the parser and return a :class:`ParsePreview`. Does NOT persist."""
-    when = expense_date or date.today()
+    when = expense_date or app_today()
     result = await parse(
         raw_text=raw_text,
         db=db,

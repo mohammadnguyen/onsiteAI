@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.deps import get_current_user, require_admin
 from app.models.category import Category
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.category import CategoryCreate, CategoryPublic, CategoryUpdate
 
 router = APIRouter(tags=["categories"])
@@ -46,8 +46,12 @@ async def list_categories(
     db: AsyncSession = Depends(get_db),
 ) -> list[Category]:
     """List categories ordered by ``display_order``."""
+    # Audit R30: ``include_inactive`` is admin-only per the contract. A
+    # contributor passing it is silently downgraded to active-only rather
+    # than being handed archived rows the product hides from them.
+    show_inactive = include_inactive and current_user.role == UserRole.admin
     stmt = select(Category).order_by(Category.display_order)
-    if not include_inactive:
+    if not show_inactive:
         stmt = stmt.where(Category.is_active.is_(True))
     result = await db.execute(stmt)
     return list(result.scalars().all())

@@ -3,7 +3,12 @@
 Usage from the ``backend/`` directory::
 
     uv run python -m scripts.seed_admin \
-        --email admin@example.com --password admin --name "Admin"
+        --email admin@example.com --name "Admin"
+    # prompts for the password (min 12 chars) without echoing it
+
+``--password`` may still be passed non-interactively for automation, but
+prefer the prompt so the secret never lands in shell history / the
+process list.
 
 Idempotent: re-running resets the admin's password/name/role to the
 supplied values and re-runs :func:`seed_builder_categories`, which is
@@ -22,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import uuid
 
 from sqlalchemy import select
@@ -31,6 +37,24 @@ from app.core.security import hash_password
 from app.core.seed import seed_builder_categories, seed_suppliers
 from app.database import get_sessionmaker
 from app.models.user import LanguageCode, User, UserRole
+
+# Mirror the invite path's floor (``UserInvite.initial_password``,
+# min_length=12). Without it the bootstrap tool was a documented bypass of
+# the E3/R23 password strength gate.
+_MIN_PASSWORD_LEN = 12
+
+
+def _resolve_password(cli_password: str | None) -> str:
+    """Return a validated password, prompting (no echo) if not supplied."""
+    password = cli_password if cli_password is not None else getpass.getpass(
+        "Admin password (min 12 chars): "
+    )
+    if len(password) < _MIN_PASSWORD_LEN:
+        raise SystemExit(
+            f"Password must be at least {_MIN_PASSWORD_LEN} characters "
+            f"(got {len(password)})."
+        )
+    return password
 
 
 async def _seed_admin(db: AsyncSession, email: str, password: str, name: str) -> User:
@@ -73,7 +97,11 @@ def main() -> None:
         description="Seed an admin user + builder categories (and optionally suppliers)."
     )
     parser.add_argument("--email", required=True)
-    parser.add_argument("--password", required=True)
+    parser.add_argument(
+        "--password",
+        default=None,
+        help="Admin password (>= 12 chars). Omit to be prompted without echo.",
+    )
     parser.add_argument("--name", default="Admin")
     parser.add_argument(
         "--seed-suppliers",
@@ -86,10 +114,11 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+    password = _resolve_password(args.password)
     asyncio.run(
         _main(
             args.email,
-            args.password,
+            password,
             args.name,
             with_suppliers=args.seed_suppliers,
         )

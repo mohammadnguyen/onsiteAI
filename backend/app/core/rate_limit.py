@@ -19,12 +19,26 @@ from collections import defaultdict, deque
 
 _WINDOW_SECONDS = 60.0
 
+# Hard cap on distinct live keys. An attacker spraying unique
+# ``login:<ip>:<random-email>`` keys would otherwise grow the map without
+# bound and OOM the single Fly machine (audit R7). At the cap we first
+# sweep out keys whose whole window has expired; if the map is still full
+# of genuinely-live keys (a real high-volume attack), new keys fail closed
+# (are rate-limited) rather than allocating unbounded memory.
+_MAX_KEYS = 50_000
+
 
 class FixedWindowRateLimiter:
     """Sliding-window counter keyed on an arbitrary string."""
 
     def __init__(self) -> None:
         self._hits: dict[str, deque[float]] = defaultdict(deque)
+
+    def _evict_stale(self, cutoff: float) -> None:
+        """Drop keys whose entire window has expired. O(n); only run at cap."""
+        stale = [k for k, q in self._hits.items() if not q or q[-1] < cutoff]
+        for k in stale:
+            del self._hits[k]
 
     def hit_and_check(self, key: str, max_hits: int) -> bool:
         """Record an attempt for ``key`` and report whether it is allowed.
@@ -38,6 +52,11 @@ class FixedWindowRateLimiter:
             return True
         now = time.monotonic()
         cutoff = now - _WINDOW_SECONDS
+        # Bound memory before inserting a brand-new key (audit R7).
+        if key not in self._hits and len(self._hits) >= _MAX_KEYS:
+            self._evict_stale(cutoff)
+            if len(self._hits) >= _MAX_KEYS:
+                return False
         q = self._hits[key]
         while q and q[0] < cutoff:
             q.popleft()

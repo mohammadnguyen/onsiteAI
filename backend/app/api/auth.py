@@ -44,6 +44,28 @@ router = APIRouter(tags=["auth"])
 
 
 def _client_ip(request: Request) -> str:
+    """Best-effort real client IP for rate-limit keying (audit R4).
+
+    Behind Fly's edge proxy the raw socket peer (``request.client.host``)
+    is the proxy's internal address — identical for every user — which
+    would collapse the per-IP limiter into a single global bucket
+    (trivial auth-DoS). Prefer the proxy-supplied client IP:
+
+    * ``Fly-Client-IP`` — set by Fly's edge to the real peer.
+    * first hop of ``X-Forwarded-For`` — standard proxy chain.
+    * socket peer — direct/local (dev, tests).
+
+    This trusts upstream headers; on Fly the app is only reachable via
+    the edge proxy so that is correct. The login key also includes the
+    email, so a shared/forged IP cannot lock out an arbitrary account
+    beyond that IP's own bucket.
+    """
+    fly_ip = request.headers.get("fly-client-ip")
+    if fly_ip and fly_ip.strip():
+        return fly_ip.strip()
+    xff = request.headers.get("x-forwarded-for")
+    if xff and xff.strip():
+        return xff.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
 
 
