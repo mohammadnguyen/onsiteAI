@@ -83,17 +83,33 @@ class AmountMatch:
 
 # Internal candidate record — scored before we pick a winner. Kept
 # module-private so the public API is just :class:`AmountMatch`.
+# Minus-sign glyphs that mark a negative / refund amount. The full-width
+# form (U+FF0D) is already folded to ASCII ``-`` by the tokenizer, so we
+# only need the ASCII hyphen-minus, the true Unicode minus, and the small
+# hyphen-minus here.
+_MINUS_SIGNS: frozenset[str] = frozenset({"-", "−", "﹣"})
+
+
+def _is_negative_sign(tok: Token | None) -> bool:
+    """True iff ``tok`` is a lone minus sign (not part of a number)."""
+    return tok is not None and not tok.is_numeric_like and tok.text in _MINUS_SIGNS
+
+
 @dataclass(frozen=True)
 class _Candidate:
     value: Decimal
     confidence: float
     unsupported_currency: bool
     span: tuple[int, int]
+    is_aud: bool
+    negative: bool
 
 
 def _score_candidate(
     numeric_token: Token,
     prev_token: Token | None,
+    *,
+    is_negative: bool,
 ) -> _Candidate:
     """Score a single numeric-like token as a candidate.
 
@@ -103,6 +119,11 @@ def _score_candidate(
     * other recognised currency symbol → unsupported (conf 0.3)
     * no currency prefix → bare (conf 0.5 / 0.7)
 
+    ``is_negative`` (computed by the caller from the tokens preceding the
+    amount) marks a refund / negative amount, which the product does not
+    support; the caller routes any winning negative candidate to review
+    rather than silently booking a positive cost.
+
     ``Decimal(numeric_token.normalized)`` is guaranteed to parse
     because the tokenizer only sets ``is_numeric_like=True`` for
     strings that match its numeric regex; any failure here is a bug
@@ -111,10 +132,12 @@ def _score_candidate(
     value = Decimal(numeric_token.normalized)
     has_decimal_point = "." in numeric_token.text
 
+    is_aud = False
     if prev_token is not None and prev_token.is_currency_symbol:
         if prev_token.text == "$":
             confidence = _CONF_AUD_DECIMAL if has_decimal_point else _CONF_AUD_INTEGER
             unsupported = False
+            is_aud = True
         else:
             # Any recognised non-AUD currency symbol — ¥ € £ ₩ ₹.
             confidence = _CONF_UNSUPPORTED
@@ -128,6 +151,8 @@ def _score_candidate(
         confidence=confidence,
         unsupported_currency=unsupported,
         span=numeric_token.span,
+        is_aud=is_aud,
+        negative=is_negative,
     )
 
 
@@ -150,7 +175,15 @@ def extract_amount(tokens: list[Token]) -> AmountMatch:
         if not tok.is_numeric_like:
             continue
         prev = tokens[idx - 1] if idx > 0 else None
-        candidates.append(_score_candidate(tok, prev))
+        prev_prev = tokens[idx - 2] if idx > 1 else None
+        # A leading minus attaches to the number directly (``-50``) or to
+        # its currency symbol (``-$50`` → tokens ``- $ 50``).
+        negative = _is_negative_sign(prev) or (
+            prev is not None
+            and prev.is_currency_symbol
+            and _is_negative_sign(prev_prev)
+        )
+        candidates.append(_score_candidate(tok, prev, is_negative=negative))
 
     if not candidates:
         return AmountMatch(
@@ -159,6 +192,22 @@ def extract_amount(tokens: list[Token]) -> AmountMatch:
             unsupported_currency=False,
             source_span=None,
             ambiguous=False,
+        )
+
+    # Two or more DISTINCT explicitly-``$``-marked values in one string
+    # (e.g. a unit price AND a line total) are inherently ambiguous — the
+    # rules layer cannot know which is the expense. Route to review rather
+    # than silently letting the higher confidence tier win. A bare
+    # quantity (``20 bags``) is not ``$``-marked, so it does not trip this.
+    aud_values = {c.value for c in candidates if c.is_aud}
+    if len(aud_values) > 1:
+        winner = max((c for c in candidates if c.is_aud), key=lambda c: c.confidence)
+        return AmountMatch(
+            value=winner.value,
+            confidence=_CONF_NONE,
+            unsupported_currency=winner.unsupported_currency,
+            source_span=winner.span,
+            ambiguous=True,
         )
 
     # Find the top confidence tier and all candidates at that tier.
@@ -179,6 +228,17 @@ def extract_amount(tokens: list[Token]) -> AmountMatch:
         )
 
     winner = top_tier[0]
+    if winner.negative:
+        # Negative / refund amount — unsupported by the product. Surface a
+        # positive default for the reviewer but force review rather than
+        # silently flipping the sign and booking it as a cost.
+        return AmountMatch(
+            value=winner.value,
+            confidence=_CONF_NONE,
+            unsupported_currency=winner.unsupported_currency,
+            source_span=winner.span,
+            ambiguous=True,
+        )
     return AmountMatch(
         value=winner.value,
         confidence=winner.confidence,

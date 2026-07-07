@@ -60,6 +60,15 @@ from app.services.parser.tokens import tokenize
         ("一百零五", Decimal(105), False),
         ("五千零五", Decimal(5005), False),
         ("一万零五百", Decimal(10500), False),
+        # Audit R2/F4: 万 + 零 + bare trailing digit — the digit lands in
+        # the ones place, NOT the colloquial 千 shift (previously 15000).
+        ("一万零五", Decimal(10005), False),
+        ("三万零二", Decimal(30002), False),
+        ("一万零五块", Decimal(10005), True),
+        # The colloquial shift (no 零) is preserved: bare tail after 万
+        # shifts to the 千 place.
+        ("三万二", Decimal(32000), False),
+        ("三万五", Decimal(35000), False),
         # Larger values still under the cap.
         ("一万二千", Decimal(12000), False),
         ("五千万", Decimal(50000000), False),

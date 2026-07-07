@@ -82,6 +82,12 @@ _CJK_DIGITS: dict[str, int] = {
     "九": 9,
 }
 
+# Zero-skip markers. ``零``/``〇`` mean "the following digit lands in a
+# lower (ultimately the ones) place" — e.g. ``一万零五`` = 10005, not
+# 15000. Their presence in a 万-split remainder disables the colloquial
+# trailing-digit shift below.
+_CJK_ZERO_CHARS: frozenset[str] = frozenset({"零", "〇"})
+
 # Sub-``万`` place markers: handled inside :func:`_parse_sub_wan`.
 _CJK_SUB_WAN_PLACES: dict[str, int] = {
     "十": 10,
@@ -251,10 +257,15 @@ def _parse_mixed_amount(text: str) -> Decimal | None:
     m = _MIXED_ARABIC_WAN_TAIL_RE.match(text)
     if m:
         high = int(m.group(1))
-        low = int(m.group(2))
+        low_raw = m.group(2)
+        low = int(low_raw)
         tail_mag = m.group(3)
         if tail_mag is not None:
             low_value = low * _MIXED_MAGNITUDES[tail_mag]
+        elif low_raw.startswith("0"):
+            # Leading-zero tail is a ``零``-skip: the digit lands at face
+            # value in the ones place. ``3万05`` → 30005, not 35000.
+            low_value = low
         elif low <= 9:
             # A bare single trailing digit shifts one place below 万 (千).
             # ``3万5`` → 30000 + 5*1000 = 35000.
@@ -335,11 +346,15 @@ def _parse_cjk_numeral(text: str) -> Decimal | None:
             sub = _parse_sub_wan(low_text)
             if sub is None:
                 return None
-            if sub > 0 and not any(
-                ch in _CJK_SUB_WAN_PLACES for ch in low_text
+            if (
+                sub > 0
+                and not any(ch in _CJK_SUB_WAN_PLACES for ch in low_text)
+                and not any(ch in _CJK_ZERO_CHARS for ch in low_text)
             ):
                 # Trailing single digit shift: one place lower than
-                # 万 = 千 (1000).
+                # 万 = 千 (1000). ``三万二`` → 30000 + 2*1000 = 32000.
+                # Suppressed when a ``零`` skip is present: ``一万零五``
+                # → 10005 (the 五 lands in the ones place), not 15000.
                 low_value = sub * 1000
             else:
                 low_value = sub

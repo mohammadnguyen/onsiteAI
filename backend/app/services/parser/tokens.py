@@ -32,6 +32,22 @@ from app.core.text import normalize_alias
 # broader Unicode-currency regex. Keeps behaviour auditable.
 _CURRENCY_SYMBOLS: frozenset[str] = frozenset({"$", "¥", "€", "£", "₩", "₹"})
 
+# Full-width ASCII (U+FF01–FF5E) and full-width currency glyphs are the
+# default output of Chinese IMEs (``＄３０５``, ``￥500``, ``－$5``). Fold
+# them to their half-width equivalents before tokenizing so the amount
+# extractor sees ordinary ``$`` / ``¥`` / digits / ``-``. The map is
+# strictly one codepoint → one codepoint, so token ``span`` offsets still
+# index the original ``raw_text`` unchanged.
+_FULLWIDTH_FOLD: dict[int, int] = {c: c - 0xFEE0 for c in range(0xFF01, 0xFF5F)}
+_FULLWIDTH_FOLD.update(
+    {
+        0xFFE0: 0x00A2,  # ￠ → ¢
+        0xFFE1: 0x00A3,  # ￡ → £
+        0xFFE5: 0x00A5,  # ￥ → ¥
+        0xFFE6: 0x20A9,  # ￦ → ₩
+    }
+)
+
 # A numeric-like token is either a plain decimal (``305`` / ``305.00``)
 # or a comma-grouped decimal (``1,234`` / ``1,234.56``). Anything with
 # non-digit / non-separator characters is not numeric-like.
@@ -180,6 +196,10 @@ def tokenize(raw_text: str) -> list[Token]:
     """
     if not raw_text or not raw_text.strip():
         return []
+
+    # Span-preserving full-width → half-width fold (see _FULLWIDTH_FOLD).
+    # 1:1 codepoint mapping, so match offsets below still index raw_text.
+    raw_text = raw_text.translate(_FULLWIDTH_FOLD)
 
     tokens: list[Token] = []
     # Use finditer on non-whitespace runs so we get accurate spans into
