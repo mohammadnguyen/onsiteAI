@@ -18,6 +18,14 @@ RUN uv sync --frozen --no-dev
 
 ENV PATH="/app/.venv/bin:$PATH"
 
+# R33: run as an unprivileged user, not root. Create the user AFTER the build
+# steps (uv needs to write /app/.venv as root), then hand /app to it. Because
+# appuser owns /app it can read the source and execute /app/.venv/bin/* (the
+# HEALTHCHECK's python and the CMD's uvicorn), while owning nothing outside /app.
+RUN useradd -m -u 10001 appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
 EXPOSE 8000
 
 # This image is built --no-dev for prod size; pytest/ruff/black are NOT
@@ -28,4 +36,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request,sys;urllib.request.urlopen('http://localhost:8000/healthz',timeout=2).read();sys.exit(0)" || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# R4: the image is only reachable via Fly's edge proxy, so trust X-Forwarded-*
+# from all upstream hops — otherwise every request's client IP is the proxy's.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--forwarded-allow-ips", "*"]

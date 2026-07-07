@@ -1,0 +1,67 @@
+name: frontend-ci
+
+# Type-checks both JS/TS apps (admin + mobile) on every PR and on pushes to
+# main. Mirrors local verification: `npm ci` + `npm run typecheck` (tsc
+# --noEmit) for each project. Both apps commit a package-lock.json.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One in-flight run per ref; a new push cancels the previous run.
+concurrency:
+  group: frontend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: this workflow only reads the repository.
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    name: typecheck (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Report both apps even if one fails.
+      fail-fast: false
+      matrix:
+        project: [admin, mobile]
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+
+      # Prefer the reproducible `npm ci`; fall back to `npm install` only if a
+      # project has no committed lockfile (both currently do).
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      # Blocking: type errors fail the build. Both projects define a
+      # "typecheck" script; if one ever lacks it, skip rather than hard-fail.
+      - name: Typecheck
+        run: |
+          if node -e "process.exit(require('./package.json').scripts && require('./package.json').scripts.typecheck ? 0 : 1)"; then
+            npm run typecheck
+          else
+            echo "No 'typecheck' script in ${{ matrix.project }}/package.json — skipping."
+          fi
+
+      # Advisory only (non-blocking): surface high/critical CVEs in JS deps.
+      - name: Dependency audit (advisory, non-blocking)
+        continue-on-error: true
+        run: npm audit --audit-level=high

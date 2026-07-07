@@ -14,6 +14,11 @@ concurrency:
   group: backend-ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege: every job here only reads the repository (no writes, no
+# packages, no deployments).
+permissions:
+  contents: read
+
 jobs:
   test:
     name: ruff + pytest
@@ -68,3 +73,65 @@ jobs:
 
       - name: Pytest
         run: uv run python -m pytest -q
+
+      # Advisory only (non-blocking): surface known CVEs in the locked deps.
+      # Hits PyPI's advisory DB, so a network/registry hiccup must not fail CI.
+      - name: Dependency audit (advisory, non-blocking)
+        continue-on-error: true
+        run: |
+          uv export --frozen --no-emit-project --format requirements-txt \
+            -o /tmp/backend-requirements.txt
+          uvx pip-audit -r /tmp/backend-requirements.txt
+
+  migrations:
+    name: alembic round-trip
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    # Exercise the real migrations (the test suite builds the schema straight
+    # from metadata and never runs Alembic). A fresh, dedicated Postgres so the
+    # upgrade/downgrade round-trip starts from an empty database.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sitetracker
+          POSTGRES_PASSWORD: sitetracker
+          POSTGRES_DB: sitetracker_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U sitetracker"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    # Same config the test job uses; Alembic's env.py resolves the URL via
+    # get_settings(), which requires these to pass the non-dev validator.
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://sitetracker:sitetracker@localhost:5433/sitetracker_test
+      JWT_SECRET: ci-only-jwt-secret-not-for-production-0123456789
+      CORS_ALLOWED_ORIGINS: https://localhost.test
+      AUTH_RATE_LIMIT_PER_MINUTE: "0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Sync dependencies (frozen lockfile)
+        run: uv sync --frozen
+
+      # A broken, missing, or non-reversible migration fails CI here.
+      - name: Alembic round-trip (upgrade -> downgrade -> upgrade)
+        run: |
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
