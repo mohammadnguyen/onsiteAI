@@ -307,7 +307,9 @@ async def test_digit_only_job_code_matches(db_session, seeded_admin):
     result = await match_job(tokenize("001 plumbing $100"), db_session)
 
     assert result.job_id == job.job_id
-    assert result.confidence == 0.95
+    # R19: matched, but a purely-numeric token lands below the review gate
+    # so a human confirms (a bare number is ambiguous with a quantity).
+    assert result.confidence == 0.6
     assert result.matched_via == "code"
 
 
@@ -327,7 +329,8 @@ async def test_digit_only_alias_matches(db_session, seeded_admin):
     result = await match_job(tokenize("003 cement $50"), db_session)
 
     assert result.job_id == job.job_id
-    assert result.confidence == 0.95
+    # R19: numeric-only match routes to review (below the 0.7 job gate).
+    assert result.confidence == 0.6
     assert result.matched_via == "alias"
 
 
@@ -339,7 +342,8 @@ async def test_digit_only_job_name_matches(db_session, seeded_admin):
     result = await match_job(tokenize("1 plumbing $250"), db_session)
 
     assert result.job_id == job.job_id
-    assert result.confidence == 0.95
+    # R19: numeric-only match routes to review (below the 0.7 job gate).
+    assert result.confidence == 0.6
     assert result.matched_via == "name"
 
 
@@ -405,7 +409,9 @@ async def test_excluded_span_does_not_block_unrelated_numeric_token(
     result = await match_job(tokens, db_session, excluded_span=amt.source_span)
 
     assert result.job_id == job.job_id
-    assert result.confidence == 0.95
+    # R19: the standalone ``001`` still flows through and matches the code
+    # route, but as a numeric-only token it routes to review.
+    assert result.confidence == 0.6
     assert result.matched_via == "code"
 
 

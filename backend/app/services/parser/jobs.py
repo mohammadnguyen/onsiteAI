@@ -72,6 +72,11 @@ from app.services.parser.tokens import Token
 _CONF_UNIQUE = 0.95
 _CONF_AMBIGUOUS = 0.3
 _CONF_NONE = 0.0
+# A unique job matched ONLY via a bare numeric token (e.g. a quantity
+# "20 bags" hitting a job coded "20") is ambiguous with quantities and
+# street numbers, so it lands below the 0.7 job review gate and routes
+# to a human rather than silently mis-allocating spend (audit R19).
+_CONF_NUMERIC_ONLY = 0.6
 
 
 @dataclass(frozen=True)
@@ -233,9 +238,18 @@ async def match_job(
         .options(selectinload(JobAlias.job))
     )
     alias_rows = (await db.execute(alias_stmt)).scalars().all()
+    # Track, per matched job, the normalised token(s) that produced the
+    # match — so a job matched ONLY by a purely-numeric token can be
+    # routed to review instead of trusted at 0.95 (audit R19).
+    match_normals: dict[uuid.UUID, set[str]] = {}
+
+    def _record(job_id: uuid.UUID, normal: str) -> None:
+        match_normals.setdefault(job_id, set()).add(normal)
+
     for alias in alias_rows:
         if alias.job is not None and alias.job.status == JobStatus.active:
             by_route["alias"].add(alias.job_id)
+            _record(alias.job_id, alias.alias_text_normalized)
 
     # --- Routes 2 + 3 + 4: scan active jobs for code / single-token-name
     # / multi-token-name hits.
@@ -246,11 +260,13 @@ async def match_job(
             code_normal = normalize_alias(job.job_code)
             if code_normal and code_normal in normals_set:
                 by_route["code"].add(job.job_id)
+                _record(job.job_id, code_normal)
         name_normal = normalize_alias(job.job_name)
         if name_normal:
             if name_normal in normals_set:
                 # Single-token exact name match (existing behaviour).
                 by_route["name"].add(job.job_id)
+                _record(job.job_id, name_normal)
             elif name_normal in multi_token_normals:
                 # CHP-1 multi-token contiguous name match. Same exact-
                 # equality test, just against the joined N-gram set.
@@ -259,6 +275,7 @@ async def match_job(
                 # never in the multi-token set by construction, since
                 # multi_token_normals only contains spans of N>=2).
                 by_route["multi_token_name"].add(job.job_id)
+                _record(job.job_id, name_normal)
 
     all_matches = (
         by_route["alias"]
@@ -287,11 +304,20 @@ async def match_job(
     # with the documented priority:
     # alias > code > name > multi_token_name.
     (unique_id,) = all_matches
+    # R19: if every token that produced this match is purely numeric, the
+    # signal is a bare number (indistinguishable from a quantity / street
+    # number), so drop below the review gate and let a human confirm.
+    producing = match_normals.get(unique_id, set())
+    confidence = (
+        _CONF_NUMERIC_ONLY
+        if producing and all(n.isdigit() for n in producing)
+        else _CONF_UNIQUE
+    )
     for route in ("alias", "code", "name", "multi_token_name"):
         if unique_id in by_route[route]:
             return JobMatch(
                 job_id=unique_id,
-                confidence=_CONF_UNIQUE,
+                confidence=confidence,
                 ambiguous_matches=(),
                 matched_via=route,
             )
