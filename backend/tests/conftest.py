@@ -36,6 +36,13 @@ os.environ.setdefault(
 )
 os.environ.setdefault("JWT_SECRET", "test-secret-for-sitetracker-phase1-never-production")
 os.environ.setdefault("CORS_ALLOWED_ORIGINS", "https://localhost.test")
+# PR 6: attachment-storage vars are required in every non-dev env (test
+# included, same rationale as the JWT/CORS gates above). Fake values —
+# storage tests mock boto3 and never reach a real bucket.
+os.environ.setdefault("AWS_ENDPOINT_URL_S3", "https://storage.test.invalid")
+os.environ.setdefault("BUCKET_NAME", "sitetracker-test-bucket")
+os.environ.setdefault("AWS_ACCESS_KEY_ID", "test-storage-access-key")
+os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test-storage-secret-key-never-real")
 # Disable the auth rate limiter during the suite (audit E2): many tests share
 # the same client IP + admin email and would otherwise trip a per-minute cap.
 # The focused test in test_auth_rate_limit.py re-enables it explicitly.

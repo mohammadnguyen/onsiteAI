@@ -179,6 +179,29 @@ class Settings(BaseSettings):
     # ``mode="before"`` field validator below performs the split.
     cors_allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
+    # --- Timeline attachment storage (Tigris, S3-compatible; PR 6) ---
+    # The env-var names match what ``fly storage create`` injects as app
+    # secrets verbatim (AWS_* / BUCKET_NAME), so attaching a Tigris
+    # bucket configures the app with zero renaming. In any non-dev
+    # environment all four must be present (validated below, same
+    # fail-fast policy as the JWT/CORS gates); in development they may
+    # be absent and the storage service raises at first use instead.
+    storage_endpoint_url: str | None = Field(
+        default=None, validation_alias="AWS_ENDPOINT_URL_S3"
+    )
+    storage_bucket_name: str | None = Field(
+        default=None, validation_alias="BUCKET_NAME"
+    )
+    storage_access_key_id: str | None = Field(
+        default=None, validation_alias="AWS_ACCESS_KEY_ID"
+    )
+    storage_secret_access_key: str | None = Field(
+        default=None, validation_alias="AWS_SECRET_ACCESS_KEY"
+    )
+    # Presigned URL lifetime. 10 minutes default per the module plan;
+    # bounded so a typo can't mint week-long URLs.
+    storage_presign_expiry_seconds: int = Field(default=600, ge=60, le=3600)
+
     # Legacy input alias for ``ENVIRONMENT``. Never read this attribute
     # from application code — use :attr:`environment` (which mirrors
     # ``app_env``) instead. Existence on the model is purely so the
@@ -268,6 +291,26 @@ class Settings(BaseSettings):
                     f"Wildcard '*' is not allowed in CORS_ALLOWED_ORIGINS for "
                     f"APP_ENV={self.app_env!r}; list explicit origins."
                 )
+            # Attachment storage gate (PR 6). Names only in the message —
+            # never a value (the secret key must not reach stderr).
+            storage_vars = {
+                "AWS_ENDPOINT_URL_S3": self.storage_endpoint_url,
+                "BUCKET_NAME": self.storage_bucket_name,
+                "AWS_ACCESS_KEY_ID": self.storage_access_key_id,
+                "AWS_SECRET_ACCESS_KEY": self.storage_secret_access_key,
+            }
+            missing = sorted(
+                name
+                for name, value in storage_vars.items()
+                if value is None or not value.strip()
+            )
+            if missing:
+                raise ValueError(
+                    f"Attachment storage is not configured for "
+                    f"APP_ENV={self.app_env!r}: missing {', '.join(missing)}. "
+                    "Attach a Tigris bucket (`fly storage create`) or set "
+                    "the variables before deploying."
+                )
 
         return self
 
@@ -279,6 +322,24 @@ class Settings(BaseSettings):
         continues to compile. Prefer ``settings.app_env`` in new code.
         """
         return self.app_env
+
+    @property
+    def storage_is_configured(self) -> bool:
+        """``True`` iff all four attachment-storage values are present.
+
+        Guaranteed ``True`` in any non-dev environment (the validator
+        refuses to construct otherwise); in development the storage
+        service checks this at first use and raises a domain error.
+        """
+        return all(
+            value is not None and value.strip()
+            for value in (
+                self.storage_endpoint_url,
+                self.storage_bucket_name,
+                self.storage_access_key_id,
+                self.storage_secret_access_key,
+            )
+        )
 
     @property
     def jwt_secret_is_valid(self) -> bool:

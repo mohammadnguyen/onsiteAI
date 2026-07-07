@@ -49,3 +49,13 @@ primary_region = "syd"
 #     first migration's output is observable.
 #   - No [statics], no [mounts] — backend is stateless; persistent
 #     state lives in the attached Fly Managed Postgres cluster.
+#
+# Attachment storage (Timeline module, PR 6+): photo objects live in a
+# Tigris bucket, NOT on a volume (volumes are single-host NVMe with no
+# replication — wrong home for long-lived evidence photos). DEPLOY
+# ORDER MATTERS: run `fly storage create` (which injects
+# AWS_ENDPOINT_URL_S3 / BUCKET_NAME / AWS_ACCESS_KEY_ID /
+# AWS_SECRET_ACCESS_KEY as app secrets) BEFORE deploying any build that
+# includes PR 6 — the non-dev settings validator refuses to boot the
+# app if the four storage vars are missing, exactly like the JWT/CORS
+# gates.
