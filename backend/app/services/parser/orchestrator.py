@@ -41,11 +41,13 @@ row after inspecting the :class:`ParseResult`.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import uuid
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -76,6 +78,69 @@ _log = logging.getLogger("app.parser")
 # ``ExpenseCreate.description`` Pydantic ``max_length``. Kept local so the
 # parser has no import dependency on the ORM model.
 _MAX_DESCRIPTION_LEN = 500
+
+# --- LLM seam safety rails (audit R6) ---
+# Hard wall-clock cap on the optional LLM refinement call so a provider
+# hang can't stall expense capture on a job site.
+_LLM_TIMEOUT_S = 8.0
+# Review gates (must match app.services.parser.review): an LLM that
+# CHANGES a money-affecting field can never carry confidence at/above its
+# gate — an LLM-sourced amount/job always routes to a human reviewer.
+_AMOUNT_REVIEW_GATE = 0.8
+_JOB_REVIEW_GATE = 0.7
+
+
+def _clamp_conf(v: object) -> float:
+    """Coerce a confidence to a finite float in [0.0, 1.0] (0.0 on garbage)."""
+    try:
+        f = float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    if f != f:  # NaN
+        return 0.0
+    return max(0.0, min(1.0, f))
+
+
+def _valid_amount(value: object) -> bool:
+    """True iff an LLM-supplied amount is a safe, finite, positive Decimal."""
+    if value is None:
+        return True
+    if not isinstance(value, Decimal):
+        return False
+    return value.is_finite() and value > 0
+
+
+def _sanitize_llm_partial(rules: ParsePartial, llm: ParsePartial) -> ParsePartial:
+    """Constrain an LLM-returned partial so model output can't corrupt money
+    or bypass review (audit R6).
+
+    * Non-:class:`ParsePartial` or a nonsensical amount (NaN/Inf/non-Decimal/
+      <= 0) → drop the model's amount and keep the rules-derived one.
+    * All confidences are clamped to ``[0, 1]``.
+    * Any money field the LLM CHANGED (amount or job) has its confidence
+      forced below the review gate, so an LLM-sourced money value always
+      routes to a human — the model may fill/lower confidence, never raise
+      it past the gate.
+    """
+    if not isinstance(llm, ParsePartial):
+        return rules
+    if not _valid_amount(llm.amount_value):
+        llm = dataclasses.replace(
+            llm, amount_value=rules.amount_value, amount_conf=rules.amount_conf
+        )
+    amount_conf = _clamp_conf(llm.amount_conf)
+    job_conf = _clamp_conf(llm.job_conf)
+    if llm.amount_value != rules.amount_value:
+        amount_conf = min(amount_conf, _AMOUNT_REVIEW_GATE - 0.01)
+    if llm.job_id != rules.job_id:
+        job_conf = min(job_conf, _JOB_REVIEW_GATE - 0.01)
+    return dataclasses.replace(
+        llm,
+        amount_conf=amount_conf,
+        job_conf=job_conf,
+        supplier_conf=_clamp_conf(llm.supplier_conf),
+        category_conf=_clamp_conf(llm.category_conf),
+    )
 
 
 @dataclass(frozen=True)
@@ -254,7 +319,24 @@ async def parse(
     pre_llm_reasons = _review.derive_review_reasons(partial)
     if pre_llm_reasons:
         llm = llm_parser if llm_parser is not None else MockLLMParser()
-        partial = await llm.parse(raw_text, partial)
+        rules_partial = partial
+        try:
+            llm_result = await asyncio.wait_for(
+                llm.parse(raw_text, rules_partial), timeout=_LLM_TIMEOUT_S
+            )
+        except Exception as exc:
+            # An LLM outage / timeout / crash must never fail or hang expense
+            # capture. Fall back to the deterministic rules partial, which
+            # already carries its own review reasons (audit R6).
+            _log.warning("llm_parse_failed_fell_back error=%s", type(exc).__name__)
+            llm_result = rules_partial
+        if llm_result is rules_partial:
+            # No-op refinement (MockLLMParser identity) — keep as-is.
+            partial = rules_partial
+        else:
+            # Real model output: constrain it so it can't corrupt money or
+            # raise confidence past the review gate.
+            partial = _sanitize_llm_partial(rules_partial, llm_result)
 
     # Step 10: duplicate detection — gated on populated job + amount.
     # Labour / adjustment drafts without a job id or an amount cannot
