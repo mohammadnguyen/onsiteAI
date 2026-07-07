@@ -286,7 +286,8 @@
     "cancel": "Cancel",
     "close": "Close",
     "loading": "Loading...",
-    "error": "Something went wrong"
+    "error": "Something went wrong",
+    "retry": "Retry"
   },
   "lang": {
     "label": "Language",

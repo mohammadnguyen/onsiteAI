@@ -80,6 +80,15 @@ export function ExpenseDetail() {
     ev.preventDefault()
     if (!id) return
     setFormError(null)
+    const loaded = expense.data
+    // R13/S2: the backend 403s ANY contributor PATCH whose model_fields_set
+    // includes review_status (services/expenses.py). So include
+    // review_status — and, mirroring mobile's conditional-spread builder,
+    // expense_type — ONLY when the caller is an admin OR the value actually
+    // changed from the loaded row. A contributor editing their own fields
+    // (description, supplier, …) then sends neither, so Save no longer 403s.
+    const includeReviewStatus = isAdmin || reviewStatus !== loaded?.review_status
+    const includeExpenseType = isAdmin || expenseType !== loaded?.expense_type
     const body: ExpenseUpdate = {
       supplier_id: supplierId || null,
       category_id: categoryId || null,
@@ -89,8 +98,8 @@ export function ExpenseDetail() {
       expense_date: expenseDate || null,
       payment_method: paymentMethod,
       receipt_status: receiptStatus,
-      review_status: reviewStatus,
-      expense_type: expenseType,
+      ...(includeReviewStatus ? { review_status: reviewStatus } : {}),
+      ...(includeExpenseType ? { expense_type: expenseType } : {}),
       reason: reason || null,
     }
     try {
