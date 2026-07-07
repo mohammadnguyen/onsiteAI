@@ -20,6 +20,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -76,7 +77,10 @@ async def create_supplier_endpoint(
     """Create a supplier (admin only)."""
     try:
         return await create_supplier(db, body)
-    except DuplicateSupplierName as exc:
+    except (DuplicateSupplierName, IntegrityError) as exc:
+        # DuplicateSupplierName covers the pre-checked case; IntegrityError
+        # covers losing the race to a concurrent identical create (the DB
+        # UNIQUE backstop) — both are a clean 409, never a 500 (audit R30).
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Supplier with that name already exists",

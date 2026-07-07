@@ -100,7 +100,10 @@ async def detect_duplicate(
             Expense.expense_date <= window_hi,
             Expense.review_status != ReviewStatus.rejected,
         )
-        .order_by(Expense.created_at.asc())
+        # ``expense_id`` breaks ``created_at`` ties so "earliest is
+        # canonical" is deterministic — multi-row captures share the
+        # transaction ``created_at`` (audit R13).
+        .order_by(Expense.created_at.asc(), Expense.expense_id.asc())
     )
     result = await db.execute(stmt)
     candidates = result.scalars().all()

@@ -50,6 +50,7 @@ from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.text import normalize_alias
+from app.core.time import app_today
 from app.models import (
     Category,
     Expense,
@@ -511,7 +512,7 @@ def _validate_save(
         raise ExpenseValidationError("Supplier or description is required for supplier expenses")
 
     # Sanity: reject expense_date more than 5 years in the past.
-    cutoff = date.today() - timedelta(days=365 * _MAX_PAST_YEARS)
+    cutoff = app_today() - timedelta(days=365 * _MAX_PAST_YEARS)
     if expense_date < cutoff:
         raise ExpenseValidationError("Expense date is more than 5 years in the past")
     # CHP-5: reject future-dated expenses. The +1-day tolerance covers
@@ -519,7 +520,7 @@ def _validate_save(
     # capturing at 11pm local on Mon 12 May submits with their local
     # date; the server's UTC clock is already Tue 13 May. We accept
     # that. Anything beyond +1 day is genuinely wrong.
-    future_cutoff = date.today() + timedelta(days=_FUTURE_DATE_TOLERANCE_DAYS)
+    future_cutoff = app_today() + timedelta(days=_FUTURE_DATE_TOLERANCE_DAYS)
     if expense_date > future_cutoff:
         raise ExpenseValidationError("Expense date is in the future")
 
@@ -565,7 +566,7 @@ async def create_expense(
     submission).
     """
     caller_set = _fields_set_by_caller(payload)
-    expense_date = payload.expense_date or date.today()
+    expense_date = payload.expense_date or app_today()
     expense_type = payload.expense_type
     parse_result: ParseResult | None = None
     diagnostics: ParseDiagnostics | None = None
@@ -620,10 +621,18 @@ async def create_expense(
         expense_type=merged["expense_type"],
         description=merged["description"],
     )
-    # Confirm the job id refers to a real row.
+    # Confirm the job id refers to a real, ACTIVE row. The parser only
+    # resolves active jobs, but a structured/override ``job_id`` could
+    # point at an archived/completed job; the PATCH path already forbids
+    # this, so mirror it here (audit R32) — spend can't be booked to a
+    # non-active job on create either.
     job = await db.get(Job, merged["job_id"])
     if job is None:
         raise JobNotFoundForExpense(merged["job_id"])
+    if job.status != JobStatus.active:
+        raise ExpenseValidationError(
+            "Cannot add an expense to an archived or completed job — reopen it first"
+        )
     await _validate_fk_refs(
         db,
         job_id=merged["job_id"],
@@ -643,10 +652,27 @@ async def create_expense(
         merged["payment_method"],
     )
 
-    # Pick review_status + confidence_score from the parse result, if any.
-    review_status = (
-        parse_result.review_status if parse_result is not None else ReviewStatus.reviewed
+    # Determine review routing. Start from the parser's gating reasons
+    # (empty for a structured-only submission).
+    review_reasons: list[ReviewReasonCode] = (
+        list(parse_result.review_reasons) if parse_result is not None else []
     )
+
+    # Audit R1: a contributor's amount must be established by the parser's
+    # confidence pipeline. A structured-only submission (no parser ran) or
+    # a caller override of any money field would otherwise persist as
+    # ``reviewed`` with no queue row — a silent review bypass. Force such
+    # amounts to review. Admins retain the trusted structured path.
+    if entered_by.role != UserRole.admin:
+        money_overridden = bool(
+            {"amount_inc_gst", "amount_ex_gst", "gst_amount"} & caller_set
+        )
+        if (parse_result is None or money_overridden) and (
+            ReviewReasonCode.amount_uncertain not in review_reasons
+        ):
+            review_reasons.append(ReviewReasonCode.amount_uncertain)
+
+    review_status = ReviewStatus.pending if review_reasons else ReviewStatus.reviewed
     duplicate_flag = parse_result.partial.duplicate_flag if parse_result is not None else False
     duplicate_of_expense_id = (
         parse_result.partial.duplicate_of_expense_id if parse_result is not None else None
@@ -687,12 +713,13 @@ async def create_expense(
     db.add(expense)
     await db.flush()
 
-    # Enqueue a review-queue row if the parser produced any reasons.
-    if parse_result is not None and parse_result.review_reasons:
+    # Enqueue a review-queue row whenever there are gating reasons — from
+    # the parser or from the contributor money-review rule above.
+    if review_reasons:
         queue_row = ExpenseReviewQueue(
             review_id=uuid.uuid4(),
             expense_id=expense.expense_id,
-            review_reasons=list(parse_result.review_reasons),
+            review_reasons=review_reasons,
             status=ReviewQueueStatus.open,
         )
         db.add(queue_row)
@@ -716,7 +743,7 @@ async def preview_parse(
     llm_parser: LLMParser | None = None,
 ) -> ParsePreview:
     """Run the parser and return a :class:`ParsePreview`. Does NOT persist."""
-    when = expense_date or date.today()
+    when = expense_date or app_today()
     result = await parse(
         raw_text=raw_text,
         db=db,
@@ -727,9 +754,13 @@ async def preview_parse(
     )
 
     # Build a best-guess ExpenseCreate draft from the parser output.
-    # Not persisted — just a structured "here's what we'd write".
+    # Not persisted — just a structured "here's what we'd write". Use
+    # ``model_construct`` so an out-of-range parser amount (``$0``,
+    # ``$20M``) shown for review does not trip ExpenseCreate's field
+    # validators and turn a preview into a 500 (audit R17). Create-time
+    # validation still rejects such values with a clean 422.
     p = result.partial
-    draft = ExpenseCreate(
+    draft = ExpenseCreate.model_construct(
         raw_input_text=raw_text,
         job_id=p.job_id,
         supplier_id=p.supplier_id,

@@ -127,6 +127,27 @@ def create_app() -> FastAPI:
         expose_headers=["Content-Disposition"],
     )
 
+    # Audit R24: baseline security headers on every response. HSTS is safe
+    # to always send (ignored over plain HTTP); Fly's force_https means
+    # browsers see it over TLS. This is a JSON API, so in staging/prod
+    # (docs disabled) no first-party HTML/JS is served and the CSP can be
+    # locked to ``default-src 'none'``; in dev/test the interactive docs
+    # (Swagger UI) need inline script/style so the CSP is left off there.
+    @app.middleware("http")
+    async def _security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=63072000; includeSubDomains"
+        )
+        if not _docs_enabled:
+            response.headers.setdefault(
+                "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'"
+            )
+        return response
+
     # M0 observability: explicit app-level logging for unhandled
     # exceptions (anything that would surface as a 500). Starlette's
     # ServerErrorMiddleware invokes this handler to build the 500

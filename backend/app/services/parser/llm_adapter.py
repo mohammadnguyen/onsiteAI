@@ -125,6 +125,17 @@ class LLMParser(abc.ABC):
         LLM has higher confidence than the rules did. They MUST update
         source_per_field to "llm" for any field they change.
 
+        Safety rails (enforced by the orchestrator, audit R6): whatever a
+        real implementation returns is passed through
+        ``orchestrator._sanitize_llm_partial`` before use — the call is
+        wrapped in a timeout with fall-back to the rules partial, all
+        confidences are clamped to [0, 1], a non-finite/non-positive
+        amount is discarded, and any money field the model CHANGED
+        (amount or job) has its confidence forced below the review gate
+        so an LLM-sourced money value can never bypass the review queue.
+        Implementations therefore cannot assume a returned confidence is
+        honoured verbatim for money fields.
+
         Phase 2 ships only MockLLMParser, which returns rules_partial
         unchanged. A real Claude-backed implementation is Phase 2.5.
         """

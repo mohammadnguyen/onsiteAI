@@ -17,7 +17,27 @@ import { useMe } from './api/hooks/useAuth'
 function Index() {
   const me = useMe()
   const { t } = useTranslation()
-  if (me.isLoading || !me.data) {
+  if (me.isLoading) {
+    return <p className="p-6 text-slate-500">{t('common.loading')}</p>
+  }
+  // R25/M1: a transient /me failure must not sit on a permanent "Loading".
+  // Offer a retry (the outer RequireAuth already handles the no-token
+  // redirect, so a token is present here).
+  if (me.isError) {
+    return (
+      <div className="p-6">
+        <p className="text-slate-500">{t('common.error')}</p>
+        <button
+          type="button"
+          onClick={() => void me.refetch()}
+          className="mt-3 px-4 py-2 rounded-md text-sm font-medium bg-slate-900 text-white hover:bg-slate-800"
+        >
+          {t('common.retry')}
+        </button>
+      </div>
+    )
+  }
+  if (!me.data) {
     return <p className="p-6 text-slate-500">{t('common.loading')}</p>
   }
   return me.data.role === 'admin' ? (

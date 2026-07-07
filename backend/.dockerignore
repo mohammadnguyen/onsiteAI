@@ -1,0 +1,40 @@
+# Docker build-context excludes for the backend image.
+#
+# Context is the backend/ directory (see backend/Dockerfile). The Dockerfile
+# does `COPY . .`, so anything not excluded here is baked into the image.
+#
+# Runtime NEEDS (do NOT add these): app/, alembic/, alembic.ini, pyproject.toml,
+# uv.lock. The lifespan hook reads Config("alembic.ini") + alembic/versions/**,
+# and the uv build backend packages the `app` module. Keep all of them.
+
+# --- R15: never bake local secrets / env files into the image ---
+# The container gets its config from Fly secrets / env at runtime, never from a
+# committed .env. Exclude every concrete .env file, including the *.example ones
+# (the build does not use them).
+.env
+.env.*
+
+# --- Python virtualenv (rebuilt inside the image by `uv sync`) ---
+.venv/
+
+# --- Python caches / compiled artifacts ---
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- Tests are not needed at runtime (image is built --no-dev) ---
+tests/
+
+# --- VCS metadata ---
+.git/
+.gitignore
+
+# --- Docs (not referenced by pyproject/build) ---
+*.md
+
+# --- Docker artifacts themselves ---
+Dockerfile
+.dockerignore

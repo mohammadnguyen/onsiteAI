@@ -286,7 +286,8 @@
     "cancel": "取消",
     "close": "关闭",
     "loading": "加载中...",
-    "error": "发生错误"
+    "error": "发生错误",
+    "retry": "重试"
   },
   "lang": {
     "label": "语言",

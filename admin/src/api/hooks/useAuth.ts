@@ -49,11 +49,13 @@ export function useLogout() {
     },
     onSettled: () => {
       clear()
-      // Fully remove (not just invalidate) /auth/me. Invalidation with
-      // staleTime: Infinity leaves the previous user's profile sitting in
-      // cache until a refetch completes — long enough for <Index> to read
-      // it and route the next user to the wrong landing page.
-      qc.removeQueries({ queryKey: ME_QUERY_KEY })
+      // R12/H2: wipe the ENTIRE query cache at the auth boundary, not just
+      // /auth/me. Cached ['jobs'] (money/margin summary), ['expenses'],
+      // ['users'] and budget-summary data must not survive a user switch on
+      // a shared PC. Mirrors mobile's resetSessionState() (Audit B-02) and
+      // the 401 interceptor's terminalLogout(). qc is the same singleton
+      // the interceptor clears (see api/queryClient.ts).
+      qc.clear()
     },
   })
 }

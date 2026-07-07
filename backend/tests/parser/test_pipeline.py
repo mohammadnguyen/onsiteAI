@@ -369,17 +369,17 @@ async def test_mock_llm_not_called_when_no_review_reasons(
 
 
 @pytest.mark.asyncio
-async def test_llm_returning_new_partial_is_honoured(
+async def test_llm_changed_amount_is_forced_to_review(
     db_session,
     seeded_pipeline_world,
 ):
-    """An LLM that replace()s a field has its changes reflected downstream."""
+    """Audit R6: an LLM-CHANGED money field is honoured as a value but can
+    never carry review-exempt confidence — it always routes to a human."""
     w = seeded_pipeline_world
 
     def _override_amount(partial: ParsePartial) -> ParsePartial:
-        # Mimic a Phase 2.5 ClaudeLLMParser: produce a new partial via
-        # ``dataclasses.replace`` with the overridden field AND a
-        # ``source_per_field`` bump to ``"llm"``.
+        # Mimic a Phase 2.5 ClaudeLLMParser claiming near-certainty on a
+        # rewritten amount — the exact silent-write vector the audit flagged.
         new_source = {**partial.source_per_field, "amount": "llm"}
         return dataclasses.replace(
             partial,
@@ -399,13 +399,62 @@ async def test_llm_returning_new_partial_is_honoured(
         llm_parser=spy,
     )
 
-    # Orchestrator accepts the LLM's updated values.
+    # The LLM's suggested value is kept as a default for the reviewer...
     assert result.partial.amount_value == Decimal("999.99")
-    assert result.partial.amount_conf == 0.99
     assert result.partial.source_per_field["amount"] == "llm"
-    # The LLM override was high-confidence — amount_uncertain should
-    # NOT fire on the post-LLM partial (0.99 ≥ 0.8).
-    assert ReviewReasonCode.amount_uncertain not in result.review_reasons
+    # ...but its confidence is capped below the 0.8 gate, so the
+    # LLM-sourced amount is forced to review (no silent write).
+    assert result.partial.amount_conf < 0.8
+    assert ReviewReasonCode.amount_uncertain in result.review_reasons
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_falls_back_to_rules(
+    db_session,
+    seeded_pipeline_world,
+):
+    """Audit R6: an LLM that raises must not fail capture — the pipeline
+    falls back to the deterministic rules partial."""
+    w = seeded_pipeline_world
+
+    def _boom(partial: ParsePartial) -> ParsePartial:
+        raise RuntimeError("simulated LLM provider outage")
+
+    result = await parse(
+        raw_text="工地1 水工材料 163",
+        db=db_session,
+        entered_by=w["admin"],
+        expense_date=date(2026, 4, 21),
+        expense_type=ExpenseType.supplier_expense,
+        llm_parser=SpyLLMParser(returns=_boom),
+    )
+
+    # Parse still succeeds; the rules-derived amount survives.
+    assert result.partial.amount_value == Decimal("163")
+
+
+@pytest.mark.asyncio
+async def test_llm_nan_amount_is_discarded(
+    db_session,
+    seeded_pipeline_world,
+):
+    """Audit R6: a non-finite LLM amount is dropped, not written (would 500)."""
+    w = seeded_pipeline_world
+
+    def _nan(partial: ParsePartial) -> ParsePartial:
+        return dataclasses.replace(partial, amount_value=Decimal("NaN"), amount_conf=0.99)
+
+    result = await parse(
+        raw_text="工地1 水工材料 163",
+        db=db_session,
+        entered_by=w["admin"],
+        expense_date=date(2026, 4, 21),
+        expense_type=ExpenseType.supplier_expense,
+        llm_parser=SpyLLMParser(returns=_nan),
+    )
+
+    # The NaN is discarded and the rules amount is retained.
+    assert result.partial.amount_value == Decimal("163")
 
 
 # ---------------------------------------------------------------------------

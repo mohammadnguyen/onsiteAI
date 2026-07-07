@@ -176,12 +176,27 @@ def test_cjk_full_string():
 
 
 def test_full_width_nfkc_folding():
-    """Full-width ``Ｓｉｔｅ１`` normalizes to ``site1`` via normalize_alias."""
+    """Full-width ``Ｓｉｔｅ１`` folds to half-width ``Site1`` at tokenize.
+
+    The tokenizer applies a span-preserving full-width → half-width fold
+    (audit R21) so the amount extractor sees ordinary ``$``/digits for
+    Chinese-IME input. ``normalized`` still casefolds to ``site1``.
+    """
     tokens = tokenize("Ｓｉｔｅ１")
     assert len(tokens) == 1
-    assert tokens[0].text == "Ｓｉｔｅ１"  # original preserved
-    assert tokens[0].normalized == "site1"  # NFKC + casefold
+    assert tokens[0].text == "Site1"  # full-width folded to half-width
+    assert tokens[0].normalized == "site1"  # + casefold
     assert tokens[0].is_numeric_like is False
+
+
+def test_full_width_currency_glyph_peels():
+    """Full-width ``＄３０５`` folds and peels like ``$305`` (audit R21)."""
+    tokens = tokenize("＄３０５")
+    assert [t.text for t in tokens] == ["$", "305"]
+    assert tokens[1].is_numeric_like is True
+    # Span still indexes the original (one codepoint per glyph) string.
+    assert tokens[0].span == (0, 1)
+    assert tokens[1].span == (1, 4)
 
 
 def test_leading_and_trailing_whitespace_stripped():

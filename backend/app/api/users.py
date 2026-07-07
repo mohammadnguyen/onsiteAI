@@ -19,6 +19,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -75,6 +76,13 @@ async def invite_user_endpoint(
     except svc.DuplicateEmail as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except IntegrityError as exc:
+        # Lost the email pre-check race to a concurrent invite — the DB
+        # UNIQUE backstop fired; surface a clean 409, not a 500 (audit R30).
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A user with that email already exists",
         ) from exc
     except svc.AdminLimitReached as exc:
         raise HTTPException(

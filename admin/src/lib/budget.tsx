@@ -274,12 +274,37 @@ export function calcTargetCostLimit(
   const contract = Number(contractExGst)
   const target = Number(targetProfitRatioPct)
   if (!Number.isFinite(contract) || !Number.isFinite(target)) return ''
-  // Compute in cents to dodge JS float drift on the (1 - target/100) factor:
-  //   result_cents = round(contract_cents × (10000 − target_basis_points) / 10000)
-  // Then divide by 100 for the dollar-string. Tolerable for amounts up to
-  // ~$10M (matches the gst.ts precision note).
-  const resultDollars = (contract * (100 - target)) / 100
-  return resultDollars.toFixed(2)
+  // Compute in integer cents so the result matches the backend, which
+  // quantizes ``contract * (100 − target) / 100`` to 0.01 with Decimal's
+  // ROUND_HALF_EVEN (banker's rounding — services/budget_summary.py `_q`).
+  //   result_cents = roundHalfEven(contract_cents × (10000 − target_bps) / 10000)
+  // where target_bps = target × 100. `.toFixed` alone rounds half AWAY
+  // from zero and so could diverge by a cent on exact-half ties; the
+  // integer path below closes that gap as tightly as JS floats allow
+  // (exact for amounts up to ~$10M, per the gst.ts precision note).
+  const contractCents = Math.round(contract * 100)
+  const targetBasisPoints = target * 100
+  const rawResultCents = (contractCents * (10000 - targetBasisPoints)) / 10000
+  const resultCents = roundHalfEven(rawResultCents)
+  return (resultCents / 100).toFixed(2)
+}
+
+/**
+ * Round to the nearest integer using round-half-to-even (banker's
+ * rounding) — the tie-break Python's ``Decimal.quantize`` uses by
+ * default, and therefore what the backend money math uses. A small
+ * epsilon absorbs float representation error so a value that is a
+ * mathematical half (e.g. 2.5) is treated as a tie rather than being
+ * nudged to one side by binary drift.
+ */
+function roundHalfEven(value: number): number {
+  const floor = Math.floor(value)
+  const diff = value - floor
+  const EPSILON = 1e-9
+  if (diff < 0.5 - EPSILON) return floor
+  if (diff > 0.5 + EPSILON) return floor + 1
+  // Exact half → round to the even neighbour.
+  return floor % 2 === 0 ? floor : floor + 1
 }
 
 /**

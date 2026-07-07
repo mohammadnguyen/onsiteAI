@@ -18,7 +18,7 @@ Tests cover:
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -79,9 +79,16 @@ async def _make_expense(
     description: str | None,
     review_status: ReviewStatus = ReviewStatus.reviewed,
     expense_type: ExpenseType = ExpenseType.supplier_expense,
+    created_at: datetime | None = None,
 ) -> Expense:
-    """Insert an :class:`Expense` row. Returns the persisted expense."""
-    expense = Expense(
+    """Insert an :class:`Expense` row. Returns the persisted expense.
+
+    ``created_at`` may be set explicitly to give rows distinct insertion
+    timestamps; the DB ``server_default=now()`` is transaction-scoped, so
+    rows flushed in one test transaction would otherwise share a timestamp
+    (fine in production where each expense is its own transaction).
+    """
+    fields: dict = dict(
         expense_id=uuid.uuid4(),
         job_id=job.job_id,
         supplier_id=supplier.supplier_id if supplier is not None else None,
@@ -92,6 +99,9 @@ async def _make_expense(
         expense_date=on_date,
         review_status=review_status,
     )
+    if created_at is not None:
+        fields["created_at"] = created_at
+    expense = Expense(**fields)
     db_session.add(expense)
     await db_session.flush()
     return expense
@@ -405,9 +415,11 @@ async def test_returns_earliest_match(db_session, seeded_admin):
     job = await _make_job(db_session, seeded_admin, name="Multi Job", code="ML-01")
     sup = await _make_supplier(db_session, name="Multi Supplier")
 
-    # Two priors with the same (job, amount, date, supplier). Each flush
-    # assigns a server-default ``created_at`` in insertion order, so the
-    # FIRST one flushed should be the earliest by ``created_at`` ASC.
+    # Two priors with the same (job, amount, date, supplier). Give them
+    # explicit, distinct ``created_at`` values (in production each expense
+    # is a separate transaction with its own timestamp) so "earliest by
+    # created_at ASC" is unambiguous — the DB server_default now() is
+    # transaction-scoped and would otherwise tie both rows.
     earliest = await _make_expense(
         db_session,
         seeded_admin,
@@ -416,6 +428,7 @@ async def test_returns_earliest_match(db_session, seeded_admin):
         on_date=date(2026, 4, 5),
         supplier=sup,
         description="first entry",
+        created_at=datetime(2026, 4, 5, 9, 0, 0, tzinfo=UTC),
     )
     await _make_expense(
         db_session,
@@ -425,6 +438,7 @@ async def test_returns_earliest_match(db_session, seeded_admin):
         on_date=date(2026, 4, 5),
         supplier=sup,
         description="second entry",
+        created_at=datetime(2026, 4, 5, 10, 0, 0, tzinfo=UTC),
     )
 
     result = await detect_duplicate(

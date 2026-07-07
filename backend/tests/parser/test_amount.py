@@ -59,8 +59,10 @@ from app.services.parser.tokens import Token, tokenize
         ("¥100 $50", Decimal("50"), 0.9, False, False),
         # Non-AUD beats nothing else: flag stays True on the winner
         ("¥100 timber", Decimal("100"), 0.3, True, False),
-        # AUD decimal (1.0) beats AUD integer (0.9) from same input
-        ("$305 $50.00", Decimal("50.00"), 1.0, False, False),
+        # Two distinct $-marked values (unit price + total) are ambiguous
+        # — route to review instead of silently letting the decimal tier
+        # win (audit R2/F6). Value default = highest-confidence AUD value.
+        ("$305 $50.00", Decimal("50.00"), 0.0, False, True),
         # Bare decimal (0.7) beats bare integer (0.5)
         ("305 400.50", Decimal("400.50"), 0.7, False, False),
         # --- Ambiguous ties — confidence collapses to 0.0 ---
@@ -108,6 +110,21 @@ from app.services.parser.tokens import Token, tokenize
         # "$Ｓｉｔｅ１" — the mixed-letters chunk is NOT numeric (letters
         # disqualify the regex), so no candidate at all.
         ("$Ｓｉｔｅ１", None, 0.0, False, False),
+        # --- Audit R21: full-width currency glyphs (Chinese-IME default) ---
+        # "＄３０５" folds to "$305" → AUD integer.
+        ("＄３０５ Kelly", Decimal("305"), 0.9, False, False),
+        # "￥500" folds to "¥500" → non-AUD unsupported (was silently no
+        # amount at all before the fold).
+        ("￥500 Kelly", Decimal("500"), 0.3, True, False),
+        # --- Audit R2/F5: leading minus = refund/negative → review ---
+        # Positive default surfaced for the reviewer, but ambiguous so it
+        # never silently books a positive cost.
+        ("-$50 Bunnings Kelly refund", Decimal("50"), 0.0, False, True),
+        ("－$50 refund", Decimal("50"), 0.0, False, True),  # full-width minus
+        # --- Audit R2/F6: unit price + total across tiers → review ---
+        ("2 taps $60.50 each total $121", Decimal("60.50"), 0.0, False, True),
+        # A bare quantity alongside one $-amount is NOT ambiguous.
+        ("$305 Bunnings 20 bags", Decimal("305"), 0.9, False, False),
     ],
 )
 def test_extract_amount_matrix(
