@@ -477,6 +477,26 @@ After close-out, Slice 2-B2 is complete. Slice 2-B3 (backup/restore
 rehearsal — `staging-backup-restore.md`) is a separate user-gated
 batch.
 
+## Gate D-11: Attach Tigris attachment storage (required from PR 6 onward)
+
+Added with the Timeline module (PR 6). Any build containing PR 6+
+refuses to boot in a non-dev environment unless the four storage vars
+are set — the same fail-fast policy as `JWT_SECRET` / `CORS_ALLOWED_ORIGINS`.
+This also applies to **manual alembic runs** (`alembic upgrade head`
+loads settings) and the seed scripts, not just the app process.
+
+- Run BEFORE deploying any PR 6+ build:
+  `fly storage create --app sitetracker-backend-staging`
+  This injects `AWS_ENDPOINT_URL_S3`, `BUCKET_NAME`,
+  `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` as app secrets.
+- The bucket MUST remain **private** — never pass `--public`. Every
+  download is served through short-lived presigned GET URLs; a public
+  bucket silently defeats that access model (keys have guessable
+  prefixes).
+- Note: the config gate checks presence only, not placeholder values —
+  a leftover `<REPLACE-...>` boots and fails at first upload. Verify
+  with a real presigned upload during Gate D-9 smoke once PR 7 lands.
+
 ## Hard boundaries (apply to every gate)
 
 - NO production environment. NO production data.

@@ -142,6 +142,12 @@ def generate_presigned_put(storage_key: str, content_type: str) -> str:
     a URL requested for a JPEG cannot be used to upload arbitrary
     content types.
 
+    CALLER CONTRACT: this layer signs whatever ``content_type`` it is
+    given — allow-listing is NOT done here. Callers must pass only
+    schema-validated values (PR 3's ``AttachmentUploadRequest`` pins
+    ``image/jpeg`` / ``image/png``); signing e.g. ``text/html`` would
+    let an uploaded payload render as a page on the bucket origin.
+
     Known limit of SigV4 *query* auth: object SIZE is not bindable —
     ``Content-Length`` is absent at presign time (``content-length-range``
     exists only for presigned POST), so the URL holder may upload any

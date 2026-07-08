@@ -58,4 +58,6 @@ primary_region = "syd"
 # AWS_SECRET_ACCESS_KEY as app secrets) BEFORE deploying any build that
 # includes PR 6 — the non-dev settings validator refuses to boot the
 # app if the four storage vars are missing, exactly like the JWT/CORS
-# gates.
+# gates. The bucket MUST remain PRIVATE (never `--public`): downloads
+# are served exclusively through short-lived presigned GET URLs, and a
+# public bucket silently defeats that access model.

@@ -73,6 +73,10 @@ alone.
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | no (default `60`) | `app.core.security` | |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | no (default `30`) | `app.core.security` | |
 | `CORS_ALLOWED_ORIGINS` | yes (non-dev) | `app.config.Settings`, `app.main` | Comma-separated. See format spec below. |
+| `AWS_ENDPOINT_URL_S3` | yes (non-dev) | `app.config.Settings`, `app.services.timeline_storage` | Tigris S3 endpoint; injected by `fly storage create`. |
+| `BUCKET_NAME` | yes (non-dev) | `app.config.Settings`, `app.services.timeline_storage` | Attachment bucket. Must be **private** — never `fly storage create --public`. |
+| `AWS_ACCESS_KEY_ID` | yes (non-dev) | `app.config.Settings`, `app.services.timeline_storage` | Injected by `fly storage create`. Presence-only gate: a leftover `<REPLACE>` placeholder boots but fails at first upload. |
+| `AWS_SECRET_ACCESS_KEY` | yes (non-dev) | `app.config.Settings`, `app.services.timeline_storage` | Secret. Same handling rules as `JWT_SECRET`. |
 | `ENVIRONMENT` | no (deprecated) | `app.config.Settings` | Only for legacy / migration; do not set in new files. |
 
 ### Admin
