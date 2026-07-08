@@ -81,14 +81,43 @@ def test_production_partial_storage_config_names_only_missing():
     assert "AWS_ENDPOINT_URL_S3" not in msg  # present vars are not listed
 
 
-def test_gate_error_never_leaks_secret_value():
+def test_gate_error_never_leaks_secret_value(monkeypatch, tmp_path):
+    """The failure path the app actually runs (get_settings ->
+    SettingsValidationError) must not surface any fragment of the
+    storage secret.
+
+    Deliberately NOT asserted on a raw ``Settings(...)`` ValidationError:
+    pydantic's own repr embeds a truncated ``input_value=`` dict that can
+    include the secret's tail — the codebase's defence is the
+    ``get_settings`` wrapper (same design as the JWT-secret leak guard in
+    test_config.py), so that is the boundary this test pins, with the
+    same sliding-window rigour.
+    """
+    from app.config import SettingsValidationError, get_settings
+
     sentinel = "super-secret-storage-key-DO-NOT-LEAK-0123456789"
-    with pytest.raises(ValidationError) as exc:
-        _settings(
-            storage_secret_access_key=sentinel,
-            storage_bucket_name=None,  # trip the gate with the secret present
-        )
-    assert sentinel not in str(exc.value)
+    monkeypatch.chdir(tmp_path)  # no stray .env files
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", _VALID_DB_URL)
+    monkeypatch.setenv("JWT_SECRET", _VALID_SECRET)
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", _VALID_ORIGIN)
+    monkeypatch.setenv("AWS_ENDPOINT_URL_S3", "https://fly.storage.tigris.dev")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "tid_access")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", sentinel)
+    monkeypatch.delenv("BUCKET_NAME", raising=False)  # trip the gate
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(SettingsValidationError) as exc:
+            get_settings()
+        msg = str(exc.value)
+        assert "BUCKET_NAME" in msg
+        assert sentinel not in msg
+        # Guard against substrings (any 10-char window) leaking, same
+        # rigour as the JWT leak test.
+        for i in range(0, len(sentinel) - 10):
+            assert sentinel[i : i + 10] not in msg
+    finally:
+        get_settings.cache_clear()  # next caller re-resolves suite env
 
 
 def test_blank_storage_value_counts_as_missing():
@@ -166,6 +195,9 @@ def test_client_built_with_tigris_requirements(stub_boto3):
     assert kwargs["endpoint_url"] == "https://storage.test.invalid"
     assert kwargs["aws_access_key_id"] == "test-storage-access-key"
     assert kwargs["aws_secret_access_key"] == "test-storage-secret-key-never-real"
+    # Pinned region: keeps the SigV4 credential scope deterministic
+    # instead of inheriting AWS_REGION / ~/.aws/config from the host.
+    assert kwargs["region_name"] == "auto"
     cfg = kwargs["config"]
     assert cfg.signature_version == "s3v4"
     assert cfg.s3 == {"addressing_style": "virtual"}

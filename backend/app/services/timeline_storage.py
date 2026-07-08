@@ -30,6 +30,7 @@ it is an operator configuration fault, not a client error.
 from __future__ import annotations
 
 import re
+import threading
 import uuid
 
 import boto3
@@ -58,32 +59,47 @@ class StorageNotConfigured(Exception):
 # constructed on first use so tests can monkeypatch ``boto3.client`` or
 # settings before any client exists. ``reset_client_cache`` is the
 # test/reload hook (analogous to ``get_settings.cache_clear()``).
+# The lock guards first construction: async-def callers can't interleave
+# inside the builder, but a future sync-def endpoint (threadpool) could —
+# and ``boto3.client`` lazily initialises boto3's module-global default
+# session, which boto3 documents as NOT thread-safe.
 _client = None
+_client_lock = threading.Lock()
 
 
 def reset_client_cache() -> None:
     """Discard the cached S3 client (tests / settings reload)."""
     global _client
-    _client = None
+    with _client_lock:
+        _client = None
 
 
 def _get_client():
     """Return the process-wide S3 client, creating it on first use."""
     global _client
     if _client is None:
-        settings = get_settings()
-        if not settings.storage_is_configured:
-            raise StorageNotConfigured()
-        _client = boto3.client(
-            "s3",
-            endpoint_url=settings.storage_endpoint_url,
-            aws_access_key_id=settings.storage_access_key_id,
-            aws_secret_access_key=settings.storage_secret_access_key,
-            config=Config(
-                signature_version="s3v4",
-                s3={"addressing_style": "virtual"},
-            ),
-        )
+        with _client_lock:
+            if _client is None:  # re-check under the lock
+                settings = get_settings()
+                if not settings.storage_is_configured:
+                    raise StorageNotConfigured()
+                _client = boto3.client(
+                    "s3",
+                    endpoint_url=settings.storage_endpoint_url,
+                    # Tigris ignores region semantics and documents
+                    # "auto"; pinning it keeps the SigV4 credential
+                    # scope deterministic instead of inheriting
+                    # AWS_REGION / ~/.aws/config from the host (a
+                    # non-Fly deploy without AWS_REGION would otherwise
+                    # silently sign for us-east-1).
+                    region_name="auto",
+                    aws_access_key_id=settings.storage_access_key_id,
+                    aws_secret_access_key=settings.storage_secret_access_key,
+                    config=Config(
+                        signature_version="s3v4",
+                        s3={"addressing_style": "virtual"},
+                    ),
+                )
     return _client
 
 
@@ -125,6 +141,13 @@ def generate_presigned_put(storage_key: str, content_type: str) -> str:
     exact ``Content-Type`` header it declared to the issue endpoint, so
     a URL requested for a JPEG cannot be used to upload arbitrary
     content types.
+
+    Known limit of SigV4 *query* auth: object SIZE is not bindable —
+    ``Content-Length`` is absent at presign time (``content-length-range``
+    exists only for presigned POST), so the URL holder may upload any
+    byte size (and re-PUT the same key) until expiry. PR 7's confirm
+    step and object-storage monitoring are the size controls; the
+    storage layer cannot bound it.
     """
     settings = get_settings()
     return _get_client().generate_presigned_url(
