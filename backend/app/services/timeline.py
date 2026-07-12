@@ -41,7 +41,7 @@ import base64
 import enum
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select, tuple_
@@ -50,6 +50,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.job import Job
 from app.models.timeline import (
+    AttachmentUploadStatus,
     IssueStatus,
     JobChecklistItem,
     TimelineAttachment,
@@ -58,7 +59,13 @@ from app.models.timeline import (
     TimelineItemType,
 )
 from app.models.user import User, UserRole
-from app.schemas.timeline import TimelineItemCreate, TimelineItemUpdate
+from app.schemas.timeline import (
+    AttachmentConfirm,
+    AttachmentUploadRequest,
+    TimelineItemCreate,
+    TimelineItemUpdate,
+)
+from app.services import timeline_storage
 
 
 class JobNotFoundForTimeline(Exception):
@@ -88,6 +95,14 @@ class ChecklistItemNotFound(Exception):
     def __init__(self, checklist_item_id: uuid.UUID):
         self.checklist_item_id = checklist_item_id
         super().__init__(f"Checklist item {checklist_item_id} not found")
+
+
+class AttachmentNotFound(Exception):
+    """Raised when an attachment id doesn't resolve to a live row."""
+
+    def __init__(self, attachment_id: uuid.UUID):
+        self.attachment_id = attachment_id
+        super().__init__(f"Attachment {attachment_id} not found")
 
 
 class TimelinePermissionDenied(Exception):
@@ -692,3 +707,179 @@ async def toggle_checklist_item(
     row.done_by = current_user.user_id if is_done else None
     await db.flush()
     return row
+
+
+# ---------------------------------------------------------------------------
+# Attachments (presign issue -> client PUT -> confirm -> download)
+# ---------------------------------------------------------------------------
+#
+# Two-phase direct upload: the issue endpoint inserts a ``pending`` row
+# and signs a PUT URL; the client uploads straight to object storage;
+# the confirm endpoint records final dimensions and flips the row to
+# ``confirmed``. Attachment operations write no ``timeline_audit_log``
+# rows — the audit contract (PR 4) is item-centric, and the attachment
+# lifecycle is fully reconstructable from the row itself
+# (``created_by`` / ``created_at`` / ``upload_status`` / ``deleted_at``).
+
+
+async def _get_attachment(
+    db: AsyncSession, attachment_id: uuid.UUID
+) -> TimelineAttachment:
+    """Fetch one live attachment via ``select`` (NEVER ``session.get``)."""
+    row = (
+        await db.execute(
+            select(TimelineAttachment).where(
+                TimelineAttachment.attachment_id == attachment_id
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise AttachmentNotFound(attachment_id)
+    return row
+
+
+async def create_attachment_upload(
+    db: AsyncSession,
+    *,
+    item_id: uuid.UUID,
+    current_user: User,
+    payload: AttachmentUploadRequest,
+) -> tuple[TimelineAttachment, str]:
+    """Insert a ``pending`` attachment row and sign its upload URL.
+
+    Any team member with access to the item's job may attach evidence
+    (per the permission matrix the issue endpoint is not creator-gated;
+    ownership of the *attachment* is the requester, and only they — or
+    an admin — may confirm it). Evidence metadata (``taken_at`` / GPS)
+    is recorded now, from the pre-resize EXIF read; the object's final
+    byte size / dimensions arrive at confirm.
+
+    Row insert and presign share the request transaction: if signing
+    raises (:class:`~app.services.timeline_storage.StorageNotConfigured`
+    in dev), the rollback discards the pending row.
+
+    Returns ``(attachment, presigned_put_url)``.
+    """
+    item = await _get_item(db, item_id)
+    await _ensure_job_access(db, item.job_id, current_user)
+
+    storage_key = timeline_storage.build_storage_key(
+        item.job_id, item.timeline_item_id, payload.filename
+    )
+    attachment = TimelineAttachment(
+        attachment_id=uuid.uuid4(),
+        timeline_item_id=item.timeline_item_id,
+        storage_key=storage_key,
+        content_type=payload.content_type,
+        taken_at=payload.taken_at,
+        gps_lat=payload.gps_lat,
+        gps_lng=payload.gps_lng,
+        created_by=current_user.user_id,
+    )
+    db.add(attachment)
+    await db.flush()
+
+    # content_type is schema-whitelisted (image/jpeg | image/png) by
+    # AttachmentUploadRequest — the storage layer signs it verbatim.
+    presigned_url = timeline_storage.generate_presigned_put(
+        storage_key, payload.content_type
+    )
+    return attachment, presigned_url
+
+
+async def confirm_attachment(
+    db: AsyncSession,
+    *,
+    attachment_id: uuid.UUID,
+    current_user: User,
+    payload: AttachmentConfirm,
+) -> TimelineAttachment:
+    """Record final object metadata and flip ``pending`` → ``confirmed``.
+
+    Only the attachment's creator (the uploader) or an admin may
+    confirm — confirming asserts "I put these bytes there", which
+    nobody else can truthfully claim. Re-confirming an already-
+    confirmed attachment is treated as a weak-network retry: the
+    supplied dimensions are re-applied and the row returned (no error,
+    no state regression).
+    """
+    attachment = await _get_attachment(db, attachment_id)
+    # Parent item must still be live; its job is the access scope.
+    item = await _get_item(db, attachment.timeline_item_id)
+    await _ensure_job_access(db, item.job_id, current_user)
+    if not (
+        _is_admin(current_user)
+        or attachment.created_by == current_user.user_id
+    ):
+        raise TimelinePermissionDenied("Not your attachment")
+
+    attachment.byte_size = payload.byte_size
+    attachment.width = payload.width
+    attachment.height = payload.height
+    attachment.upload_status = AttachmentUploadStatus.confirmed
+    await db.flush()
+    return attachment
+
+
+async def get_attachment_download(
+    db: AsyncSession,
+    *,
+    attachment_id: uuid.UUID,
+    current_user: User,
+) -> tuple[TimelineAttachment, str]:
+    """Return a live, confirmed attachment plus a short-lived GET URL.
+
+    Read access is team-wide (same job-visibility rule as the item
+    itself). A ``pending`` attachment has no confirmed object behind
+    it — requesting its download is a 422-semantics validation error,
+    not a 404: the row is visible in detail responses, so existence is
+    no secret; the state is just wrong.
+    """
+    attachment = await _get_attachment(db, attachment_id)
+    item = await _get_item(db, attachment.timeline_item_id)
+    await _ensure_job_access(db, item.job_id, current_user)
+    if attachment.upload_status is not AttachmentUploadStatus.confirmed:
+        raise TimelineValidationError(
+            "attachment upload has not been confirmed"
+        )
+    download_url = timeline_storage.generate_presigned_get(
+        attachment.storage_key
+    )
+    return attachment, download_url
+
+
+async def purge_orphan_attachments(
+    db: AsyncSession,
+    *,
+    older_than_hours: int = 24,
+) -> int:
+    """Soft-delete ``pending`` attachment rows older than the cutoff.
+
+    Orphans arise when a client obtains a presigned PUT but never
+    confirms (crash, dead battery, abandoned upload). This is the
+    row-level half of cleanup; it returns the number of rows swept.
+
+    PLACEHOLDER SCOPE (per the module plan): no scheduler invokes this
+    yet, and the object-storage half (``delete_object`` on the swept
+    keys — some orphans have real bytes behind them) is deferred until
+    a background-task runner exists. Wire both together then.
+    """
+    cutoff = datetime.now(UTC) - timedelta(hours=older_than_hours)
+    stale = (
+        (
+            await db.execute(
+                select(TimelineAttachment).where(
+                    TimelineAttachment.upload_status
+                    == AttachmentUploadStatus.pending,
+                    TimelineAttachment.created_at < cutoff,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    for row in stale:
+        row.deleted_at = now
+    await db.flush()
+    return len(stale)

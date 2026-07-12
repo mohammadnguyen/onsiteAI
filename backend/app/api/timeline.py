@@ -35,6 +35,10 @@ from app.database import get_db
 from app.deps import get_current_user
 from app.models import IssueStatus, TimelineItemType, User
 from app.schemas.timeline import (
+    AttachmentConfirm,
+    AttachmentPublic,
+    AttachmentUploadRequest,
+    AttachmentUploadResponse,
     ChecklistItemPublic,
     ChecklistToggle,
     IssueStatusUpdate,
@@ -45,6 +49,7 @@ from app.schemas.timeline import (
     TimelineItemUpdate,
 )
 from app.services import timeline as svc
+from app.services.timeline_storage import StorageNotConfigured
 
 router = APIRouter(tags=["timeline"])
 
@@ -71,6 +76,20 @@ def _map_validation(exc: svc.TimelineValidationError) -> HTTPException:
     # Literal 422 (as in app/api/expenses.py): starlette deprecated the
     # HTTP_422_UNPROCESSABLE_ENTITY constant name.
     return HTTPException(status_code=422, detail=exc.detail)
+
+
+def _map_attachment_not_found(exc: svc.AttachmentNotFound) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found"
+    )
+
+
+def _map_storage_unconfigured(exc: StorageNotConfigured) -> HTTPException:
+    # Operator misconfiguration (dev without a bucket), not a client
+    # error: 503 says "try again once the service is configured".
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=exc.detail
+    )
 
 
 @router.get(
@@ -248,6 +267,100 @@ async def change_issue_status_endpoint(
     except svc.TimelineValidationError as exc:
         raise _map_validation(exc) from exc
     return TimelineItemPublic.model_validate(item)
+
+
+@router.post(
+    "/timeline/{item_id}/attachments",
+    response_model=AttachmentUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_attachment_upload_endpoint(
+    item_id: uuid.UUID,
+    body: AttachmentUploadRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> AttachmentUploadResponse:
+    """Insert a pending attachment row and return its presigned PUT URL.
+
+    The client PUTs the bytes directly to object storage (with the
+    exact ``Content-Type`` it declared here — it is signature-bound),
+    then calls the confirm endpoint.
+    """
+    try:
+        attachment, presigned_url = await svc.create_attachment_upload(
+            db, item_id=item_id, current_user=current_user, payload=body
+        )
+    except svc.TimelineItemNotFound as exc:
+        raise _map_item_not_found(exc) from exc
+    except svc.JobNotFoundForTimeline as exc:
+        raise _map_job_not_found(exc) from exc
+    except StorageNotConfigured as exc:
+        raise _map_storage_unconfigured(exc) from exc
+    return AttachmentUploadResponse(
+        attachment_id=attachment.attachment_id,
+        storage_key=attachment.storage_key,
+        presigned_url=presigned_url,
+    )
+
+
+@router.post(
+    "/timeline/attachments/{attachment_id}/confirm",
+    response_model=AttachmentPublic,
+    status_code=status.HTTP_200_OK,
+)
+async def confirm_attachment_endpoint(
+    attachment_id: uuid.UUID,
+    body: AttachmentConfirm,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> AttachmentPublic:
+    """Record final object metadata; pending → confirmed (uploader/admin)."""
+    try:
+        attachment = await svc.confirm_attachment(
+            db,
+            attachment_id=attachment_id,
+            current_user=current_user,
+            payload=body,
+        )
+    except svc.AttachmentNotFound as exc:
+        raise _map_attachment_not_found(exc) from exc
+    except svc.TimelineItemNotFound as exc:
+        raise _map_item_not_found(exc) from exc
+    except svc.JobNotFoundForTimeline as exc:
+        raise _map_job_not_found(exc) from exc
+    except svc.TimelinePermissionDenied as exc:
+        raise _map_permission_denied(exc) from exc
+    return AttachmentPublic.model_validate(attachment)
+
+
+@router.get(
+    "/timeline/attachments/{attachment_id}",
+    response_model=AttachmentPublic,
+    status_code=status.HTTP_200_OK,
+)
+async def get_attachment_endpoint(
+    attachment_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> AttachmentPublic:
+    """Attachment metadata plus a fresh short-lived presigned GET URL."""
+    try:
+        attachment, download_url = await svc.get_attachment_download(
+            db, attachment_id=attachment_id, current_user=current_user
+        )
+    except svc.AttachmentNotFound as exc:
+        raise _map_attachment_not_found(exc) from exc
+    except svc.TimelineItemNotFound as exc:
+        raise _map_item_not_found(exc) from exc
+    except svc.JobNotFoundForTimeline as exc:
+        raise _map_job_not_found(exc) from exc
+    except svc.TimelineValidationError as exc:
+        raise _map_validation(exc) from exc
+    except StorageNotConfigured as exc:
+        raise _map_storage_unconfigured(exc) from exc
+    return AttachmentPublic.model_validate(attachment).model_copy(
+        update={"download_url": download_url}
+    )
 
 
 @router.get(
