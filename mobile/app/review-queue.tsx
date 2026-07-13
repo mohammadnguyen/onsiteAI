@@ -141,7 +141,7 @@ export default function ReviewQueueScreen() {
             <View style={s.state} testID="review-queue-forbidden">
               <Text style={s.stateText}>{t('expense.review_forbidden')}</Text>
             </View>
-          ) : queue.isError ? (
+          ) : queue.isError && !queue.data ? (
             <View style={s.state} testID="review-queue-error">
               <Text style={[s.stateText, s.errorText]}>
                 {t('review_queue.error')}

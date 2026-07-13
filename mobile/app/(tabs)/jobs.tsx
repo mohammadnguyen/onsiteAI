@@ -8,9 +8,11 @@ import {
   TouchableOpacity,
   Modal,
   Pressable,
+  RefreshControl,
   ScrollView,
   Alert,
 } from 'react-native';
+import { useQueryClient } from '@tanstack/react-query';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
@@ -130,7 +132,23 @@ function localizeJobStatus(status: string, t: TFunction): string {
 export default function JobsScreen() {
   const s = useScaledStyles(base);
   const { t } = useTranslation();
-  const { data, isLoading, isError } = useJobs();
+  const jobsQuery = useJobs();
+  const { data, isLoading, isError } = jobsQuery;
+  const qc = useQueryClient();
+  // X-2: pull-to-refresh (house pattern — explicit "user pulled" flag so
+  // background refetches never pin the spinner). Jobs was the only data
+  // tab without a manual refresh path; money surfaces could not recover
+  // from staleness by gesture. Also invalidates the stats-header roots
+  // so month-spend + pending refetch on the same pull.
+  const [userRefreshing, setUserRefreshing] = useState(false);
+  const onRefresh = () => {
+    setUserRefreshing(true);
+    void Promise.allSettled([
+      jobsQuery.refetch(),
+      qc.invalidateQueries({ queryKey: ['expenses'] }),
+      qc.invalidateQueries({ queryKey: ['review-queue'] }),
+    ]).finally(() => setUserRefreshing(false));
+  };
   // O2-B: role drives the merged-dashboard surfaces. VISIBILITY ONLY —
   // the backend strips job money for contributors regardless (jobs
   // money strip), and the admin-only queries live inside
@@ -227,7 +245,9 @@ export default function JobsScreen() {
           <ActivityIndicator size="large" color="#1e293b" />
           <Text style={s.loadingText}>{t('jobs.loading')}</Text>
         </View>
-      ) : isError ? (
+      ) : isError && !data ? (
+        // X-2 follow-up: blank to an error ONLY with no cached list —
+        // a failed focus/pull refetch keeps showing the cached jobs.
         <View style={s.center}>
           <Text style={s.errText}>{t('common.error')}</Text>
         </View>
@@ -257,6 +277,13 @@ export default function JobsScreen() {
           }
           ItemSeparatorComponent={() => <View style={s.sep} />}
           contentContainerStyle={s.listContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={userRefreshing}
+              onRefresh={onRefresh}
+              tintColor="#1e293b"
+            />
+          }
         />
       )}
       <JobDetailModal
@@ -476,9 +503,15 @@ function JobDetailModal({
   const { data, isLoading, isError } = useJob(jobId);
   // Per-job spend + budget. Parallel fetch to useJob — both fire when
   // jobId is set, so spending is usually ready by the time the user has
-  // scanned identity rows. Endpoint is admin-only; contributors get 403
-  // and the section hides silently (see SpendingSection below).
-  const summary = useJobBudgetSummary(jobId);
+  // scanned identity rows. Endpoint is admin-only; C-09: the query is
+  // ALSO gated on isAdmin client-side so a contributor modal open no
+  // longer fires a guaranteed-403 request (SpendingSection's silent
+  // 403 hide stays as the backstop; server remains authoritative).
+  // /auth/me drives VISIBILITY ONLY here and for the lifecycle
+  // affordances below (M5) — write routes stay require_admin.
+  const me = useMe();
+  const isAdmin = me.data?.role === 'admin';
+  const summary = useJobBudgetSummary(isAdmin ? jobId : null);
   // L-D1: per-job labour rollup. Contributor-safe endpoint (200 for all
   // roles; hours + cost stripped server-side for non-admins), so
   // contributors now get a per-job rollup too — labourers / worker-days
@@ -508,11 +541,8 @@ function JobDetailModal({
   // if 20 turns out not to be enough during dogfooding. Reuses the
   // existing RecentCapturesList row + navigation chrome.
   const jobExpenses = useJobExpenses(jobId, 20);
-  // M5: lifecycle actions. /auth/me drives VISIBILITY ONLY — the job
-  // write routes are require_admin, so the backend stays
-  // authoritative; contributors see no lifecycle affordances.
-  const me = useMe();
-  const isAdmin = me.data?.role === 'admin';
+  // M5: lifecycle actions (isAdmin declared above with the summary
+  // gate; single useMe per modal).
   const updateJob = useUpdateJob(jobId ?? '');
   const deleteJob = useDeleteJob();
   const lifecycleBusy = updateJob.isPending || deleteJob.isPending;
@@ -623,10 +653,12 @@ function JobDetailModal({
             <Text style={s.closeBtn}>{'\u00d7'}</Text>
           </TouchableOpacity>
           {/* Tier 1B: Edit button. Only meaningful when a job has
-              actually loaded (else there's nothing to edit). Admin-
-              only on the backend; contributor will get 403 inline
-              on save attempt. */}
-          {data ? (
+              actually loaded. C-05: ALSO gated on isAdmin client-side
+              — the edit screen is a money surface (contract/budget/
+              margin); the server strips values for contributors, but
+              the double-gate posture means a contributor never even
+              opens it. Backend require_admin stays authoritative. */}
+          {data && isAdmin ? (
             <TouchableOpacity
               onPress={onEdit}
               style={s.editBtnTouch}
@@ -643,7 +675,11 @@ function JobDetailModal({
           <View style={s.center}>
             <ActivityIndicator color="#1e293b" />
           </View>
-        ) : isError || !data ? (
+        ) : !data ? (
+          // X-2 follow-up: `isError || !data` blanked the open modal
+          // when a focus refetch failed even though the job was still
+          // cached. Cached data keeps rendering; the error screen is
+          // only for a cold open that failed (no data at all).
           <View style={s.center}>
             <Text style={s.errText}>{t('common.error')}</Text>
           </View>
@@ -718,7 +754,11 @@ function JobDetailModal({
                 </Text>
               ))
             )}
-            <SpendingSection summary={summary} />
+            {/* C-09: render the money section for admins only — with
+                the summary query also admin-gated, a contributor no
+                longer sees the "Budgets & spending" header flash on
+                non-403 errors, and no guaranteed-403 request fires. */}
+            {isAdmin ? <SpendingSection summary={summary} /> : null}
             {isAdmin ? <MarginSection job={data} summary={summary} /> : null}
             <LabourDaysSection
               rollup={labourRollup}
@@ -976,6 +1016,19 @@ function SpendingBody({ data }: { data: JobBudgetSummary }) {
   // admin web's budget summary remains the canonical surface.
   return (
     <View testID="job-spending-body">
+      {/* Operator request (2026-07-13): the cash-out headline. Sum of
+          amount_inc_gst — cash rows at face value (GST 0 by the
+          pre-insert rule), GST-inclusive rows at their inclusive
+          total. This is "what actually left the pocket"; the ex-GST
+          rows below stay the cost/budget basis, so remaining is never
+          mixed-basis. Display-only — no math added client-side. */}
+      <DetailRow
+        label={t('job.total_paid')}
+        value={formatMoney(data.actual_inc_gst)}
+      />
+      <Text style={s.metricHint} testID="job-total-paid-hint">
+        {t('job.total_paid_hint')}
+      </Text>
       <DetailRow
         label={t('job.total_spent')}
         value={formatMoney(data.actual_ex_gst)}

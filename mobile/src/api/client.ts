@@ -129,6 +129,19 @@ api.interceptors.response.use(
             access_token: string;
             token_type: string;
           }>('/auth/refresh', { refresh_token: refreshToken });
+          // A4: the session may have ENDED or CHANGED while this
+          // refresh was in flight — logout (refreshToken now null) or
+          // logout-then-relogin (a DIFFERENT refresh token). Either
+          // way, committing this response would resurrect or
+          // cross-wire a session — drop it and fail the waiting
+          // requests. Comparing the refresh token actually POSTed
+          // (not accessToken) closes the relogin race the review
+          // found. Residual micro-TOCTOU around SecureStore write
+          // ordering is documented-accepted (pre-A4 was strictly
+          // worse).
+          if (useAuthStore.getState().refreshToken !== refreshToken) {
+            return null;
+          }
           await useAuthStore.getState().setAccessToken(r.data.access_token);
           return r.data.access_token;
         } catch (refreshErr) {

@@ -144,13 +144,19 @@ export default function LabourSummaryScreen() {
 
   const onBack = useOneShotBack('/(tabs)/labour');
 
+  // X-2 follow-up: explicit "user pulled" flag (house pattern) — see
+  // jobs.tsx; isRefetching now also fires on app-resume refetches.
+  const [userRefreshing, setUserRefreshing] = useState(false);
   const refreshControl = (
     <RefreshControl
-      refreshing={summary.isRefetching}
+      refreshing={userRefreshing}
       onRefresh={() => {
-        void summary.refetch();
-        void jobs.refetch();
-        void me.refetch();
+        setUserRefreshing(true);
+        void Promise.allSettled([
+          summary.refetch(),
+          jobs.refetch(),
+          me.refetch(),
+        ]).finally(() => setUserRefreshing(false));
       }}
       tintColor="#1e293b"
     />
@@ -291,7 +297,7 @@ export default function LabourSummaryScreen() {
             <View style={s.state}>
               <ActivityIndicator size="large" color="#1e293b" />
             </View>
-          ) : summary.isError ? (
+          ) : summary.isError && !summary.data ? (
             <View style={s.state} testID="summary-error">
               <Text style={[s.stateText, s.errorText]}>
                 {t('labour.summary_error')}

@@ -76,6 +76,9 @@ export default function LabourRecordsScreen() {
   const to = monthEnd(monthAnchor);
   const entries = useLabourEntriesRange(jobFilter, from, to);
   const del = useDeleteLabourEntry();
+  // X-2 follow-up: explicit "user pulled" flag (house pattern) — see
+  // jobs.tsx; isRefetching now also fires on app-resume refetches.
+  const [userRefreshing, setUserRefreshing] = useState(false);
 
   const isAdmin = me.data?.role === 'admin';
   const myId = me.data?.user_id;
@@ -240,7 +243,7 @@ export default function LabourRecordsScreen() {
         <View style={s.state} testID="records-loading">
           <ActivityIndicator color="#1e293b" />
         </View>
-      ) : entries.isError ? (
+      ) : entries.isError && !entries.data ? (
         <View style={s.state} testID="records-error">
           <Text style={s.stateText}>{t('common.error')}</Text>
           <Pressable
@@ -256,8 +259,13 @@ export default function LabourRecordsScreen() {
           keyExtractor={(e) => e.entry_id}
           refreshControl={
             <RefreshControl
-              refreshing={entries.isRefetching}
-              onRefresh={() => void entries.refetch()}
+              refreshing={userRefreshing}
+              onRefresh={() => {
+                setUserRefreshing(true);
+                void entries
+                  .refetch()
+                  .finally(() => setUserRefreshing(false));
+              }}
               tintColor="#1e293b"
             />
           }

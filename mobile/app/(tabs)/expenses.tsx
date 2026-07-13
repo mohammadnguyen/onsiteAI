@@ -197,13 +197,20 @@ export default function ExpensesScreen() {
     return zhAliasMap[jobId] ?? jobId.slice(0, 8);
   };
 
-  // RefreshControl reads `isRefetching` (not `isFetching`) so the
-  // spinner only shows on manual pull-to-refresh, not on initial
-  // load — initial load is covered by the list's own loading state.
+  // X-2 follow-up: explicit "user pulled" flag (house pattern).
+  // isRefetching also goes true on focus refetches now that
+  // refetchOnWindowFocus is on — driving the spinner from it would
+  // pin a phantom pull-spinner on every app resume.
+  const [userRefreshing, setUserRefreshing] = useState(false);
   const refreshControl = (
     <RefreshControl
-      refreshing={recentExpenses.isRefetching}
-      onRefresh={() => void recentExpenses.refetch()}
+      refreshing={userRefreshing}
+      onRefresh={() => {
+        setUserRefreshing(true);
+        void recentExpenses
+          .refetch()
+          .finally(() => setUserRefreshing(false));
+      }}
       tintColor="#1e293b"
     />
   );

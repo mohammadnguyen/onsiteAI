@@ -13,7 +13,14 @@ export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       retry: false,
-      refetchOnWindowFocus: false,
+      // X-2: was false. With the AppState -> focusManager wiring in
+      // app/_layout.tsx, "window focus" now means "app returned to the
+      // foreground" — stale queries (most money surfaces use
+      // staleTime 0) refetch on resume, so a phone reopened on site
+      // shows other devices' captures without waiting for a local
+      // mutation. staleTime is still honoured (e.g. the expenses list's
+      // 30s), so this is not a refetch storm.
+      refetchOnWindowFocus: true,
     },
   },
 });

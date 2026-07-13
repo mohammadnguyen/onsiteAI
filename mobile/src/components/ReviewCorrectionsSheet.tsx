@@ -4,6 +4,8 @@ import {
   View,
   Text,
   TextInput,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   StyleSheet,
   ActivityIndicator,
@@ -192,6 +194,12 @@ export function ReviewCorrectionsSheet({
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={s.backdrop}>
+        {/* D4: the sheet is bottom-anchored, so the supplier
+            quick-create input sits exactly in the keyboard zone on
+            small phones — KAV lifts the sheet with the keyboard. */}
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
         <View style={s.sheet} testID="review-corrections-sheet">
           <Text style={s.title}>{t('expense.correct_title')}</Text>
           <Text style={s.hint}>{t('expense.correct_hint')}</Text>
@@ -272,6 +280,7 @@ export function ReviewCorrectionsSheet({
             <Text style={s.cancelText}>{t('common.cancel')}</Text>
           </Pressable>
         </View>
+        </KeyboardAvoidingView>
       </View>
 
       <OptionPickerModal

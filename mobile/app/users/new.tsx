@@ -14,13 +14,13 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import axios from 'axios';
 
 import {
   useInviteUser,
   type UserInviteInput,
   type UserRole,
 } from '../../src/api/hooks/useUsers';
+import { resolveApiErrorMessage } from '../../src/api/errors';
 import { useOneShotBack } from '../../src/util/navigation';
 
 /**
@@ -43,21 +43,10 @@ import { useOneShotBack } from '../../src/util/navigation';
  * verbatim in the inline error banner.
  */
 
-function extractErrorMessage(error: unknown, fallback: string): string {
-  if (axios.isAxiosError(error)) {
-    const detail = error.response?.data?.detail;
-    if (typeof detail === 'string') return detail;
-    if (Array.isArray(detail) && detail.length > 0) {
-      return detail
-        .map((d: { msg?: string }) => d.msg ?? '')
-        .filter(Boolean)
-        .join('; ');
-    }
-    if (error.message) return error.message;
-  }
-  if (error instanceof Error && error.message) return error.message;
-  return fallback;
-}
+// D5: legacy local extractErrorMessage removed — raw axios English
+// reached zh users on transport failures. resolveApiErrorMessage keeps
+// the backend `detail` passthrough (409 duplicate-email / admin-cap
+// messages still surface verbatim) and localizes timeout/offline.
 
 export default function NewUserScreen() {
   const { t } = useTranslation();
@@ -98,7 +87,7 @@ export default function NewUserScreen() {
       await invite.mutateAsync(body);
       onBack();
     } catch (err) {
-      setFormError(extractErrorMessage(err, t('users.create_error')));
+      setFormError(resolveApiErrorMessage(err, t, t('users.create_error')));
     }
   };
 

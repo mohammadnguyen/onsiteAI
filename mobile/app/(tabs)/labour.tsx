@@ -4,6 +4,8 @@ import {
   Text,
   TouchableOpacity,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
   StyleSheet,
   ScrollView,
   RefreshControl,
@@ -93,7 +95,13 @@ export default function LabourScreen() {
 
   // L-E1: consume an "edit this day" handoff from the records screen.
   // One-shot — cleared immediately so a later tab focus can't re-apply
-  // a stale target.
+  // a stale target. B-04: remember the handed-off job id so the
+  // selection-repair effect below can tell the user when that job is
+  // archived instead of silently rebinding to a different job.
+  const handoffJobRef = useRef<string | null>(null);
+  // B-04: set by the selection-repair effect, consumed by the
+  // (job,date) reset effect — see both effects below.
+  const archivedHandoffPending = useRef(false);
   useFocusEffect(
     useCallback(() => {
       const target = useLabourEditTargetStore.getState().target;
@@ -101,6 +109,7 @@ export default function LabourScreen() {
       useLabourEditTargetStore.getState().clear();
       setDate(target.date);
       setJobId(target.jobId);
+      handoffJobRef.current = target.jobId;
       useLabourEditTargetStore.getState().setLastUsedJobId(target.jobId);
     }, []),
   );
@@ -114,6 +123,28 @@ export default function LabourScreen() {
   );
   const selectedJob = activeJobs.find((j) => j.job_id === jobId) ?? null;
 
+  // A new (job, date) context invalidates local edits — the checklist
+  // re-derives from that day's server entries. B-04: this effect is
+  // also the ONLY place the archived-handoff warning is applied.
+  // DECLARATION ORDER MATTERS (re-verify finding): this reset effect
+  // must run BEFORE the selection-repair effect below within a commit.
+  // That way a flag the repair effect sets in pass N is first seen by
+  // this effect in pass N+1 — the rebind commit, whose jobId is final
+  // — so no later jobId change wipes the banner. Declared the other
+  // way round, both effects ran in the handoff commit itself: the
+  // flag was consumed prematurely and the rebind commit's re-run
+  // wiped the banner after one frame (the original B-04 bug).
+  useEffect(() => {
+    setEdits({});
+    if (archivedHandoffPending.current) {
+      archivedHandoffPending.current = false;
+      setBanner({ kind: 'error', text: t('labour.target_job_archived') });
+    } else {
+      setBanner(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId, date]);
+
   // Default / repair the job selection: prefer the in-session
   // last-used job; fall back to the first active job. Also covers a
   // selected job being archived mid-session (it drops out of
@@ -121,11 +152,23 @@ export default function LabourScreen() {
   // remains, which also clears edits and disables Save).
   useEffect(() => {
     if (jobs.data === undefined) return;
+    if (jobId && activeJobs.some((j) => j.job_id === jobId)) {
+      // Selection valid — a pending handoff (if any) resolved cleanly.
+      handoffJobRef.current = null;
+      return;
+    }
+    // B-04: the records->edit handoff targeted a job that is NOT in
+    // activeJobs (archived since, or archived history row). Flag it —
+    // the (job,date) reset effect ABOVE applies the banner on the
+    // rebind commit (see its declaration-order note).
+    if (jobId && handoffJobRef.current === jobId) {
+      handoffJobRef.current = null;
+      archivedHandoffPending.current = true;
+    }
     if (activeJobs.length === 0) {
       if (jobId !== null) setJobId(null);
       return;
     }
-    if (jobId && activeJobs.some((j) => j.job_id === jobId)) return;
     const lastUsedJobId = useLabourEditTargetStore.getState().lastUsedJobId;
     const candidate =
       lastUsedJobId && activeJobs.some((j) => j.job_id === lastUsedJobId)
@@ -133,13 +176,6 @@ export default function LabourScreen() {
         : activeJobs[0].job_id;
     setJobId(candidate);
   }, [activeJobs, jobId, jobs.data]);
-
-  // A new (job, date) context invalidates local edits — the checklist
-  // re-derives from that day's server entries.
-  useEffect(() => {
-    setEdits({});
-    setBanner(null);
-  }, [jobId, date]);
 
   const entriesByWorker = useMemo(() => {
     const m = new Map<string, LabourEntryPublic>();
@@ -473,16 +509,24 @@ export default function LabourScreen() {
     }));
   };
 
+  // X-2 follow-up: explicit "user pulled" flag (house pattern) — with
+  // refetchOnWindowFocus on, isRefetching also goes true on every app
+  // resume, which would pin a phantom pull-spinner for the refetch
+  // duration on weak networks.
+  const [userRefreshing, setUserRefreshing] = useState(false);
   const refreshControl = (
     <RefreshControl
-      refreshing={entries.isRefetching || workers.isRefetching}
+      refreshing={userRefreshing}
       onRefresh={() => {
-        void entries.refetch();
-        void workers.refetch();
-        void jobs.refetch();
-        // useMe has retry:false — pull-to-refresh is the in-screen
-        // recovery path when /auth/me failed (identity drives locks).
-        void me.refetch();
+        setUserRefreshing(true);
+        void Promise.allSettled([
+          entries.refetch(),
+          workers.refetch(),
+          jobs.refetch(),
+          // useMe has retry:false — pull-to-refresh is the in-screen
+          // recovery path when /auth/me failed (identity drives locks).
+          me.refetch(),
+        ]).finally(() => setUserRefreshing(false));
       }}
       tintColor="#1e293b"
     />
@@ -492,6 +536,13 @@ export default function LabourScreen() {
 
   return (
     <SafeAreaView style={s.safe} edges={['bottom', 'left', 'right']}>
+      {/* C-01: per-row time inputs sit low on the screen; without KAV
+          the keyboard covers the row being typed into (login.tsx
+          shape — padding on iOS, system resize on Android). */}
+      <KeyboardAvoidingView
+        style={s.kavFlex}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
       <ScrollView
         contentContainerStyle={s.scroll}
         keyboardShouldPersistTaps="handled"
@@ -578,7 +629,13 @@ export default function LabourScreen() {
           <View style={s.center}>
             <ActivityIndicator size="large" color="#1e293b" />
           </View>
-        ) : jobs.isError || workers.isError || me.isError ? (
+        ) : (jobs.isError && !jobs.data) ||
+          (workers.isError && !workers.data) ||
+          (me.isError && !me.data) ? (
+          // Full-screen error ONLY when there is nothing cached to
+          // show (X-2 follow-up: focus refetches can fail routinely
+          // on weak networks; a failed refetch must never blank a
+          // checklist the user was just working on).
           <Text style={s.errorCenter}>
             {workers.isError ? t('labour.workers_error') : t('common.error')}
           </Text>
@@ -672,6 +729,7 @@ export default function LabourScreen() {
           )}
         </TouchableOpacity>
       </ScrollView>
+      </KeyboardAvoidingView>
 
       <OptionPickerModal
         visible={pickerOpen}
@@ -693,6 +751,7 @@ export default function LabourScreen() {
 
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#ffffff' },
+  kavFlex: { flex: 1 },
   scroll: { padding: 16, gap: 14 },
   title: { fontSize: 24, fontWeight: '600', color: '#0f172a' },
   titleRow: {

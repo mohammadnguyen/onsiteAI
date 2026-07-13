@@ -25,6 +25,7 @@ import {
   type ReceiptStatus,
 } from '../../../src/api/hooks/useExpenses';
 import { useMe } from '../../../src/api/hooks/useAuth';
+import { resolveApiErrorMessage } from '../../../src/api/errors';
 import { DatePills } from '../../../src/components/DatePills';
 import { useOneShotBack } from '../../../src/util/navigation';
 
@@ -68,23 +69,10 @@ type PaymentSel = 'cash' | 'transfer' | 'unknown';
 
 const MAX_AMOUNT = 10_000_000;
 
-function extractErrorMessage(error: unknown, fallback: string): string {
-  if (axios.isAxiosError(error)) {
-    const detail = error.response?.data?.detail;
-    if (typeof detail === 'string') return detail;
-    if (Array.isArray(detail) && detail.length > 0) {
-      return detail
-        .map((d: { msg?: string; loc?: (string | number)[] }) => {
-          const loc = Array.isArray(d.loc) ? d.loc.join('.') : '';
-          return loc ? `${loc}: ${d.msg ?? ''}` : (d.msg ?? '');
-        })
-        .join('; ');
-    }
-    if (error.message) return error.message;
-  }
-  if (error instanceof Error && error.message) return error.message;
-  return fallback;
-}
+// D5: legacy local extractErrorMessage removed — it fell through to
+// axios's raw English `error.message` ("Network Error" / "timeout of
+// 15000ms exceeded") in the zh UI. resolveApiErrorMessage returns the
+// localized transport messages and still surfaces server `detail`.
 
 function parseAmount(s: string): number | null {
   if (s.trim().length === 0) return null;
@@ -224,7 +212,7 @@ export default function ExpenseEditScreen() {
       await update.mutateAsync(body);
       onBack();
     } catch (err) {
-      setFormError(extractErrorMessage(err, t('edit.error_network')));
+      setFormError(resolveApiErrorMessage(err, t, t('edit.error_network')));
     }
   };
 

@@ -209,7 +209,7 @@ export default function UsersScreen() {
             <View style={s.state} testID="users-forbidden">
               <Text style={s.stateText}>{t('users.forbidden')}</Text>
             </View>
-          ) : users.isError ? (
+          ) : users.isError && !users.data ? (
             <View style={s.state} testID="users-error">
               <Text style={[s.stateText, s.errorText]}>
                 {t('users.error')}

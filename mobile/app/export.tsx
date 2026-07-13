@@ -68,7 +68,8 @@ function errorKey(kind: ExportErrorKind): string {
 
 export default function ExportScreen() {
   const { t } = useTranslation();
-  const { data: me, isLoading: meLoading } = useMe();
+  const meQuery = useMe();
+  const { data: me, isLoading: meLoading } = meQuery;
   const isAdmin = me?.role === 'admin';
 
   const [from, setFrom] = useState('');
@@ -188,6 +189,22 @@ export default function ExportScreen() {
       {meLoading ? (
         <View style={s.state} testID="export-loading">
           <ActivityIndicator color="#1e293b" />
+        </View>
+      ) : meQuery.isError && !me ? (
+        // C-03: a failed /auth/me (weak network) is NOT "forbidden" —
+        // telling an admin "admins only" was wrong and gave no way
+        // back. Distinct error state + retry; the forbidden branch
+        // below now only renders on a POSITIVE non-admin identity.
+        <View style={s.state} testID="export-me-error">
+          <Text style={s.stateText}>{t('common.error')}</Text>
+          <Pressable
+            onPress={() => void meQuery.refetch()}
+            style={({ pressed }) => [s.retryBtn, pressed && s.retryBtnPressed]}
+            accessibilityRole="button"
+            testID="export-me-retry"
+          >
+            <Text style={s.retryBtnText}>{t('common.retry')}</Text>
+          </Pressable>
         </View>
       ) : !isAdmin ? (
         <View style={s.state} testID="export-forbidden">
@@ -343,6 +360,14 @@ const s = StyleSheet.create({
   bodyContent: { padding: 20 },
   state: { alignItems: 'center', padding: 24, gap: 12 },
   stateText: { color: '#64748b', fontSize: 15 },
+  retryBtn: {
+    backgroundColor: '#1e293b',
+    paddingVertical: 10,
+    paddingHorizontal: 28,
+    borderRadius: 6,
+  },
+  retryBtnPressed: { opacity: 0.85 },
+  retryBtnText: { color: '#ffffff', fontWeight: '600', fontSize: 15 },
   hint: { fontSize: 14, color: '#475569', marginBottom: 20, lineHeight: 20 },
   label: { fontSize: 13, color: '#64748b', marginBottom: 6 },
   input: {

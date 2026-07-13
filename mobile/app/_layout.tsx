@@ -5,10 +5,11 @@ import {
   useSegments,
   type ErrorBoundaryProps,
 } from 'expo-router';
-import { QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider, focusManager } from '@tanstack/react-query';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import {
+  AppState,
   View,
   Text,
   TouchableOpacity,
@@ -155,11 +156,43 @@ export default function RootLayout() {
       }
       // O3 (U5): restore the font-size preference alongside language.
       // Non-fatal — the store defaults to 'standard'.
-      await useFontScaleStore.getState().hydrate();
-      await hydrate();
+      // B-01: BOTH hydrate awaits are guarded — a keychain/AsyncStorage
+      // read rejection must never strand the launch on the splash
+      // spinner. Failure = start logged-out with default font size.
+      try {
+        await useFontScaleStore.getState().hydrate();
+      } catch {
+        // defaults apply
+      }
+      try {
+        await hydrate();
+      } catch {
+        // Auth store stays empty -> normal logged-out flow. MUST still
+        // flip `hydrated`, or the auth-redirect effect below never runs
+        // and the launch strands on a blank screen anyway.
+        useAuthStore.setState({ hydrated: true });
+      }
       setReady(true);
     })();
   }, [hydrate]);
+
+  // X-2: drive React Query's focusManager from AppState so returning
+  // to the app from the background counts as a "window focus" —
+  // combined with refetchOnWindowFocus (queryClient.ts), money
+  // surfaces refetch on resume instead of showing another device's
+  // stale numbers until a mutation happens to invalidate them.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      // Ignore iOS 'inactive' — it fires on share sheets, Face ID,
+      // the notification shade and the photo picker. Counting those
+      // as focus-loss would turn every capture-with-share round trip
+      // into a full refetch burst on a weak site network. Only a real
+      // background/foreground transition toggles focus.
+      if (state === 'inactive') return;
+      focusManager.setFocused(state === 'active');
+    });
+    return () => sub.remove();
+  }, []);
 
   useEffect(() => {
     if (!ready || !hydrated) return;
