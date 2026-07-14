@@ -7,11 +7,14 @@
     "error": "\u767b\u5f55\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u51ed\u8bc1\u3002"
   },
   "ui": {
-    "pct_used": "已用 {{pct}}%"
+    "pct_used": "\u5df2\u7528 {{pct}}%"
+  },
+  "home": {
+    "view_all": "\u67e5\u770b\u5168\u90e8"
   },
   "tabs": {
+    "home": "\u9996\u9875",
     "jobs": "\u9879\u76ee",
-    "expenses": "\u5f00\u652f",
     "dashboard": "\u4eea\u8868\u76d8",
     "labour": "\u5de5\u65f6",
     "settings": "\u8bbe\u7f6e"
@@ -39,7 +42,9 @@
     "margin_header": "\u5229\u6da6\u7387",
     "target_margin_pct": "\u76ee\u6807\u5229\u6da6\u7387 %",
     "current_margin_to_date": "\u5f53\u524d\u5229\u6da6\u7387\uff08\u81f3\u4eca\uff09",
-    "margin_delta_pill": "\u8f83\u76ee\u6807 {{target}}%\uff1a{{delta}}%",
+    "projected_margin": "\u9884\u8ba1\u5229\u6da6\u7387",
+    "projected_margin_hint": "\uff08\u4e0d\u542bGST\u6536\u5165\u2212\u603b\u9884\u7b97\uff09\u00f7\u4e0d\u542bGST\u6536\u5165\u2014\u2014\u6309\u9884\u7b97\u843d\u5730\u65f6\u7684\u5229\u6da6\u7387\u3002",
+    "margin_delta_pill": "\u8f83\u76ee\u6807 {{target}}%\uff1a{{delta}} \u4e2a\u767e\u5206\u70b9",
     "margin_percent_hint": "\u4f8b\u5982 25",
     "margin_todate_hint": "\u4ec5\u6309\u5df2\u53d1\u751f\u6210\u672c\u8ba1\u7b97\u2014\u2014\u540e\u7eed\u6210\u672c\u4f1a\u964d\u4f4e\u8be5\u503c\u3002",
     "gst_mode_label": "\u5408\u540cGST",
@@ -154,7 +159,7 @@
     "job_picker_empty": "\u672a\u627e\u5230\u9879\u76ee",
     "date_type_instead": "\u6539\u4e3a\u624b\u52a8\u8f93\u5165\u65e5\u671f",
     "date_use_calendar": "\u4f7f\u7528\u65e5\u5386",
-    "submit": "\u63d0\u4ea4",
+    "submit": "\u63d0\u4ea4\u652f\u51fa",
     "submitting": "\u63d0\u4ea4\u4e2d...",
     "result_saved": "\u5df2\u4fdd\u5b58",
     "result_pending_review": "\u5df2\u4fdd\u5b58 \u2014 \u5f85\u5ba1\u6838",
@@ -262,20 +267,20 @@
     "error": "\u65e0\u6cd5\u52a0\u8f7d\u652f\u51fa\u3002"
   },
   "dashboard": {
-    "month_spend": "本月支出（不含GST）",
-    "pending_review": "待审核",
-    "active_jobs": "进行中项目",
-    "jobs_heading": "项目预算状况",
-    "spent_of": "已用 {{spent}} / 预算 {{budget}}",
-    "spent_label": "已支出 {{spent}}",
-    "over_by": "超支 {{amount}}",
-    "left": "剩余 {{amount}}",
-    "no_budget": "未设预算",
-    "empty": "暂无进行中的项目。",
-    "error": "无法加载仪表盘。",
-    "card_error": "无法加载",
-    "stale": "数据可能不是最新",
-    "partial_error": "部分数据未能加载"
+    "month_spend": "\u672c\u6708\u652f\u51fa\uff08\u4e0d\u542bGST\uff09",
+    "pending_review": "\u5f85\u5ba1\u6838",
+    "active_jobs": "\u8fdb\u884c\u4e2d\u9879\u76ee",
+    "jobs_heading": "\u9879\u76ee\u9884\u7b97\u72b6\u51b5",
+    "spent_of": "\u5df2\u7528 {{spent}} / \u9884\u7b97 {{budget}}",
+    "spent_label": "\u5df2\u652f\u51fa {{spent}}",
+    "over_by": "\u8d85\u652f {{amount}}",
+    "left": "\u5269\u4f59 {{amount}}",
+    "no_budget": "\u672a\u8bbe\u9884\u7b97",
+    "empty": "\u6682\u65e0\u8fdb\u884c\u4e2d\u7684\u9879\u76ee\u3002",
+    "error": "\u65e0\u6cd5\u52a0\u8f7d\u4eea\u8868\u76d8\u3002",
+    "card_error": "\u65e0\u6cd5\u52a0\u8f7d",
+    "stale": "\u6570\u636e\u53ef\u80fd\u4e0d\u662f\u6700\u65b0",
+    "partial_error": "\u90e8\u5206\u6570\u636e\u672a\u80fd\u52a0\u8f7d"
   },
   "review_queue": {
     "title": "\u5f85\u5ba1\u6838",
@@ -448,10 +453,8 @@
     "range_month": "\u6708",
     "range_week_hint": "\u5468 = \u4ece\u6240\u9009\u65e5\u671f\u8d77\u7684 7 \u5929\uff0c\u5e76\u975e\u5de5\u8d44\u5468\u671f\u3002",
     "days_metrics_hint": "\u5de5\u4f5c\u5929\u6570\u6309\u6bcf\u4eba\u6bcf\u5929\u7d2f\u8ba1\uff082 \u4eba\u540c\u4e00\u5929 = 2\uff09\uff1b\u5230\u573a\u5929\u6570\u6309\u65e5\u5386\u5929\u8ba1\u7b97\u3002",
-    "set_rates_hint": "\u70b9\u6309\u8bbe\u7f6e\u5de5\u4eba\u8d39\u7387",
     "total_hours": "\u603b\u5de5\u65f6",
     "total_cost": "\u7528\u5de5\u8d39\u7528",
-    "cost_incomplete": "{{costed}}/{{total}} \u6761\u8bb0\u5f55\u542b\u5de5\u65f6\u548c\u8d39\u7387",
     "days_on_site_value": "{{days}} \u5929\u5728\u573a",
     "worker_days_value": "{{days}} \u7528\u5de5\u5929\u6570",
     "job_days_on_site_label": "\u5728\u573a\u5929\u6570",
@@ -460,7 +463,8 @@
     "job_labourers_label": "\u7528\u5de5\u4eba\u6570",
     "job_rollup_header": "\u672c\u9879\u76ee\u7528\u5de5",
     "range_all_time": "\u5168\u90e8",
-    "range_this_month": "\u672c\u6708"
+    "rate_gap_title": "{{missing}}/{{total}} \u6761\u8bb0\u5f55\u7f3a\u5de5\u65f6\u6216\u65f6\u85aa\uff0c\u6210\u672c\u88ab\u4f4e\u4f30",
+    "rate_gap_cta": "\u70b9\u6309\u8865\u5168\u5de5\u4eba\u65f6\u85aa"
   },
   "review_reason": {
     "amount_uncertain": "\u91d1\u989d\u4e0d\u786e\u5b9a",

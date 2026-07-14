@@ -13,7 +13,7 @@ import {
   Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, type Href } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
 
@@ -192,7 +192,7 @@ export default function ExpenseEditScreen() {
   // expenses tab rather than to /expenses/{id} (the latter would also
   // be valid but requires the typed-routes manifest cast pattern used
   // elsewhere — same UX, no cast).
-  const onBack = useOneShotBack('/(tabs)/expenses');
+  const onBack = useOneShotBack('/(tabs)/home' as unknown as Href);
 
   const onSave = async () => {
     if (update.isPending) return;

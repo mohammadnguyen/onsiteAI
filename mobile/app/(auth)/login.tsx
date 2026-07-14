@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import { useRouter } from 'expo-router';
+import { useRouter, type Href } from 'expo-router';
 import { api } from '../../src/api/client';
 import { useAuthStore } from '../../src/store/auth';
 import type { TokenPair } from '../../src/api/hooks/useAuth';
@@ -32,7 +32,7 @@ export default function Login() {
     try {
       const r = await api.post<TokenPair>('/auth/login', { email, password });
       await setTokens(r.data.access_token, r.data.refresh_token);
-      router.replace('/(tabs)/expenses');
+      router.replace('/(tabs)/home' as unknown as Href);
     } catch (e: unknown) {
       const errObj = e as { response?: { data?: { detail?: string } } };
       setErr(errObj?.response?.data?.detail ?? t('login.error'));

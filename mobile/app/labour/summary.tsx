@@ -30,6 +30,13 @@ import {
 import { formatDays, formatMoney } from '../../src/util/format';
 import { useScaledStyles } from '../../src/ui/type';
 import { useOneShotBack } from '../../src/util/navigation';
+import {
+  IncompleteAmount,
+  RateGapBanner,
+  Segmented,
+} from '../../src/ui/kit';
+import { tokens } from '../../src/ui/tokens';
+import { ClockIcon, DollarIcon, UsersIcon } from '../../src/ui/icons';
 
 /**
  * L-C2: weekly labour summary (admin-only) — labour cost CAPTURE,
@@ -214,23 +221,16 @@ export default function LabourSummaryScreen() {
           contentContainerStyle={s.scroll}
           refreshControl={refreshControl}
         >
-          <View style={s.modeRow}>
-            {(['month', 'week'] as const).map((opt) => (
-              <TouchableOpacity
-                key={opt}
-                onPress={() => setMode(opt)}
-                style={[s.modeChip, mode === opt && s.modeChipActive]}
-                accessibilityRole="button"
-                testID={`summary-mode-${opt}`}
-              >
-                <Text
-                  style={[s.modeChipText, mode === opt && s.modeChipTextActive]}
-                >
-                  {t(opt === 'month' ? 'labour.range_month' : 'labour.range_week')}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
+          {/* B3: kit Segmented replaces the hand-rolled mode chips. */}
+          <Segmented
+            options={[
+              { value: 'month', label: t('labour.range_month') },
+              { value: 'week', label: t('labour.range_week') },
+            ]}
+            value={mode}
+            onChange={setMode}
+            testID="summary-mode"
+          />
           {/* O2-B polish #6: "Week" is a 7-day window, not a pay week —
               admins kept reading it as a payroll period. */}
           {mode === 'week' ? (
@@ -316,54 +316,64 @@ export default function LabourSummaryScreen() {
               <View style={s.totalCard} testID="summary-total">
                 {/* F5: admin-first hierarchy — labour cost is the hero
                     number, then hours, then worker-days. */}
-                <View style={s.totalRow}>
-                  <Text style={s.totalLabel}>{t('labour.total_cost')}</Text>
-                  <Text style={s.totalValue} testID="summary-total-cost">
-                    {formatMoney(summary.data.total_labour_cost)}
-                  </Text>
-                </View>
-                <View style={s.totalRow}>
-                  <Text style={s.totalLabel}>{t('labour.total_hours')}</Text>
-                  <Text style={s.totalValue}>
-                    {t('labour.hours_value', {
-                      hours: formatDays(summary.data.total_hours),
-                    })}
-                  </Text>
-                </View>
-                <View style={s.totalRow}>
-                  <Text style={s.totalLabel}>
-                    {t('labour.job_worker_days_label')}
-                  </Text>
-                  <Text style={s.totalValue}>
-                    {formatDays(summary.data.total_days)}
-                  </Text>
+                {/* Preview-parity: three stat cards (cost / hours /
+                    worker-days) instead of stacked rows. */}
+                <View style={s.statCards}>
+                  <View style={s.statCard} testID="summary-total-cost">
+                    <View style={[s.statIcon, { backgroundColor: tokens.okBg }]}>
+                      <DollarIcon size={15} color={tokens.ok} />
+                    </View>
+                    <Text style={s.statCardLabel}>{t('labour.total_cost')}</Text>
+                    <Text style={s.statCardValue}>
+                      <IncompleteAmount
+                        formatted={formatMoney(summary.data.total_labour_cost)}
+                        incomplete={
+                          summary.data.entries_costed <
+                          summary.data.entries_total
+                        }
+                      />
+                    </Text>
+                  </View>
+                  <View style={s.statCard}>
+                    <View style={[s.statIcon, { backgroundColor: tokens.warnBg }]}>
+                      <ClockIcon size={15} color={tokens.warnFill} />
+                    </View>
+                    <Text style={s.statCardLabel}>{t('labour.total_hours')}</Text>
+                    <Text style={s.statCardValue}>
+                      {t('labour.hours_value', {
+                        hours: formatDays(summary.data.total_hours),
+                      })}
+                    </Text>
+                  </View>
+                  <View style={s.statCard}>
+                    <View style={[s.statIcon, { backgroundColor: tokens.sel }]}>
+                      <UsersIcon size={15} color={tokens.primary} />
+                    </View>
+                    <Text style={s.statCardLabel}>
+                      {t('labour.job_worker_days_label')}
+                    </Text>
+                    <Text style={s.statCardValue}>
+                      {formatDays(summary.data.total_days)}
+                    </Text>
+                  </View>
                 </View>
                 {/* O2-B polish #6: define the metric inline. */}
                 <Text style={s.modeHint} testID="summary-days-hint">
                   {t('labour.days_metrics_hint')}
                 </Text>
-                {summary.data.entries_costed < summary.data.entries_total ? (
-                  /* O2-C (U9): the incomplete-cost warning now says WHERE
-                     to fix it and takes you there (worker rates). */
-                  <Pressable
-                    onPress={() =>
-                      router.push('/labour/workers' as unknown as Href)
-                    }
-                    accessibilityRole="button"
-                    testID="summary-incomplete"
-                    style={({ pressed }) => [pressed && { opacity: 0.6 }]}
-                  >
-                    <Text style={s.incompleteNote}>
-                      {t('labour.cost_incomplete', {
-                        costed: summary.data.entries_costed,
-                        total: summary.data.entries_total,
-                      })}
-                    </Text>
-                    <Text style={s.modeHint}>
-                      {t('labour.set_rates_hint')}
-                    </Text>
-                  </Pressable>
-                ) : null}
+                {/* B3: kit RateGapBanner replaces the O2-C (U9)
+                    incomplete-cost note — same data (entries_costed /
+                    entries_total), same destination (worker rates). */}
+                <RateGapBanner
+                  missing={
+                    summary.data.entries_total - summary.data.entries_costed
+                  }
+                  total={summary.data.entries_total}
+                  onPress={() =>
+                    router.push('/labour/workers' as unknown as Href)
+                  }
+                  testID="summary-incomplete"
+                />
               </View>
 
               {empty ? (
@@ -489,19 +499,8 @@ const base = StyleSheet.create({
   },
   headerSpacer: { minWidth: 72 },
   scroll: { padding: 16, gap: 12 },
-  modeRow: { flexDirection: 'row', gap: 8 },
-  modeChip: {
-    flex: 1,
-    paddingVertical: 8,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderRadius: 6,
-    backgroundColor: '#f8fafc',
-  },
-  modeChipActive: { backgroundColor: '#0f172a', borderColor: '#0f172a' },
-  modeChipText: { color: '#475569', fontSize: 14, fontWeight: '600' },
-  modeChipTextActive: { color: '#ffffff' },
+  // B3: mode toggle now uses the kit Segmented (old modeChip styles
+  // removed); the incomplete-cost note is the kit RateGapBanner.
   modeHint: { fontSize: 12, color: '#64748b', marginTop: 6 },
   state: { alignItems: 'center', padding: 24, gap: 12 },
   stateText: { color: '#64748b', fontSize: 15, textAlign: 'center' },
@@ -564,17 +563,28 @@ const base = StyleSheet.create({
     gap: 8,
     backgroundColor: '#f8fafc',
   },
-  totalRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+  statCards: { flexDirection: 'row', gap: 8 },
+  statCard: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: tokens.line,
+    borderRadius: 10,
+    padding: 10,
+    backgroundColor: '#ffffff',
+    gap: 4,
   },
-  totalLabel: { color: '#475569', fontSize: 15, fontWeight: '600' },
-  incompleteNote: { color: '#92400e', fontSize: 12, marginTop: 2 },
-  totalValue: {
-    color: '#0f172a',
-    fontSize: 20,
-    fontWeight: '600',
+  statIcon: {
+    width: 26,
+    height: 26,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statCardLabel: { fontSize: 11, color: tokens.ink2 },
+  statCardValue: {
+    fontSize: 14.5,
+    fontWeight: '700',
+    color: tokens.ink,
     fontVariant: ['tabular-nums'],
   },
   emptyText: { color: '#64748b', fontSize: 14, textAlign: 'center', paddingVertical: 16 },

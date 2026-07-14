@@ -68,7 +68,7 @@ export default function ReviewQueueScreen() {
     return m;
   }, [summaries.data]);
 
-  const onBack = useOneShotBack('/(tabs)/expenses');
+  const onBack = useOneShotBack('/(tabs)/home' as unknown as Href);
 
   const onRefresh = () => {
     setUserRefreshing(true);

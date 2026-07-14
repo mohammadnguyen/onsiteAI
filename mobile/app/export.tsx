@@ -11,6 +11,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import type { Href } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import * as Sharing from 'expo-sharing';
 
@@ -96,7 +97,7 @@ export default function ExportScreen() {
     }
   };
 
-  const onBack = useOneShotBack('/(tabs)/settings');
+  const onBack = useOneShotBack('/settings' as unknown as Href);
 
   const onExport = async () => {
     if (busy) return;

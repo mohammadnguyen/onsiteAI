@@ -138,7 +138,7 @@ export default function ExpenseDetailScreen() {
       return;
     }
     if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)/expenses');
+    else router.replace('/(tabs)/home' as unknown as Href);
   };
 
   // O2-B polish #10: brief visible confirmation after Approve / Reject

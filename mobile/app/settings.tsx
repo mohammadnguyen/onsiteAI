@@ -4,16 +4,17 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useRouter, type Href } from 'expo-router';
 import Constants from 'expo-constants';
-import i18n, { setLanguage, type Lang } from '../../src/i18n';
-import { useAuthStore } from '../../src/store/auth';
+import i18n, { setLanguage, type Lang } from '../src/i18n';
+import { useAuthStore } from '../src/store/auth';
 import {
   useFontScaleStore,
   type FontScaleLevel,
-} from '../../src/store/fontScale';
-import { useScaledStyles } from '../../src/ui/type';
-import { api, apiUrl } from '../../src/api/client';
-import { useMe } from '../../src/api/hooks/useAuth';
-import { resetSessionState, wipeFailures } from '../../src/store/session';
+} from '../src/store/fontScale';
+import { useScaledStyles } from '../src/ui/type';
+import { api, apiUrl } from '../src/api/client';
+import { useMe } from '../src/api/hooks/useAuth';
+import { resetSessionState, wipeFailures } from '../src/store/session';
+import { useOneShotBack } from '../src/util/navigation';
 
 export default function SettingsScreen() {
   const { t } = useTranslation();
@@ -23,6 +24,8 @@ export default function SettingsScreen() {
   const fontLevel = useFontScaleStore((st) => st.level);
   const setFontLevel = useFontScaleStore((st) => st.setLevel);
   const router = useRouter();
+  // B2 (IA rework): settings is a PUSHED screen (entered from Home).
+  const onBack = useOneShotBack('/(tabs)/home' as unknown as Href);
   const clear = useAuthStore((s) => s.clear);
   const { data: me, isLoading } = useMe();
   // M4: admin-only Users entry — /auth/me drives VISIBILITY ONLY;
@@ -78,9 +81,21 @@ export default function SettingsScreen() {
       ?.buildCommit ?? 'dev';
 
   return (
-    <SafeAreaView style={s.safe} edges={['bottom', 'left', 'right']}>
+    <SafeAreaView style={s.safe} edges={['top', 'bottom', 'left', 'right']}>
       <View style={s.wrap}>
-        <Text style={s.title}>{t('settings.title')}</Text>
+        <View style={s.headerRow}>
+          <TouchableOpacity
+            onPress={onBack}
+            hitSlop={12}
+            testID="settings-back"
+            accessibilityRole="button"
+            style={s.backBtn}
+          >
+            <Text style={s.backChevron}>{'‹'}</Text>
+          </TouchableOpacity>
+          <Text style={s.title}>{t('settings.title')}</Text>
+          <View style={s.backSpacer} />
+        </View>
 
         <View style={s.card}>
           <Text style={s.cardLabel}>{t('settings.signed_in_as')}</Text>
@@ -224,7 +239,11 @@ export default function SettingsScreen() {
 const base = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#ffffff' },
   wrap: { flex: 1, padding: 20 },
-  title: { fontSize: 22, fontWeight: '600', color: '#0f172a', marginBottom: 20 },
+  headerRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 20 },
+  backBtn: { minWidth: 44, minHeight: 44, justifyContent: 'center' },
+  backChevron: { fontSize: 30, lineHeight: 32, color: '#475569' },
+  backSpacer: { width: 44 },
+  title: { fontSize: 22, fontWeight: '600', color: '#0f172a' },
   card: {
     borderWidth: 1,
     borderColor: '#e2e8f0',

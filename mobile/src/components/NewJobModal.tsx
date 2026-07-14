@@ -40,7 +40,7 @@ import {
  *      duplicate alias is a normal user-correctable case.
  *
  * Body construction follows the conditional-spread pattern from
- * capture v0 (`mobile/app/(tabs)/expenses.tsx`) to avoid the Pydantic
+ * capture v0 (`mobile/app/capture.tsx`) to avoid the Pydantic
  * `model_fields_set` 422 trap on optional nullable fields.
  */
 export function NewJobModal({

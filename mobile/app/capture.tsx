@@ -11,6 +11,7 @@ import {
   ScrollView,
   Keyboard,
   RefreshControl,
+  Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -21,23 +22,26 @@ import {
   type ExpenseCreateResponse,
   type PaymentMethod,
   type ReceiptStatus,
-} from '../../src/api/hooks/useExpenses';
-import { resolveApiErrorMessage } from '../../src/api/errors';
-import { useMe } from '../../src/api/hooks/useAuth';
+} from '../src/api/hooks/useExpenses';
+import { resolveApiErrorMessage } from '../src/api/errors';
+import { useMe } from '../src/api/hooks/useAuth';
 import {
   useJobs,
   useJobZhAliasMap,
   type JobPublic,
-} from '../../src/api/hooks/useJobs';
-import { CaptureResultCard } from '../../src/components/CaptureResultCard';
-import { JobPickerSheet } from '../../src/components/JobPickerSheet';
-import { RecentCapturesList } from '../../src/components/RecentCapturesList';
-import { RecentFailuresList } from '../../src/components/RecentFailuresList';
-import { DatePills } from '../../src/components/DatePills';
-import { useFailuresStore } from '../../src/store/failures';
-import { todayISO } from '../../src/util/dates';
-import { hasCJK } from '../../src/util/text';
-import { useScaledStyles } from '../../src/ui/type';
+} from '../src/api/hooks/useJobs';
+import { CaptureResultCard } from '../src/components/CaptureResultCard';
+import { JobPickerSheet } from '../src/components/JobPickerSheet';
+import { RecentCapturesList } from '../src/components/RecentCapturesList';
+import { RecentFailuresList } from '../src/components/RecentFailuresList';
+import { DatePills } from '../src/components/DatePills';
+import { useFailuresStore } from '../src/store/failures';
+import { todayISO } from '../src/util/dates';
+import { hasCJK } from '../src/util/text';
+import { useScaledStyles } from '../src/ui/type';
+import { Chip } from '../src/ui/kit';
+import { useOneShotBack } from '../src/util/navigation';
+import type { Href } from 'expo-router';
 
 /**
  * Mobile Capture v0: natural-language expense capture screen.
@@ -84,9 +88,29 @@ type MultiCaptureResult = {
   preamble: string | null;
 };
 
-export default function ExpensesScreen() {
+export default function CaptureScreen() {
   const s = useScaledStyles(base);
+
   const { t, i18n } = useTranslation();
+  // B2 (IA rework): capture is a PUSHED screen now (central ➕), so it
+  // renders its own back header. One-shot back; deep-link fallback to
+  // the Home tab.
+  const onBackHome = useOneShotBack('/(tabs)/home' as unknown as Href);
+  const screenHeader = (
+    <View style={s.headerRow}>
+      <TouchableOpacity
+        onPress={onBackHome}
+        hitSlop={12}
+        testID="capture-back"
+        accessibilityRole="button"
+        style={s.backBtn}
+      >
+        <Text style={s.backChevron}>{'‹'}</Text>
+      </TouchableOpacity>
+      <Text style={s.title}>{t('capture.title')}</Text>
+      <View style={s.backSpacer} />
+    </View>
+  );
   const createExpense = useCreateExpense();
   // Mobile Capture v1 Sub-batch A: "My Captures" list query lives on
   // the parent screen so the same RefreshControl can drive pull-to-
@@ -368,13 +392,13 @@ export default function ExpensesScreen() {
 
   if (multiResult) {
     return (
-      <SafeAreaView style={s.safe} edges={['bottom', 'left', 'right']}>
+      <SafeAreaView style={s.safe} edges={['top', 'bottom', 'left', 'right']}>
         <ScrollView
           contentContainerStyle={s.scroll}
           keyboardShouldPersistTaps="handled"
           refreshControl={refreshControl}
         >
-          <Text style={s.title}>{t('capture.title')}</Text>
+          {screenHeader}
           <MultiCaptureResultCard
             result={multiResult}
             onReset={onReset}
@@ -392,13 +416,13 @@ export default function ExpensesScreen() {
 
   if (result) {
     return (
-      <SafeAreaView style={s.safe} edges={['bottom', 'left', 'right']}>
+      <SafeAreaView style={s.safe} edges={['top', 'bottom', 'left', 'right']}>
         <ScrollView
           contentContainerStyle={s.scroll}
           keyboardShouldPersistTaps="handled"
           refreshControl={refreshControl}
         >
-          <Text style={s.title}>{t('capture.title')}</Text>
+          {screenHeader}
           <CaptureResultCard
             result={result}
             onReset={onReset}
@@ -423,7 +447,7 @@ export default function ExpensesScreen() {
   const submitDisabled = inFlight || rawInputText.trim().length === 0;
 
   return (
-    <SafeAreaView style={s.safe} edges={['bottom', 'left', 'right']}>
+    <SafeAreaView style={s.safe} edges={['top', 'bottom', 'left', 'right']}>
       <KeyboardAvoidingView
         style={s.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -433,7 +457,7 @@ export default function ExpensesScreen() {
           keyboardShouldPersistTaps="handled"
           refreshControl={refreshControl}
         >
-          <Text style={s.title}>{t('capture.title')}</Text>
+          {screenHeader}
 
           {/* O2-A (feedback #1): tap a job instead of spelling it. Chips
               are recent-first active jobs, labelled with the zh alias
@@ -458,7 +482,11 @@ export default function ExpensesScreen() {
                 />
               ))}
               <PaymentOption
-                label={t('capture.job_more')}
+                label={
+                  activeJobs.length > displayChips.length
+                    ? `+${activeJobs.length - displayChips.length}`
+                    : t('capture.job_more')
+                }
                 active={false}
                 disabled={inFlight}
                 onPress={() => setJobPickerOpen(true)}
@@ -479,11 +507,12 @@ export default function ExpensesScreen() {
             placeholder={t('capture.textarea_placeholder')}
             placeholderTextColor="#94a3b8"
             multiline
-            // F3: no autoFocus — the Capture tab is the post-login landing
-            // screen, so auto-focusing here forced the keyboard up on every
-            // app launch. The user taps to type; the deferred focus calls in
-            // onReset ("capture another") and onRefillFailure (retry) still
-            // re-focus the textarea after user-initiated actions.
+            // F3 legacy: no autoFocus. The original rationale (capture was
+            // the post-login landing tab; keyboard popped on every launch)
+            // no longer applies — B2 made this a pushed screen behind the
+            // tab-bar ➕. Kept as-is for now; whether ➕ should auto-focus
+            // the textarea is an operator UX call (B2 follow-up). The
+            // deferred focus calls in onReset / onRefillFailure still work.
             editable={!inFlight}
             style={s.textarea}
             testID="capture-textarea"
@@ -524,19 +553,21 @@ export default function ExpensesScreen() {
             </Text>
           ) : null}
 
-          <TouchableOpacity
-            style={s.checkboxRow}
-            onPress={() => !inFlight && setReceiptLater((v) => !v)}
-            disabled={inFlight}
-            testID="receipt-later"
-            accessibilityRole="checkbox"
-            accessibilityState={{ checked: receiptLater }}
-          >
-            <View style={[s.checkbox, receiptLater && s.checkboxChecked]}>
-              {receiptLater ? <Text style={s.checkmark}>{'✓'}</Text> : null}
-            </View>
+          {/* Preview-parity: switch row (was a checkbox). */}
+          <View style={s.switchRow} testID="receipt-later">
             <Text style={s.checkboxLabel}>{t('capture.receipt_later')}</Text>
-          </TouchableOpacity>
+            <Switch
+              testID="receipt-later-switch"
+              value={receiptLater}
+              onValueChange={(v) => {
+                if (!inFlight) setReceiptLater(v);
+              }}
+              disabled={inFlight}
+              trackColor={{ true: '#93c5fd', false: '#e2e8f0' }}
+              thumbColor={receiptLater ? '#2563EB' : '#f8fafc'}
+              accessibilityLabel={t('capture.receipt_later')}
+            />
+          </View>
 
           {formError ? (
             <View style={s.errorBanner} testID="capture-error">
@@ -570,7 +601,7 @@ export default function ExpensesScreen() {
               without first capturing a new one. With the list always
               visible, the path "I want to fix something I captured
               earlier" -> scroll -> tap row -> detail -> Edit expense
-              is one tap from the default state of the Capture tab. */}
+              is one tap from the default state of this screen. */}
           <RecentCapturesList
             query={recentExpenses}
             showViewAll
@@ -594,6 +625,8 @@ export default function ExpensesScreen() {
   );
 }
 
+/** B3: thin adapter over the kit Chip — job chips + payment chips get
+ *  the design system's tonal selected state from one place. */
 function PaymentOption({
   label,
   active,
@@ -607,20 +640,15 @@ function PaymentOption({
   onPress: () => void;
   testID: string;
 }) {
-  const s = useScaledStyles(base);
   return (
-    <TouchableOpacity
-      onPress={onPress}
+    <Chip
+      label={label}
+      selected={active}
       disabled={disabled}
-      style={[s.paymentOption, active && s.paymentOptionActive, disabled && s.paymentOptionDisabled]}
+      onPress={onPress}
       testID={testID}
       accessibilityRole="radio"
-      accessibilityState={{ selected: active, disabled }}
-    >
-      <Text style={[s.paymentOptionText, active && s.paymentOptionTextActive]}>
-        {label}
-      </Text>
-    </TouchableOpacity>
+    />
   );
 }
 
@@ -735,6 +763,10 @@ const base = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#ffffff' },
   flex: { flex: 1 },
   scroll: { padding: 16, gap: 14 },
+  headerRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  backBtn: { minWidth: 44, minHeight: 44, justifyContent: 'center' },
+  backChevron: { fontSize: 30, lineHeight: 32, color: '#475569' },
+  backSpacer: { width: 44 },
   title: {
     fontSize: 24,
     fontWeight: '600',
@@ -760,21 +792,7 @@ const base = StyleSheet.create({
     gap: 8,
   },
   paymentLabel: { color: '#475569', fontSize: 14, marginRight: 4 },
-  paymentOption: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderRadius: 6,
-    backgroundColor: '#f8fafc',
-  },
-  paymentOptionActive: {
-    backgroundColor: '#1e293b',
-    borderColor: '#1e293b',
-  },
-  paymentOptionDisabled: { opacity: 0.5 },
-  paymentOptionText: { color: '#0f172a', fontSize: 14, fontWeight: '500' },
-  paymentOptionTextActive: { color: '#ffffff' },
+  // B3: chip visuals live in src/ui/kit.tsx (Chip).
   paymentHint: { color: '#64748b', fontSize: 12, lineHeight: 16 },
   // O2-A job chips row — mirrors paymentRow so the two selector rows
   // read as one visual family.
@@ -784,23 +802,17 @@ const base = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
-  checkboxRow: {
+  switchRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 4,
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
-  checkbox: {
-    width: 22,
-    height: 22,
-    borderWidth: 1.5,
-    borderColor: '#94a3b8',
-    borderRadius: 4,
-    marginRight: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  checkboxChecked: { backgroundColor: '#1e293b', borderColor: '#1e293b' },
-  checkmark: { color: '#ffffff', fontSize: 14, fontWeight: '700' },
+  // Preview-parity: receipt-later is a Switch row now (switchRow).
   checkboxLabel: { color: '#0f172a', fontSize: 14 },
   errorBanner: {
     backgroundColor: '#fef2f2',

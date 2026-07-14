@@ -7,7 +7,7 @@ import { useRouter, type Href } from 'expo-router';
  * Under the root Stack (back-nav fix), a second GO_BACK after this
  * screen has already popped is NOT a no-op: the root stack can't
  * handle it, so it bubbles into the tab navigator (backBehavior
- * 'firstRoute') and yanks the user onto the first tab (Expenses).
+ * 'firstRoute') and yanks the user onto the first tab (Home).
  * Two real double-fire windows exist on native-stack pops:
  *   - the ~300ms pop animation keeps the chevron tappable, so a
  *     double-tap dispatches GO_BACK twice (under the old Slot root

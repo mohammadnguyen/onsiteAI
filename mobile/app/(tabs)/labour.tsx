@@ -535,7 +535,7 @@ export default function LabourScreen() {
   const initialLoading = jobs.isLoading || workers.isLoading || me.isLoading;
 
   return (
-    <SafeAreaView style={s.safe} edges={['bottom', 'left', 'right']}>
+    <SafeAreaView style={s.safe} edges={['top', 'bottom', 'left', 'right']}>
       {/* C-01: per-row time inputs sit low on the screen; without KAV
           the keyboard covers the row being typed into (login.tsx
           shape — padding on iOS, system resize on Android). */}

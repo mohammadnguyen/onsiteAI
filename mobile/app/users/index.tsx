@@ -27,7 +27,7 @@ import { useOneShotBack } from '../../src/util/navigation';
  * M4: user/team management list (admin-only).
  *
  * Route: ``/users``. Entered via the admin-only "Users" card on the
- * Settings tab. Backend is authoritative — all three user routes are
+ * Settings screen (pushed from Home). Backend is authoritative — all three user routes are
  * require_admin; a contributor landing here gets a 403, rendered as
  * the "admins only" state.
  *
@@ -48,7 +48,7 @@ export default function UsersScreen() {
   const update = useUpdateUser();
   const [userRefreshing, setUserRefreshing] = useState(false);
 
-  const onBack = useOneShotBack('/(tabs)/settings');
+  const onBack = useOneShotBack('/settings' as unknown as Href);
 
   const onRefresh = () => {
     setUserRefreshing(true);

@@ -5,6 +5,7 @@ import type { ExpensePublic } from '../api/hooks/useExpenses';
 import { formatMoney } from '../util/format';
 import { formatDateAU } from '../util/dates';
 import { StatusBadge } from '../ui/kit';
+import { useScaledStyles } from '../ui/type';
 
 /**
  * Shared expense row visual.
@@ -45,6 +46,9 @@ export function ExpenseRow({
   fromJobId?: string;
 }) {
   const { t } = useTranslation();
+  // B3: two-line font-scale adoption — fixes the mixed-scaling nit
+  // (embedded StatusBadge scaled while the row text did not).
+  const s = useScaledStyles(base);
   const statusKey = `expense.status_${expense.review_status}`;
   const previewSource = expense.raw_input_text || expense.description || '';
   const preview = truncate(previewSource, PREVIEW_MAX);
@@ -114,7 +118,7 @@ export function ExpenseRow({
   );
 }
 
-const s = StyleSheet.create({
+const base = StyleSheet.create({
   row: {
     paddingVertical: 12,
     borderBottomWidth: 1,

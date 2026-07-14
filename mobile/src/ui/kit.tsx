@@ -116,19 +116,22 @@ export function Chip({
   onPress,
   disabled,
   testID,
+  accessibilityRole = 'button',
 }: {
   selected?: boolean;
   label: string;
   onPress?: () => void;
   disabled?: boolean;
   testID?: string;
+  /** 'radio' for mutually-exclusive groups (e.g. payment method). */
+  accessibilityRole?: 'button' | 'radio';
 }) {
   const s = useScaledStyles(base);
   return (
     <Pressable
       onPress={onPress}
       disabled={disabled}
-      accessibilityRole="button"
+      accessibilityRole={accessibilityRole}
       accessibilityState={{ selected: !!selected }}
       style={[s.chip, selected ? s.chipSelected : null, disabled ? s.dim : null]}
       testID={testID}
@@ -176,6 +179,65 @@ export function Segmented<T extends string>({
         );
       })}
     </View>
+  );
+}
+
+/* ================= labour-cost gap ================= */
+
+/**
+ * Amount with an incomplete-data marker: when some entries lack a
+ * worker rate the shown cost UNDERSTATES reality — the amber "+"
+ * signals "actual cost is higher". Caller formats the amount.
+ */
+export function IncompleteAmount({
+  formatted,
+  incomplete,
+  testID,
+}: {
+  formatted: string;
+  incomplete?: boolean;
+  testID?: string;
+}) {
+  const s = useScaledStyles(base);
+  return (
+    <Text style={s.incompleteWrap} testID={testID}>
+      {formatted}
+      {incomplete ? <Text style={s.incompletePlus}>+</Text> : null}
+    </Text>
+  );
+}
+
+/** Tappable warning: N of M entries have no worker rate, so labour
+ *  cost is understated. onPress goes to the worker-rates screen. */
+export function RateGapBanner({
+  missing,
+  total,
+  onPress,
+  testID,
+}: {
+  missing: number;
+  total: number;
+  onPress: () => void;
+  testID?: string;
+}) {
+  const s = useScaledStyles(base);
+  const { t } = useTranslation();
+  if (missing <= 0) return null;
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      style={({ pressed }) => [s.rateGap, pressed && { opacity: 0.7 }]}
+      testID={testID}
+    >
+      <View style={s.rateGapBody}>
+        <Text style={s.rateGapTitle}>
+          {t('labour.rate_gap_title', { missing, total })}
+        </Text>
+        <Text style={s.rateGapCta}>{t('labour.rate_gap_cta')}</Text>
+      </View>
+      <Text style={s.rateGapChevron}>{'›'}</Text>
+    </Pressable>
   );
 }
 
@@ -260,6 +322,9 @@ const base = StyleSheet.create({
     backgroundColor: '#ffffff',
     paddingHorizontal: 14,
     paddingVertical: 6,
+    // Truncation cap (review nit: long job/supplier names must not
+    // produce a chip wider than the screen).
+    maxWidth: 220,
   },
   chipSelected: {
     borderColor: tokens.selBorder,
@@ -293,6 +358,30 @@ const base = StyleSheet.create({
   },
   segmentText: { fontSize: 12, fontWeight: '600', color: tokens.ink2 },
   segmentTextOn: { color: tokens.selText },
+
+  // labour-cost gap
+  incompleteWrap: { fontVariant: ['tabular-nums'] },
+  incompletePlus: { color: tokens.warn, fontWeight: '800' },
+  rateGap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: tokens.warnBorder,
+    backgroundColor: tokens.warnBg,
+    padding: 12,
+    marginTop: 8,
+  },
+  rateGapBody: { flex: 1, minWidth: 0 },
+  rateGapTitle: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: '#92400e',
+    lineHeight: 17,
+  },
+  rateGapCta: { marginTop: 2, fontSize: 11, color: tokens.warn },
+  rateGapChevron: { fontSize: 18, color: tokens.warnFill },
 
   // primary button
   primaryBtn: {

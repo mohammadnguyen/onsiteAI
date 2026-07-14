@@ -7,12 +7,10 @@ import {
   StyleSheet,
   TouchableOpacity,
   Modal,
-  Pressable,
   RefreshControl,
   ScrollView,
   Alert,
 } from 'react-native';
-import { useQueryClient } from '@tanstack/react-query';
 import { BudgetBar, StatusBadge } from '../../src/ui/kit';
 import { tokens } from '../../src/ui/tokens';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -29,11 +27,7 @@ import {
   type JobBudgetSummary,
 } from '../../src/api/hooks/useJobs';
 import { useFocusEffect, useRouter, type Href } from 'expo-router';
-import {
-  useJobExpenses,
-  useExpensesSince,
-} from '../../src/api/hooks/useExpenses';
-import { useOpenReviewQueue } from '../../src/api/hooks/useReviewQueue';
+import { useJobExpenses } from '../../src/api/hooks/useExpenses';
 import { monthStart, monthEnd, todayISO } from '../../src/util/dates';
 import {
   useJobLabourRollup,
@@ -101,16 +95,6 @@ function rankByPressure(jobs: JobPublic[]): JobPublic[] {
 }
 
 /**
- * R1 (ex-Dashboard): map a stat query's status to a render state so a
- * failed fetch NEVER coalesces to a real-looking value.
- */
-type StatState = 'loading' | 'value' | 'stale' | 'error';
-function statState(isError: boolean, hasData: boolean): StatState {
-  if (hasData) return isError ? 'stale' : 'value';
-  return isError ? 'error' : 'loading';
-}
-
-/**
  * Mobile Polish slice (Half A): map the backend's job-status enum
  * ("active" / "completed") to a translated label. Unknown / future
  * statuses fall back to the raw value rather than rendering a raw
@@ -134,20 +118,14 @@ export default function JobsScreen() {
   const { t } = useTranslation();
   const jobsQuery = useJobs();
   const { data, isLoading, isError } = jobsQuery;
-  const qc = useQueryClient();
-  // X-2: pull-to-refresh (house pattern — explicit "user pulled" flag so
-  // background refetches never pin the spinner). Jobs was the only data
-  // tab without a manual refresh path; money surfaces could not recover
-  // from staleness by gesture. Also invalidates the stats-header roots
-  // so month-spend + pending refetch on the same pull.
+  // X-2: pull-to-refresh (house pattern — explicit "user pulled" flag
+  // so background refetches never pin the spinner). B2: the stats
+  // cards moved to Home, so this pull only refreshes the jobs list —
+  // Home has its own pull that covers the stats roots.
   const [userRefreshing, setUserRefreshing] = useState(false);
   const onRefresh = () => {
     setUserRefreshing(true);
-    void Promise.allSettled([
-      jobsQuery.refetch(),
-      qc.invalidateQueries({ queryKey: ['expenses'] }),
-      qc.invalidateQueries({ queryKey: ['review-queue'] }),
-    ]).finally(() => setUserRefreshing(false));
+    void jobsQuery.refetch().finally(() => setUserRefreshing(false));
   };
   // O2-B: role drives the merged-dashboard surfaces. VISIBILITY ONLY —
   // the backend strips job money for contributors regardless (jobs
@@ -223,7 +201,7 @@ export default function JobsScreen() {
   }, [jobs, isAdmin]);
 
   return (
-    <SafeAreaView style={s.safe} edges={['bottom', 'left', 'right']}>
+    <SafeAreaView style={s.safe} edges={['top', 'bottom', 'left', 'right']}>
       <View style={s.header}>
         <Text style={s.title}>{t('jobs.title')}</Text>
         <TouchableOpacity
@@ -236,10 +214,8 @@ export default function JobsScreen() {
           <Text style={s.newBtnText}>{t('jobs.new')}</Text>
         </TouchableOpacity>
       </View>
-      {/* O2-B: admin-only stats header (ex-Dashboard cards). Rendered
-          for admins even while the list loads; COMPLETELY ABSENT for
-          contributors — no placeholder that advertises hidden money. */}
-      {isAdmin ? <AdminStatsHeader /> : null}
+      {/* UI-kit v2 B2: the admin stats cards moved to the Home tab
+          (app/(tabs)/home.tsx) with the IA rework. */}
       {isLoading ? (
         <View style={s.center}>
           <ActivityIndicator size="large" color="#1e293b" />
@@ -302,110 +278,6 @@ export default function JobsScreen() {
 // M5: jobs-list item — either a job row or the single archived-section
 // divider injected between active and archived groups.
 type JobListItem = { kind: 'job'; job: JobPublic } | { kind: 'archived-header' };
-
-/**
- * O2-B: admin-only stats header — the retired Dashboard's three cards
- * (this-month spend → expense list; pending-review count → review
- * queue; active-jobs count), with the same R1 degraded-state handling.
- * Lives in its own component so its admin-flavoured queries NEVER fire
- * for contributors (the parent renders it only when isAdmin).
- */
-function AdminStatsHeader() {
-  const s = useScaledStyles(base);
-  const { t } = useTranslation();
-  const router = useRouter();
-  const jobs = useJobs();
-  const queue = useOpenReviewQueue();
-  // Month-to-date window, recomputed per render so a month rollover
-  // picks up the new window on the next refresh (ex-Dashboard pattern).
-  const monthExpenses = useExpensesSince(monthStart(todayISO()));
-
-  const activeCount = useMemo(
-    () => (jobs.data ?? []).filter((j) => j.status === 'active').length,
-    [jobs.data],
-  );
-  const monthTotalExGst = useMemo(() => {
-    const items = monthExpenses.data?.items ?? [];
-    return items
-      .filter((e) => e.review_status !== 'rejected')
-      .reduce((acc, e) => acc + parseFloat(e.amount_ex_gst ?? '0'), 0);
-  }, [monthExpenses.data]);
-  const pendingCount = queue.data?.length ?? null;
-
-  const monthStat = statState(
-    monthExpenses.isError,
-    monthExpenses.data !== undefined,
-  );
-  const jobsStat = statState(jobs.isError, jobs.data !== undefined);
-  const queueStat = statState(queue.isError, queue.data !== undefined);
-
-  return (
-    <View style={s.statRow} testID="jobs-stats-header">
-      <Pressable
-        style={({ pressed }) => [s.statCard, pressed && s.statCardPressed]}
-        onPress={() => router.push('/expenses/list' as unknown as Href)}
-        accessibilityRole="button"
-        testID="jobs-stat-month-spend"
-      >
-        <Text style={s.statLabel}>{t('dashboard.month_spend')}</Text>
-        <Text
-          style={[s.statValue, monthStat === 'error' && s.statValueError]}
-          numberOfLines={1}
-        >
-          {monthStat === 'loading'
-            ? '…'
-            : monthStat === 'error'
-              ? '—'
-              : formatMoney(monthTotalExGst.toFixed(2))}
-        </Text>
-        {monthStat === 'stale' ? (
-          <Text style={s.statTag}>{t('dashboard.stale')}</Text>
-        ) : null}
-      </Pressable>
-      <Pressable
-        style={({ pressed }) => [
-          s.statCard,
-          s.statCardPending,
-          pressed && s.statCardPressed,
-        ]}
-        onPress={() => router.push('/review-queue' as unknown as Href)}
-        accessibilityRole="button"
-        testID="jobs-stat-pending"
-      >
-        <Text style={s.statLabel}>{t('dashboard.pending_review')}</Text>
-        <Text
-          style={[
-            s.statValue,
-            s.statValuePending,
-            queueStat === 'error' && s.statValueError,
-          ]}
-        >
-          {queueStat === 'loading'
-            ? '…'
-            : queueStat === 'error'
-              ? '—'
-              : `${pendingCount} ›`}
-        </Text>
-        {queueStat === 'stale' ? (
-          <Text style={s.statTag}>{t('dashboard.stale')}</Text>
-        ) : null}
-      </Pressable>
-      <View style={s.statCard} testID="jobs-stat-active">
-        <Text style={s.statLabel}>{t('dashboard.active_jobs')}</Text>
-        <Text style={[s.statValue, jobsStat === 'error' && s.statValueError]}>
-          {jobsStat === 'loading'
-            ? '…'
-            : jobsStat === 'error'
-              ? '—'
-              : activeCount}
-        </Text>
-        {jobsStat === 'stale' ? (
-          <Text style={s.statTag}>{t('dashboard.stale')}</Text>
-        ) : null}
-      </View>
-    </View>
-  );
-}
 
 function JobRow({
   job,
@@ -1079,29 +951,51 @@ function MarginSection({
       ? ((contract - Number(data.actual_ex_gst)) / contract) * 100
       : null;
 
-  // Show the section if EITHER a target is configured OR a current
-  // margin is computable; otherwise render nothing.
-  if (target == null && current == null) return null;
+  // B3 (operator-approved): PROJECTED margin — the design kit's
+  // headline figure: "what the job earns IF it lands on budget".
+  // Value comes from the SERVER (budgeted_profit_ratio_pct on the
+  // same budget-summary payload — review fix: no client re-derivation
+  // of a headline financial figure; backend owns the math). Zero/no
+  // budget -> no projected hero (a "100% margin" from an unentered
+  // budget is misleading), falling back to the to-date hero.
+  const budget =
+    data.total_budget_ex_gst != null
+      ? Number(data.total_budget_ex_gst)
+      : null;
+  const projected =
+    budget != null && budget > 0 && data.budgeted_profit_ratio_pct != null
+      ? Number(data.budgeted_profit_ratio_pct)
+      : null;
 
-  const delta = current != null && target != null ? current - target : null;
+  // Show the section if anything is computable/configured.
+  if (target == null && current == null && projected == null) return null;
 
-  // UI-kit v2 layout: hero number = the SAME "current margin (to
-  // date)" value as before, delta pill vs target, qualifier hint.
-  // Values/math untouched (the kit's budget-based "projected margin"
-  // is a NEW financial figure — deferred to Batch 3 for its own
-  // approval). Falls back to the plain target row when no contract
-  // means no computable current margin.
+  // Hero = projected when available, else to-date (B1 behaviour).
+  const hero = projected ?? current;
+  const heroIsProjected = projected != null;
+  const delta = hero != null && target != null ? hero - target : null;
+
+  // UI-kit v2 layout (B3): hero = PROJECTED margin when computable
+  // (contract + budget), with a pp delta pill vs target; "to date"
+  // becomes a secondary row with its qualifier hint. Falls back to
+  // to-date as the hero (B1 behaviour) when no budget exists, and to
+  // a plain target row when nothing is computable.
   return (
     <View testID="job-margin">
       <Text style={s.sectionHeader}>{t('job.margin_header')}</Text>
-      {current != null ? (
+      {hero != null ? (
         <>
           <Text style={s.marginHeroLabel}>
-            {t('job.current_margin_to_date')}
+            {heroIsProjected
+              ? t('job.projected_margin')
+              : t('job.current_margin_to_date')}
           </Text>
           <View style={s.marginHeroRow}>
-            <Text style={s.marginHeroValue} testID="job-margin-current">
-              {current.toFixed(1)}%
+            <Text
+              style={s.marginHeroValue}
+              testID={heroIsProjected ? 'job-margin-projected' : 'job-margin-current'}
+            >
+              {hero.toFixed(1)}%
             </Text>
             {delta != null && target != null ? (
               <View
@@ -1125,11 +1019,23 @@ function MarginSection({
               </View>
             ) : null}
           </View>
+          {heroIsProjected ? (
+            <Text style={s.metricHint} testID="job-margin-projected-hint">
+              {t('job.projected_margin_hint')}
+            </Text>
+          ) : null}
         </>
       ) : target != null ? (
         <DetailRow
           label={t('job.target_margin_pct')}
           value={`${target.toFixed(1)}%`}
+        />
+      ) : null}
+      {/* To-date as a secondary row when projected holds the hero. */}
+      {heroIsProjected && current != null ? (
+        <DetailRow
+          label={t('job.current_margin_to_date')}
+          value={`${current.toFixed(1)}%`}
         />
       ) : null}
       {/* O2-C (U3): early in a job, "current margin" reads as a huge
@@ -1214,30 +1120,7 @@ const base = StyleSheet.create({
     alignItems: 'center',
   },
   rowMain: { flex: 1 },
-  // O2-B: ex-Dashboard stats header + pressure bar styles.
-  statRow: {
-    flexDirection: 'row',
-    gap: 8,
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-  },
-  statCard: {
-    flex: 1,
-    backgroundColor: '#f8fafc',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 10,
-    gap: 2,
-  },
-  statCardPending: { backgroundColor: '#fffbeb', borderColor: '#fde68a' },
-  statCardPressed: { opacity: 0.7 },
-  statLabel: { fontSize: 11, color: '#64748b' },
-  statValue: { fontSize: 17, fontWeight: '600', color: '#0f172a' },
-  statValuePending: { color: '#92400e' },
-  statValueError: { color: '#94a3b8' },
-  statTag: { fontSize: 10, color: '#b45309' },
+  // B2: stats-card styles moved to app/(tabs)/home.tsx with the cards.
   // bar visuals now live in src/ui/kit.tsx (BudgetBar); job status
   // pills in StatusBadge — the old inline styles are removed.
   pressureWrap: { marginTop: 2 },

@@ -13,6 +13,7 @@ import {
   Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import type { Href } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -60,7 +61,7 @@ export default function NewUserScreen() {
   const [language, setLanguage] = useState<'en' | 'zh'>('en');
   const [formError, setFormError] = useState<string | null>(null);
 
-  const onBack = useOneShotBack('/(tabs)/settings');
+  const onBack = useOneShotBack('/settings' as unknown as Href);
 
   // Light client-side gate only — the backend validates properly
   // (EmailStr etc.). Password is NOT trimmed: leading/trailing

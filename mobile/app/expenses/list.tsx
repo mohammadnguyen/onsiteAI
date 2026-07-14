@@ -10,6 +10,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import type { Href } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -31,13 +32,14 @@ import {
   type ExpenseListDatePreset,
 } from '../../src/store/expenseListFilters';
 import { useOneShotBack } from '../../src/util/navigation';
+import { Chip } from '../../src/ui/kit';
 
 /**
  * M2-B: full expenses list.
  *
  * Route: ``/expenses/list`` (stack sibling of the detail route).
  * Entered via "View all expenses" under the Last-5 list on the
- * Expenses tab — capture remains the tab's primary action.
+ * Capture screen (pushed via the tab-bar ➕) and the Home month-spend card.
  *
  * Phone-native by design: a chip bar of single-select filters
  * (job / status / date preset / supplier / category) over an
@@ -156,7 +158,7 @@ export default function ExpenseListScreen() {
     return status ? all : all.filter((e) => e.review_status !== 'rejected');
   }, [list.data, status]);
 
-  const onBack = useOneShotBack('/(tabs)/expenses');
+  const onBack = useOneShotBack('/(tabs)/home' as unknown as Href);
 
   // M2-B review fix: the error gate matters. Without it, a failed
   // next-page fetch (weak field network, backend 5xx) re-arms
@@ -331,24 +333,13 @@ export default function ExpenseListScreen() {
           {(
             ['job', 'status', 'date', 'supplier', 'category'] as PickerKind[]
           ).map((kind) => (
-            <Pressable
+            <Chip
               key={kind}
+              label={`${chipLabels[kind]} ▾`}
+              selected={chipActive[kind]}
               onPress={() => setOpenPicker(kind)}
-              accessibilityRole="button"
               testID={`filter-chip-${kind}`}
-              style={({ pressed }) => [
-                s.chip,
-                chipActive[kind] && s.chipActive,
-                pressed && s.chipPressed,
-              ]}
-            >
-              <Text
-                style={[s.chipText, chipActive[kind] && s.chipTextActive]}
-                numberOfLines={1}
-              >
-                {chipLabels[kind]} ▾
-              </Text>
-            </Pressable>
+            />
           ))}
         </ScrollView>
       </View>
@@ -485,19 +476,7 @@ const s = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
-  chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderRadius: 16,
-    backgroundColor: '#f8fafc',
-    maxWidth: 180,
-  },
-  chipActive: { backgroundColor: '#1e293b', borderColor: '#1e293b' },
-  chipPressed: { opacity: 0.7 },
-  chipText: { fontSize: 13, fontWeight: '500', color: '#0f172a' },
-  chipTextActive: { color: '#ffffff' },
+  // B3: filter chips now use src/ui/kit.tsx Chip.
   list: { flex: 1 },
   listContainer: { paddingHorizontal: 16 },
   listEmptyContainer: { flexGrow: 1, justifyContent: 'center' },

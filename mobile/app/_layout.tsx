@@ -4,6 +4,7 @@ import {
   useRouter,
   useSegments,
   type ErrorBoundaryProps,
+  type Href,
 } from 'expo-router';
 import { QueryClientProvider, focusManager } from '@tanstack/react-query';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -220,7 +221,7 @@ export default function RootLayout() {
       if (router.canDismiss()) router.dismissAll();
       router.replace('/(auth)/login');
     } else if (accessToken && (inAuth || first === undefined)) {
-      router.replace('/(tabs)/expenses');
+      router.replace('/(tabs)/home' as unknown as Href);
     }
   }, [ready, hydrated, accessToken, segments, router]);
 
