@@ -13,6 +13,8 @@ import {
   Alert,
 } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
+import { BudgetBar, StatusBadge } from '../../src/ui/kit';
+import { tokens } from '../../src/ui/tokens';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
@@ -72,11 +74,9 @@ function bandFor(job: JobPublic): Band {
 }
 
 const BAND_ORDER: Record<Band, number> = { red: 0, amber: 1, green: 2, none: 3 };
-const BAND_COLORS: Record<Exclude<Band, 'none'>, string> = {
-  red: '#dc2626',
-  amber: '#d97706',
-  green: '#16a34a',
-};
+// UI-kit v2: band → data-status tone (bar colours now come from the
+// kit's toneFill; banding logic + per-job thresholds unchanged).
+const BAND_TONE = { red: 'bad', amber: 'warn', green: 'ok' } as const;
 
 /** Budget-pressure ordering (ex-Dashboard): red → amber → green by
  * consumed % desc, then budget-less jobs by spend desc. */
@@ -427,7 +427,6 @@ function JobRow({
   const band = pressure && !archived ? bandFor(job) : 'none';
   const pct =
     sum?.percent_consumed != null ? parseFloat(sum.percent_consumed) : null;
-  const barWidth = pct != null ? Math.min(pct, 100) : 0;
   const remaining =
     sum?.remaining_ex_gst != null ? parseFloat(sum.remaining_ex_gst) : null;
 
@@ -442,39 +441,28 @@ function JobRow({
           <Text style={s.rowName}>{job.job_name}</Text>
           {job.job_code ? <Text style={s.rowCode}>{job.job_code}</Text> : null}
         </View>
-        <Text style={[s.badge, job.status === 'active' ? s.badgeActive : s.badgeCompleted]}>
-          {localizeJobStatus(job.status, t)}
-        </Text>
+        <StatusBadge
+          status={job.status}
+          label={localizeJobStatus(job.status, t)}
+        />
       </View>
       {band !== 'none' ? (
         <View style={s.pressureWrap} testID={`job-pressure-${job.job_id}`}>
-          <View style={s.barTrack}>
-            <View
-              style={[
-                s.barFill,
-                { width: `${barWidth}%`, backgroundColor: BAND_COLORS[band] },
-              ]}
-            />
-          </View>
-          <Text
-            style={[
-              s.pressureText,
-              band === 'red'
-                ? s.pressureRed
-                : band === 'amber'
-                  ? s.pressureAmber
-                  : s.pressureGreen,
-            ]}
-            numberOfLines={1}
-          >
-            {remaining != null && remaining < 0
-              ? t('dashboard.over_by', {
-                  amount: formatMoney(Math.abs(remaining).toFixed(2)),
-                })
-              : t('dashboard.left', {
-                  amount: formatMoney((remaining ?? 0).toFixed(2)),
-                })}
-          </Text>
+          {/* RAW pct on purpose: the label must say "143% used" on an
+              overspent job — BudgetBar clamps only the FILL width. */}
+          <BudgetBar
+            pctUsed={pct ?? 0}
+            tone={BAND_TONE[band]}
+            leftText={
+              remaining != null && remaining < 0
+                ? t('dashboard.over_by', {
+                    amount: formatMoney(Math.abs(remaining).toFixed(2)),
+                  })
+                : t('dashboard.left', {
+                    amount: formatMoney((remaining ?? 0).toFixed(2)),
+                  })
+            }
+          />
         </View>
       ) : null}
       {/* O2-C (U8): budget-less ACTIVE jobs still get spend context on
@@ -1097,33 +1085,52 @@ function MarginSection({
 
   const delta = current != null && target != null ? current - target : null;
 
+  // UI-kit v2 layout: hero number = the SAME "current margin (to
+  // date)" value as before, delta pill vs target, qualifier hint.
+  // Values/math untouched (the kit's budget-based "projected margin"
+  // is a NEW financial figure — deferred to Batch 3 for its own
+  // approval). Falls back to the plain target row when no contract
+  // means no computable current margin.
   return (
     <View testID="job-margin">
       <Text style={s.sectionHeader}>{t('job.margin_header')}</Text>
-      {target != null ? (
+      {current != null ? (
+        <>
+          <Text style={s.marginHeroLabel}>
+            {t('job.current_margin_to_date')}
+          </Text>
+          <View style={s.marginHeroRow}>
+            <Text style={s.marginHeroValue} testID="job-margin-current">
+              {current.toFixed(1)}%
+            </Text>
+            {delta != null && target != null ? (
+              <View
+                style={[
+                  s.marginPill,
+                  delta >= 0 ? s.marginPillOk : s.marginPillBad,
+                ]}
+                testID="job-margin-delta"
+              >
+                <Text
+                  style={[
+                    s.marginPillText,
+                    { color: delta >= 0 ? tokens.ok : tokens.bad },
+                  ]}
+                >
+                  {t('job.margin_delta_pill', {
+                    delta: `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}`,
+                    target: target.toFixed(1),
+                  })}
+                </Text>
+              </View>
+            ) : null}
+          </View>
+        </>
+      ) : target != null ? (
         <DetailRow
           label={t('job.target_margin_pct')}
           value={`${target.toFixed(1)}%`}
         />
-      ) : null}
-      {current != null ? (
-        <DetailRow
-          label={t('job.current_margin_to_date')}
-          value={`${current.toFixed(1)}%`}
-        />
-      ) : null}
-      {delta != null ? (
-        <View style={s.detailRow}>
-          <Text style={s.detailLabel}>{t('job.margin_vs_target')}</Text>
-          <Text
-            style={[s.detailValue, delta >= 0 ? s.marginAbove : s.marginBelow]}
-            testID="job-margin-delta"
-          >
-            {delta >= 0
-              ? `▲ +${delta.toFixed(1)}%`
-              : `▼ ${delta.toFixed(1)}%`}
-          </Text>
-        </View>
       ) : null}
       {/* O2-C (U3): early in a job, "current margin" reads as a huge
           beat of target when it only means most costs haven't landed
@@ -1139,8 +1146,38 @@ function MarginSection({
 
 const base = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#ffffff' },
-  marginAbove: { color: '#16a34a', fontWeight: '600' },
-  marginBelow: { color: '#dc2626', fontWeight: '600' },
+  // UI-kit v2 margin hero (values unchanged; layout per design spec)
+  marginHeroLabel: { fontSize: 12, color: tokens.ink3, marginTop: 2 },
+  marginHeroRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 10,
+    marginTop: 4,
+    flexWrap: 'wrap',
+  },
+  marginHeroValue: {
+    fontSize: 29,
+    fontWeight: '800',
+    color: tokens.ink,
+    fontVariant: ['tabular-nums'],
+    letterSpacing: -0.5,
+  },
+  marginPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  marginPillOk: { backgroundColor: tokens.okBg, borderColor: tokens.okBorder },
+  marginPillBad: {
+    backgroundColor: tokens.badBg,
+    borderColor: tokens.badBorder,
+  },
+  marginPillText: {
+    fontSize: 10.5,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
   header: {
     paddingHorizontal: 16,
     paddingTop: 16,
@@ -1201,31 +1238,12 @@ const base = StyleSheet.create({
   statValuePending: { color: '#92400e' },
   statValueError: { color: '#94a3b8' },
   statTag: { fontSize: 10, color: '#b45309' },
-  pressureWrap: { gap: 4 },
-  barTrack: {
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#e2e8f0',
-    overflow: 'hidden',
-  },
-  barFill: { height: 6, borderRadius: 3 },
-  pressureText: { fontSize: 12, fontWeight: '500' },
-  pressureRed: { color: '#dc2626' },
-  pressureAmber: { color: '#b45309' },
-  pressureGreen: { color: '#15803d' },
+  // bar visuals now live in src/ui/kit.tsx (BudgetBar); job status
+  // pills in StatusBadge — the old inline styles are removed.
+  pressureWrap: { marginTop: 2 },
   metricHint: { fontSize: 12, color: '#64748b', paddingVertical: 2 },
   rowName: { fontSize: 16, color: '#0f172a', fontWeight: '500' },
   rowCode: { fontSize: 13, color: '#64748b', marginTop: 2 },
-  badge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    overflow: 'hidden',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  badgeActive: { backgroundColor: '#dcfce7', color: '#15803d' },
-  badgeCompleted: { backgroundColor: '#e2e8f0', color: '#475569' },
   sep: { height: 1, backgroundColor: '#e2e8f0' },
   modalHeader: {
     flexDirection: 'row',

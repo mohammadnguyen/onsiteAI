@@ -31,6 +31,7 @@ import { formatMoney } from '../../src/util/format';
 import { formatDateAU } from '../../src/util/dates';
 import { localizeCategoryName } from '../../src/util/category';
 import { useScaledStyles } from '../../src/ui/type';
+import { StatusBadge } from '../../src/ui/kit';
 
 /**
  * Mobile Expense Detail (v1) — read-only.
@@ -58,12 +59,9 @@ import { useScaledStyles } from '../../src/ui/type';
 
 type ReasonColor = { bg: string; fg: string };
 
-const STATUS_COLORS = {
-  pending: { bg: '#fef3c7', fg: '#92400e' },
-  reviewed: { bg: '#dcfce7', fg: '#15803d' },
-  rejected: { bg: '#fee2e2', fg: '#991b1b' },
-} as const;
-
+// UI-kit v2: the status pill is now src/ui/kit.tsx StatusBadge (which
+// keeps the C-04 unknown-enum grey fallback). REASON chips keep their
+// local palette below.
 const REASON_COLORS: Record<ReviewReasonCode, ReasonColor> = {
   amount_uncertain: { bg: '#fef3c7', fg: '#92400e' },
   unsupported_currency: { bg: '#ffe4e6', fg: '#9f1239' },
@@ -456,7 +454,6 @@ function DetailBody({
 }) {
   const s = useScaledStyles(base);
   const { t } = useTranslation();
-  const statusColor = STATUS_COLORS[data.review_status] ?? FALLBACK_COLOR;
   const reasons = data.review_reasons ?? [];
   const showReasons =
     (data.review_status === 'pending' || data.review_status === 'rejected') &&
@@ -493,13 +490,13 @@ function DetailBody({
             {formatDateAU(data.expense_date)}
           </Text>
         </View>
-        <View style={[s.pill, { backgroundColor: statusColor.bg }]}>
-          <Text style={[s.pillText, { color: statusColor.fg }]}>
-            {t(`expense.status_${data.review_status}`, {
-              defaultValue: data.review_status,
-            })}
-          </Text>
-        </View>
+        <StatusBadge
+          status={data.review_status}
+          label={t(`expense.status_${data.review_status}`, {
+            defaultValue: data.review_status,
+          })}
+          testID="detail-status"
+        />
       </View>
 
       {/* Edit-discoverability slice: dogfooding showed the header
@@ -802,8 +799,6 @@ const base = StyleSheet.create({
     color: '#475569',
     fontVariant: ['tabular-nums'],
   },
-  pill: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 14 },
-  pillText: { fontSize: 12, fontWeight: '600' },
   grid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -8 },
   field: { width: '50%', paddingHorizontal: 8, paddingVertical: 8 },
   fieldLabel: {

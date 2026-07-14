@@ -1,0 +1,46 @@
+/* ============================================================
+   SiteTracker · semantic tokens (Tailwind v4)
+   规则:实心 primary 只给动作;选中态一律 sel(tonal);
+   ok/warn/bad 只表达数据状态,不用于交互。
+   若主入口 css 已有 @import "tailwindcss",删掉下面这行,
+   把 @theme 块并进去即可。
+   ============================================================ */
+@import "tailwindcss";
+
+@theme {
+  /* -- action -------------------------------------------- */
+  --color-primary: #2563EB;       /* 唯一的动作色:Submit / Save / +New / 中央 ➕ */
+  --color-primary-deep: #1D4ED8;  /* pressed / hover */
+
+  /* -- selected (tonal) ----------------------------------- */
+  --color-sel: #EFF6FF;           /* chips / segments / tabs 选中底 */
+  --color-sel-text: #1D4ED8;
+  --color-sel-border: #BFDBFE;
+
+  /* -- data status ---------------------------------------- */
+  --color-ok: #16A34A;            /* 健康 / reviewed / <70% used */
+  --color-ok-bg: #F0FDF4;
+  --color-ok-border: #BBF7D0;
+
+  --color-warn: #B45309;          /* 文字用(过 AA) */
+  --color-warn-fill: #D97706;     /* 条 / 图标用 */
+  --color-warn-bg: #FFFBEB;
+  --color-warn-border: #FDE68A;
+
+  --color-bad: #DC2626;           /* >90% used / 超支 */
+  --color-bad-bg: #FEF2F2;
+  --color-bad-border: #FECACA;
+
+  /* -- neutrals ------------------------------------------- */
+  --color-ink: #0F172A;
+  --color-ink-2: #475569;
+  --color-ink-3: #94A3B8;
+  --color-line: #E2E8F0;
+  --color-line-soft: #F1F5F9;
+
+  /* -- category palette(By worker 等分类图,避开交互蓝)-- */
+  --color-cat-1: #16A34A;
+  --color-cat-2: #0D9488;
+  --color-cat-3: #EA580C;
+  --color-cat-4: #7C3AED;
+}

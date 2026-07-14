@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { ExpensePublic } from '../api/hooks/useExpenses';
 import { formatMoney } from '../util/format';
 import { formatDateAU } from '../util/dates';
+import { StatusBadge } from '../ui/kit';
 
 /**
  * Shared expense row visual.
@@ -24,16 +25,8 @@ import { formatDateAU } from '../util/dates';
  * modal rather than the originating screen on back/delete.
  */
 
-const STATUS_COLORS = {
-  pending: { bg: '#fef3c7', fg: '#92400e' },
-  reviewed: { bg: '#dcfce7', fg: '#15803d' },
-  rejected: { bg: '#fee2e2', fg: '#991b1b' },
-} as const;
-
-// Audit C-04: neutral fallback for a review_status THIS build doesn't
-// know — a newer backend enum must degrade to a grey pill, not crash
-// every expense row in the list.
-const FALLBACK_COLOR = { bg: '#f1f5f9', fg: '#475569' };
+// UI-kit v2: status colours live in src/ui/kit.tsx (StatusBadge),
+// which keeps the C-04 unknown-enum grey fallback.
 
 const PREVIEW_MAX = 60;
 
@@ -52,7 +45,6 @@ export function ExpenseRow({
   fromJobId?: string;
 }) {
   const { t } = useTranslation();
-  const statusColor = STATUS_COLORS[expense.review_status] ?? FALLBACK_COLOR;
   const statusKey = `expense.status_${expense.review_status}`;
   const previewSource = expense.raw_input_text || expense.description || '';
   const preview = truncate(previewSource, PREVIEW_MAX);
@@ -73,11 +65,10 @@ export function ExpenseRow({
       >
         <View style={s.rowTop}>
           <Text style={s.amount}>{formatMoney(expense.amount_inc_gst)}</Text>
-          <View style={[s.pill, { backgroundColor: statusColor.bg }]}>
-            <Text style={[s.pillText, { color: statusColor.fg }]}>
-              {t(statusKey, { defaultValue: expense.review_status })}
-            </Text>
-          </View>
+          <StatusBadge
+            status={expense.review_status}
+            label={t(statusKey, { defaultValue: expense.review_status })}
+          />
         </View>
 
         <View style={s.rowMid}>
@@ -143,13 +134,6 @@ const s = StyleSheet.create({
     color: '#0f172a',
     fontVariant: ['tabular-nums'],
   },
-  pill: {
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderRadius: 12,
-    overflow: 'hidden',
-  },
-  pillText: { fontSize: 11, fontWeight: '600' },
   rowMid: { flexDirection: 'row', marginTop: 4, alignItems: 'center' },
   date: { color: '#64748b', fontSize: 13 },
   dot: { color: '#94a3b8', fontSize: 13 },

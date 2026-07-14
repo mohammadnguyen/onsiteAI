@@ -6,6 +6,9 @@
     "submit": "Sign in",
     "error": "Sign-in failed. Check your credentials."
   },
+  "ui": {
+    "pct_used": "{{pct}}% used"
+  },
   "tabs": {
     "jobs": "Jobs",
     "expenses": "Expenses",
@@ -36,7 +39,7 @@
     "margin_header": "Margin",
     "target_margin_pct": "Target margin %",
     "current_margin_to_date": "Current margin (to date)",
-    "margin_vs_target": "vs target",
+    "margin_delta_pill": "{{delta}}% vs target {{target}}%",
     "margin_percent_hint": "e.g. 25",
     "margin_todate_hint": "Based on costs to date - remaining costs will lower this.",
     "gst_mode_label": "Contract GST",

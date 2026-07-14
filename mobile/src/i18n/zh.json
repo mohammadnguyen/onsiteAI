@@ -6,6 +6,9 @@
     "submit": "\u767b\u5f55",
     "error": "\u767b\u5f55\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u51ed\u8bc1\u3002"
   },
+  "ui": {
+    "pct_used": "已用 {{pct}}%"
+  },
   "tabs": {
     "jobs": "\u9879\u76ee",
     "expenses": "\u5f00\u652f",
@@ -36,7 +39,7 @@
     "margin_header": "\u5229\u6da6\u7387",
     "target_margin_pct": "\u76ee\u6807\u5229\u6da6\u7387 %",
     "current_margin_to_date": "\u5f53\u524d\u5229\u6da6\u7387\uff08\u81f3\u4eca\uff09",
-    "margin_vs_target": "\u5bf9\u6bd4\u76ee\u6807",
+    "margin_delta_pill": "\u8f83\u76ee\u6807 {{target}}%\uff1a{{delta}}%",
     "margin_percent_hint": "\u4f8b\u5982 25",
     "margin_todate_hint": "\u4ec5\u6309\u5df2\u53d1\u751f\u6210\u672c\u8ba1\u7b97\u2014\u2014\u540e\u7eed\u6210\u672c\u4f1a\u964d\u4f4e\u8be5\u503c\u3002",
     "gst_mode_label": "\u5408\u540cGST",
