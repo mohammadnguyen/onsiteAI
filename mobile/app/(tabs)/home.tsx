@@ -23,7 +23,12 @@ import {
 } from '../../src/api/hooks/useExpenses';
 import { formatDateAU } from '../../src/util/dates';
 import { StatusBadge } from '../../src/ui/kit';
-import { GearIcon } from '../../src/ui/icons';
+import {
+  BriefcaseIcon,
+  ClockIcon,
+  DollarIcon,
+  GearIcon,
+} from '../../src/ui/icons';
 import { useMe } from '../../src/api/hooks/useAuth';
 import { formatMoney } from '../../src/util/format';
 import { monthStart, todayISO } from '../../src/util/dates';
@@ -242,6 +247,9 @@ function AdminStats() {
         accessibilityRole="button"
         testID="home-stat-month-spend"
       >
+        <View style={[s.statIcon, { backgroundColor: tokens.okBg }]}>
+          <DollarIcon size={14} color={tokens.ok} />
+        </View>
         <Text style={s.statLabel}>{t('dashboard.month_spend')}</Text>
         <Text
           style={[s.statValue, monthStat === 'error' && s.statValueError]}
@@ -267,6 +275,9 @@ function AdminStats() {
         accessibilityRole="button"
         testID="home-stat-pending"
       >
+        <View style={[s.statIcon, { backgroundColor: '#ffffff' }]}>
+          <ClockIcon size={14} color={tokens.warnFill} />
+        </View>
         <Text style={s.statLabel}>{t('dashboard.pending_review')}</Text>
         <Text
           style={[
@@ -286,6 +297,9 @@ function AdminStats() {
         ) : null}
       </Pressable>
       <View style={s.statCard} testID="home-stat-active">
+        <View style={[s.statIcon, { backgroundColor: tokens.sel }]}>
+          <BriefcaseIcon size={14} color={tokens.selText} />
+        </View>
         <Text style={s.statLabel}>{t('dashboard.active_jobs')}</Text>
         <Text style={[s.statValue, jobsStat === 'error' && s.statValueError]}>
           {jobsStat === 'loading'
@@ -310,6 +324,14 @@ const base = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
     marginBottom: 16,
+  },
+  statIcon: {
+    width: 26,
+    height: 26,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 5,
   },
   statCard: {
     flex: 1,

@@ -15,6 +15,7 @@ import {
   todayISO,
   yesterdayISO,
 } from '../util/dates';
+import { tokens } from '../ui/tokens';
 
 /**
  * Mobile expense-date pills.
@@ -369,12 +370,23 @@ function Pill({
     <TouchableOpacity
       onPress={onPress}
       disabled={disabled}
-      style={[s.pill, active && s.pillActive, disabled && s.pillDisabled]}
+      // B4.5 review: dim the LABEL, never the tonal fill (an opacity
+      // pass over sel-blue washes the selected pill out to white).
+      hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+      style={[s.pill, active && s.pillActive]}
       testID={testID}
       accessibilityRole="radio"
       accessibilityState={{ selected: active, disabled }}
     >
-      <Text style={[s.pillText, active && s.pillTextActive]}>{label}</Text>
+      <Text
+        style={[
+          s.pillText,
+          active && s.pillTextActive,
+          disabled && s.pillTextDisabled,
+        ]}
+      >
+        {label}
+      </Text>
     </TouchableOpacity>
   );
 }
@@ -383,18 +395,23 @@ const s = StyleSheet.create({
   wrap: { gap: 8 },
   label: { color: '#475569', fontSize: 14 },
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  // UI-kit v2 (B4.5): tonal selected state per the design spec —
+  // solid blue is reserved for ACTIONS, never for selection.
+  // Metrics match the kit Chip exactly (14/6/12.5) so the capture
+  // screen renders ONE chip family across quick-job, date and payment
+  // rows (design ③).
   pill: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
     borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderRadius: 6,
-    backgroundColor: '#f8fafc',
+    borderColor: tokens.line,
+    borderRadius: 999,
+    backgroundColor: '#ffffff',
   },
-  pillActive: { backgroundColor: '#1e293b', borderColor: '#1e293b' },
-  pillDisabled: { opacity: 0.5 },
-  pillText: { color: '#0f172a', fontSize: 14, fontWeight: '500' },
-  pillTextActive: { color: '#ffffff' },
+  pillActive: { backgroundColor: tokens.sel, borderColor: tokens.selBorder },
+  pillText: { color: tokens.ink2, fontSize: 12.5, fontWeight: '500' },
+  pillTextActive: { color: tokens.selText, fontWeight: '600' },
+  pillTextDisabled: { color: tokens.ink3 },
   customWrap: { gap: 4 },
   customInput: {
     borderWidth: 1,

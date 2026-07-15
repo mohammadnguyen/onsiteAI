@@ -60,8 +60,7 @@
     "status_completed": "Archived",
     "budgets_and_spending": "Budgets & Spending",
     "expenses": "Expenses",
-    "total_paid": "Total paid",
-    "total_paid_hint": "Cash at face value; GST invoices at their GST-inclusive total.",
+    "total_paid_hint": "Total paid = cash at face value + GST invoices at their GST-inclusive total, for cash flow; cost, the budget bar and margin all use the ex-GST basis.",
     "total_spent": "Total spent (ex GST)",
     "remaining": "Remaining (ex GST)",
     "no_budget_set": "No budget set",
@@ -84,7 +83,10 @@
     "tab_expenses": "Expenses",
     "tab_labour": "Labour",
     "tab_files": "Files",
-    "files_coming_soon": "Receipts & files are coming in a later version."
+    "files_coming_soon": "Receipts & files are coming in a later version.",
+    "tab_notes": "Notes",
+    "notes_coming_soon": "Job notes are coming in a later version.",
+    "total_paid_cash_out": "Total paid (cash out)"
   },
   "settings": {
     "title": "Settings",

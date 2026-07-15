@@ -60,7 +60,7 @@ import { tokens, type Tone } from '../../../src/ui/tokens';
  * rollup stays contributor-safe (money-free metrics for all roles).
  */
 
-type DetailTab = 'overview' | 'expenses' | 'labour' | 'files';
+type DetailTab = 'overview' | 'expenses' | 'labour' | 'files' | 'notes';
 
 export default function JobDetailScreen() {
   const s = useScaledStyles(base);
@@ -188,6 +188,7 @@ export default function JobDetailScreen() {
     { key: 'expenses', label: t('job.tab_expenses') },
     { key: 'labour', label: t('job.tab_labour') },
     { key: 'files', label: t('job.tab_files') },
+    { key: 'notes', label: t('job.tab_notes') },
   ];
 
   return (
@@ -348,9 +349,19 @@ export default function JobDetailScreen() {
           ) : null}
 
           {tab === 'files' ? (
-            <View style={s.filesPlaceholder} testID="job-files-placeholder">
-              <Text style={s.filesPlaceholderText}>
+            <View style={s.comingSoonBox} testID="job-files-placeholder">
+              <Text style={s.comingSoonText}>
                 {t('job.files_coming_soon')}
+              </Text>
+            </View>
+          ) : null}
+
+          {/* Notes: placeholder like Files — the backend has no notes
+              field yet, so the real feature needs its own project. */}
+          {tab === 'notes' ? (
+            <View style={s.comingSoonBox} testID="job-notes-placeholder">
+              <Text style={s.comingSoonText}>
+                {t('job.notes_coming_soon')}
               </Text>
             </View>
           ) : null}
@@ -460,7 +471,7 @@ function FinancialOverviewCard({
               <Text style={s.gridValue}>{formatMoney(sum.actual_ex_gst)}</Text>
             </View>
             <View style={s.gridCell}>
-              <Text style={s.gridLabel}>{t('job.total_paid')}</Text>
+              <Text style={s.gridLabel}>{t('job.total_paid_cash_out')}</Text>
               <Text style={s.gridValue}>{formatMoney(sum.actual_inc_gst)}</Text>
             </View>
             <View style={s.gridCell}>
@@ -888,7 +899,7 @@ const base = StyleSheet.create({
   },
   jobDeleteBtnText: { fontSize: 14.5, fontWeight: '600', color: tokens.bad },
 
-  filesPlaceholder: {
+  comingSoonBox: {
     borderWidth: 1,
     borderColor: tokens.line,
     borderRadius: 14,
@@ -896,7 +907,7 @@ const base = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: tokens.lineSoft,
   },
-  filesPlaceholderText: {
+  comingSoonText: {
     fontSize: 13.5,
     color: tokens.ink2,
     textAlign: 'center',

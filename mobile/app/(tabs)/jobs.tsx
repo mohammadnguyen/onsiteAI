@@ -9,6 +9,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import { BudgetBar, StatusBadge } from '../../src/ui/kit';
+import { tokens } from '../../src/ui/tokens';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useJobs, type JobPublic } from '../../src/api/hooks/useJobs';
@@ -284,15 +285,16 @@ const base = StyleSheet.create({
     justifyContent: 'space-between',
   },
   title: { fontSize: 22, fontWeight: '600', color: '#0f172a' },
+  // B4.5 (design ②): the list's single action = solid primary.
   newBtn: {
-    backgroundColor: '#1e293b',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 6,
+    backgroundColor: tokens.primary,
+    paddingHorizontal: 13,
+    paddingVertical: 7,
+    borderRadius: 9,
     minHeight: 36,
     justifyContent: 'center',
   },
-  newBtnText: { color: '#ffffff', fontSize: 14, fontWeight: '600' },
+  newBtnText: { color: '#ffffff', fontSize: 13, fontWeight: '600' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   loadingText: { marginTop: 12, color: '#64748b' },
   emptyText: { color: '#64748b', fontSize: 16 },

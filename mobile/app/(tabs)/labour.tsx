@@ -33,7 +33,8 @@ import { todayISO } from '../../src/util/dates';
 import { useLabourEditTargetStore } from '../../src/store/labourEditTarget';
 import { formatDays } from '../../src/util/format';
 import { computeTimeRange, formatHoursShort, hhmmFromServer } from '../../src/util/time';
-import { Segmented } from '../../src/ui/kit';
+import { Chip, Segmented } from '../../src/ui/kit';
+import { tokens } from '../../src/ui/tokens';
 import { RecordsView } from '../../src/components/labour/RecordsView';
 import { WorkersView } from '../../src/components/labour/WorkersView';
 import { SummaryView } from '../../src/components/labour/SummaryView';
@@ -596,17 +597,14 @@ export default function LabourScreen() {
 
         <View style={s.jobRow}>
           <Text style={s.jobLabel}>{t('labour.job_label')}</Text>
-          <TouchableOpacity
-            style={s.jobChip}
+          {/* B4.5: one chip family on this screen (design ⑤) — the job
+              selector uses the kit Chip like the date pills. */}
+          <Chip
+            label={selectedJob?.job_name ?? '—'}
             onPress={() => setPickerOpen(true)}
             disabled={save.isPending || activeJobs.length === 0}
-            accessibilityRole="button"
             testID="labour-job-chip"
-          >
-            <Text style={s.jobChipText} numberOfLines={1}>
-              {selectedJob?.job_name ?? '—'}
-            </Text>
-          </TouchableOpacity>
+          />
         </View>
 
         {isFuture ? (
@@ -765,16 +763,6 @@ const s = StyleSheet.create({
   tabHeader: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8, gap: 6 },
   jobRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   jobLabel: { color: '#475569', fontSize: 14 },
-  jobChip: {
-    flexShrink: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderRadius: 6,
-    backgroundColor: '#f8fafc',
-  },
-  jobChipText: { color: '#0f172a', fontSize: 14, fontWeight: '500' },
   center: { paddingVertical: 24, alignItems: 'center' },
   errorCenter: { color: '#b91c1c', fontSize: 14, textAlign: 'center', paddingVertical: 16 },
   emptyText: { color: '#64748b', fontSize: 14, textAlign: 'center', paddingVertical: 16 },
@@ -795,12 +783,14 @@ const s = StyleSheet.create({
   bannerErrorText: { color: '#991b1b', fontSize: 14 },
   footerRow: { flexDirection: 'row', justifyContent: 'flex-end' },
   summaryText: { color: '#475569', fontSize: 14, fontVariant: ['tabular-nums'] },
+  // B4.5 (design ⑤): with dates/Full-Half/segments all tonal, this is
+  // the screen's single solid-primary action.
   saveBtn: {
-    backgroundColor: '#1e293b',
-    paddingVertical: 14,
-    borderRadius: 6,
+    backgroundColor: tokens.primary,
+    paddingVertical: 13,
+    borderRadius: 12,
     alignItems: 'center',
   },
   saveBtnDisabled: { opacity: 0.4 },
-  saveBtnText: { color: '#ffffff', fontWeight: '600', fontSize: 16 },
+  saveBtnText: { color: '#ffffff', fontWeight: '700', fontSize: 14.5 },
 });

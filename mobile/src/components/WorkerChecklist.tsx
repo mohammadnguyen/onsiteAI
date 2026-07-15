@@ -6,6 +6,7 @@ import {
   StyleSheet,
 } from 'react-native';
 import { useTranslation } from 'react-i18next';
+import { tokens } from '../ui/tokens';
 import type { WorkerPublic } from '../api/hooks/useLabour';
 import { formatHoursShort, type TimeRangeStatus } from '../util/time';
 
@@ -245,12 +246,28 @@ function FractionPill({
     <TouchableOpacity
       onPress={onPress}
       disabled={disabled}
-      style={[s.pill, active && s.pillActive, disabled && s.pillDisabled]}
+      // B4.5 review (blocker): do NOT dim the tonal fill — a locked row
+      // already carries rowLocked's 0.55, and RN multiplies nested
+      // opacity (0.55 x 0.5 = 0.275), which washed the sel background
+      // out to white: a saved row stopped showing whether the worker
+      // was booked Full or Half. Dim the LABEL only; the fill+border
+      // survive. hitSlop restores the tap target the spec's compact
+      // padding costs (26px visual -> ~44px touch).
+      hitSlop={{ top: 9, bottom: 9, left: 4, right: 4 }}
+      style={[s.pill, active && s.pillActive]}
       accessibilityRole="radio"
       accessibilityState={{ selected: active, disabled }}
       testID={testID}
     >
-      <Text style={[s.pillText, active && s.pillTextActive]}>{label}</Text>
+      <Text
+        style={[
+          s.pillText,
+          active && s.pillTextActive,
+          disabled && s.pillTextDisabled,
+        ]}
+      >
+        {label}
+      </Text>
     </TouchableOpacity>
   );
 }
@@ -279,16 +296,22 @@ const s = StyleSheet.create({
     flex: 1,
     gap: 10,
   },
+  // B4.5 (design ⑤): ticked = primary blue rounded box; the tick IS
+  // the action affordance on this screen, so it keeps the action
+  // colour while every SELECTION (Full/Half, dates) goes tonal.
   checkbox: {
-    width: 22,
-    height: 22,
+    width: 21,
+    height: 21,
     borderWidth: 1.5,
-    borderColor: '#94a3b8',
-    borderRadius: 4,
+    borderColor: '#CBD5E1',
+    borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  checkboxChecked: { backgroundColor: '#1e293b', borderColor: '#1e293b' },
+  checkboxChecked: {
+    backgroundColor: tokens.primary,
+    borderColor: tokens.primary,
+  },
   checkmark: { color: '#ffffff', fontSize: 14, fontWeight: '700' },
   nameBlock: { flex: 1 },
   nameLine: { flexDirection: 'row', alignItems: 'center', gap: 6 },
@@ -328,16 +351,20 @@ const s = StyleSheet.create({
   },
   timeError: { color: '#b45309', fontSize: 12 },
   pills: { flexDirection: 'row', gap: 6 },
+  // B4.5: tonal selected state (design ⑤ — Full/Half is a SELECTION).
   pill: {
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 5,
     borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderRadius: 6,
-    backgroundColor: '#f8fafc',
+    borderColor: tokens.line,
+    borderRadius: 8,
+    backgroundColor: '#ffffff',
   },
-  pillActive: { backgroundColor: '#1e293b', borderColor: '#1e293b' },
+  pillActive: { backgroundColor: tokens.sel, borderColor: tokens.selBorder },
+  // Still used by the time inputs below (a dimmed TEXT INPUT reads
+  // correctly; a dimmed tonal FILL does not — see FractionPill).
   pillDisabled: { opacity: 0.5 },
-  pillText: { color: '#0f172a', fontSize: 14, fontWeight: '500' },
-  pillTextActive: { color: '#ffffff' },
+  pillText: { color: tokens.ink2, fontSize: 11.5, fontWeight: '600' },
+  pillTextActive: { color: tokens.selText },
+  pillTextDisabled: { color: tokens.ink3 },
 });
