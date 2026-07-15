@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -12,7 +12,6 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect, useRouter, type Href } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { useMe } from '../../src/api/hooks/useAuth';
 import { resolveApiErrorMessage } from '../../src/api/errors';
@@ -34,6 +33,10 @@ import { todayISO } from '../../src/util/dates';
 import { useLabourEditTargetStore } from '../../src/store/labourEditTarget';
 import { formatDays } from '../../src/util/format';
 import { computeTimeRange, formatHoursShort, hhmmFromServer } from '../../src/util/time';
+import { Segmented } from '../../src/ui/kit';
+import { RecordsView } from '../../src/components/labour/RecordsView';
+import { WorkersView } from '../../src/components/labour/WorkersView';
+import { SummaryView } from '../../src/components/labour/SummaryView';
 
 /**
  * L-B1 / L-C3: Labour tab — daily attendance tick screen.
@@ -75,7 +78,6 @@ type Banner = { kind: 'success' | 'error'; text: string };
 
 export default function LabourScreen() {
   const { t } = useTranslation();
-  const router = useRouter();
   const me = useMe();
   const jobs = useJobs();
   // include_inactive so a since-deactivated worker's existing entry on
@@ -89,6 +91,14 @@ export default function LabourScreen() {
   const [edits, setEdits] = useState<Record<string, RowEdit>>({});
   const [banner, setBanner] = useState<Banner | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // B4-2: second-level tabs. Attendance stays this screen's own body;
+  // Records/Workers/Summary render as embedded views (extracted from
+  // their retired pushed routes). Contributors get attendance+records
+  // only — workers/summary remain admin surfaces (each view still
+  // re-gates itself; backend authoritative).
+  const [subTab, setSubTab] = useState<
+    'attendance' | 'records' | 'workers' | 'summary'
+  >('attendance');
 
   const entries = useLabourEntries(jobId, date);
   const save = useSaveAttendance();
@@ -102,17 +112,17 @@ export default function LabourScreen() {
   // B-04: set by the selection-repair effect, consumed by the
   // (job,date) reset effect — see both effects below.
   const archivedHandoffPending = useRef(false);
-  useFocusEffect(
-    useCallback(() => {
-      const target = useLabourEditTargetStore.getState().target;
-      if (!target) return;
-      useLabourEditTargetStore.getState().clear();
-      setDate(target.date);
-      setJobId(target.jobId);
-      handoffJobRef.current = target.jobId;
-      useLabourEditTargetStore.getState().setLastUsedJobId(target.jobId);
-    }, []),
-  );
+  // B4-2: records is an embedded tab now, so the edit-day handoff is a
+  // plain callback (the one-shot labourEditTarget mechanism is retired;
+  // the store keeps only lastUsedJobId). B-04 archived-job detection is
+  // unchanged: handoffJobRef feeds the selection-repair effect below.
+  const onEditDay = (targetJobId: string, targetDate: string) => {
+    setDate(targetDate);
+    setJobId(targetJobId);
+    handoffJobRef.current = targetJobId;
+    useLabourEditTargetStore.getState().setLastUsedJobId(targetJobId);
+    setSubTab('attendance');
+  };
 
   const isAdmin = me.data?.role === 'admin';
   const myId = me.data?.user_id;
@@ -536,6 +546,40 @@ export default function LabourScreen() {
 
   return (
     <SafeAreaView style={s.safe} edges={['top', 'bottom', 'left', 'right']}>
+      <View style={s.tabHeader}>
+        <View style={s.titleRow}>
+          <Text style={s.title}>{t('labour.title')}</Text>
+        </View>
+        {/* B4-2: second-level tabs (preview parity). Admin sees all
+            four; contributors attendance+records only. Rendered OUTSIDE
+            the per-tab scroll containers: Records/Workers carry their
+            own virtualized lists, which must not nest in a ScrollView. */}
+        <Segmented
+          options={
+            isAdmin
+              ? [
+                  { value: 'attendance', label: t('labour.tab_attendance') },
+                  { value: 'records', label: t('labour.records_entry') },
+                  { value: 'workers', label: t('labour.workers_entry') },
+                  { value: 'summary', label: t('labour.summary_entry') },
+                ]
+              : [
+                  { value: 'attendance', label: t('labour.tab_attendance') },
+                  { value: 'records', label: t('labour.records_entry') },
+                ]
+          }
+          value={subTab}
+          onChange={setSubTab}
+          testID="labour-subtabs"
+        />
+      </View>
+
+      {subTab === 'records' ? <RecordsView onEditDay={onEditDay} /> : null}
+      {subTab === 'workers' ? <WorkersView /> : null}
+      {subTab === 'summary' ? <SummaryView onFixRates={() => setSubTab('workers')} /> : null}
+
+      {subTab !== 'attendance' ? null : (
+      <>
       {/* C-01: per-row time inputs sit low on the screen; without KAV
           the keyboard covers the row being typed into (login.tsx
           shape — padding on iOS, system resize on Android). */}
@@ -548,53 +592,7 @@ export default function LabourScreen() {
         keyboardShouldPersistTaps="handled"
         refreshControl={refreshControl}
       >
-        <View style={s.titleRow}>
-          <Text style={s.title}>{t('labour.title')}</Text>
-          {/* L-B2: admin-only entries to roster management and the
-              attendance summary. useMe drives VISIBILITY only — both
-              destinations re-gate themselves and the backend write/
-              summary routes are require_admin (fails closed). */}
-          <View style={s.headerBtns}>
-            {/* L-E1: records browser — BOTH roles (attendance identity
-                only; per-row delete self-gates to the backend rule). */}
-            <TouchableOpacity
-              onPress={() =>
-                router.push('/labour/records' as unknown as Href)
-              }
-              style={s.headerBtn}
-              accessibilityRole="button"
-              testID="labour-records-btn"
-            >
-              <Text style={s.headerBtnText}>{t('labour.records_entry')}</Text>
-            </TouchableOpacity>
-            {isAdmin ? (
-              <>
-                <TouchableOpacity
-                  onPress={() =>
-                    router.push('/labour/workers' as unknown as Href)
-                  }
-                  style={s.headerBtn}
-                  accessibilityRole="button"
-                  testID="labour-workers-btn"
-                >
-                  <Text style={s.headerBtnText}>{t('labour.workers_entry')}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() =>
-                    router.push('/labour/summary' as unknown as Href)
-                  }
-                  style={s.headerBtn}
-                  accessibilityRole="button"
-                  testID="labour-summary-btn"
-                >
-                  <Text style={s.headerBtnText}>{t('labour.summary_entry')}</Text>
-                </TouchableOpacity>
-              </>
-            ) : null}
-          </View>
-        </View>
-
-        <DatePills value={date} onChange={setDate} disabled={save.isPending} />
+                <DatePills value={date} onChange={setDate} disabled={save.isPending} />
 
         <View style={s.jobRow}>
           <Text style={s.jobLabel}>{t('labour.job_label')}</Text>
@@ -730,6 +728,8 @@ export default function LabourScreen() {
         </TouchableOpacity>
       </ScrollView>
       </KeyboardAvoidingView>
+      </>
+      )}
 
       <OptionPickerModal
         visible={pickerOpen}
@@ -760,16 +760,9 @@ const s = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 4,
   },
-  headerBtns: { flexDirection: 'row', gap: 8 },
-  headerBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderRadius: 6,
-    backgroundColor: '#f8fafc',
-  },
-  headerBtnText: { color: '#1e293b', fontSize: 14, fontWeight: '600' },
+  // B4-2: fixed header region (title + subtabs) above the per-tab
+  // scroll containers.
+  tabHeader: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8, gap: 6 },
   jobRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   jobLabel: { color: '#475569', fontSize: 14 },
   jobChip: {

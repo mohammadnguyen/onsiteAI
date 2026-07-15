@@ -47,10 +47,9 @@ import { localizeCategoryName } from '../../../src/util/category';
 /**
  * Tier 1B: Mobile Job Edit screen.
  *
- * Route: ``/jobs/[id]/edit``. Reachable from the Edit button in the
- * JobDetailModal header. On return via router.back(), the modal
- * re-opens at the same job (selectedJobId persisted in the store
- * from when the modal was first opened).
+ * Route: ``/jobs/[id]/edit``. Reachable from the Edit button on the
+ * job-details PAGE (app/jobs/[id]/index.tsx — B4-1). On return via
+ * router.back(), the page below re-renders with refetched data.
  *
  * Editable fields (operator-approved Tier 1B scope):
  *   - name, code, status (active / completed), address
@@ -362,16 +361,9 @@ export default function JobEditScreen() {
   const onBack = () => {
     if (backFiredRef.current) return;
     backFiredRef.current = true;
-    // Root Stack (back-nav fix): back() now returns to the exact
-    // screen we came from — (tabs) stays MOUNTED underneath with its
-    // Jobs tab still selected, and JobsScreen's useFocusEffect
-    // re-presents the native Modal at the same selectedJobId. (The
-    // old Slot-era replace('/(tabs)/jobs') workaround would now SWAP
-    // this screen for a duplicate (tabs) instance — replace swaps
-    // the top route; navigate pushes when the target name differs
-    // from the top route. back() is the only primitive that keeps
-    // the stack flat.) The replace fallback covers deep-link entry
-    // with no history.
+    // back() pops to the job-details page (B4-1) — the screen that
+    // pushed us — which re-renders with refetched data. The replace
+    // fallback covers deep-link entry with no history.
     if (router.canGoBack()) router.back();
     else router.replace('/(tabs)/jobs');
   };

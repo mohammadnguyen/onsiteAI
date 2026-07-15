@@ -9,15 +9,13 @@ import {
   TouchableOpacity,
   RefreshControl,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, type Href } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
 
-import { useLabourSummary } from '../../src/api/hooks/useLabour';
-import { useJobs } from '../../src/api/hooks/useJobs';
-import { useMe } from '../../src/api/hooks/useAuth';
-import { OptionPickerModal } from '../../src/components/OptionPickerModal';
+import { useLabourSummary } from '../../api/hooks/useLabour';
+import { useJobs } from '../../api/hooks/useJobs';
+import { useMe } from '../../api/hooks/useAuth';
+import { OptionPickerModal } from '../OptionPickerModal';
 import {
   dateToISO,
   formatDateAU,
@@ -26,25 +24,24 @@ import {
   monthStart,
   shiftMonthISO,
   todayISO,
-} from '../../src/util/dates';
-import { formatDays, formatMoney } from '../../src/util/format';
-import { useScaledStyles } from '../../src/ui/type';
-import { useOneShotBack } from '../../src/util/navigation';
+} from '../../util/dates';
+import { formatDays, formatMoney } from '../../util/format';
+import { useScaledStyles } from '../../ui/type';
 import {
   IncompleteAmount,
   RateGapBanner,
   Segmented,
-} from '../../src/ui/kit';
-import { tokens } from '../../src/ui/tokens';
-import { ClockIcon, DollarIcon, UsersIcon } from '../../src/ui/icons';
+} from '../../ui/kit';
+import { tokens } from '../../ui/tokens';
+import { ClockIcon, DollarIcon, UsersIcon } from '../../ui/icons';
 
 /**
  * L-C2: weekly labour summary (admin-only) — labour cost CAPTURE,
  * never payroll.
  *
- * Route: ``/labour/summary``, entered via the admin-only "Summary"
- * header button on the Labour tab. GET /labour-summary is
- * require_admin on the backend; the screen gates on /auth/me (fails
+ * B4-2: embedded as the Summary tab of the Labour screen (formerly
+ * route ``/labour/summary``). GET /labour-summary is
+ * require_admin on the backend; the view gates on /auth/me (fails
  * closed) and maps a server 403 to the forbidden state as backstop.
  *
  * Range model: a WEEK (Monday–Sunday) containing ``weekStart``;
@@ -74,9 +71,12 @@ function mondayOf(iso: string): string {
   return dateToISO(dt);
 }
 
-export default function LabourSummaryScreen() {
+type SummaryViewProps = {
+  onFixRates: () => void;
+};
+
+export function SummaryView({ onFixRates }: SummaryViewProps) {
   const s = useScaledStyles(base);
-  const router = useRouter();
   const { t, i18n } = useTranslation();
   const me = useMe();
   const jobs = useJobs();
@@ -149,8 +149,6 @@ export default function LabourSummaryScreen() {
     [jobs.data, t],
   );
 
-  const onBack = useOneShotBack('/(tabs)/labour');
-
   // X-2 follow-up: explicit "user pulled" flag (house pattern) — see
   // jobs.tsx; isRefetching now also fires on app-resume refetches.
   const [userRefreshing, setUserRefreshing] = useState(false);
@@ -169,37 +167,29 @@ export default function LabourSummaryScreen() {
     />
   );
 
+  // B4-3: bar scale — the range's largest per-worker worker-days.
+  const maxWorkerDays = useMemo(
+    () =>
+      Math.max(
+        1,
+        ...(summary.data?.workers ?? []).map((w) => parseFloat(w.total_days)),
+      ),
+    [summary.data],
+  );
+
   const empty =
     summary.data &&
     summary.data.workers.length === 0 &&
     summary.data.jobs.length === 0;
 
   return (
-    <SafeAreaView style={s.safe} edges={['top', 'left', 'right']}>
-      <View style={s.header}>
-        <Pressable
-          onPress={onBack}
-          hitSlop={12}
-          testID="summary-back"
-          accessibilityRole="button"
-          accessibilityLabel={t('expense.back')}
-          style={({ pressed }) => [s.backBtn, pressed && s.pressed]}
-        >
-          <Text style={s.backChevron}>{'‹'}</Text>
-          <Text style={s.backLabel}>{t('expense.back')}</Text>
-        </Pressable>
-        <Text style={s.headerTitle} numberOfLines={1}>
-          {t('labour.summary_title')}
-        </Text>
-        <View style={s.headerSpacer} />
-      </View>
-
+    <View style={s.root}>
       {me.isLoading ? (
         <View style={s.state}>
           <ActivityIndicator color="#1e293b" />
         </View>
       ) : me.isError ? (
-        // Unresolved identity ≠ forbidden — offer an in-screen retry
+        // Unresolved identity ≠ forbidden — offer an in-view retry
         // rather than a permission message. Still fails closed.
         <View style={s.state} testID="summary-me-error">
           <Text style={[s.stateText, s.errorText]}>{t('common.error')}</Text>
@@ -369,9 +359,7 @@ export default function LabourSummaryScreen() {
                     summary.data.entries_total - summary.data.entries_costed
                   }
                   total={summary.data.entries_total}
-                  onPress={() =>
-                    router.push('/labour/workers' as unknown as Href)
-                  }
+                  onPress={onFixRates}
                   testID="summary-incomplete"
                 />
               </View>
@@ -383,12 +371,17 @@ export default function LabourSummaryScreen() {
               ) : (
                 <>
                   <Text style={s.sectionHeader}>{t('labour.by_worker')}</Text>
-                  {summary.data.workers.map((w) => (
+                  {/* B4-3 (preview parity): categorical bar per worker,
+                      sized by worker-days relative to the range max.
+                      cat-1..4 palette — deliberately NOT the action
+                      blue and NOT the ok/warn/bad status colours. */}
+                  {summary.data.workers.map((w, wi) => (
                     <View
                       key={w.worker_id}
                       style={s.totalsRow}
                       testID={`summary-worker-${w.worker_id}`}
                     >
+                      <View style={s.totalsLine}>
                       <Text style={s.totalsName} numberOfLines={1}>
                         {w.display_name}
                       </Text>
@@ -411,6 +404,12 @@ export default function LabourSummaryScreen() {
                           </Text>
                         ) : null}
                       </View>
+                      </View>
+                      <WorkerBar
+                        value={parseFloat(w.total_days)}
+                        max={maxWorkerDays}
+                        index={wi}
+                      />
                     </View>
                   ))}
 
@@ -421,6 +420,7 @@ export default function LabourSummaryScreen() {
                       style={s.totalsRow}
                       testID={`summary-job-${j.job_id}`}
                     >
+                      <View style={s.totalsLine}>
                       <Text style={s.totalsName} numberOfLines={1}>
                         {j.job_name}
                       </Text>
@@ -448,6 +448,7 @@ export default function LabourSummaryScreen() {
                           </Text>
                         ) : null}
                       </View>
+                      </View>
                     </View>
                   ))}
                 </>
@@ -466,38 +467,45 @@ export default function LabourSummaryScreen() {
         onClose={() => setPickerOpen(false)}
         cancelLabel={t('common.cancel')}
       />
-    </SafeAreaView>
+    </View>
+  );
+}
+
+
+/** B4-3: minimal categorical bar (no chart library) — width is the
+ *  worker's share of the range max; colour cycles cat-1..4. */
+const CAT_COLORS = [tokens.cat1, tokens.cat2, tokens.cat3, tokens.cat4];
+
+function WorkerBar({
+  value,
+  max,
+  index,
+}: {
+  value: number;
+  max: number;
+  index: number;
+}) {
+  const s = useScaledStyles(base);
+  const pct = Number.isFinite(value) && max > 0 ? (value / max) * 100 : 0;
+  const width = Math.min(100, Math.max(2, pct));
+  return (
+    <View style={s.workerBarTrack}>
+      <View
+        style={[
+          s.workerBarFill,
+          {
+            width: `${width}%`,
+            backgroundColor: CAT_COLORS[index % CAT_COLORS.length],
+          },
+        ]}
+      />
+    </View>
   );
 }
 
 const base = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
-  },
-  backBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    minWidth: 72,
-  },
+  root: { flex: 1, backgroundColor: '#ffffff' },
   pressed: { opacity: 0.5 },
-  backChevron: { fontSize: 28, color: '#1e293b', marginRight: 4, lineHeight: 28 },
-  backLabel: { fontSize: 16, color: '#1e293b' },
-  headerTitle: {
-    flex: 1,
-    textAlign: 'center',
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#0f172a',
-  },
-  headerSpacer: { minWidth: 72 },
   scroll: { padding: 16, gap: 12 },
   // B3: mode toggle now uses the kit Segmented (old modeChip styles
   // removed); the incomplete-cost note is the kit RateGapBanner.
@@ -594,14 +602,29 @@ const base = StyleSheet.create({
     marginTop: 8,
     color: '#0f172a',
   },
+  // B4-3 review fix: column wrapper + inner NON-wrapping line row, so a
+  // long (esp. Chinese) name shrinks/truncates beside right-aligned
+  // metrics exactly as pre-B4 — the full-width WorkerBar sits below.
   totalsRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
     paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#f1f5f9',
   },
+  totalsLine: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  workerBarTrack: {
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: '#EDF1F6',
+    overflow: 'hidden',
+    marginTop: 6,
+    width: '100%',
+  },
+  workerBarFill: { height: '100%', borderRadius: 999 },
   totalsName: {
     color: '#0f172a',
     fontSize: 15,

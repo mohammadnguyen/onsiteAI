@@ -1,6 +1,5 @@
 import { queryClient } from '../api/queryClient';
 import { useFailuresStore } from './failures';
-import { useSelectedJobStore } from './selectedJob';
 import { useLabourEditTargetStore } from './labourEditTarget';
 import { useExpenseListFiltersStore } from './expenseListFilters';
 
@@ -31,10 +30,7 @@ import { useExpenseListFiltersStore } from './expenseListFilters';
  */
 export function resetSessionState(): void {
   queryClient.clear();
-  useSelectedJobStore.getState().setSelectedJobId(null);
-  const labour = useLabourEditTargetStore.getState();
-  labour.clear();
-  labour.setLastUsedJobId(null);
+  useLabourEditTargetStore.getState().setLastUsedJobId(null);
   const filters = useExpenseListFiltersStore.getState();
   filters.setJobId(null);
   filters.setStatus(null);

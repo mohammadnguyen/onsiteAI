@@ -13,7 +13,6 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
 
@@ -23,18 +22,17 @@ import {
   useUpdateWorker,
   type WorkerPublic,
   type WorkerUpdateInput,
-} from '../../src/api/hooks/useLabour';
-import { useMe } from '../../src/api/hooks/useAuth';
-import { formatMoney } from '../../src/util/format';
-import { useOneShotBack } from '../../src/util/navigation';
+} from '../../api/hooks/useLabour';
+import { useMe } from '../../api/hooks/useAuth';
+import { formatMoney } from '../../util/format';
 
 /**
  * L-B2: worker roster management (admin-only).
  *
- * Route: ``/labour/workers``, entered via the admin-only "Workers"
- * header button on the Labour tab. GET /workers is any-auth on the
+ * B4-2: embedded as the Workers tab of the Labour screen (formerly
+ * route ``/labour/workers``). GET /workers is any-auth on the
  * backend, so unlike /users the forbidden state cannot come from the
- * list call — the screen gates on /auth/me (fails closed) and the
+ * list call — the view gates on /auth/me (fails closed) and the
  * WRITE routes' require_admin remains the authority.
  *
  * One inline card serves both ADD and EDIT (name + note + save);
@@ -63,7 +61,7 @@ function parseRate(text: string): { value: number | null; valid: boolean } {
   return { value: n, valid: true };
 }
 
-export default function WorkersScreen() {
+export function WorkersView() {
   const { t } = useTranslation();
   const me = useMe();
   // Always fetch the full roster; "show deactivated" filters DISPLAY
@@ -76,7 +74,7 @@ export default function WorkersScreen() {
   const [editing, setEditing] = useState<Editing>(null);
   const [name, setName] = useState('');
   const [note, setNote] = useState('');
-  // Admin-only hourly rate (this whole screen is admin-gated; the
+  // Admin-only hourly rate (this whole view is admin-gated; the
   // backend returns hourly_rate only to admins). Raw input text.
   const [rate, setRate] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
@@ -89,8 +87,6 @@ export default function WorkersScreen() {
     () => (workers.data ?? []).filter((w) => showInactive || w.is_active),
     [workers.data, showInactive],
   );
-
-  const onBack = useOneShotBack('/(tabs)/labour');
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -365,49 +361,14 @@ export default function WorkersScreen() {
     ) : null;
 
   return (
-    <SafeAreaView style={s.safe} edges={['top', 'left', 'right']}>
-      <View style={s.header}>
-        <Pressable
-          onPress={onBack}
-          hitSlop={12}
-          testID="workers-back"
-          accessibilityRole="button"
-          accessibilityLabel={t('expense.back')}
-          style={({ pressed }) => [s.backBtn, pressed && s.pressed]}
-        >
-          <Text style={s.backChevron}>{'‹'}</Text>
-          <Text style={s.backLabel}>{t('expense.back')}</Text>
-        </Pressable>
-        <Text style={s.headerTitle} numberOfLines={1}>
-          {t('labour.workers_title')}
-        </Text>
-        {isAdmin ? (
-          <Pressable
-            onPress={openAdd}
-            disabled={busy}
-            hitSlop={12}
-            testID="workers-add"
-            accessibilityRole="button"
-            accessibilityLabel={t('labour.add_worker')}
-            style={({ pressed }) => [
-              s.newBtn,
-              (pressed || busy) && s.pressed,
-            ]}
-          >
-            <Text style={s.newBtnText}>{'＋'}</Text>
-          </Pressable>
-        ) : (
-          <View style={s.newBtn} />
-        )}
-      </View>
-
+    <View style={s.root}>
       {me.isLoading ? (
         <View style={s.state} testID="workers-me-loading">
           <ActivityIndicator color="#1e293b" />
         </View>
       ) : me.isError ? (
         // Unresolved identity (weak network) is NOT the same as
-        // forbidden — offer an in-screen retry instead of telling a
+        // forbidden — offer an in-view retry instead of telling a
         // possible admin they lack permission. Still fails closed.
         <View style={s.state} testID="workers-me-error">
           <Text style={[s.stateText, s.errorText]}>{t('common.error')}</Text>
@@ -427,144 +388,148 @@ export default function WorkersScreen() {
           <Text style={s.stateText}>{t('labour.workers_forbidden')}</Text>
         </View>
       ) : (
-        <KeyboardAvoidingView
-          style={s.flex}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        >
-          <FlatList
-            data={visible}
-            keyExtractor={(w) => w.worker_id}
-            keyboardShouldPersistTaps="handled"
-            ListHeaderComponent={
-              <View>
-                {form}
-                <Pressable
-                  onPress={() => setShowInactive((v) => !v)}
-                  style={s.toggleRow}
-                  accessibilityRole="checkbox"
-                  accessibilityState={{ checked: showInactive }}
-                  testID="workers-show-inactive"
-                >
-                  <View
-                    style={[s.checkbox, showInactive && s.checkboxChecked]}
-                  >
-                    {showInactive ? (
-                      <Text style={s.checkmark}>{'✓'}</Text>
-                    ) : null}
-                  </View>
-                  <Text style={s.toggleLabel}>{t('labour.show_inactive')}</Text>
-                </Pressable>
-              </View>
-            }
-            renderItem={({ item }) => (
-              <Pressable
-                onPress={() => openEdit(item)}
-                disabled={busy}
-                testID={`roster-row-${item.worker_id}`}
-                accessibilityRole="button"
-                accessibilityLabel={item.display_name}
-                style={({ pressed }) => [s.row, pressed && s.rowPressed]}
-              >
-                <View style={s.rowMain}>
-                  <Text style={s.rowName} numberOfLines={1}>
-                    {item.display_name}
-                  </Text>
-                  {item.note ? (
-                    <Text style={s.rowNote} numberOfLines={1}>
-                      {item.note}
-                    </Text>
-                  ) : null}
-                </View>
-                <View style={s.rowRight}>
-                  {item.hourly_rate != null ? (
-                    <Text style={s.rowRate} testID={`rate-${item.worker_id}`}>
-                      {t('labour.rate_per_hour', {
-                        amount: formatMoney(item.hourly_rate),
-                      })}
-                    </Text>
-                  ) : null}
-                  {!item.is_active ? (
-                    <View style={s.inactivePill}>
-                      <Text style={s.inactiveText}>
-                        {t('labour.deactivated_badge')}
-                      </Text>
-                    </View>
-                  ) : null}
-                </View>
-              </Pressable>
-            )}
-            style={s.list}
-            contentContainerStyle={
-              visible.length === 0 ? s.listEmptyContainer : s.listContainer
-            }
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={onRefresh}
-                tintColor="#1e293b"
-              />
-            }
-            testID="workers-list"
-            ListEmptyComponent={
-              workers.isLoading ? (
-                <View style={s.state} testID="workers-loading">
-                  <ActivityIndicator color="#1e293b" />
-                  <Text style={s.stateText}>{t('common.loading')}</Text>
-                </View>
-              ) : workers.isError ? (
-                <View style={s.state} testID="workers-error">
-                  <Text style={[s.stateText, s.errorText]}>
-                    {t('labour.workers_error')}
-                  </Text>
+        <>
+          {/* B4-2: the ADD entry point moved here from the removed
+              screen header (the embedding Labour screen owns the top
+              bar and knows nothing about the roster). Same control:
+              testID, label and disabled behaviour unchanged. */}
+          <View style={s.toolbar}>
+            <Pressable
+              onPress={openAdd}
+              disabled={busy}
+              hitSlop={12}
+              testID="workers-add"
+              accessibilityRole="button"
+              accessibilityLabel={t('labour.add_worker')}
+              style={({ pressed }) => [
+                s.newBtn,
+                (pressed || busy) && s.pressed,
+              ]}
+            >
+              <Text style={s.newBtnText}>{'＋'}</Text>
+            </Pressable>
+          </View>
+          <KeyboardAvoidingView
+            style={s.flex}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          >
+            <FlatList
+              data={visible}
+              keyExtractor={(w) => w.worker_id}
+              keyboardShouldPersistTaps="handled"
+              ListHeaderComponent={
+                <View>
+                  {form}
                   <Pressable
-                    onPress={() => void workers.refetch()}
-                    style={({ pressed }) => [s.linkBtn, pressed && s.pressed]}
-                    accessibilityRole="button"
-                    testID="workers-retry"
+                    onPress={() => setShowInactive((v) => !v)}
+                    style={s.toggleRow}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: showInactive }}
+                    testID="workers-show-inactive"
                   >
-                    <Text style={s.linkBtnText}>{t('common.retry')}</Text>
+                    <View
+                      style={[s.checkbox, showInactive && s.checkboxChecked]}
+                    >
+                      {showInactive ? (
+                        <Text style={s.checkmark}>{'✓'}</Text>
+                      ) : null}
+                    </View>
+                    <Text style={s.toggleLabel}>{t('labour.show_inactive')}</Text>
                   </Pressable>
                 </View>
-              ) : (
-                <View style={s.state} testID="workers-empty">
-                  <Text style={s.stateText}>{t('labour.roster_empty')}</Text>
-                </View>
-              )
-            }
-          />
-        </KeyboardAvoidingView>
+              }
+              renderItem={({ item }) => (
+                <Pressable
+                  onPress={() => openEdit(item)}
+                  disabled={busy}
+                  testID={`roster-row-${item.worker_id}`}
+                  accessibilityRole="button"
+                  accessibilityLabel={item.display_name}
+                  style={({ pressed }) => [s.row, pressed && s.rowPressed]}
+                >
+                  <View style={s.rowMain}>
+                    <Text style={s.rowName} numberOfLines={1}>
+                      {item.display_name}
+                    </Text>
+                    {item.note ? (
+                      <Text style={s.rowNote} numberOfLines={1}>
+                        {item.note}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <View style={s.rowRight}>
+                    {item.hourly_rate != null ? (
+                      <Text style={s.rowRate} testID={`rate-${item.worker_id}`}>
+                        {t('labour.rate_per_hour', {
+                          amount: formatMoney(item.hourly_rate),
+                        })}
+                      </Text>
+                    ) : null}
+                    {!item.is_active ? (
+                      <View style={s.inactivePill}>
+                        <Text style={s.inactiveText}>
+                          {t('labour.deactivated_badge')}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                </Pressable>
+              )}
+              style={s.list}
+              contentContainerStyle={
+                visible.length === 0 ? s.listEmptyContainer : s.listContainer
+              }
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  tintColor="#1e293b"
+                />
+              }
+              testID="workers-list"
+              ListEmptyComponent={
+                workers.isLoading ? (
+                  <View style={s.state} testID="workers-loading">
+                    <ActivityIndicator color="#1e293b" />
+                    <Text style={s.stateText}>{t('common.loading')}</Text>
+                  </View>
+                ) : workers.isError ? (
+                  <View style={s.state} testID="workers-error">
+                    <Text style={[s.stateText, s.errorText]}>
+                      {t('labour.workers_error')}
+                    </Text>
+                    <Pressable
+                      onPress={() => void workers.refetch()}
+                      style={({ pressed }) => [s.linkBtn, pressed && s.pressed]}
+                      accessibilityRole="button"
+                      testID="workers-retry"
+                    >
+                      <Text style={s.linkBtnText}>{t('common.retry')}</Text>
+                    </Pressable>
+                  </View>
+                ) : (
+                  <View style={s.state} testID="workers-empty">
+                    <Text style={s.stateText}>{t('labour.roster_empty')}</Text>
+                  </View>
+                )
+              }
+            />
+          </KeyboardAvoidingView>
+        </>
       )}
-    </SafeAreaView>
+    </View>
   );
 }
 
 const s = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
+  root: { flex: 1, backgroundColor: '#ffffff' },
   flex: { flex: 1 },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
-  },
-  backBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    minWidth: 72,
-  },
   pressed: { opacity: 0.5 },
-  backChevron: { fontSize: 28, color: '#1e293b', marginRight: 4, lineHeight: 28 },
-  backLabel: { fontSize: 16, color: '#1e293b' },
-  headerTitle: {
-    flex: 1,
-    textAlign: 'center',
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#0f172a',
+  toolbar: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 8,
+    paddingTop: 4,
   },
   newBtn: {
     minWidth: 72,

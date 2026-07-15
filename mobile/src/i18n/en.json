@@ -7,7 +7,8 @@
     "error": "Sign-in failed. Check your credentials."
   },
   "ui": {
-    "pct_used": "{{pct}}% used"
+    "pct_used": "{{pct}}% used",
+    "of_budget": "of budget (ex GST)"
   },
   "home": {
     "view_all": "View all"
@@ -35,7 +36,6 @@
     "create_alias_partial": "Job created. These aliases failed: {{names}}"
   },
   "job": {
-    "code": "Code",
     "status": "Status",
     "contract": "Contract value (ex GST)",
     "budget": "Total budget (ex GST)",
@@ -54,7 +54,6 @@
     "contract_value": "Contract value",
     "ex_gst_revenue": "Ex-GST revenue",
     "gst_amount": "GST",
-    "address": "Site address",
     "aliases": "Aliases",
     "budgets": "Category budgets",
     "status_active": "Active",
@@ -79,7 +78,13 @@
     "delete_cta": "Delete empty job",
     "delete_confirm_title": "Delete this job?",
     "delete_confirm_message": "This permanently deletes the job. Only possible while it has no expenses.",
-    "lifecycle_error": "Couldn't update job."
+    "lifecycle_error": "Couldn't update job.",
+    "details_title": "Job details",
+    "tab_overview": "Overview",
+    "tab_expenses": "Expenses",
+    "tab_labour": "Labour",
+    "tab_files": "Files",
+    "files_coming_soon": "Receipts & files are coming in a later version."
   },
   "settings": {
     "title": "Settings",
@@ -390,7 +395,6 @@
     "workers_entry": "Workers",
     "summary_entry": "Summary",
     "records_entry": "Records",
-    "records_title": "Attendance records",
     "records_edit_hint": "Tap a row to open that day for editing.",
     "records_empty": "No records this month.",
     "saved_day_banner": "This day already has {{count}} saved record(s) - change below and save again.",
@@ -398,8 +402,6 @@
     "record_delete_message": "Removes {{name}}'s attendance on {{date}}. This cannot be undone.",
     "record_delete_cta": "Delete",
     "record_delete_error": "Couldn't delete the record.",
-    "workers_title": "Workers",
-    "summary_title": "Attendance summary",
     "add_worker": "Add worker",
     "field_name": "Name",
     "field_note": "Note (optional)",
@@ -464,7 +466,8 @@
     "job_rollup_header": "Labour on this job",
     "range_all_time": "All-time",
     "rate_gap_title": "{{missing}} of {{total}} entries missing hours or a rate \u2014 cost is understated",
-    "rate_gap_cta": "Tap to set worker rates"
+    "rate_gap_cta": "Tap to set worker rates",
+    "tab_attendance": "Attendance"
   },
   "review_reason": {
     "amount_uncertain": "Amount uncertain",

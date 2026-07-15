@@ -45,7 +45,6 @@ type Props = {
    * the detail screen falls back to its current router.back()
    * behaviour.
    */
-  fromJobId?: string;
   /**
    * M2-B: when true, renders a "View all expenses" footer link to
    * the full expenses list at `/expenses/list`.
@@ -62,7 +61,6 @@ type Props = {
 export function RecentCapturesList({
   query,
   heading,
-  fromJobId,
   showViewAll,
   showPendingTriage,
 }: Props) {
@@ -111,7 +109,6 @@ export function RecentCapturesList({
               key={e.expense_id}
               expense={e}
               jobName={jobMap.get(e.job_id)}
-              fromJobId={fromJobId}
             />
           ))}
         </View>

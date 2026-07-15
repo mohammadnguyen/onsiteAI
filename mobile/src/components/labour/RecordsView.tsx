@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -10,8 +10,6 @@ import {
   RefreshControl,
   Alert,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, type Href } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -19,11 +17,10 @@ import {
   useDeleteLabourEntry,
   useWorkers,
   type LabourEntryPublic,
-} from '../../src/api/hooks/useLabour';
-import { useJobs } from '../../src/api/hooks/useJobs';
-import { useMe } from '../../src/api/hooks/useAuth';
-import { useLabourEditTargetStore } from '../../src/store/labourEditTarget';
-import { OptionPickerModal } from '../../src/components/OptionPickerModal';
+} from '../../api/hooks/useLabour';
+import { useJobs } from '../../api/hooks/useJobs';
+import { useMe } from '../../api/hooks/useAuth';
+import { OptionPickerModal } from '../OptionPickerModal';
 import {
   formatDateAU,
   formatMonthLabel,
@@ -31,10 +28,10 @@ import {
   monthStart,
   shiftMonthISO,
   todayISO,
-} from '../../src/util/dates';
-import { formatHoursShort, hhmmFromServer } from '../../src/util/time';
-import { useScaledStyles } from '../../src/ui/type';
-import i18n from '../../src/i18n';
+} from '../../util/dates';
+import { formatHoursShort, hhmmFromServer } from '../../util/time';
+import { useScaledStyles } from '../../ui/type';
+import i18n from '../../i18n';
 
 /**
  * L-E1: attendance RECORDS browser — "see the records, then edit them".
@@ -42,11 +39,14 @@ import i18n from '../../src/i18n';
  * Dogfood finding: saved attendance FELT immutable because nothing ever
  * showed the saved rows — the tick screen quietly pre-seeds the selected
  * day, but there was no way to discover which days had records at all.
- * This screen lists a month of entries (newest day first, optional job
- * filter); tapping a row hands that job+date to the Labour tab (via the
- * labourEditTarget store) where the existing pre-seeded tick screen
- * does the actual editing. A per-row delete covers the remove case
- * without a round-trip through the tick screen.
+ * This view lists a month of entries (newest day first, optional job
+ * filter); tapping a row hands that job+date to the parent Labour
+ * screen via the ``onEditDay`` callback, where the existing pre-seeded
+ * tick screen does the actual editing. A per-row delete covers the
+ * remove case without a round-trip through the tick screen.
+ *
+ * B4-2: embedded as the Records tab of the Labour screen (formerly
+ * route ``/labour/records``).
  *
  * Roles: viewable by BOTH roles — rows carry attendance identity only
  * (worker / job / date / fraction / times), never rates or cost. The
@@ -57,14 +57,16 @@ import i18n from '../../src/i18n';
 
 type Section = { title: string; data: LabourEntryPublic[] };
 
-export default function LabourRecordsScreen() {
+type RecordsViewProps = {
+  onEditDay: (jobId: string, date: string) => void;
+};
+
+export function RecordsView({ onEditDay }: RecordsViewProps) {
   const s = useScaledStyles(base);
   const { t } = useTranslation();
-  const router = useRouter();
   const me = useMe();
   const jobs = useJobs();
   const workers = useWorkers(true);
-  const setTarget = useLabourEditTargetStore((st) => st.setTarget);
 
   const [monthAnchor, setMonthAnchor] = useState<string>(() =>
     monthStart(todayISO()),
@@ -114,27 +116,6 @@ export default function LabourRecordsScreen() {
   const canDelete = (e: LabourEntryPublic): boolean =>
     isAdmin || (e.recorded_by_user_id === myId && e.work_date >= today);
 
-  // One shared one-shot guard for BOTH exits (row tap → Labour tab,
-  // back chevron): a second GO_BACK after this screen has popped is
-  // handled by the tab navigator (backBehavior firstRoute) and would
-  // jump the user to the Expenses tab. First exit wins.
-  const navFiredRef = useRef(false);
-
-  const onEditDay = (e: LabourEntryPublic) => {
-    if (navFiredRef.current) return;
-    navFiredRef.current = true;
-    // Hand the job+date to the Labour tab's tick screen — the existing
-    // pre-seed + diff-save flow IS the editor. Pop with back(): this
-    // screen is only ever pushed FROM the Labour tab, so back()
-    // returns to that exact (tabs) entry (Labour still selected) and
-    // its focus effect consumes the target. Do NOT use navigate/push
-    // here — under expo-router v6 both would stack a SECOND whole
-    // tabs navigator on top of this screen.
-    setTarget({ jobId: e.job_id, date: e.work_date });
-    if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)/labour' as unknown as Href);
-  };
-
   const onDelete = (e: LabourEntryPublic) => {
     Alert.alert(
       t('labour.record_delete_title'),
@@ -161,13 +142,6 @@ export default function LabourRecordsScreen() {
     );
   };
 
-  const onBack = () => {
-    if (navFiredRef.current) return;
-    navFiredRef.current = true;
-    if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)/labour' as unknown as Href);
-  };
-
   const fractionLabel = (e: LabourEntryPublic): string => {
     const frac = Number(e.day_fraction);
     const fracText =
@@ -186,24 +160,7 @@ export default function LabourRecordsScreen() {
   };
 
   return (
-    <SafeAreaView style={s.safe} edges={['top', 'left', 'right']}>
-      <View style={s.header}>
-        <Pressable
-          onPress={onBack}
-          hitSlop={12}
-          accessibilityRole="button"
-          testID="records-back"
-          style={({ pressed }) => [s.backBtn, pressed && s.pressed]}
-        >
-          <Text style={s.backChevron}>{'‹'}</Text>
-          <Text style={s.backLabel}>{t('expense.back')}</Text>
-        </Pressable>
-        <Text style={s.headerTitle} numberOfLines={1}>
-          {t('labour.records_title')}
-        </Text>
-        <View style={s.headerSpacer} />
-      </View>
-
+    <View style={s.root}>
       <View style={s.controls}>
         <View style={s.monthRow}>
           <TouchableOpacity
@@ -276,7 +233,7 @@ export default function LabourRecordsScreen() {
           )}
           renderItem={({ item }) => (
             <Pressable
-              onPress={() => onEditDay(item)}
+              onPress={() => onEditDay(item.job_id, item.work_date)}
               accessibilityRole="button"
               testID={`record-row-${item.entry_id}`}
               style={({ pressed }) => [s.row, pressed && s.pressed]}
@@ -327,31 +284,12 @@ export default function LabourRecordsScreen() {
         onClose={() => setPickerOpen(false)}
         cancelLabel={t('common.cancel')}
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
 const base = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
-  },
-  backBtn: { flexDirection: 'row', alignItems: 'center', minWidth: 70 },
-  backChevron: { fontSize: 26, color: '#1e293b', marginRight: 2 },
-  backLabel: { fontSize: 15, color: '#1e293b' },
-  headerTitle: {
-    flex: 1,
-    textAlign: 'center',
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#0f172a',
-  },
-  headerSpacer: { minWidth: 70 },
+  root: { flex: 1, backgroundColor: '#ffffff' },
   controls: { paddingHorizontal: 16, paddingTop: 12, gap: 8 },
   monthRow: {
     flexDirection: 'row',

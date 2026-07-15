@@ -21,7 +21,6 @@ import {
 } from '../../src/api/hooks/useExpenses';
 import { useJobs } from '../../src/api/hooks/useJobs';
 import { useMe } from '../../src/api/hooks/useAuth';
-import { useSelectedJobStore } from '../../src/store/selectedJob';
 import type {
   ExpenseDetailPublic,
   ReviewReasonCode,
@@ -36,12 +35,10 @@ import { StatusBadge } from '../../src/ui/kit';
 /**
  * Mobile Expense Detail (v1) — read-only.
  *
- * Top-level expo-router route at /expenses/[id]. Renders a self-
- * contained header (with a back chevron) instead of relying on a
- * native nav stack, because the project root uses `<Slot />` rather
- * than `<Stack />`. The tab bar slides away while this screen is
- * visible because the route sits outside `(tabs)/` — standard
- * iOS drill-in UX.
+ * Top-level expo-router route at /expenses/[id], pushed on the root
+ * Stack (headers are off app-wide, so it renders its own back
+ * chevron). The tab bar is covered while this screen is visible —
+ * standard iOS drill-in UX.
  *
  * Hard scope (matches the approved plan):
  *   - read-only fields only
@@ -86,11 +83,7 @@ function isMissing(error: unknown): boolean {
 
 export default function ExpenseDetailScreen() {
   const s = useScaledStyles(base);
-  const { id, from, jobId } = useLocalSearchParams<{
-    id: string;
-    from?: string;
-    jobId?: string;
-  }>();
+  const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { t } = useTranslation();
   const expense = useExpense(id);
@@ -100,7 +93,6 @@ export default function ExpenseDetailScreen() {
   const reviewId = expense.data?.pending_review_queue_id ?? '';
   const rejectMutation = useRejectQueueItem(reviewId);
   const [correctOpen, setCorrectOpen] = useState(false);
-  const setSelectedJobId = useSelectedJobStore((s) => s.setSelectedJobId);
 
   const jobName = useMemo(() => {
     if (!expense.data) return undefined;
@@ -117,26 +109,10 @@ export default function ExpenseDetailScreen() {
   const onBack = () => {
     if (backFiredRef.current) return;
     backFiredRef.current = true;
-    // Job-modal return path: ONLY triggered when the URL explicitly
-    // carries from=job&jobId=... (operator guardrail — don't infer
-    // job-return behaviour from the global store alone, since the
-    // store may hold a stale modal id from a different workflow).
-    // We set the store so JobsScreen re-opens the modal on focus,
-    // then pop with back(): from=job is only ever appended when this
-    // screen was pushed FROM the Jobs tab's modal, so back() returns
-    // to that exact (tabs) entry with the Jobs tab still selected.
-    // Do NOT use navigate/replace here — under expo-router v6 both
-    // create a SECOND (tabs) instance (navigate pushes when the
-    // target name differs from the top route; replace swaps the top
-    // route), growing the stack every loop iteration. This keeps the
-    // multi-delete loop flat: Job modal → expense → Delete → Job
-    // modal (same job) → tap next expense → repeat.
-    if (from === 'job' && jobId) {
-      setSelectedJobId(jobId);
-      if (router.canGoBack()) router.back();
-      else router.replace('/(tabs)/jobs');
-      return;
-    }
+    // B4-1: job details is a pushed PAGE, so back() from here lands
+    // on whatever pushed us (job page, review queue, list, Home) with
+    // no special-casing — the old from=job/selectedJob return path is
+    // retired. Fallback covers deep-link entry.
     if (router.canGoBack()) router.back();
     else router.replace('/(tabs)/home' as unknown as Href);
   };
