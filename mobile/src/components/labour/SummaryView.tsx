@@ -314,7 +314,12 @@ export function SummaryView({ onFixRates }: SummaryViewProps) {
                       <DollarIcon size={15} color={tokens.ok} />
                     </View>
                     <Text style={s.statCardLabel}>{t('labour.total_cost')}</Text>
-                    <Text style={s.statCardValue}>
+                    <Text
+                      style={s.statCardValue}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.7}
+                    >
                       <IncompleteAmount
                         formatted={formatMoney(summary.data.total_labour_cost)}
                         incomplete={
@@ -329,7 +334,12 @@ export function SummaryView({ onFixRates }: SummaryViewProps) {
                       <ClockIcon size={15} color={tokens.warnMid} />
                     </View>
                     <Text style={s.statCardLabel}>{t('labour.total_hours')}</Text>
-                    <Text style={s.statCardValue}>
+                    <Text
+                      style={s.statCardValue}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.7}
+                    >
                       {t('labour.hours_value', {
                         hours: formatDays(summary.data.total_hours),
                       })}
@@ -342,7 +352,12 @@ export function SummaryView({ onFixRates }: SummaryViewProps) {
                     <Text style={s.statCardLabel}>
                       {t('labour.job_worker_days_label')}
                     </Text>
-                    <Text style={s.statCardValue}>
+                    <Text
+                      style={s.statCardValue}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.7}
+                    >
                       {formatDays(summary.data.total_days)}
                     </Text>
                   </View>

@@ -1,5 +1,13 @@
 import React from 'react';
-import { Pressable, Text, View, StyleSheet } from 'react-native';
+import {
+  Pressable,
+  Text,
+  View,
+  StyleSheet,
+  Animated,
+  Easing,
+  AccessibilityInfo,
+} from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { tokens, toneFill, toneText, type Tone } from './tokens';
 import { useScaledStyles } from './type';
@@ -199,6 +207,9 @@ export function IncompleteAmount({
   testID?: string;
 }) {
   const s = useScaledStyles(base);
+  // NOTE: this renders as a NESTED <Text> at its call site, where
+  // numberOfLines/adjustsFontSizeToFit would be inert — the wrapping
+  // Text owns those. The Build-29 "$1,250.0"/"0+" wrap was fixed there.
   return (
     <Text style={s.incompleteWrap} testID={testID}>
       {formatted}
@@ -360,6 +371,22 @@ const base = StyleSheet.create({
   segmentTextOn: { color: tokens.selText },
 
   // labour-cost gap
+  toast: {
+    position: 'absolute',
+    top: 8,
+    left: 16,
+    right: 16,
+    backgroundColor: tokens.ink,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    shadowColor: '#101828',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.22,
+    shadowRadius: 16,
+    elevation: 6,
+  },
+  toastText: { color: '#ffffff', fontSize: 13.5, fontWeight: '600' },
   incompleteWrap: { fontVariant: ['tabular-nums'] },
   incompletePlus: { color: tokens.warn, fontWeight: '800' },
   rateGap: {
@@ -397,3 +424,109 @@ const base = StyleSheet.create({
 
   dim: { opacity: 0.4 },
 });
+
+/**
+ * forey F1: transient top toast (handoff §Interactions — slide-in
+ * 0.25s, hold 2.4s). Controlled: pass `text` to show, and it calls
+ * `onDone` once it has faded out so the parent can clear its state.
+ *
+ * pointerEvents="none" — a toast must never eat a tap meant for the
+ * screen under it. Honours reduce-motion by skipping the slide.
+ */
+const TOAST_HOLD_MS = 2400;
+
+export function Toast({
+  text,
+  seq = 0,
+  onDone,
+}: {
+  text: string | null;
+  /** Bump this per toast. Approving two identical amounts back-to-back
+   *  produces the SAME text, and an effect keyed on the string alone
+   *  would silently no-op the second one (or let it inherit a nearly
+   *  expired hold). */
+  seq?: number;
+  onDone: () => void;
+}) {
+  const s = useScaledStyles(base);
+  const anim = React.useRef(new Animated.Value(0)).current;
+  const [shown, setShown] = React.useState<string | null>(null);
+  // Keep onDone in a ref so the effect never re-runs (and re-animates)
+  // just because the parent passed a fresh closure.
+  const doneRef = React.useRef(onDone);
+  doneRef.current = onDone;
+
+  React.useEffect(() => {
+    if (!text) return;
+    let cancelled = false;
+    setShown(text);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const run = async () => {
+      let reduce = false;
+      try {
+        reduce = await AccessibilityInfo.isReduceMotionEnabled();
+      } catch {
+        reduce = false;
+      }
+      if (cancelled) return;
+      // accessibilityLiveRegion is Android-only; on iOS this is the
+      // only way a VoiceOver user learns the toast happened.
+      try {
+        AccessibilityInfo.announceForAccessibility(text);
+      } catch {
+        /* non-fatal */
+      }
+      const inMs = reduce ? 0 : 250;
+      const outMs = reduce ? 0 : 200;
+      Animated.timing(anim, {
+        toValue: 1,
+        duration: inMs,
+        easing: Easing.out(Easing.ease),
+        useNativeDriver: true,
+      }).start();
+      timer = setTimeout(() => {
+        Animated.timing(anim, {
+          toValue: 0,
+          duration: outMs,
+          easing: Easing.in(Easing.ease),
+          useNativeDriver: true,
+        }).start(({ finished }) => {
+          if (finished && !cancelled) {
+            setShown(null);
+            doneRef.current();
+          }
+        });
+      }, TOAST_HOLD_MS);
+    };
+    void run();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [text, seq, anim]);
+
+  if (!shown) return null;
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        s.toast,
+        {
+          opacity: anim,
+          transform: [
+            { translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [-14, 0] }) },
+          ],
+        },
+      ]}
+      accessibilityLiveRegion="polite"
+      testID="app-toast"
+    >
+      <Text style={s.toastText} numberOfLines={2}>
+        {shown}
+      </Text>
+    </Animated.View>
+  );
+}

@@ -180,3 +180,32 @@ export function formatMonthLabel(iso: string, locale?: string): string {
     return `${String(m).padStart(2, '0')}/${y}`;
   }
 }
+
+/**
+ * forey F1: the Today header's date line — the spec's "7月16日 周四"
+ * (zh) / "Thu 16 Jul" (en). Composed explicitly: a single Intl call
+ * with month:'long' + weekday:'short' yields neither shape, so only
+ * the NAMES come from Intl and the order/punctuation is ours.
+ */
+export function formatTodayLine(iso: string, locale?: string): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return iso;
+  const date = new Date(y, m - 1, d);
+  const zh = locale?.startsWith('zh') ?? false;
+  try {
+    const weekday = new Intl.DateTimeFormat(zh ? 'zh-CN' : 'en-AU', {
+      weekday: 'short',
+    }).format(date);
+    if (zh) return `${m}月${d}日 ${weekday}`;
+    // en-AU's CLDR abbreviations are NOT all three letters (June, July,
+    // Sept), so en-AU would render "Fri 17 July". en-GB gives the
+    // spec's "Jul" — the 3-letter form isn't a locale preference here,
+    // it's the design.
+    const month = new Intl.DateTimeFormat('en-GB', { month: 'short' }).format(
+      date,
+    );
+    return `${weekday} ${d} ${month}`;
+  } catch {
+    return formatDateAU(iso);
+  }
+}

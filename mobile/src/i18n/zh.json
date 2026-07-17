@@ -12,7 +12,28 @@
     "of_budget": "\u5360\u9884\u7b97\uff08\u4e0d\u542bGST\uff09"
   },
   "home": {
-    "view_all": "\u67e5\u770b\u5168\u90e8"
+    "capture_placeholder": "\u8bb0\u4e00\u7b14:Bunnings $500 \u73b0\u91d1 \u6676\u6676\u5bb6\u2026",
+    "month_spend": "\u672c\u6708\u652f\u51fa \u00b7 \u4e0d\u542bGST",
+    "pending_total": "\u5f85\u5ba1\u6838 \u00b7 \u5408\u8ba1 {{sum}}",
+    "cleared": "\u5df2\u6e05\u7a7a \u2713",
+    "for_your_review": "\u5f85\u4f60\u5ba1\u6838",
+    "last_one": "\u8fd9\u662f\u6700\u540e\u4e00\u7b14",
+    "all_clear": "\u5168\u90e8\u5904\u7406\u5b8c,\u8d26\u76ee\u5e72\u51c0",
+    "today_attendance": "\u4eca\u65e5\u51fa\u52e4",
+    "not_logged": "\u4eca\u5929\u8fd8\u6ca1\u8bb0",
+    "add_record": "\u8865\u5f55",
+    "queue_error": "\u65e0\u6cd5\u52a0\u8f7d\u5f85\u5ba1\u6838\u961f\u5217\u3002",
+    "items_one": "{{count}} \u7b14",
+    "items_other": "{{count}} \u7b14",
+    "date_line_one": "{{date}} \u00b7 {{count}} \u4e2a\u9879\u76ee\u8fdb\u884c\u4e2d",
+    "date_line_other": "{{date}} \u00b7 {{count}} \u4e2a\u9879\u76ee\u8fdb\u884c\u4e2d",
+    "more_pending_one": "\u8fd8\u6709 {{count}} \u7b14 \u00b7 \u5904\u7406\u5b8c\u81ea\u52a8\u8fdb\u5165\u4e0b\u4e00\u5f20",
+    "more_pending_other": "\u8fd8\u6709 {{count}} \u7b14 \u00b7 \u5904\u7406\u5b8c\u81ea\u52a8\u8fdb\u5165\u4e0b\u4e00\u5f20",
+    "item_unavailable": "\u8fd9\u7b14\u660e\u7ec6\u6ca1\u52a0\u8f7d\u51fa\u6765",
+    "item_unavailable_hint": "\u70b9\u6309\u6253\u5f00",
+    "workers_days_one": "{{count}} \u4eba \u00b7 {{days}} \u5929",
+    "workers_days_other": "{{count}} \u4eba \u00b7 {{days}} \u5929",
+    "attendance_error": "\u4eca\u65e5\u51fa\u52e4\u6ca1\u52a0\u8f7d\u51fa\u6765\u3002"
   },
   "tabs": {
     "home": "\u4eca\u5929",
@@ -275,9 +296,7 @@
     "error": "\u65e0\u6cd5\u52a0\u8f7d\u652f\u51fa\u3002"
   },
   "dashboard": {
-    "month_spend": "\u672c\u6708\u652f\u51fa\uff08\u4e0d\u542bGST\uff09",
     "pending_review": "\u5f85\u5ba1\u6838",
-    "active_jobs": "\u8fdb\u884c\u4e2d\u9879\u76ee",
     "jobs_heading": "\u9879\u76ee\u9884\u7b97\u72b6\u51b5",
     "spent_of": "\u5df2\u7528 {{spent}} / \u9884\u7b97 {{budget}}",
     "spent_label": "\u5df2\u652f\u51fa {{spent}}",
@@ -470,7 +489,8 @@
     "range_all_time": "\u5168\u90e8",
     "rate_gap_title": "{{missing}}/{{total}} \u6761\u8bb0\u5f55\u7f3a\u5de5\u65f6\u6216\u65f6\u85aa\uff0c\u6210\u672c\u88ab\u4f4e\u4f30",
     "rate_gap_cta": "\u70b9\u6309\u8865\u5168\u5de5\u4eba\u65f6\u85aa",
-    "tab_attendance": "\u8003\u52e4"
+    "tab_attendance": "\u8003\u52e4",
+    "saved": "\u5df2\u4fdd\u5b58"
   },
   "review_reason": {
     "amount_uncertain": "\u91d1\u989d\u4e0d\u786e\u5b9a",
@@ -504,5 +524,17 @@
     "Waste / Skip Bin": "\u5783\u573e\u6e05\u8fd0",
     "Delivery": "\u8fd0\u8f93",
     "Miscellaneous": "\u6742\u9879"
+  },
+  "review": {
+    "approve": "\u901a\u8fc7",
+    "reject": "\u9a73\u56de",
+    "fix_project": "\u6539\u9879\u76ee",
+    "approve_failed": "\u901a\u8fc7\u5931\u8d25 \u2014 \u5df2\u653e\u56de\u961f\u5217\u3002",
+    "reject_failed": "\u9a73\u56de\u5931\u8d25 \u2014 \u5df2\u653e\u56de\u961f\u5217\u3002",
+    "already_handled": "\u8fd9\u7b14\u5df2\u7ecf\u5904\u7406\u8fc7\u4e86 \u2014 \u961f\u5217\u5df2\u66f4\u65b0\u3002"
+  },
+  "toast": {
+    "approved": "\u5df2\u901a\u8fc7 {{sum}}",
+    "rejected": "\u5df2\u9a73\u56de {{sum}}"
   }
 }

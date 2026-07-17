@@ -12,7 +12,28 @@
     "of_budget": "of budget (ex GST)"
   },
   "home": {
-    "view_all": "View all"
+    "capture_placeholder": "Add: Bunnings $500 cash Jing\u2019s house\u2026",
+    "month_spend": "This month \u00b7 ex GST",
+    "pending_total": "Pending \u00b7 total {{sum}}",
+    "cleared": "All clear \u2713",
+    "for_your_review": "For your review",
+    "last_one": "This is the last one",
+    "all_clear": "All done \u2014 books are clean",
+    "today_attendance": "Today's attendance",
+    "not_logged": "Not logged today",
+    "add_record": "Add",
+    "queue_error": "Couldn't load the review queue.",
+    "items_one": "{{count}} item",
+    "items_other": "{{count}} items",
+    "date_line_one": "{{date}} \u00b7 {{count}} active project",
+    "date_line_other": "{{date}} \u00b7 {{count}} active projects",
+    "more_pending_one": "{{count}} more \u00b7 auto-advances when done",
+    "more_pending_other": "{{count}} more \u00b7 auto-advances when done",
+    "item_unavailable": "Couldn't load this item",
+    "item_unavailable_hint": "Tap to open it",
+    "workers_days_one": "{{count}} worker \u00b7 {{days}} days",
+    "workers_days_other": "{{count}} workers \u00b7 {{days}} days",
+    "attendance_error": "Couldn't load today's attendance."
   },
   "tabs": {
     "home": "Today",
@@ -275,9 +296,7 @@
     "error": "Could not load expenses."
   },
   "dashboard": {
-    "month_spend": "This month (ex GST)",
     "pending_review": "Pending review",
-    "active_jobs": "Active jobs",
     "jobs_heading": "Jobs by budget pressure",
     "spent_of": "{{spent}} of {{budget}} budget",
     "spent_label": "{{spent}} spent",
@@ -470,7 +489,8 @@
     "range_all_time": "All-time",
     "rate_gap_title": "{{missing}} of {{total}} entries missing hours or a rate \u2014 cost is understated",
     "rate_gap_cta": "Tap to set worker rates",
-    "tab_attendance": "Attendance"
+    "tab_attendance": "Attendance",
+    "saved": "Saved"
   },
   "review_reason": {
     "amount_uncertain": "Amount uncertain",
@@ -504,5 +524,17 @@
     "Waste / Skip Bin": "Waste / Skip Bin",
     "Delivery": "Delivery",
     "Miscellaneous": "Miscellaneous"
+  },
+  "review": {
+    "approve": "Approve",
+    "reject": "Reject",
+    "fix_project": "Fix project",
+    "approve_failed": "Couldn't approve \u2014 put back in the queue.",
+    "reject_failed": "Couldn't reject \u2014 put back in the queue.",
+    "already_handled": "Already handled \u2014 the queue has moved on."
+  },
+  "toast": {
+    "approved": "Approved {{sum}}",
+    "rejected": "Rejected {{sum}}"
   }
 }
