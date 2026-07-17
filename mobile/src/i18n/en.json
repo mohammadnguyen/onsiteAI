@@ -206,7 +206,13 @@
       "error": "Could not load captures.",
       "duplicate_flag": "Duplicate",
       "receipt_later_flag": "Receipt later"
-    }
+    },
+    "chip_job_unsure": "Job unsure",
+    "chip_duplicate": "Possible duplicate",
+    "submit_to": "Submit \u00b7 {{amount}} \u2192 {{job}}",
+    "submit_amount": "Submit \u00b7 {{amount}}",
+    "cash_note": "Cash is recorded at face value \u00b7 no GST credit",
+    "bank_note": "GST invoice split: net {{net}} + GST {{gst}}"
   },
   "failures": {
     "title": "Failed captures",

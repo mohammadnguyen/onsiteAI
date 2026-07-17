@@ -35,9 +35,12 @@ import { JobPickerSheet } from '../src/components/JobPickerSheet';
 import { RecentCapturesList } from '../src/components/RecentCapturesList';
 import { RecentFailuresList } from '../src/components/RecentFailuresList';
 import { DatePills } from '../src/components/DatePills';
+import { ParseChips } from '../src/components/capture/ParseChips';
+import { useParsePreview } from '../src/api/hooks/useParsePreview';
 import { useFailuresStore } from '../src/store/failures';
 import { todayISO } from '../src/util/dates';
 import { hasCJK } from '../src/util/text';
+import { formatMoney } from '../src/util/format';
 import { useScaledStyles } from '../src/ui/type';
 import { Chip } from '../src/ui/kit';
 import { tokens } from '../src/ui/tokens';
@@ -221,6 +224,38 @@ export default function CaptureScreen() {
     if (j) return jobLabelFor(j);
     return zhAliasMap[jobId] ?? jobId.slice(0, 8);
   };
+
+  // F2: live parse preview — debounced, silent-failure (weak network).
+  // Renders the recognised amount/job/supplier as chips and drives the
+  // dynamic submit label. The REAL parse still happens on POST /expenses.
+  const preview = useParsePreview(rawInputText, expenseDate);
+  // Amount/job the CTA promises: an explicit selection wins over the
+  // parser's guess, exactly as the submit body's structured-wins merge.
+  const ctaAmount =
+    preview.draft?.amount_inc_gst != null && preview.draft.amount_inc_gst !== ''
+      ? formatMoney(preview.draft.amount_inc_gst)
+      : null;
+  const ctaJobId = jobSel ?? preview.draft?.job_id ?? null;
+  const ctaJobName = ctaJobId ? jobNameFor(ctaJobId) : null;
+  // Bank-transfer GST split note. The preview endpoint returns only
+  // the inc-GST amount (review finding: ex/gst are split at PERSIST
+  // time server-side), so this derives the DISPLAY-ONLY preview with
+  // the same definitional AU-GST rule the backend applies (ex = inc /
+  // 1.1, gst = inc / 11). Nothing here is stored; the persisted split
+  // remains the server's and is what the detail screen shows. A cent
+  // of rounding drift in this hint is possible and acceptable.
+  const previewIncNum =
+    preview.draft?.amount_inc_gst != null && preview.draft.amount_inc_gst !== ''
+      ? Number(preview.draft.amount_inc_gst)
+      : null;
+  const previewNet =
+    previewIncNum != null && Number.isFinite(previewIncNum)
+      ? formatMoney((previewIncNum / 1.1).toFixed(2))
+      : null;
+  const previewGst =
+    previewIncNum != null && Number.isFinite(previewIncNum)
+      ? formatMoney((previewIncNum / 11).toFixed(2))
+      : null;
 
   // X-2 follow-up: explicit "user pulled" flag (house pattern).
   // isRefetching also goes true on focus refetches now that
@@ -506,7 +541,7 @@ export default function CaptureScreen() {
             value={rawInputText}
             onChangeText={setRawInputText}
             placeholder={t('capture.textarea_placeholder')}
-            placeholderTextColor="#94a3b8"
+            placeholderTextColor={tokens.muted}
             multiline
             // F3 legacy: no autoFocus. The original rationale (capture was
             // the post-login landing tab; keyboard popped on every launch)
@@ -518,6 +553,13 @@ export default function CaptureScreen() {
             style={s.textarea}
             testID="capture-textarea"
             accessibilityLabel={t('capture.title')}
+          />
+
+          <ParseChips
+            draft={preview.draft}
+            diagnostics={preview.diagnostics}
+            jobName={jobNameFor}
+            isSettling={preview.isSettling}
           />
 
           <DatePills
@@ -553,6 +595,16 @@ export default function CaptureScreen() {
               {t('capture.payment_default_hint')}
             </Text>
           ) : null}
+          {paymentSel === 'cash' ? (
+            <Text style={s.paymentHint} testID="payment-cash-note">
+              {t('capture.cash_note')}
+            </Text>
+          ) : null}
+          {paymentSel === 'transfer' && previewNet && previewGst ? (
+            <Text style={s.paymentHint} testID="payment-bank-note">
+              {t('capture.bank_note', { net: previewNet, gst: previewGst })}
+            </Text>
+          ) : null}
 
           {/* Preview-parity: switch row (was a checkbox). */}
           <View style={s.switchRow} testID="receipt-later">
@@ -564,8 +616,8 @@ export default function CaptureScreen() {
                 if (!inFlight) setReceiptLater(v);
               }}
               disabled={inFlight}
-              trackColor={{ true: '#93c5fd', false: '#e2e8f0' }}
-              thumbColor={receiptLater ? '#2563EB' : '#f8fafc'}
+              trackColor={{ true: '#93c5fd', false: tokens.line }}
+              thumbColor={receiptLater ? tokens.primary : tokens.surfaceSub}
               accessibilityLabel={t('capture.receipt_later')}
             />
           </View>
@@ -586,7 +638,21 @@ export default function CaptureScreen() {
             {inFlight ? (
               <ActivityIndicator color="#fff" />
             ) : (
-              <Text style={s.submitBtnText}>{t('capture.submit')}</Text>
+              <Text
+                style={s.submitBtnText}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.6}
+              >
+                {ctaAmount && ctaJobName
+                  ? t('capture.submit_to', {
+                      amount: ctaAmount,
+                      job: ctaJobName,
+                    })
+                  : ctaAmount
+                    ? t('capture.submit_amount', { amount: ctaAmount })
+                    : t('capture.submit')}
+              </Text>
             )}
           </TouchableOpacity>
 
@@ -766,24 +832,24 @@ const base = StyleSheet.create({
   scroll: { padding: 16, gap: 14 },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   backBtn: { minWidth: 44, minHeight: 44, justifyContent: 'center' },
-  backChevron: { fontSize: 30, lineHeight: 32, color: '#475569' },
+  backChevron: { fontSize: 30, lineHeight: 32, color: tokens.ink2 },
   backSpacer: { width: 44 },
   title: {
     fontSize: 24,
     fontWeight: '600',
-    color: '#0f172a',
+    color: tokens.ink,
     marginBottom: 4,
   },
   textarea: {
     minHeight: 120,
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderRadius: 8,
-    padding: 12,
+    borderWidth: 1.5,
+    borderColor: tokens.line,
+    borderRadius: 14,
+    padding: 14,
     fontSize: 16,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    color: '#0f172a',
-    backgroundColor: '#ffffff',
+    color: tokens.ink,
+    backgroundColor: tokens.surface,
     textAlignVertical: 'top',
   },
   paymentRow: {
@@ -792,9 +858,9 @@ const base = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
   },
-  paymentLabel: { color: '#475569', fontSize: 14, marginRight: 4 },
+  paymentLabel: { color: tokens.ink2, fontSize: 14, marginRight: 4 },
   // B3: chip visuals live in src/ui/kit.tsx (Chip).
-  paymentHint: { color: '#64748b', fontSize: 12, lineHeight: 16 },
+  paymentHint: { color: tokens.ink3, fontSize: 12, lineHeight: 16 },
   // O2-A job chips row — mirrors paymentRow so the two selector rows
   // read as one visual family.
   jobRow: {
@@ -815,23 +881,34 @@ const base = StyleSheet.create({
     backgroundColor: tokens.surface,
   },
   // Preview-parity: receipt-later is a Switch row now (switchRow).
-  checkboxLabel: { color: '#0f172a', fontSize: 14 },
+  checkboxLabel: { color: tokens.ink, fontSize: 14 },
   errorBanner: {
-    backgroundColor: '#fef2f2',
+    backgroundColor: tokens.badBg,
     borderWidth: 1,
-    borderColor: '#fecaca',
-    borderRadius: 6,
+    borderColor: tokens.badBorder,
+    borderRadius: 12,
     padding: 12,
   },
-  errorText: { color: '#991b1b', fontSize: 14 },
+  errorText: { color: tokens.bad, fontSize: 14 },
   submitBtn: {
-    backgroundColor: '#1e293b',
-    paddingVertical: 14,
-    borderRadius: 6,
+    backgroundColor: tokens.primary,
+    paddingVertical: 15,
+    borderRadius: 14,
     alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: tokens.primary,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 22,
+    elevation: 5,
   },
   submitBtnDisabled: { opacity: 0.4 },
-  submitBtnText: { color: '#ffffff', fontWeight: '600', fontSize: 16 },
+  submitBtnText: {
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 15,
+    paddingHorizontal: 12,
+  },
   // Multi-item capture result card
   multiCard: {
     backgroundColor: '#ffffff',

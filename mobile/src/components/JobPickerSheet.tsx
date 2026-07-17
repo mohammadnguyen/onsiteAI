@@ -10,6 +10,8 @@ import {
 } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import type { JobPublic } from '../api/hooks/useJobs';
+import { tokens } from '../ui/tokens';
+import { SearchIcon, ChevronRightIcon } from '../ui/icons';
 
 /**
  * O2-A (dogfood feedback #1): searchable job picker for expense capture.
@@ -75,17 +77,20 @@ export function JobPickerSheet({
               <Text style={s.closeText}>{'✕'}</Text>
             </TouchableOpacity>
           </View>
-          <TextInput
-            value={search}
-            onChangeText={setSearch}
-            placeholder={t('capture.job_picker_search')}
-            placeholderTextColor="#94a3b8"
-            autoCapitalize="none"
-            autoCorrect={false}
-            style={s.search}
-            testID="job-picker-search"
-            accessibilityLabel={t('capture.job_picker_search')}
-          />
+          <View style={s.searchRow}>
+            <SearchIcon size={18} color={tokens.muted} />
+            <TextInput
+              value={search}
+              onChangeText={setSearch}
+              placeholder={t('capture.job_picker_search')}
+              placeholderTextColor={tokens.muted}
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={s.search}
+              testID="job-picker-search"
+              accessibilityLabel={t('capture.job_picker_search')}
+            />
+          </View>
           <FlatList
             data={filtered}
             keyExtractor={(j) => j.job_id}
@@ -107,10 +112,13 @@ export function JobPickerSheet({
                   testID={`job-picker-row-${item.job_id}`}
                   accessibilityRole="button"
                 >
-                  <Text style={s.rowLabel}>{label}</Text>
-                  {meta.length > 0 ? (
-                    <Text style={s.rowMeta}>{meta}</Text>
-                  ) : null}
+                  <View style={s.rowMain}>
+                    <Text style={s.rowLabel}>{label}</Text>
+                    {meta.length > 0 ? (
+                      <Text style={s.rowMeta}>{meta}</Text>
+                    ) : null}
+                  </View>
+                  <ChevronRightIcon size={15} color={tokens.muted} />
                 </TouchableOpacity>
               );
             }}
@@ -128,44 +136,50 @@ export function JobPickerSheet({
 const s = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    backgroundColor: 'rgba(9, 14, 26, 0.45)',
     justifyContent: 'flex-end',
   },
   panel: {
-    backgroundColor: '#ffffff',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    backgroundColor: tokens.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
     paddingHorizontal: 16,
     paddingTop: 16,
     paddingBottom: 24,
-    maxHeight: '75%',
-    gap: 10,
+    maxHeight: '80%',
+    gap: 12,
   },
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  title: { fontSize: 18, fontWeight: '600', color: '#0f172a' },
-  closeText: { fontSize: 18, color: '#475569', padding: 4 },
-  search: {
+  title: { fontSize: 18, fontWeight: '800', color: tokens.ink },
+  closeText: { fontSize: 18, color: tokens.ink2, padding: 4 },
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderRadius: 8,
+    borderColor: tokens.line,
+    borderRadius: 14,
     paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 16,
-    color: '#0f172a',
-    backgroundColor: '#ffffff',
+    height: 46,
+    backgroundColor: tokens.surfaceSub,
   },
+  search: { flex: 1, fontSize: 16, color: tokens.ink },
   list: { flexGrow: 0 },
   row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
     paddingVertical: 12,
+    minHeight: 44,
     borderBottomWidth: 1,
-    borderBottomColor: '#f1f5f9',
-    gap: 2,
+    borderBottomColor: tokens.lineSoft,
   },
-  rowLabel: { fontSize: 16, color: '#0f172a', fontWeight: '500' },
-  rowMeta: { fontSize: 13, color: '#64748b' },
-  empty: { color: '#64748b', fontSize: 14, paddingVertical: 16 },
+  rowMain: { flex: 1, minWidth: 0, gap: 2 },
+  rowLabel: { fontSize: 16, color: tokens.ink, fontWeight: '600' },
+  rowMeta: { fontSize: 13, color: tokens.ink3 },
+  empty: { color: tokens.ink3, fontSize: 14, paddingVertical: 16, textAlign: 'center' },
 });
