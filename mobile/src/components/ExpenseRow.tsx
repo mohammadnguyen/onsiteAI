@@ -114,41 +114,51 @@ export function ExpenseRow({
   );
 }
 
+// forey F3 (handoff §5): each expense is a CARD on the grey ground —
+// amount 16.5/800 anchored left, badge right, description, date · job.
+// One shared visual: the full list, per-job tab and Last-5 all change
+// together. marginBottom carries the card gap in every host (bare
+// wrappers and FlatLists alike).
 const base = StyleSheet.create({
   row: {
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
     backgroundColor: tokens.surface,
+    borderWidth: 1,
+    borderColor: tokens.line,
+    borderRadius: 14,
+    paddingHorizontal: 13,
+    paddingVertical: 12,
+    marginBottom: 10,
   },
-  rowPressed: {
-    backgroundColor: '#f1f5f9',
-  },
+  rowPressed: { opacity: 0.85 },
   rowTop: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 10,
   },
   amount: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#0f172a',
+    flexShrink: 1,
+    fontSize: 16.5,
+    fontWeight: '800',
+    color: tokens.ink,
     fontVariant: ['tabular-nums'],
+    letterSpacing: -0.2,
   },
-  rowMid: { flexDirection: 'row', marginTop: 4, alignItems: 'center' },
-  date: { color: '#64748b', fontSize: 13 },
-  dot: { color: '#94a3b8', fontSize: 13 },
-  job: { color: '#64748b', fontSize: 13, flexShrink: 1 },
-  preview: { color: '#334155', fontSize: 13, marginTop: 4 },
-  previewMuted: { color: '#94a3b8', fontSize: 13, marginTop: 4 },
-  rowFlags: { flexDirection: 'row', marginTop: 6 },
+  rowMid: { flexDirection: 'row', marginTop: 5, alignItems: 'center' },
+  date: { color: tokens.muted, fontSize: 11.5 },
+  dot: { color: tokens.muted, fontSize: 11.5 },
+  job: { color: tokens.muted, fontSize: 11.5, flexShrink: 1 },
+  preview: { color: tokens.ink2, fontSize: 13, marginTop: 3 },
+  previewMuted: { color: tokens.muted, fontSize: 13, marginTop: 3 },
+  rowFlags: { flexDirection: 'row', marginTop: 7 },
   flagPill: {
     paddingHorizontal: 8,
     paddingVertical: 2,
-    borderRadius: 10,
+    borderRadius: 999,
+    borderWidth: 1,
     marginRight: 6,
   },
-  flagDuplicate: { backgroundColor: '#fef3c7' },
-  flagReceipt: { backgroundColor: '#e0e7ff' },
-  flagText: { fontSize: 10, fontWeight: '600', color: '#1e293b' },
+  flagDuplicate: { backgroundColor: tokens.warnBg, borderColor: tokens.warnBorder },
+  flagReceipt: { backgroundColor: tokens.sel, borderColor: tokens.selBorder },
+  flagText: { fontSize: 10, fontWeight: '700', color: tokens.ink2 },
 });

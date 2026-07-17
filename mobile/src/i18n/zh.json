@@ -55,7 +55,11 @@
     "field_aliases_hint": "\u7528\u4e8e\u5c06\u8bb0\u5f55\u5339\u914d\u5230\u6b64\u9879\u76ee",
     "create_error_duplicate_code": "\u9879\u76ee\u7f16\u53f7\u5df2\u5b58\u5728",
     "create_error_generic": "\u65e0\u6cd5\u521b\u5efa\u9879\u76ee",
-    "create_alias_partial": "\u9879\u76ee\u5df2\u521b\u5efa\u3002\u4ee5\u4e0b\u522b\u540d\u5931\u8d25\uff1a{{names}}"
+    "create_alias_partial": "\u9879\u76ee\u5df2\u521b\u5efa\u3002\u4ee5\u4e0b\u522b\u540d\u5931\u8d25\uff1a{{names}}",
+    "net_profit": "\u51c0\u5229\u6da6",
+    "profit_calc": "\u6536\u5165 {{rev}} \u2212 \u6210\u672c {{cost}} \u00b7 \u4e0d\u542bGST",
+    "archived_total": "\u603b\u51c0\u5229 {{sum}}",
+    "archived_total_partial": "\u603b\u51c0\u5229 {{sum}}\uff08{{n}}/{{m}} \u4e2a\uff09"
   },
   "job": {
     "status": "\u72b6\u6001",
@@ -108,7 +112,12 @@
     "files_coming_soon": "\u6536\u636e\u4e0e\u6587\u4ef6\u529f\u80fd\u5c06\u5728\u540e\u7eed\u7248\u672c\u63a8\u51fa\u3002",
     "tab_notes": "\u5907\u6ce8",
     "notes_coming_soon": "\u9879\u76ee\u5907\u6ce8\u529f\u80fd\u5c06\u5728\u540e\u7eed\u7248\u672c\u63a8\u51fa\u3002",
-    "total_paid_cash_out": "\u5b9e\u4ed8\u603b\u8ba1\uff08\u73b0\u91d1\u6d41\uff09"
+    "total_paid_cash_out": "\u5b9e\u4ed8\u603b\u8ba1\uff08\u73b0\u91d1\u6d41\uff09",
+    "other_categories": "\u5176\u4ed6",
+    "ruler_target": "\u76ee\u6807 {{target}}%",
+    "by_worker": "\u6309\u5de5\u4eba \u00b7 \u4ec5\u672c\u9879\u76ee",
+    "bw_days_hours": "{{days}} \u5929 \u00b7 {{hours}} \u5c0f\u65f6",
+    "labour_empty": "\u8be5\u8303\u56f4\u5185\u6682\u65e0\u7528\u5de5\u8bb0\u5f55\u3002"
   },
   "settings": {
     "title": "\u8bbe\u7f6e",
@@ -321,7 +330,13 @@
     "empty": "\u6ca1\u6709\u5f85\u5ba1\u6838\u7684\u652f\u51fa\u3002",
     "error": "\u65e0\u6cd5\u52a0\u8f7d\u5ba1\u6838\u961f\u5217\u3002",
     "waiting_since": "\u81ea {{date}} \u8d77\u7b49\u5f85",
-    "summary_unavailable": "\u6458\u8981\u4e0d\u53ef\u7528\u2014\u2014\u70b9\u6309\u67e5\u770b\u8be6\u60c5"
+    "summary_unavailable": "\u6458\u8981\u4e0d\u53ef\u7528\u2014\u2014\u70b9\u6309\u67e5\u770b\u8be6\u60c5",
+    "earliest": "\u6700\u65e9 {{date}}",
+    "post_note": "\u5904\u7406\u5b8c\u7684\u8bb0\u5f55\u7acb\u5373\u8ba1\u5165\u9879\u76ee\u6210\u672c\u4e0e\u9884\u7b97\u6761\u3002",
+    "banner_one": "{{count}} \u7b14\u5f85\u5ba1 \u00b7 \u5408\u8ba1 {{sum}}",
+    "banner_other": "{{count}} \u7b14\u5f85\u5ba1 \u00b7 \u5408\u8ba1 {{sum}}",
+    "banner_count_only_one": "{{count}} \u7b14\u5f85\u5ba1",
+    "banner_count_only_other": "{{count}} \u7b14\u5f85\u5ba1"
   },
   "users": {
     "title": "\u7528\u6237",
@@ -537,10 +552,13 @@
     "fix_project": "\u6539\u9879\u76ee",
     "approve_failed": "\u901a\u8fc7\u5931\u8d25 \u2014 \u5df2\u653e\u56de\u961f\u5217\u3002",
     "reject_failed": "\u9a73\u56de\u5931\u8d25 \u2014 \u5df2\u653e\u56de\u961f\u5217\u3002",
-    "already_handled": "\u8fd9\u7b14\u5df2\u7ecf\u5904\u7406\u8fc7\u4e86 \u2014 \u961f\u5217\u5df2\u66f4\u65b0\u3002"
+    "already_handled": "\u8fd9\u7b14\u5df2\u7ecf\u5904\u7406\u8fc7\u4e86 \u2014 \u961f\u5217\u5df2\u66f4\u65b0\u3002",
+    "delete_dup": "\u5220\u9664\u91cd\u590d",
+    "keep_approve": "\u4fdd\u7559\u5e76\u901a\u8fc7"
   },
   "toast": {
     "approved": "\u5df2\u901a\u8fc7 {{sum}}",
-    "rejected": "\u5df2\u9a73\u56de {{sum}}"
+    "rejected": "\u5df2\u9a73\u56de {{sum}}",
+    "dup_deleted": "\u5df2\u5220\u9664\u91cd\u590d {{sum}}"
   }
 }

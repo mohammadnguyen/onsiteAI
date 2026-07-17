@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -9,7 +9,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Link, type Href } from 'expo-router';
+import { useRouter, type Href } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
 
@@ -19,43 +19,53 @@ import {
   type ReviewQueueItem,
 } from '../src/api/hooks/useReviewQueue';
 import { useJobs } from '../src/api/hooks/useJobs';
-import type { ExpensePublic } from '../src/api/hooks/useExpenses';
+import {
+  useResolveQueueItem,
+  useRejectQueueItem,
+  useDeleteExpense,
+  type ExpensePublic,
+} from '../src/api/hooks/useExpenses';
 import { formatMoney } from '../src/util/format';
 import { formatDateAU } from '../src/util/dates';
 import { useOneShotBack } from '../src/util/navigation';
+import { useScaledStyles } from '../src/ui/type';
 import { tokens } from '../src/ui/tokens';
+import { Toast } from '../src/ui/kit';
 
 /**
- * M3: mobile review queue / pending triage (admin-only).
+ * forey F3 (handoff §3): the review queue as in-place triage CARDS.
  *
- * Route: ``/review-queue``. Entered via the admin-only "Pending
- * review" link under the Last-5 list on the Expenses tab.
+ * Each open row renders as a full card — amount, reasons, description,
+ * job · date — with 驳回 / 改项目 / 通过 right on it (the same
+ * mutations the Today stack uses; the expense detail keeps the full
+ * corrections flow behind 改项目/tap). A duplicate-suspected card
+ * swaps its actions for 删除重复 / 保留并通过, where delete uses the
+ * existing soft-delete (reject + audit) on THIS expense — the original
+ * it duplicates stays untouched.
  *
- * Option 1 client-side join (operator decision): queue rows from
- * GET /review-queue?status=open (ordering + review reasons) are
- * joined by expense_id against GET /expenses?status=pending
- * (summaries). Rows whose summary is missing (join miss — only
- * possible past the 500-row page cap) render DEGRADED: reason chips
- * + waiting-since + a "details unavailable" line, still tappable.
+ * The amber banner totals the queue (count + $ + oldest). Evidence
+ * rules (the F1 lesson): the $ total renders only when the summaries
+ * query actually delivered; the green all-clear only on a loaded,
+ * EMPTY queue.
  *
- * Each row links to the existing expense detail screen, where the
- * M1 Approve / Reject / Edit flows already live — this screen adds
- * NO new mutation paths. After any action, the ['review-queue'] and
- * ['expenses'] cache roots are invalidated by the existing hooks, so
- * returning to this screen shows fresh data.
- *
- * Non-admins never see the entry link; if one lands here anyway the
- * backend 403s the queue fetch and the screen shows the existing
- * "admins only" message — backend remains authoritative.
+ * Join model unchanged (M3 Option 1): queue rows ⋈ pending summaries;
+ * a join-miss renders degraded but stays actionable via the detail.
  */
 
 export default function ReviewQueueScreen() {
+  const s = useScaledStyles(base);
   const { t } = useTranslation();
 
   const queue = useOpenReviewQueue();
   const summaries = usePendingExpenseSummaries();
   const jobs = useJobs();
   const [userRefreshing, setUserRefreshing] = useState(false);
+  const [toast, setToast] = useState<{ text: string; seq: number } | null>(null);
+  const toastSeq = useRef(0);
+  const showToast = (text: string) => {
+    toastSeq.current += 1;
+    setToast({ text, seq: toastSeq.current });
+  };
 
   const jobMap = useMemo(() => {
     const m = new Map<string, string>();
@@ -83,10 +93,20 @@ export default function ReviewQueueScreen() {
     axios.isAxiosError(queue.error) &&
     queue.error.response?.status === 403;
 
-  // Wait for BOTH initial loads so enriched rows don't pop in after
-  // a degraded first paint. A summaries FAILURE is non-fatal: rows
-  // render degraded (the queue itself is the source of truth here).
   const loading = queue.isLoading || summaries.isLoading;
+  const rows = queue.data ?? [];
+
+  // Banner money: positive evidence only (F1 lesson — never "$0.00"
+  // over a real count because the summaries fetch failed).
+  const totalKnown = summaries.data !== undefined;
+  const total = useMemo(() => {
+    if (!totalKnown) return 0;
+    const open = new Set(rows.map((q) => q.expense_id));
+    return (summaries.data?.items ?? [])
+      .filter((e) => open.has(e.expense_id))
+      .reduce((acc, e) => acc + parseFloat(e.amount_inc_gst ?? '0'), 0);
+  }, [rows, summaries.data, totalKnown]);
+  const oldest = rows.length > 0 ? rows[0].opened_at.slice(0, 10) : null;
 
   return (
     <SafeAreaView style={s.safe} edges={['top', 'left', 'right']}>
@@ -109,33 +129,64 @@ export default function ReviewQueueScreen() {
       </View>
 
       <FlatList
-        data={loading ? [] : (queue.data ?? [])}
+        data={loading ? [] : rows}
         keyExtractor={(item) => item.review_id}
         renderItem={({ item }) => (
-          <TriageRow
+          <TriageCard
             item={item}
             expense={expenseMap.get(item.expense_id)}
-            jobMap={jobMap}
+            jobName={
+              expenseMap.get(item.expense_id)
+                ? jobMap.get(expenseMap.get(item.expense_id)!.job_id)
+                : undefined
+            }
+            onToast={showToast}
           />
         )}
+        ListHeaderComponent={
+          !loading && rows.length > 0 ? (
+            <View style={s.banner} testID="review-queue-banner">
+              <Text style={s.bannerText}>
+                {totalKnown
+                  ? t('review_queue.banner', {
+                      count: rows.length,
+                      sum: formatMoney(total.toFixed(2)),
+                    })
+                  : t('review_queue.banner_count_only', {
+                      count: rows.length,
+                    })}
+              </Text>
+              {oldest ? (
+                <Text style={s.bannerSub}>
+                  {t('review_queue.earliest', {
+                    date: formatDateAU(oldest),
+                  })}
+                </Text>
+              ) : null}
+            </View>
+          ) : null
+        }
+        ListFooterComponent={
+          !loading && rows.length > 0 ? (
+            <Text style={s.footNote}>{t('review_queue.post_note')}</Text>
+          ) : null
+        }
         style={s.list}
         contentContainerStyle={
-          loading || (queue.data ?? []).length === 0
-            ? s.listEmptyContainer
-            : s.listContainer
+          loading || rows.length === 0 ? s.listEmptyContainer : s.listContainer
         }
         refreshControl={
           <RefreshControl
             refreshing={userRefreshing}
             onRefresh={onRefresh}
-            tintColor="#1e293b"
+            tintColor={tokens.ink3}
           />
         }
         testID="review-queue-list"
         ListEmptyComponent={
           loading ? (
             <View style={s.state} testID="review-queue-loading">
-              <ActivityIndicator color="#1e293b" />
+              <ActivityIndicator color={tokens.primary} />
               <Text style={s.stateText}>{t('common.loading')}</Text>
             </View>
           ) : isForbidden ? (
@@ -149,112 +200,259 @@ export default function ReviewQueueScreen() {
               </Text>
               <Pressable
                 onPress={() => void queue.refetch()}
-                style={({ pressed }) => [
-                  s.linkBtn,
-                  pressed && s.linkBtnPressed,
-                ]}
+                style={({ pressed }) => [s.linkBtn, pressed && s.linkBtnPressed]}
                 accessibilityRole="button"
                 testID="review-queue-retry"
               >
                 <Text style={s.linkBtnText}>{t('common.retry')}</Text>
               </Pressable>
             </View>
-          ) : (
+          ) : queue.isSuccess ? (
+            // Positive evidence: queue.data is a loaded, empty list.
             <View style={s.state} testID="review-queue-empty">
+              <View style={s.doneTick}>
+                <Text style={s.doneTickText}>{'✓'}</Text>
+              </View>
               <Text style={s.stateText}>{t('review_queue.empty')}</Text>
             </View>
-          )
+          ) : null
         }
+      />
+      <Toast
+        text={toast?.text ?? null}
+        seq={toast?.seq ?? 0}
+        onDone={() => setToast(null)}
       />
     </SafeAreaView>
   );
 }
 
 /**
- * One triage row. Enriched when the joined expense summary exists;
- * degraded (reasons + waiting-since only) when it doesn't. Both
- * variants link to the expense detail, where Approve/Reject/Edit
- * already live.
+ * One triage card. Duplicate-suspected rows swap the action pair:
+ * 删除重复 (soft-delete THIS expense) / 保留并通过 (resolve).
  */
-function TriageRow({
+function TriageCard({
   item,
   expense,
-  jobMap,
+  jobName,
+  onToast,
 }: {
   item: ReviewQueueItem;
   expense: ExpensePublic | undefined;
-  jobMap: Map<string, string>;
+  jobName: string | undefined;
+  onToast: (text: string) => void;
 }) {
+  const s = useScaledStyles(base);
   const { t } = useTranslation();
-  const detailHref = `/expenses/${item.expense_id}` as unknown as Href;
-  const openedDate = formatDateAU(item.opened_at.slice(0, 10));
-  const jobName = expense ? jobMap.get(expense.job_id) : undefined;
-  const preview = expense
-    ? (expense.raw_input_text || expense.description || '').slice(0, 60)
-    : null;
+  const router = useRouter();
+  const approve = useResolveQueueItem(item.review_id);
+  const reject = useRejectQueueItem(item.review_id);
+  const del = useDeleteExpense(item.expense_id);
+  const busy = approve.isPending || reject.isPending || del.isPending;
+
+  const isDup = item.review_reasons.includes('duplicate_suspected');
+  const money = expense ? formatMoney(expense.amount_inc_gst) : null;
+  const openDetail = () =>
+    router.push(`/expenses/${item.expense_id}` as unknown as Href);
+
+  const run = async (
+    fire: () => Promise<unknown>,
+    okText: string,
+    failText: string,
+  ) => {
+    if (busy) return;
+    try {
+      await fire();
+      onToast(okText);
+      // Success invalidations (in the hooks) refetch the queue — the
+      // card leaves the list on server truth, no optimistic state here.
+    } catch (err) {
+      const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+      if (status === 409 || status === 404) {
+        onToast(t('review.already_handled'));
+        return;
+      }
+      onToast(failText);
+    }
+  };
 
   return (
-    <Link href={detailHref} asChild>
+    <View style={s.card} testID={`triage-row-${item.review_id}`}>
       <Pressable
-        testID={`triage-row-${item.review_id}`}
+        onPress={openDetail}
         accessibilityRole="button"
-        accessibilityLabel={t('review_queue.title')}
-        hitSlop={4}
-        style={({ pressed }) => [s.row, pressed && s.rowPressed]}
+        disabled={busy}
+        style={({ pressed }) => pressed && s.cardPressed}
       >
-        {expense ? (
-          <View style={s.rowTop}>
-            <Text style={s.amount}>{formatMoney(expense.amount_inc_gst)}</Text>
-            <Text style={s.waiting}>
-              {t('review_queue.waiting_since', { date: openedDate })}
+        <View style={s.cardTop}>
+          {money ? (
+            <Text
+              style={s.amount}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.7}
+            >
+              {money}
             </Text>
-          </View>
-        ) : (
-          <View style={s.rowTop}>
+          ) : (
             <Text style={s.degraded}>
               {t('review_queue.summary_unavailable')}
             </Text>
-            <Text style={s.waiting}>
-              {t('review_queue.waiting_since', { date: openedDate })}
-            </Text>
-          </View>
-        )}
+          )}
+          <Text style={s.waiting}>
+            {t('review_queue.waiting_since', {
+              date: formatDateAU(item.opened_at.slice(0, 10)),
+            })}
+          </Text>
+        </View>
 
         {expense ? (
-          <View style={s.rowMid}>
-            <Text style={s.date}>{formatDateAU(expense.expense_date)}</Text>
-            {jobName ? <Text style={s.dot}> · </Text> : null}
-            {jobName ? (
-              <Text style={s.job} numberOfLines={1}>
-                {jobName}
-              </Text>
-            ) : null}
-          </View>
+          <Text style={s.preview} numberOfLines={2}>
+            {expense.raw_input_text || expense.description || '—'}
+          </Text>
         ) : null}
-
-        {preview ? (
-          <Text style={s.preview} numberOfLines={1}>
-            {preview}
+        {expense ? (
+          <Text style={s.meta} numberOfLines={1}>
+            {[jobName, formatDateAU(expense.expense_date)]
+              .filter(Boolean)
+              .join(' · ')}
           </Text>
         ) : null}
 
         <View style={s.reasonRow}>
           {item.review_reasons.map((code) => (
-            <View key={code} style={s.reasonPill}>
-              {/* Audit C-04: defaultValue so a NEW backend reason code
-                  degrades to the raw code, not an i18n key string. */}
-              <Text style={s.reasonText}>
+            <View
+              key={code}
+              style={[
+                s.reasonPill,
+                code === 'duplicate_suspected' && s.reasonPillDup,
+              ]}
+            >
+              <Text
+                style={[
+                  s.reasonText,
+                  code === 'duplicate_suspected' && s.reasonTextDup,
+                ]}
+              >
                 {t(`review_reason.${code}`, { defaultValue: code })}
               </Text>
             </View>
           ))}
         </View>
       </Pressable>
-    </Link>
+
+      {/* Actions need a loaded summary — approving an amount you can't
+          see is not offered (F1 rule). Degraded rows act via detail. */}
+      {expense ? (
+        <View style={s.actions}>
+          {isDup ? (
+            <>
+              <Pressable
+                style={({ pressed }) => [s.btn, s.btnGhost, pressed && s.pressed]}
+                onPress={() =>
+                  void run(
+                    () => del.mutateAsync({}),
+                    t('toast.dup_deleted', { sum: money ?? '' }),
+                    t('review.reject_failed'),
+                  )
+                }
+                disabled={busy}
+                accessibilityRole="button"
+                testID={`triage-delete-dup-${item.review_id}`}
+              >
+                <Text
+                  style={[s.btnText, s.btnTextReject]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.8}
+                >
+                  {t('review.delete_dup')}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [s.btn, s.btnApprove, pressed && s.pressed]}
+                onPress={() =>
+                  void run(
+                    () => approve.mutateAsync(),
+                    t('toast.approved', { sum: money ?? '' }),
+                    t('review.approve_failed'),
+                  )
+                }
+                disabled={busy}
+                accessibilityRole="button"
+                testID={`triage-keep-approve-${item.review_id}`}
+              >
+                <Text
+                  style={[s.btnText, s.btnTextApprove]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.8}
+                >
+                  {t('review.keep_approve')}
+                </Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <Pressable
+                style={({ pressed }) => [s.btn, s.btnGhost, pressed && s.pressed]}
+                onPress={() =>
+                  void run(
+                    () => reject.mutateAsync(),
+                    t('toast.rejected', { sum: money ?? '' }),
+                    t('review.reject_failed'),
+                  )
+                }
+                disabled={busy}
+                accessibilityRole="button"
+                testID={`triage-reject-${item.review_id}`}
+              >
+                <Text style={[s.btnText, s.btnTextReject]} numberOfLines={1}>
+                  {t('review.reject')}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [s.btn, s.btnGhost, pressed && s.pressed]}
+                onPress={openDetail}
+                disabled={busy}
+                accessibilityRole="button"
+                testID={`triage-fix-${item.review_id}`}
+              >
+                <Text
+                  style={[s.btnText, s.btnTextGhost]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.8}
+                >
+                  {t('review.fix_project')}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [s.btn, s.btnApprove, pressed && s.pressed]}
+                onPress={() =>
+                  void run(
+                    () => approve.mutateAsync(),
+                    t('toast.approved', { sum: money ?? '' }),
+                    t('review.approve_failed'),
+                  )
+                }
+                disabled={busy}
+                accessibilityRole="button"
+                testID={`triage-approve-${item.review_id}`}
+              >
+                <Text style={[s.btnText, s.btnTextApprove]} numberOfLines={1}>
+                  {t('review.approve')}
+                </Text>
+              </Pressable>
+            </>
+          )}
+        </View>
+      ) : null}
+    </View>
   );
 }
 
-const s = StyleSheet.create({
+const base = StyleSheet.create({
   safe: { flex: 1, backgroundColor: tokens.bg },
   header: {
     flexDirection: 'row',
@@ -262,7 +460,7 @@ const s = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
+    borderBottomColor: tokens.line,
     backgroundColor: tokens.surface,
   },
   backBtn: {
@@ -275,60 +473,128 @@ const s = StyleSheet.create({
   backBtnPressed: { opacity: 0.5 },
   backChevron: {
     fontSize: 28,
-    color: '#1e293b',
+    color: tokens.ink2,
     marginRight: 4,
     lineHeight: 28,
   },
-  backLabel: { fontSize: 16, color: '#1e293b' },
+  backLabel: { fontSize: 16, color: tokens.ink2 },
   headerTitle: {
     flex: 1,
     textAlign: 'center',
     fontSize: 17,
-    fontWeight: '600',
-    color: '#0f172a',
+    fontWeight: '700',
+    color: tokens.ink,
   },
   headerSpacer: { width: 72 },
   list: { flex: 1 },
-  listContainer: { paddingHorizontal: 16 },
+  listContainer: { padding: 16, gap: 12 },
   listEmptyContainer: { flexGrow: 1, justifyContent: 'center' },
   state: { alignItems: 'center', padding: 24, gap: 12 },
-  stateText: { color: '#64748b', fontSize: 15 },
-  errorText: { color: '#b91c1c' },
+  stateText: { color: tokens.ink3, fontSize: 15 },
+  errorText: { color: tokens.bad },
   linkBtn: { paddingHorizontal: 12, paddingVertical: 8 },
   linkBtnPressed: { opacity: 0.5 },
-  linkBtnText: { color: '#1e293b', fontSize: 15, fontWeight: '600' },
-  row: {
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: tokens.lineSoft,
-    backgroundColor: tokens.surface,
+  linkBtnText: { color: tokens.primary, fontSize: 15, fontWeight: '600' },
+  doneTick: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: tokens.okBg,
+    borderWidth: 1,
+    borderColor: tokens.okBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  rowPressed: { backgroundColor: '#f1f5f9' },
-  rowTop: {
+  doneTickText: { fontSize: 22, color: tokens.ok, fontWeight: '800' },
+
+  banner: {
+    backgroundColor: tokens.warnBg,
+    borderWidth: 1,
+    borderColor: tokens.warnBorder,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    marginBottom: 2,
+  },
+  bannerText: {
+    color: tokens.warn,
+    fontSize: 13.5,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  bannerSub: { color: tokens.warnMid, fontSize: 11.5, marginTop: 2 },
+  footNote: {
+    color: tokens.muted,
+    fontSize: 11.5,
+    textAlign: 'center',
+    paddingVertical: 10,
+    lineHeight: 16,
+  },
+
+  card: {
+    backgroundColor: tokens.surface,
+    borderWidth: 1,
+    borderColor: tokens.line,
+    borderRadius: 16,
+    padding: 14,
+    shadowColor: '#101828',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.05,
+    shadowRadius: 14,
+    elevation: 2,
+  },
+  cardPressed: { opacity: 0.85 },
+  cardTop: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 10,
   },
   amount: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#0f172a',
+    flexShrink: 1,
+    fontSize: 22,
+    fontWeight: '800',
+    color: tokens.ink,
     fontVariant: ['tabular-nums'],
+    letterSpacing: -0.3,
   },
-  waiting: { color: '#94a3b8', fontSize: 12 },
-  degraded: { color: '#64748b', fontSize: 14, fontStyle: 'italic' },
-  rowMid: { flexDirection: 'row', marginTop: 4, alignItems: 'center' },
-  date: { color: '#64748b', fontSize: 13 },
-  dot: { color: '#94a3b8', fontSize: 13 },
-  job: { color: '#64748b', fontSize: 13, flexShrink: 1 },
-  preview: { color: '#334155', fontSize: 13, marginTop: 4 },
-  reasonRow: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 6, gap: 6 },
+  waiting: { color: tokens.muted, fontSize: 12 },
+  degraded: { color: tokens.ink3, fontSize: 14, fontStyle: 'italic' },
+  preview: { color: tokens.ink2, fontSize: 14, marginTop: 6, lineHeight: 19 },
+  meta: { color: tokens.muted, fontSize: 12, marginTop: 4 },
+  reasonRow: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 8, gap: 6 },
   reasonPill: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 10,
-    backgroundColor: '#fef3c7',
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+    backgroundColor: tokens.warnBg,
+    borderColor: tokens.warnBorder,
   },
-  reasonText: { fontSize: 10, fontWeight: '600', color: '#92400e' },
+  reasonText: { fontSize: 10.5, fontWeight: '700', color: tokens.warn },
+  reasonPillDup: {
+    backgroundColor: tokens.badBg,
+    borderColor: tokens.badBorder,
+  },
+  reasonTextDup: { color: tokens.bad },
+  actions: { flexDirection: 'row', gap: 8, marginTop: 12 },
+  btn: {
+    flex: 1,
+    height: 42,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  btnGhost: {
+    backgroundColor: tokens.surface,
+    borderWidth: 1,
+    borderColor: tokens.line,
+  },
+  btnApprove: { flex: 1.4, backgroundColor: tokens.okFill },
+  btnText: { fontSize: 14, fontWeight: '700' },
+  btnTextReject: { color: tokens.bad },
+  btnTextGhost: { color: tokens.ink2 },
+  btnTextApprove: { color: '#ffffff' },
+  pressed: { opacity: 0.75 },
 });

@@ -539,7 +539,7 @@ export default function LabourScreen() {
           me.refetch(),
         ]).finally(() => setUserRefreshing(false));
       }}
-      tintColor="#1e293b"
+      tintColor={tokens.ink3}
     />
   );
 
@@ -623,7 +623,7 @@ export default function LabourScreen() {
 
         {initialLoading ? (
           <View style={s.center}>
-            <ActivityIndicator size="large" color="#1e293b" />
+            <ActivityIndicator size="large" color={tokens.primary} />
           </View>
         ) : (jobs.isError && !jobs.data) ||
           (workers.isError && !workers.data) ||
@@ -643,7 +643,7 @@ export default function LabourScreen() {
           <Text style={s.errorCenter}>{t('labour.entries_error')}</Text>
         ) : entries.isLoading ? (
           <View style={s.center}>
-            <ActivityIndicator size="small" color="#1e293b" />
+            <ActivityIndicator size="small" color={tokens.ink3} />
           </View>
         ) : (
           <>

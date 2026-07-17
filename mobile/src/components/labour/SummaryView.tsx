@@ -163,7 +163,7 @@ export function SummaryView({ onFixRates }: SummaryViewProps) {
           me.refetch(),
         ]).finally(() => setUserRefreshing(false));
       }}
-      tintColor="#1e293b"
+      tintColor={tokens.ink3}
     />
   );
 
@@ -186,7 +186,7 @@ export function SummaryView({ onFixRates }: SummaryViewProps) {
     <View style={s.root}>
       {me.isLoading ? (
         <View style={s.state}>
-          <ActivityIndicator color="#1e293b" />
+          <ActivityIndicator color={tokens.primary} />
         </View>
       ) : me.isError ? (
         // Unresolved identity ≠ forbidden — offer an in-view retry
@@ -285,7 +285,7 @@ export function SummaryView({ onFixRates }: SummaryViewProps) {
 
           {summary.isLoading ? (
             <View style={s.state}>
-              <ActivityIndicator size="large" color="#1e293b" />
+              <ActivityIndicator size="large" color={tokens.primary} />
             </View>
           ) : summary.isError && !summary.data ? (
             <View style={s.state} testID="summary-error">
@@ -532,7 +532,7 @@ const base = StyleSheet.create({
   stateText: { color: '#64748b', fontSize: 15, textAlign: 'center' },
   errorText: { color: '#b91c1c' },
   linkBtn: { paddingHorizontal: 12, paddingVertical: 8 },
-  linkBtnText: { color: '#1e293b', fontSize: 15, fontWeight: '600' },
+  linkBtnText: { color: tokens.primary, fontSize: 15, fontWeight: '600' },
   rangeRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -549,7 +549,7 @@ const base = StyleSheet.create({
     backgroundColor: '#f8fafc',
   },
   chevronDisabled: { opacity: 0.4 },
-  chevronText: { fontSize: 22, color: '#1e293b', lineHeight: 24 },
+  chevronText: { fontSize: 22, color: tokens.ink2, lineHeight: 24 },
   rangeLabel: {
     fontSize: 15,
     fontWeight: '600',

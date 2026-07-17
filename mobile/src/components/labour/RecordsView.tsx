@@ -199,7 +199,7 @@ export function RecordsView({ onEditDay }: RecordsViewProps) {
 
       {entries.isLoading ? (
         <View style={s.state} testID="records-loading">
-          <ActivityIndicator color="#1e293b" />
+          <ActivityIndicator color={tokens.primary} />
         </View>
       ) : entries.isError && !entries.data ? (
         <View style={s.state} testID="records-error">
@@ -224,7 +224,7 @@ export function RecordsView({ onEditDay }: RecordsViewProps) {
                   .refetch()
                   .finally(() => setUserRefreshing(false));
               }}
-              tintColor="#1e293b"
+              tintColor={tokens.ink3}
             />
           }
           renderSectionHeader={({ section }) => (
@@ -304,7 +304,7 @@ const base = StyleSheet.create({
     borderColor: '#cbd5e1',
     borderRadius: 6,
   },
-  chevronText: { fontSize: 18, color: '#1e293b' },
+  chevronText: { fontSize: 18, color: tokens.muted },
   monthLabel: { fontSize: 16, fontWeight: '600', color: '#0f172a' },
   filterChip: {
     alignSelf: 'flex-start',

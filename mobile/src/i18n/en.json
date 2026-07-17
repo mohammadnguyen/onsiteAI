@@ -55,7 +55,11 @@
     "field_aliases_hint": "Used to match captures to this job",
     "create_error_duplicate_code": "Job code already exists",
     "create_error_generic": "Could not create job",
-    "create_alias_partial": "Job created. These aliases failed: {{names}}"
+    "create_alias_partial": "Job created. These aliases failed: {{names}}",
+    "net_profit": "Net profit",
+    "profit_calc": "Revenue {{rev}} \u2212 cost {{cost}} \u00b7 ex GST",
+    "archived_total": "Total {{sum}}",
+    "archived_total_partial": "Total {{sum}} ({{n}}/{{m}})"
   },
   "job": {
     "status": "Status",
@@ -108,7 +112,12 @@
     "files_coming_soon": "Receipts & files are coming in a later version.",
     "tab_notes": "Notes",
     "notes_coming_soon": "Job notes are coming in a later version.",
-    "total_paid_cash_out": "Total paid (cash out)"
+    "total_paid_cash_out": "Total paid (cash out)",
+    "other_categories": "Other",
+    "ruler_target": "Target {{target}}%",
+    "by_worker": "By worker \u00b7 this job",
+    "bw_days_hours": "{{days}} d \u00b7 {{hours}} h",
+    "labour_empty": "No labour recorded for this range."
   },
   "settings": {
     "title": "Settings",
@@ -321,7 +330,13 @@
     "empty": "Nothing is waiting for review.",
     "error": "Could not load the review queue.",
     "waiting_since": "Waiting since {{date}}",
-    "summary_unavailable": "Details unavailable \u2014 tap to open"
+    "summary_unavailable": "Details unavailable \u2014 tap to open",
+    "earliest": "Oldest {{date}}",
+    "post_note": "Processed records post to job costs and the budget bar immediately.",
+    "banner_one": "{{count}} pending \u00b7 total {{sum}}",
+    "banner_other": "{{count}} pending \u00b7 total {{sum}}",
+    "banner_count_only_one": "{{count}} pending",
+    "banner_count_only_other": "{{count}} pending"
   },
   "users": {
     "title": "Users",
@@ -537,10 +552,13 @@
     "fix_project": "Fix project",
     "approve_failed": "Couldn't approve \u2014 put back in the queue.",
     "reject_failed": "Couldn't reject \u2014 put back in the queue.",
-    "already_handled": "Already handled \u2014 the queue has moved on."
+    "already_handled": "Already handled \u2014 the queue has moved on.",
+    "delete_dup": "Delete duplicate",
+    "keep_approve": "Keep & approve"
   },
   "toast": {
     "approved": "Approved {{sum}}",
-    "rejected": "Rejected {{sum}}"
+    "rejected": "Rejected {{sum}}",
+    "dup_deleted": "Deleted duplicate {{sum}}"
   }
 }

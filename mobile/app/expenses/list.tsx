@@ -481,7 +481,8 @@ const s = StyleSheet.create({
   },
   // B3: filter chips now use src/ui/kit.tsx Chip.
   list: { flex: 1 },
-  listContainer: { paddingHorizontal: 16, backgroundColor: tokens.surface },
+  // F3: rows are self-surfaced cards; the container shows the ground.
+  listContainer: { padding: 16 },
   listEmptyContainer: { flexGrow: 1, justifyContent: 'center' },
   state: { alignItems: 'center', padding: 24, gap: 12 },
   stateText: { color: '#64748b', fontSize: 15 },

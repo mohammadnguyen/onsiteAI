@@ -365,7 +365,7 @@ export function WorkersView() {
     <View style={s.root}>
       {me.isLoading ? (
         <View style={s.state} testID="workers-me-loading">
-          <ActivityIndicator color="#1e293b" />
+          <ActivityIndicator color={tokens.primary} />
         </View>
       ) : me.isError ? (
         // Unresolved identity (weak network) is NOT the same as
@@ -484,14 +484,14 @@ export function WorkersView() {
                 <RefreshControl
                   refreshing={refreshing}
                   onRefresh={onRefresh}
-                  tintColor="#1e293b"
+                  tintColor={tokens.ink3}
                 />
               }
               testID="workers-list"
               ListEmptyComponent={
                 workers.isLoading ? (
                   <View style={s.state} testID="workers-loading">
-                    <ActivityIndicator color="#1e293b" />
+                    <ActivityIndicator color={tokens.primary} />
                     <Text style={s.stateText}>{t('common.loading')}</Text>
                   </View>
                 ) : workers.isError ? (
@@ -538,7 +538,7 @@ const s = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 4,
   },
-  newBtnText: { fontSize: 22, color: '#1e293b', fontWeight: '600' },
+  newBtnText: { fontSize: 22, color: tokens.primary, fontWeight: '600' },
   list: { flex: 1 },
   listContainer: { paddingHorizontal: 16, paddingBottom: 24 },
   listEmptyContainer: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: 16 },
@@ -546,7 +546,7 @@ const s = StyleSheet.create({
   stateText: { color: '#64748b', fontSize: 15, textAlign: 'center' },
   errorText: { color: '#b91c1c' },
   linkBtn: { paddingHorizontal: 12, paddingVertical: 8 },
-  linkBtnText: { color: '#1e293b', fontSize: 15, fontWeight: '600' },
+  linkBtnText: { color: tokens.primary, fontSize: 15, fontWeight: '600' },
   formCard: {
     borderWidth: 1,
     borderColor: '#e2e8f0',
@@ -588,7 +588,7 @@ const s = StyleSheet.create({
   },
   cancelBtnText: { color: '#334155', fontWeight: '600', fontSize: 14 },
   saveBtn: {
-    backgroundColor: '#1e293b',
+    backgroundColor: tokens.primary,
     paddingHorizontal: 20,
     paddingVertical: 10,
     borderRadius: 6,
@@ -612,7 +612,7 @@ const s = StyleSheet.create({
     paddingVertical: 10,
     alignItems: 'center',
   },
-  reactivateBtnText: { color: '#1e293b', fontWeight: '600', fontSize: 14 },
+  reactivateBtnText: { color: tokens.primary, fontWeight: '600', fontSize: 14 },
   toggleRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -628,7 +628,7 @@ const s = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  checkboxChecked: { backgroundColor: '#1e293b', borderColor: '#1e293b' },
+  checkboxChecked: { backgroundColor: tokens.primary, borderColor: tokens.primary },
   checkmark: { color: '#ffffff', fontSize: 14, fontWeight: '700' },
   toggleLabel: { color: '#0f172a', fontSize: 14 },
   row: {

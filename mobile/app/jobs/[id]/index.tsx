@@ -23,6 +23,7 @@ import {
 import { useJobExpenses } from '../../../src/api/hooks/useExpenses';
 import {
   useJobLabourRollup,
+  useLabourSummary,
   type JobLabourRollup,
 } from '../../../src/api/hooks/useLabour';
 import { useMe } from '../../../src/api/hooks/useAuth';
@@ -35,6 +36,7 @@ import {
 } from '../../../src/util/format';
 import { monthStart, monthEnd, todayISO } from '../../../src/util/dates';
 import { localizeJobStatus } from '../../../src/util/jobStatus';
+import { localizeCategoryName } from '../../../src/util/category';
 import { useScaledStyles } from '../../../src/ui/type';
 import { useOneShotBack } from '../../../src/util/navigation';
 import { BudgetBar, Chip, StatusBadge } from '../../../src/ui/kit';
@@ -341,6 +343,7 @@ export default function JobDetailScreen() {
 
           {tab === 'labour' ? (
             <LabourDaysSection
+              jobId={jobId}
               rollup={labourRollup}
               isAdmin={isAdmin}
               range={labourRange}
@@ -497,8 +500,101 @@ function FinancialOverviewCard({
           <Text style={s.metricHint} testID="job-total-paid-hint">
             {t('job.total_paid_hint')}
           </Text>
+          <CompositionBar
+            categories={sum.categories ?? []}
+            uncategorised={sum.uncategorised_actual_ex_gst}
+          />
         </View>
       ) : null}
+    </View>
+  );
+}
+
+/**
+ * F4 (handoff §8 成本构成条): where the spend went, as one segmented
+ * bar + a legend. The spec draws four FIXED classes (材料/人工/分包/
+ * 其他); real data is the tenant's own category list, so this renders
+ * the top three by actual spend and buckets the tail as 其他 — same
+ * four segments, true numbers. Colours are the cat1-4 semantic set.
+ * Renders nothing until there is actual spend.
+ */
+const CAT_COLOURS = [tokens.cat1, tokens.cat2, tokens.cat3, tokens.cat4];
+
+function CompositionBar({
+  categories,
+  uncategorised,
+}: {
+  categories: Array<{
+    category_id: string;
+    category_name: string;
+    actual_ex_gst: string;
+  }>;
+  /** NULL-category spend (AI captures can leave category unset). The
+   *  backend returns it separately so the bar can reconcile with the
+   *  card's 已支出 total — it belongs in the 其他 bucket. */
+  uncategorised: string | null | undefined;
+}) {
+  const s = useScaledStyles(base);
+  const { t } = useTranslation();
+
+  const spent = categories
+    .map((c) => ({
+      id: c.category_id,
+      name: c.category_name,
+      value: parseFloat(c.actual_ex_gst),
+    }))
+    .filter((c) => Number.isFinite(c.value) && c.value > 0)
+    .sort((a, b) => b.value - a.value);
+  const catTotal = spent.reduce((a, c) => a + c.value, 0);
+  const total =
+    catTotal + (uncategorised != null && Number.isFinite(parseFloat(uncategorised)) && parseFloat(uncategorised) > 0 ? parseFloat(uncategorised) : 0);
+  if (total <= 0) return null;
+
+  const top = spent.slice(0, 3);
+  const uncat = uncategorised != null ? parseFloat(uncategorised) : 0;
+  const restValue =
+    spent.slice(3).reduce((a, c) => a + c.value, 0) +
+    (Number.isFinite(uncat) && uncat > 0 ? uncat : 0);
+  const segs = [
+    ...top.map((c) => ({ id: c.id, name: c.name, value: c.value })),
+    ...(restValue > 0
+      ? [{ id: '__rest__', name: t('job.other_categories'), value: restValue }]
+      : []),
+  ];
+
+  return (
+    <View style={s.compWrap} testID="job-composition">
+      <View style={s.compBar}>
+        {segs.map((seg, i) => (
+          <View
+            key={seg.id}
+            style={{
+              flex: seg.value / total,
+              backgroundColor: CAT_COLOURS[i % CAT_COLOURS.length],
+            }}
+          />
+        ))}
+      </View>
+      <View style={s.compLegend}>
+        {segs.map((seg, i) => (
+          <View key={seg.id} style={s.compLegendItem}>
+            <View
+              style={[
+                s.compDot,
+                { backgroundColor: CAT_COLOURS[i % CAT_COLOURS.length] },
+              ]}
+            />
+            <Text style={s.compName} numberOfLines={1}>
+              {seg.id === '__rest__'
+                ? seg.name
+                : localizeCategoryName(seg.name, t)}
+            </Text>
+            <Text style={s.compValue} numberOfLines={1}>
+              {formatMoney(seg.value.toFixed(2))}
+            </Text>
+          </View>
+        ))}
+      </View>
     </View>
   );
 }
@@ -592,6 +688,38 @@ function MarginCard({
               </View>
             ) : null}
           </View>
+          {/* F4 (handoff §8 利润刻度尺): 0-50% scale, filled to the
+              hero margin, with a tick at the target. Values are the
+              same server-derived figures as the hero — the ruler is
+              pure presentation. */}
+          <View style={s.ruler} testID="job-margin-ruler">
+            <View style={s.rulerTrack}>
+              <View
+                style={[
+                  s.rulerFill,
+                  {
+                    width: `${(Math.min(Math.max(hero, 0), 50) / 50) * 100}%`,
+                    backgroundColor:
+                      delta != null && delta < 0 ? tokens.warnFill : tokens.okFill,
+                  },
+                ]}
+              />
+              {target != null && target >= 0 && target <= 50 ? (
+                <View
+                  style={[s.rulerTick, { left: `${(target / 50) * 100}%` }]}
+                />
+              ) : null}
+            </View>
+            <View style={s.rulerLabels}>
+              <Text style={s.rulerLabel}>0%</Text>
+              {target != null ? (
+                <Text style={s.rulerLabel}>
+                  {t('job.ruler_target', { target: target.toFixed(0) })}
+                </Text>
+              ) : null}
+              <Text style={s.rulerLabel}>50%</Text>
+            </View>
+          </View>
           {heroIsProjected ? (
             <Text style={s.metricHint} testID="job-margin-projected-hint">
               {t('job.projected_margin_hint')}
@@ -622,11 +750,13 @@ function MarginCard({
 /* ================= Labour rollup (moved from the modal) ============ */
 
 function LabourDaysSection({
+  jobId,
   rollup,
   isAdmin,
   range,
   onRangeChange,
 }: {
+  jobId: string | null;
   rollup: ReturnType<typeof useJobLabourRollup>;
   isAdmin: boolean;
   range: 'all' | 'month';
@@ -635,6 +765,26 @@ function LabourDaysSection({
   const s = useScaledStyles(base);
   const { t } = useTranslation();
   const row: JobLabourRollup | undefined = rollup.data?.[0];
+  // F4 (handoff §9): admin-only by-worker list for THIS job. The
+  // summary endpoint is admin-only (403 for contributors) — every arg
+  // is nulled for non-admins so the query is disabled and never fires
+  // (C-09 posture: no guaranteed-403 requests).
+  const summary = useLabourSummary(
+    isAdmin && range === 'month' ? monthStart(todayISO()) : null,
+    isAdmin && range === 'month' ? monthEnd(todayISO()) : null,
+    isAdmin ? jobId : null,
+  );
+  const workers = (summary.data?.workers ?? [])
+    .map((w) => ({
+      id: w.worker_id,
+      name: w.display_name,
+      cost: w.labour_cost != null ? parseFloat(w.labour_cost) : null,
+      days: w.total_days,
+      hours: w.total_hours,
+      gap: w.entries_costed < w.entries_total,
+    }))
+    .sort((a, b) => (b.cost ?? 0) - (a.cost ?? 0));
+  const maxCost = Math.max(1, ...workers.map((w) => w.cost ?? 0));
 
   return (
     <View testID="job-labour-days">
@@ -692,6 +842,53 @@ function LabourDaysSection({
               label={t('labour.job_cost_label')}
               value={formatMoney(row.labour_cost)}
             />
+          ) : null}
+          {/* By-worker (admin): cost-proportional blue bars; amber when
+              the worker has uncosted entries (missing rate/hours). Only
+              renders on REAL data — a failed fetch shows nothing rather
+              than asserting an empty crew (F1 evidence rule). */}
+          {isAdmin && summary.data && workers.length > 0 ? (
+            <View style={s.byWorkerWrap} testID="job-by-worker">
+              <Text style={s.byWorkerTitle}>{t('job.by_worker')}</Text>
+              {workers.map((w) => (
+                <View key={w.id} style={s.bwRow}>
+                  <View style={s.bwTop}>
+                    <Text style={s.bwName} numberOfLines={1}>
+                      {w.name}
+                    </Text>
+                    <Text style={s.bwMeta} numberOfLines={1}>
+                      {[
+                        w.cost != null ? formatMoney(w.cost.toFixed(2)) : null,
+                        t('job.bw_days_hours', {
+                          days: formatDays(w.days),
+                          hours: w.hours ?? '0',
+                        }),
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                  </View>
+                  <View style={s.bwTrack}>
+                    <View
+                      style={[
+                        s.bwFill,
+                        {
+                          width: `${Math.min(100, Math.max(2, ((w.cost ?? 0) / maxCost) * 100))}%`,
+                          backgroundColor: w.gap
+                            ? tokens.warnFill
+                            : tokens.primary,
+                        },
+                      ]}
+                    />
+                  </View>
+                </View>
+              ))}
+            </View>
+          ) : null}
+          {isAdmin && summary.data && workers.length === 0 ? (
+            <Text style={s.metricHint} testID="job-by-worker-empty">
+              {t('job.labour_empty')}
+            </Text>
           ) : null}
         </>
       )}
@@ -811,6 +1008,73 @@ const base = StyleSheet.create({
   },
   overspendValue: { color: tokens.bad },
   barWrap: { marginTop: 6 },
+  compWrap: { marginTop: 12, gap: 10 },
+  compBar: {
+    flexDirection: 'row',
+    height: 14,
+    borderRadius: 7,
+    overflow: 'hidden',
+    backgroundColor: tokens.barTrack,
+  },
+  compLegend: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    rowGap: 6,
+  },
+  compLegendItem: {
+    width: '50%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingRight: 8,
+  },
+  compDot: { width: 9, height: 9, borderRadius: 3 },
+  compName: { flexShrink: 1, fontSize: 12, color: tokens.ink2 },
+  byWorkerWrap: { marginTop: 12, gap: 10 },
+  byWorkerTitle: { fontSize: 13, fontWeight: '700', color: tokens.ink },
+  bwRow: { gap: 5 },
+  bwTop: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  bwName: { flexShrink: 1, fontSize: 13.5, fontWeight: '600', color: tokens.ink },
+  bwMeta: { fontSize: 11.5, color: tokens.ink2, fontVariant: ['tabular-nums'] },
+  bwTrack: {
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: tokens.barTrack,
+    overflow: 'hidden',
+  },
+  bwFill: { height: 7, borderRadius: 4 },
+  ruler: { marginTop: 10, gap: 4 },
+  rulerTrack: {
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: tokens.barTrack,
+    overflow: 'visible',
+  },
+  rulerFill: { height: 10, borderRadius: 5 },
+  rulerTick: {
+    position: 'absolute',
+    top: -2.5,
+    width: 2.5,
+    height: 15,
+    borderRadius: 1,
+    backgroundColor: tokens.ink,
+  },
+  rulerLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  rulerLabel: { fontSize: 10.5, color: tokens.muted },
+  compValue: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: tokens.ink,
+    fontVariant: ['tabular-nums'],
+  },
 
   inlineLoading: {
     flexDirection: 'row',

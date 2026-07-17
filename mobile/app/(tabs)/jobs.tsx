@@ -171,9 +171,7 @@ export default function JobsScreen() {
                 }
               />
             ) : (
-              <Text style={s.archivedHeader} testID="jobs-archived-header">
-                {t('job.archived_section')}
-              </Text>
+              <ArchivedHeader jobs={jobs} isAdmin={isAdmin} />
             )
           }
           ItemSeparatorComponent={() => <View style={s.sep} />}
@@ -198,6 +196,21 @@ export default function JobsScreen() {
 // M5: jobs-list item — either a job row or the single archived-section
 // divider injected between active and archived groups.
 type JobListItem = { kind: 'job'; job: JobPublic } | { kind: 'archived-header' };
+
+/**
+ * F4 (handoff §7 已归档区): realised net profit for an ARCHIVED job —
+ * contract (ex-GST) − actual cost (ex-GST). Display arithmetic on two
+ * server figures (same precedent as margin-to-date); null when either
+ * side is missing (no contract set, or contributor-stripped summary).
+ */
+function netProfit(job: JobPublic): number | null {
+  if (job.contract_value_ex_gst == null || job.summary?.actual_ex_gst == null)
+    return null;
+  const contract = parseFloat(job.contract_value_ex_gst);
+  const actual = parseFloat(job.summary.actual_ex_gst);
+  if (!Number.isFinite(contract) || !Number.isFinite(actual)) return null;
+  return contract - actual;
+}
 
 function JobRow({
   job,
@@ -231,7 +244,14 @@ function JobRow({
       <View style={s.rowTop}>
         <View style={s.rowMain}>
           <Text style={s.rowName}>{job.job_name}</Text>
-          {job.job_code ? <Text style={s.rowCode}>{job.job_code}</Text> : null}
+          {/* F4 (operator decision): the subline is the SITE ADDRESS —
+              that's how the operator thinks of jobs — falling back to
+              the code when no address is recorded. */}
+          {job.site_address || job.job_code ? (
+            <Text style={s.rowCode} numberOfLines={1}>
+              {job.site_address || job.job_code}
+            </Text>
+          ) : null}
         </View>
         <StatusBadge
           status={job.status}
@@ -266,7 +286,92 @@ function JobRow({
           })}
         </Text>
       ) : null}
+      {/* F4: archived jobs settle to their realised net profit (admin
+          only by construction — contributors' summary is null). */}
+      {archived && pressure
+        ? (() => {
+            const profit = netProfit(job);
+            if (profit == null) return null;
+            const contract = parseFloat(job.contract_value_ex_gst ?? '0');
+            const actual = parseFloat(sum?.actual_ex_gst ?? '0');
+            return (
+              <View style={s.profitRow} testID={`job-profit-${job.job_id}`}>
+                <Text style={s.profitLabel}>{t('jobs.net_profit')}</Text>
+                <View style={s.profitRight}>
+                  <Text
+                    style={[s.profitValue, profit < 0 && s.profitValueNeg]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.7}
+                  >
+                    {(profit >= 0 ? '+' : '−') +
+                      formatMoney(Math.abs(profit).toFixed(2))}
+                  </Text>
+                  <Text style={s.profitCalc} numberOfLines={2}>
+                    {t('jobs.profit_calc', {
+                      rev: formatMoney(contract.toFixed(2)),
+                      cost: formatMoney(actual.toFixed(2)),
+                    })}
+                  </Text>
+                </View>
+              </View>
+            );
+          })()
+        : null}
     </TouchableOpacity>
+  );
+}
+
+/** F4: archived-section header — count + the SUM of realised profits
+ *  across archived jobs where it's computable (contract + summary both
+ *  present). All-archived scope per operator decision (no archived_at
+ *  field exists for an FY cut). If NO archived job has a computable
+ *  profit, the sum line is omitted rather than showing $0.00. */
+function ArchivedHeader({
+  jobs,
+  isAdmin,
+}: {
+  jobs: JobPublic[];
+  isAdmin: boolean;
+}) {
+  const s = useScaledStyles(base);
+  const { t } = useTranslation();
+  const archived = jobs.filter((j) => j.status !== 'active');
+  const profits = isAdmin
+    ? archived.map(netProfit).filter((p): p is number => p != null)
+    : [];
+  const total = profits.reduce((a, b) => a + b, 0);
+  return (
+    <View style={s.archivedHeaderRow} testID="jobs-archived-header">
+      <Text style={s.archivedHeader}>
+        {t('job.archived_section')}
+        {archived.length > 0 ? ` (${archived.length})` : ''}
+      </Text>
+      {profits.length > 0 ? (
+        <Text
+          style={[s.archivedTotal, total < 0 && s.profitValueNeg]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.7}
+        >
+          {/* Partial coverage must say so: jobs with no contract can't
+              settle a profit, and a sum over 3 of 5 jobs presented as
+              "总净利" would read as complete (review finding). */}
+          {t(
+            profits.length === archived.length
+              ? 'jobs.archived_total'
+              : 'jobs.archived_total_partial',
+            {
+              sum:
+                (total >= 0 ? '+' : '−') +
+                formatMoney(Math.abs(total).toFixed(2)),
+              n: profits.length,
+              m: archived.length,
+            },
+          )}
+        </Text>
+      ) : null}
+    </View>
   );
 }
 
@@ -328,14 +433,56 @@ const base = StyleSheet.create({
   // remaining). Per-category breakdown removed per operator dogfood
   // signal — redundant with the per-expense list shown below.
   // M5: lifecycle section + archived-list styling.
-  rowArchived: { opacity: 0.6 },
-  archivedHeader: {
+  rowArchived: { opacity: 0.75 },
+  profitRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 10,
+    borderTopWidth: 1,
+    borderTopColor: tokens.lineSoft,
+    paddingTop: 8,
+    marginTop: 2,
+  },
+  profitLabel: { fontSize: 12, color: tokens.ink2, paddingTop: 2 },
+  profitRight: { flex: 1, alignItems: 'flex-end', minWidth: 0 },
+  profitValue: {
+    fontSize: 16.5,
+    fontWeight: '800',
+    color: tokens.ok,
+    fontVariant: ['tabular-nums'],
+    letterSpacing: -0.2,
+  },
+  profitValueNeg: { color: tokens.bad },
+  profitCalc: {
+    fontSize: 11,
+    color: tokens.muted,
+    marginTop: 1,
+    fontVariant: ['tabular-nums'],
+  },
+  /* (calc line wraps to 2 lines at xlarge rather than clipping the
+     ex-GST qualifier — see numberOfLines at the call site) */
+  archivedHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: 10,
     paddingHorizontal: 16,
     paddingTop: 18,
     paddingBottom: 6,
+  },
+  archivedTotal: {
+    flexShrink: 1,
+    fontSize: 13,
+    fontWeight: '800',
+    color: tokens.ok,
+    fontVariant: ['tabular-nums'],
+  },
+  // F4: padding moved to archivedHeaderRow (the Text is nested now).
+  archivedHeader: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#94a3b8',
+    color: tokens.muted,
     textTransform: 'uppercase',
   },
 });
