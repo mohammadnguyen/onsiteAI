@@ -274,7 +274,7 @@ function JobRow({
 // page at app/jobs/[id]/index.tsx. This file is the LIST only.
 
 const base = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
+  safe: { flex: 1, backgroundColor: tokens.bg },
   // UI-kit v2 margin hero (values unchanged; layout per design spec)
   header: {
     paddingHorizontal: 16,
@@ -305,7 +305,7 @@ const base = StyleSheet.create({
   row: {
     paddingVertical: 14,
     paddingHorizontal: 16,
-    backgroundColor: '#ffffff',
+    backgroundColor: tokens.surface,
     gap: 8,
   },
   rowTop: {

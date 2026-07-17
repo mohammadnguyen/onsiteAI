@@ -22,6 +22,7 @@ import {
 } from '../../src/api/hooks/useUsers';
 import { useMe } from '../../src/api/hooks/useAuth';
 import { useOneShotBack } from '../../src/util/navigation';
+import { tokens } from '../../src/ui/tokens';
 
 /**
  * M4: user/team management list (admin-only).
@@ -292,14 +293,15 @@ function UserRow({
 }
 
 const s = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
+  safe: { flex: 1, backgroundColor: tokens.bg },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 8,
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
+    borderBottomColor: tokens.line,
+    backgroundColor: tokens.surface,
   },
   backBtn: {
     flexDirection: 'row',
@@ -341,8 +343,10 @@ const s = StyleSheet.create({
   linkBtnText: { color: '#1e293b', fontSize: 15, fontWeight: '600' },
   row: {
     paddingVertical: 12,
+    paddingHorizontal: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
+    borderBottomColor: tokens.lineSoft,
+    backgroundColor: tokens.surface,
   },
   rowPressed: { backgroundColor: '#f1f5f9' },
   rowTop: {

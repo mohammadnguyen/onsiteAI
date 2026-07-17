@@ -4,7 +4,8 @@
     "email": "Email",
     "password": "Password",
     "submit": "Sign in",
-    "error": "Sign-in failed. Check your credentials."
+    "error": "Sign-in failed. Check your credentials.",
+    "tagline": "The PM in your pocket"
   },
   "ui": {
     "pct_used": "{{pct}}% used",
@@ -14,7 +15,7 @@
     "view_all": "View all"
   },
   "tabs": {
-    "home": "Home",
+    "home": "Today",
     "jobs": "Jobs",
     "dashboard": "Dashboard",
     "labour": "Labour",

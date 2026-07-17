@@ -326,7 +326,7 @@ export function SummaryView({ onFixRates }: SummaryViewProps) {
                   </View>
                   <View style={s.statCard}>
                     <View style={[s.statIcon, { backgroundColor: tokens.warnBg }]}>
-                      <ClockIcon size={15} color={tokens.warnFill} />
+                      <ClockIcon size={15} color={tokens.warnMid} />
                     </View>
                     <Text style={s.statCardLabel}>{t('labour.total_hours')}</Text>
                     <Text style={s.statCardValue}>
@@ -474,7 +474,10 @@ export function SummaryView({ onFixRates }: SummaryViewProps) {
 
 /** B4-3: minimal categorical bar (no chart library) — width is the
  *  worker's share of the range max; colour cycles cat-1..4. */
-const CAT_COLORS = [tokens.cat1, tokens.cat2, tokens.cat3, tokens.cat4];
+// forey §12: by-worker bars are ONE blue proportional bar (蓝条按占比).
+// The cat1-4 ramp is the cost-composition palette (材料/人工/分包/其他)
+// and is NOT a rotatable categorical scale — cat4 #E4E7EC on the
+// barTrack is ~1.09:1, i.e. every 4th worker's bar disappeared.
 
 function WorkerBar({
   value,
@@ -495,7 +498,7 @@ function WorkerBar({
           s.workerBarFill,
           {
             width: `${width}%`,
-            backgroundColor: CAT_COLORS[index % CAT_COLORS.length],
+            backgroundColor: tokens.primary,
           },
         ]}
       />
@@ -504,7 +507,7 @@ function WorkerBar({
 }
 
 const base = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#ffffff' },
+  root: { flex: 1, backgroundColor: tokens.bg },
   pressed: { opacity: 0.5 },
   scroll: { padding: 16, gap: 12 },
   // B3: mode toggle now uses the kit Segmented (old modeChip styles
@@ -569,7 +572,7 @@ const base = StyleSheet.create({
     borderRadius: 8,
     padding: 16,
     gap: 8,
-    backgroundColor: '#f8fafc',
+    backgroundColor: tokens.surface,
   },
   statCards: { flexDirection: 'row', gap: 8 },
   statCard: {
@@ -605,10 +608,14 @@ const base = StyleSheet.create({
   // B4-3 review fix: column wrapper + inner NON-wrapping line row, so a
   // long (esp. Chinese) name shrinks/truncates beside right-aligned
   // metrics exactly as pre-B4 — the full-width WorkerBar sits below.
+  // F0 review: these rows are gapped children of the scroll body, so
+  // painting them白 produced detached square slabs on the grey ground.
+  // Left transparent with a ground-visible divider; the spec's card
+  // treatment for this list is F5 (工时 visual pass).
   totalsRow: {
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#f1f5f9',
+    borderBottomColor: tokens.line,
   },
   totalsLine: {
     flexDirection: 'row',

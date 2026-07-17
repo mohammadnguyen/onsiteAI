@@ -276,7 +276,7 @@ function AdminStats() {
         testID="home-stat-pending"
       >
         <View style={[s.statIcon, { backgroundColor: '#ffffff' }]}>
-          <ClockIcon size={14} color={tokens.warnFill} />
+          <ClockIcon size={14} color={tokens.warnMid} />
         </View>
         <Text style={s.statLabel}>{t('dashboard.pending_review')}</Text>
         <Text
@@ -317,7 +317,7 @@ function AdminStats() {
 }
 
 const base = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
+  safe: { flex: 1, backgroundColor: tokens.bg },
   scroll: { padding: 16, paddingBottom: 24 },
   title: { fontSize: 22, fontWeight: '600', color: tokens.ink },
   statRow: {
@@ -340,7 +340,7 @@ const base = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 10,
     paddingVertical: 8,
-    backgroundColor: '#ffffff',
+    backgroundColor: tokens.surface,
   },
   statCardPending: { backgroundColor: tokens.warnBg, borderColor: tokens.warnBorder },
   statCardPressed: { opacity: 0.7 },
@@ -366,7 +366,9 @@ const base = StyleSheet.create({
     borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: tokens.lineSoft,
+    backgroundColor: tokens.surface,
+    borderWidth: 1,
+    borderColor: tokens.line,
   },
   gearPressed: { opacity: 0.6 },
   sectionRow: {
@@ -382,7 +384,7 @@ const base = StyleSheet.create({
     borderColor: tokens.line,
     borderRadius: 12,
     overflow: 'hidden',
-    backgroundColor: '#ffffff',
+    backgroundColor: tokens.surface,
   },
   pendingRow: {
     flexDirection: 'row',

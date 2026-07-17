@@ -25,6 +25,7 @@ import {
 } from '../../api/hooks/useLabour';
 import { useMe } from '../../api/hooks/useAuth';
 import { formatMoney } from '../../util/format';
+import { tokens } from '../../ui/tokens';
 
 /**
  * L-B2: worker roster management (admin-only).
@@ -522,7 +523,7 @@ export function WorkersView() {
 }
 
 const s = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#ffffff' },
+  root: { flex: 1, backgroundColor: tokens.bg },
   flex: { flex: 1 },
   pressed: { opacity: 0.5 },
   toolbar: {
@@ -553,7 +554,7 @@ const s = StyleSheet.create({
     padding: 12,
     marginTop: 12,
     gap: 10,
-    backgroundColor: '#f8fafc',
+    backgroundColor: tokens.surface,
   },
   formTitle: { fontSize: 15, fontWeight: '600', color: '#0f172a' },
   input: {
@@ -637,6 +638,7 @@ const s = StyleSheet.create({
     paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
+    backgroundColor: tokens.surface,
   },
   rowPressed: { backgroundColor: '#f1f5f9' },
   rowMain: { flex: 1 },

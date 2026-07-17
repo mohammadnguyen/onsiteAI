@@ -23,6 +23,7 @@ import {
 } from '../../src/api/hooks/useUsers';
 import { resolveApiErrorMessage } from '../../src/api/errors';
 import { useOneShotBack } from '../../src/util/navigation';
+import { tokens } from '../../src/ui/tokens';
 
 /**
  * M4: create-user form (admin-only).
@@ -270,7 +271,7 @@ function RadioOption({
 }
 
 const s = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
+  safe: { flex: 1, backgroundColor: tokens.bg },
   flex: { flex: 1 },
   header: {
     flexDirection: 'row',
@@ -278,7 +279,8 @@ const s = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
+    borderBottomColor: tokens.line,
+    backgroundColor: tokens.surface,
   },
   backBtn: {
     flexDirection: 'row',

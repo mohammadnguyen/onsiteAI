@@ -748,7 +748,7 @@ export default function LabourScreen() {
 }
 
 const s = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
+  safe: { flex: 1, backgroundColor: tokens.bg },
   kavFlex: { flex: 1 },
   scroll: { padding: 16, gap: 14 },
   title: { fontSize: 24, fontWeight: '600', color: '#0f172a' },

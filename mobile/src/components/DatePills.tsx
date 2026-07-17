@@ -411,7 +411,7 @@ const s = StyleSheet.create({
   pillActive: { backgroundColor: tokens.sel, borderColor: tokens.selBorder },
   pillText: { color: tokens.ink2, fontSize: 12.5, fontWeight: '500' },
   pillTextActive: { color: tokens.selText, fontWeight: '600' },
-  pillTextDisabled: { color: tokens.ink3 },
+  pillTextDisabled: { color: tokens.disabled },
   customWrap: { gap: 4 },
   customInput: {
     borderWidth: 1,

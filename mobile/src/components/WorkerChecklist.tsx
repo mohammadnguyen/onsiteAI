@@ -366,5 +366,5 @@ const s = StyleSheet.create({
   pillDisabled: { opacity: 0.5 },
   pillText: { color: tokens.ink2, fontSize: 11.5, fontWeight: '600' },
   pillTextActive: { color: tokens.selText },
-  pillTextDisabled: { color: tokens.ink3 },
+  pillTextDisabled: { color: tokens.disabled },
 });

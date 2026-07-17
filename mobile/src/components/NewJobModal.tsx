@@ -26,6 +26,7 @@ import {
   contractExGstFromEntered,
   contractGstFromEntered,
 } from '../util/format';
+import { tokens } from '../ui/tokens';
 
 /**
  * Mobile Job Management Lite — admin-only modal that creates a job
@@ -453,7 +454,7 @@ function extractCreateError(
 }
 
 const s = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
+  safe: { flex: 1, backgroundColor: tokens.bg },
   flex: { flex: 1 },
   header: {
     flexDirection: 'row',
@@ -544,11 +545,15 @@ const s = StyleSheet.create({
     gap: 8,
     marginTop: 8,
   },
+  // F0 review: #f1f5f9 is ~4 RGB points off the new grey ground —
+  // the Cancel button had no visible edge. White + 1px line.
   btnSecondary: {
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderRadius: 6,
-    backgroundColor: '#f1f5f9',
+    backgroundColor: tokens.surface,
+    borderWidth: 1,
+    borderColor: tokens.line,
   },
   btnSecondaryText: { color: '#0f172a', fontWeight: '500', fontSize: 15 },
   btnPrimary: {

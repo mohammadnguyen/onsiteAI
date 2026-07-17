@@ -43,6 +43,7 @@ import {
 } from '../../../src/util/format';
 import { resolveApiErrorMessage } from '../../../src/api/errors';
 import { localizeCategoryName } from '../../../src/util/category';
+import { tokens } from '../../../src/ui/tokens';
 
 /**
  * Tier 1B: Mobile Job Edit screen.
@@ -1085,7 +1086,7 @@ function StatusOption({
 }
 
 const s = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
+  safe: { flex: 1, backgroundColor: tokens.bg },
   flex: { flex: 1 },
   header: {
     flexDirection: 'row',
@@ -1093,7 +1094,8 @@ const s = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
+    borderBottomColor: tokens.line,
+    backgroundColor: tokens.surface,
   },
   backBtn: {
     flexDirection: 'row',

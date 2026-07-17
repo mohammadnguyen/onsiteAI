@@ -95,3 +95,126 @@ export function UsersIcon({ size = 16, color = '#EA580C', strokeWidth = 2 }: Ico
     </Svg>
   );
 }
+
+/* ================= forey additions (F0) =================
+ * Line icons per the forey handoff (README §Assets): stroke 1.8-2.4,
+ * round cap/join; 21px nav / 19px entry / 18px form. Plus the brand
+ * logo — "框架 F" = blue rounded square with three white bars.
+ */
+
+export function MicIcon({ size = 18, color = '#98A2B3', strokeWidth = 1.9 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+      <Rect x={9} y={2.5} width={6} height={11.5} rx={3} />
+      <Path d="M5.5 11.5a6.5 6.5 0 0 0 13 0" />
+      <Path d="M12 18v3.5" />
+    </Svg>
+  );
+}
+
+export function ReceiptIcon({ size = 19, color = '#667085', strokeWidth = 1.9 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+      <Path d="M6 2.5h12v19l-2.4-1.7-2.4 1.7-1.2-.9-1.2.9-2.4-1.7L6 21.5Z" />
+      <Path d="M9.5 8h5M9.5 12h5" />
+    </Svg>
+  );
+}
+
+export function FolderIcon({ size = 19, color = '#667085', strokeWidth = 1.9 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+      <Path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z" />
+    </Svg>
+  );
+}
+
+export function NoteIcon({ size = 19, color = '#667085', strokeWidth = 1.9 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+      <Path d="M5 3.5h14v13l-4 4H5Z" />
+      <Path d="M15 20.5v-4h4" />
+      <Path d="M8.5 9h7M8.5 12.5h4.5" />
+    </Svg>
+  );
+}
+
+export function SearchIcon({ size = 18, color = '#98A2B3', strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round">
+      <Circle cx={10.5} cy={10.5} r={6.5} />
+      <Path d="m15.3 15.3 5.2 5.2" />
+    </Svg>
+  );
+}
+
+export function CameraIcon({ size = 18, color = '#667085', strokeWidth = 1.9 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+      <Path d="M4 8.5a2 2 0 0 1 2-2h1.6l1.6-2.5h5.6l1.6 2.5H18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" />
+      <Circle cx={12} cy={13} r={3.4} />
+    </Svg>
+  );
+}
+
+export function SendIcon({ size = 16, color = '#ffffff', strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+      <Path d="M21 3.5 10.5 14" />
+      <Path d="M21 3.5 14 21l-3.5-7L3.5 10.5Z" />
+    </Svg>
+  );
+}
+
+export function ImageIcon({ size = 19, color = '#667085', strokeWidth = 1.9 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+      <Rect x={3.5} y={4.5} width={17} height={15} rx={2.5} />
+      <Circle cx={9} cy={10} r={1.8} />
+      <Path d="m20.5 15.5-4.5-4.5-8 8.5" />
+    </Svg>
+  );
+}
+
+export function MailIcon({ size = 18, color = '#98A2B3', strokeWidth = 1.9 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+      <Rect x={3} y={5} width={18} height={14} rx={2.5} />
+      <Path d="m4 7.5 8 6 8-6" />
+    </Svg>
+  );
+}
+
+export function LockIcon({ size = 18, color = '#98A2B3', strokeWidth = 1.9 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+      <Rect x={4.5} y={10.5} width={15} height={10} rx={2.5} />
+      <Path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" />
+      <Circle cx={12} cy={15.5} r={1.4} />
+    </Svg>
+  );
+}
+
+export function ChevronRightIcon({ size = 15, color = '#98A2B3', strokeWidth = 2.2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+      <Path d="m9 5 7 7-7 7" />
+    </Svg>
+  );
+}
+
+/**
+ * forey brand logo — 方案A「框架 F」: blue rounded square (#2563EB,
+ * radius ≈ 26%) with three white rounded bars. Sizes per spec: login
+ * 76 (radius 19), Home header 30 (radius 8).
+ */
+export function ForeyLogo({ size = 30 }: { size?: number }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 96 96">
+      <Rect x={0} y={0} width={96} height={96} rx={25} fill="#2563EB" />
+      <Rect x={27} y={17} width={15} height={62} rx={4} fill="#ffffff" />
+      <Rect x={46} y={17} width={26} height={15} rx={4} fill="#ffffff" />
+      <Rect x={46} y={40} width={18} height={15} rx={4} fill="#ffffff" />
+    </Svg>
+  );
+}

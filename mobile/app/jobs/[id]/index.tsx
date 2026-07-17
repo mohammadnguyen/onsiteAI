@@ -712,14 +712,15 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 /* ================= styles ================= */
 
 const base = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
+  safe: { flex: 1, backgroundColor: tokens.bg },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderBottomWidth: 1,
-    borderBottomColor: tokens.lineSoft,
+    borderBottomColor: tokens.line,
+    backgroundColor: tokens.surface,
   },
   backBtn: {
     minWidth: 64,
@@ -905,7 +906,9 @@ const base = StyleSheet.create({
     borderRadius: 14,
     padding: 24,
     alignItems: 'center',
-    backgroundColor: tokens.lineSoft,
+    // On the grey ground a lineSoft fill is invisible — this box sits
+    // in the detail scroll body, not inside a card.
+    backgroundColor: tokens.surface,
   },
   comingSoonText: {
     fontSize: 13.5,

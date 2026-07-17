@@ -33,6 +33,7 @@ import {
 } from '../../src/store/expenseListFilters';
 import { useOneShotBack } from '../../src/util/navigation';
 import { Chip } from '../../src/ui/kit';
+import { tokens } from '../../src/ui/tokens';
 
 /**
  * M2-B: full expenses list.
@@ -434,7 +435,7 @@ export default function ExpenseListScreen() {
 }
 
 const s = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
+  safe: { flex: 1, backgroundColor: tokens.bg },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -442,6 +443,7 @@ const s = StyleSheet.create({
     paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
+    backgroundColor: tokens.surface,
   },
   backBtn: {
     flexDirection: 'row',
@@ -469,6 +471,7 @@ const s = StyleSheet.create({
   chipBarWrap: {
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
+    backgroundColor: tokens.surface,
   },
   chipBar: {
     flexDirection: 'row',
@@ -478,7 +481,7 @@ const s = StyleSheet.create({
   },
   // B3: filter chips now use src/ui/kit.tsx Chip.
   list: { flex: 1 },
-  listContainer: { paddingHorizontal: 16 },
+  listContainer: { paddingHorizontal: 16, backgroundColor: tokens.surface },
   listEmptyContainer: { flexGrow: 1, justifyContent: 'center' },
   state: { alignItems: 'center', padding: 24, gap: 12 },
   stateText: { color: '#64748b', fontSize: 15 },

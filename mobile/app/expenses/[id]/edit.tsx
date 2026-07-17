@@ -28,6 +28,7 @@ import { useMe } from '../../../src/api/hooks/useAuth';
 import { resolveApiErrorMessage } from '../../../src/api/errors';
 import { DatePills } from '../../../src/components/DatePills';
 import { useOneShotBack } from '../../../src/util/navigation';
+import { tokens } from '../../../src/ui/tokens';
 
 /**
  * P4: Mobile Expense Edit screen.
@@ -463,7 +464,7 @@ function PaymentOption({
 }
 
 const s = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
+  safe: { flex: 1, backgroundColor: tokens.bg },
   flex: { flex: 1 },
   header: {
     flexDirection: 'row',
@@ -472,6 +473,7 @@ const s = StyleSheet.create({
     paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
+    backgroundColor: tokens.surface,
   },
   backBtn: {
     flexDirection: 'row',

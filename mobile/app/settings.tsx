@@ -15,6 +15,7 @@ import { api, apiUrl } from '../src/api/client';
 import { useMe } from '../src/api/hooks/useAuth';
 import { resetSessionState, wipeFailures } from '../src/store/session';
 import { useOneShotBack } from '../src/util/navigation';
+import { tokens } from '../src/ui/tokens';
 
 export default function SettingsScreen() {
   const { t } = useTranslation();
@@ -237,7 +238,7 @@ export default function SettingsScreen() {
 }
 
 const base = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
+  safe: { flex: 1, backgroundColor: tokens.bg },
   wrap: { flex: 1, padding: 20 },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 20 },
   backBtn: { minWidth: 44, minHeight: 44, justifyContent: 'center' },

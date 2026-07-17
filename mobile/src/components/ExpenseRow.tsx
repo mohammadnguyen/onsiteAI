@@ -5,6 +5,7 @@ import type { ExpensePublic } from '../api/hooks/useExpenses';
 import { formatMoney } from '../util/format';
 import { formatDateAU } from '../util/dates';
 import { StatusBadge } from '../ui/kit';
+import { tokens } from '../ui/tokens';
 import { useScaledStyles } from '../ui/type';
 
 /**
@@ -118,6 +119,7 @@ const base = StyleSheet.create({
     paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
+    backgroundColor: tokens.surface,
   },
   rowPressed: {
     backgroundColor: '#f1f5f9',

@@ -23,6 +23,7 @@ import { useFailuresStore } from '../src/store/failures';
 import { useFontScaleStore } from '../src/store/fontScale';
 import { queryClient } from '../src/api/queryClient';
 import { resetSessionState } from '../src/store/session';
+import { tokens } from '../src/ui/tokens';
 
 /**
  * M0: global JS error hook.
@@ -244,7 +245,16 @@ export default function RootLayout() {
             tab — back from any pushed screen landed on Expenses
             regardless of where the user came from. Headers stay off:
             every pushed screen renders its own back button. */}
-        <Stack screenOptions={{ headerShown: false }} />
+        {/* forey F0: contentStyle paints the native-stack screen
+            container tokens.bg, so push/pop transitions (and any
+            screen without its own root background) show the app
+            ground instead of default white. */}
+        <Stack
+          screenOptions={{
+            headerShown: false,
+            contentStyle: { backgroundColor: tokens.bg },
+          }}
+        />
       </QueryClientProvider>
     </SafeAreaProvider>
   );
@@ -255,13 +265,13 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#ffffff',
+    backgroundColor: tokens.bg,
   },
   errorWrap: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#ffffff',
+    backgroundColor: tokens.bg,
     padding: 24,
   },
   errorTitle: {

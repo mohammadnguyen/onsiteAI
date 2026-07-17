@@ -18,6 +18,7 @@ import * as Sharing from 'expo-sharing';
 import { useMe } from '../src/api/hooks/useAuth';
 import { parseLooseDate, dateToISO, formatDateAU } from '../src/util/dates';
 import { useOneShotBack } from '../src/util/navigation';
+import { tokens } from '../src/ui/tokens';
 
 // O3: native calendar assist for the From/To fields. Lazily required so
 // the web export never evaluates the native module (same pattern as
@@ -330,7 +331,7 @@ export default function ExportScreen() {
 }
 
 const s = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
+  safe: { flex: 1, backgroundColor: tokens.bg },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -338,6 +339,7 @@ const s = StyleSheet.create({
     paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
+    backgroundColor: tokens.surface,
   },
   backBtn: {
     flexDirection: 'row',

@@ -31,6 +31,7 @@ import { formatDateAU } from '../../src/util/dates';
 import { localizeCategoryName } from '../../src/util/category';
 import { useScaledStyles } from '../../src/ui/type';
 import { StatusBadge } from '../../src/ui/kit';
+import { tokens } from '../../src/ui/tokens';
 
 /**
  * Mobile Expense Detail (v1) — read-only.
@@ -653,7 +654,7 @@ function Field({ label, value }: { label: string; value: string }) {
 }
 
 const base = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
+  safe: { flex: 1, backgroundColor: tokens.bg },
   // O2-B polish #10: transient approve/reject confirmation pill.
   actionToast: {
     position: 'absolute',
@@ -672,6 +673,7 @@ const base = StyleSheet.create({
     paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
+    backgroundColor: tokens.surface,
   },
   backBtn: {
     flexDirection: 'row',
@@ -761,7 +763,7 @@ const base = StyleSheet.create({
   linkBtn: { paddingHorizontal: 12, paddingVertical: 8 },
   linkBtnPressed: { opacity: 0.5 },
   linkBtnText: { color: '#1e293b', fontSize: 15, fontWeight: '600' },
-  scroll: { padding: 16, gap: 20 },
+  scroll: { padding: 16, gap: 20, backgroundColor: tokens.surface },
   hero: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   heroLeft: { flex: 1, gap: 4, paddingRight: 12 },
   heroAmount: {

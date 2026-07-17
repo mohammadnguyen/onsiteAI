@@ -31,6 +31,7 @@ import {
 } from '../../util/dates';
 import { formatHoursShort, hhmmFromServer } from '../../util/time';
 import { useScaledStyles } from '../../ui/type';
+import { tokens } from '../../ui/tokens';
 import i18n from '../../i18n';
 
 /**
@@ -289,7 +290,7 @@ export function RecordsView({ onEditDay }: RecordsViewProps) {
 }
 
 const base = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#ffffff' },
+  root: { flex: 1, backgroundColor: tokens.bg },
   controls: { paddingHorizontal: 16, paddingTop: 12, gap: 8 },
   monthRow: {
     flexDirection: 'row',
@@ -337,6 +338,7 @@ const base = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: '#f1f5f9',
+    backgroundColor: tokens.surface,
   },
   rowMain: { flex: 1, gap: 2 },
   rowWorker: { fontSize: 15, color: '#0f172a', fontWeight: '500' },

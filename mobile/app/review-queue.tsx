@@ -23,6 +23,7 @@ import type { ExpensePublic } from '../src/api/hooks/useExpenses';
 import { formatMoney } from '../src/util/format';
 import { formatDateAU } from '../src/util/dates';
 import { useOneShotBack } from '../src/util/navigation';
+import { tokens } from '../src/ui/tokens';
 
 /**
  * M3: mobile review queue / pending triage (admin-only).
@@ -254,7 +255,7 @@ function TriageRow({
 }
 
 const s = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
+  safe: { flex: 1, backgroundColor: tokens.bg },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -262,6 +263,7 @@ const s = StyleSheet.create({
     paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
+    backgroundColor: tokens.surface,
   },
   backBtn: {
     flexDirection: 'row',
@@ -297,8 +299,10 @@ const s = StyleSheet.create({
   linkBtnText: { color: '#1e293b', fontSize: 15, fontWeight: '600' },
   row: {
     paddingVertical: 12,
+    paddingHorizontal: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
+    borderBottomColor: tokens.lineSoft,
+    backgroundColor: tokens.surface,
   },
   rowPressed: { backgroundColor: '#f1f5f9' },
   rowTop: {

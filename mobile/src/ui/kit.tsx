@@ -25,7 +25,7 @@ const BADGE_STYLES: Record<string, { bg: string; fg: string; border: string }> =
   reviewed: { bg: tokens.okBg, fg: tokens.ok, border: tokens.okBorder },
   active: { bg: tokens.okBg, fg: tokens.ok, border: tokens.okBorder },
   rejected: { bg: tokens.badBg, fg: tokens.bad, border: tokens.badBorder },
-  completed: { bg: tokens.lineSoft, fg: tokens.ink2, border: tokens.line },
+  completed: { bg: tokens.surface, fg: tokens.ink2, border: tokens.line },
 };
 const BADGE_FALLBACK = {
   bg: tokens.lineSoft,
@@ -338,7 +338,7 @@ const base = StyleSheet.create({
     flexDirection: 'row',
     gap: 2,
     borderRadius: 11,
-    backgroundColor: tokens.lineSoft,
+    backgroundColor: tokens.segTrack,
     padding: 3,
   },
   // Every segment carries the border (transparent when unselected) so
@@ -381,7 +381,7 @@ const base = StyleSheet.create({
     lineHeight: 17,
   },
   rateGapCta: { marginTop: 2, fontSize: 11, color: tokens.warn },
-  rateGapChevron: { fontSize: 18, color: tokens.warnFill },
+  rateGapChevron: { fontSize: 18, color: tokens.warnMid },
 
   // primary button
   primaryBtn: {

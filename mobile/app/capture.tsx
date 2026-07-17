@@ -40,6 +40,7 @@ import { todayISO } from '../src/util/dates';
 import { hasCJK } from '../src/util/text';
 import { useScaledStyles } from '../src/ui/type';
 import { Chip } from '../src/ui/kit';
+import { tokens } from '../src/ui/tokens';
 import { useOneShotBack } from '../src/util/navigation';
 import type { Href } from 'expo-router';
 
@@ -760,7 +761,7 @@ function MultiCaptureResultCard({
 }
 
 const base = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#ffffff' },
+  safe: { flex: 1, backgroundColor: tokens.bg },
   flex: { flex: 1 },
   scroll: { padding: 16, gap: 14 },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
@@ -811,6 +812,7 @@ const base = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 10,
+    backgroundColor: tokens.surface,
   },
   // Preview-parity: receipt-later is a Switch row now (switchRow).
   checkboxLabel: { color: '#0f172a', fontSize: 14 },
