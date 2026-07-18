@@ -98,17 +98,36 @@ export default function SettingsScreen() {
           <View style={s.backSpacer} />
         </View>
 
-        <View style={s.card}>
-          <Text style={s.cardLabel}>{t('settings.signed_in_as')}</Text>
-          {isLoading ? (
-            <ActivityIndicator color="#1e293b" />
-          ) : (
-            <Text style={s.cardValue} testID="settings-user-email">
-              {me?.email ?? '-'}
+        {/* Fidelity §13: account CARD — avatar initials + email + role
+            chip. */}
+        <View style={[s.card, s.accountCard]}>
+          <View style={s.avatar}>
+            <Text style={s.avatarText}>
+              {(me?.email ?? '?').slice(0, 2).toUpperCase()}
             </Text>
-          )}
+          </View>
+          <View style={s.accountMain}>
+            <Text style={s.cardLabel}>{t('settings.signed_in_as')}</Text>
+            {isLoading ? (
+              <ActivityIndicator color={tokens.ink3} />
+            ) : (
+              <Text
+                style={s.cardValue}
+                numberOfLines={1}
+                testID="settings-user-email"
+              >
+                {me?.email ?? '-'}
+              </Text>
+            )}
+          </View>
+          {isAdmin ? (
+            <View style={s.roleChip}>
+              <Text style={s.roleChipText}>{t('settings.admin')}</Text>
+            </View>
+          ) : null}
         </View>
 
+        <Text style={s.groupLabel}>{t('settings.prefs')}</Text>
         <View style={s.card}>
           <Text style={s.cardLabel}>{t('settings.language')}</Text>
           <View style={s.langRow}>
@@ -165,6 +184,9 @@ export default function SettingsScreen() {
         </View>
 
         {isAdmin ? (
+          <Text style={s.groupLabel}>{t('settings.team')}</Text>
+        ) : null}
+        {isAdmin ? (
           <TouchableOpacity
             style={s.card}
             onPress={() => router.push('/users' as unknown as Href)}
@@ -179,6 +201,9 @@ export default function SettingsScreen() {
         ) : null}
 
         {isAdmin ? (
+          <Text style={s.groupLabel}>{t('settings.data')}</Text>
+        ) : null}
+        {isAdmin ? (
           <TouchableOpacity
             style={s.card}
             onPress={() => router.push('/export' as unknown as Href)}
@@ -192,6 +217,7 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         ) : null}
 
+        <Text style={s.groupLabel}>{t('settings.about')}</Text>
         <View style={s.card} testID="settings-diagnostics">
           <Text style={s.cardLabel}>{t('settings.diagnostics')}</Text>
           <View style={s.diagRow}>
@@ -254,6 +280,36 @@ const base = StyleSheet.create({
     backgroundColor: tokens.surface,
   },
   cardLabel: { color: tokens.ink3, fontSize: 13, marginBottom: 6 },
+  accountCard: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  // Fidelity §13: group section labels (12/700 muted).
+  groupLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: tokens.muted,
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  avatar: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: tokens.sel,
+    borderWidth: 1,
+    borderColor: tokens.selBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarText: { fontSize: 15, fontWeight: '800', color: tokens.selText },
+  accountMain: { flex: 1, minWidth: 0 },
+  roleChip: {
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: tokens.sel,
+    borderWidth: 1,
+    borderColor: tokens.selBorder,
+  },
+  roleChipText: { fontSize: 10.5, fontWeight: '700', color: tokens.selText },
   cardValue: { color: tokens.ink, fontSize: 16 },
   langRow: { flexDirection: 'row', gap: 8 },
   // F5: selection is TONAL (forey rule) — the dark-slate solid was the

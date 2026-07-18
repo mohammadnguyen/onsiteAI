@@ -347,6 +347,8 @@ export type ExpenseListFilters = {
   status?: ReviewStatus;
   supplierId?: string;
   categoryId?: string;
+  /** Server-side receipt filter (缺发票 quick pill). */
+  receiptStatus?: 'expected_later' | 'no_receipt';
   /** ISO date (YYYY-MM-DD), inclusive lower bound on expense_date. */
   from?: string;
   /** ISO date (YYYY-MM-DD), inclusive upper bound on expense_date. */
@@ -388,6 +390,9 @@ export function useExpensesList(filters: ExpenseListFilters) {
           ...(filters.status ? { status: filters.status } : {}),
           ...(filters.supplierId ? { supplier_id: filters.supplierId } : {}),
           ...(filters.categoryId ? { category_id: filters.categoryId } : {}),
+          ...(filters.receiptStatus
+            ? { receipt_status: filters.receiptStatus }
+            : {}),
           ...(filters.from ? { from: filters.from } : {}),
           ...(filters.to ? { to: filters.to } : {}),
           ...(pageParam ? { cursor: pageParam } : {}),

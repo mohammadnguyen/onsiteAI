@@ -5,7 +5,9 @@
     "password": "Password",
     "submit": "Sign in",
     "error": "Sign-in failed. Check your credentials.",
-    "tagline": "The PM in your pocket"
+    "tagline": "The PM in your pocket",
+    "face_id": "Sign in with Face ID",
+    "forgot": "Forgot password"
   },
   "ui": {
     "pct_used": "{{pct}}% used",
@@ -59,7 +61,14 @@
     "net_profit": "Net profit",
     "profit_calc": "Revenue {{rev}} \u2212 cost {{cost}} \u00b7 ex GST",
     "archived_total": "Total {{sum}}",
-    "archived_total_partial": "Total {{sum}} ({{n}}/{{m}})"
+    "archived_total_partial": "Total {{sum}} ({{n}}/{{m}})",
+    "status_over": "Over budget",
+    "status_near": "Near budget",
+    "filter_active_one": "Active {{count}}",
+    "filter_active_other": "Active {{count}}",
+    "filter_archived_one": "Archived {{count}}",
+    "filter_archived_other": "Archived {{count}}",
+    "no_archived": "No archived jobs yet."
   },
   "job": {
     "status": "Status",
@@ -117,7 +126,12 @@
     "ruler_target": "Target {{target}}%",
     "by_worker": "By worker \u00b7 this job",
     "bw_days_hours": "{{days}} d \u00b7 {{hours}} h",
-    "labour_empty": "No labour recorded for this range."
+    "labour_empty": "No labour recorded for this range.",
+    "no_contract_prompt": "No contract value set \u00b7 add it in Edit to see margin.",
+    "remaining_hero_label": "Remaining budget \u00b7 ex GST",
+    "budget_used_line": "Budget {{budget}} \u00b7 {{pct}}% used",
+    "paid_title": "Total paid \u00b7 cash-flow view",
+    "paid_sub": "Cash at face value + invoices at GST-inclusive totals"
   },
   "settings": {
     "title": "Settings",
@@ -135,7 +149,12 @@
     "app_version": "App version",
     "build": "Build",
     "build_commit": "Build commit",
-    "api_host": "API server"
+    "api_host": "API server",
+    "admin": "Admin",
+    "prefs": "Preferences",
+    "team": "Team",
+    "data": "Data",
+    "about": "About"
   },
   "export": {
     "entry": "Export for accountant",
@@ -174,23 +193,22 @@
     "unavailable_in_this_version": "This feature isn't available in the current version. For now, please use Expenses and Jobs."
   },
   "capture": {
-    "title": "New Expense",
+    "title": "Add expense",
     "textarea_placeholder": "Type or paste what you spent, e.g. 'Bunnings 250 Elizabeth Street cement' or 'Bunnings $500 \u73b0\u91d1 \u6676\u6676\u5bb6'.",
     "receipt_later": "Add receipt later",
     "date_label": "Date:",
     "date_today": "Today",
     "date_yesterday": "Yesterday",
-    "date_custom": "Other",
+    "date_custom": "Pick date",
     "date_custom_placeholder": "DD/MM or DD/MM/YYYY",
     "date_custom_hint": "e.g. 22/05 or 22/05/2026",
     "date_invalid": "Invalid date \u2014 try DD/MM or DD/MM/YYYY",
     "payment_label": "Payment:",
     "payment_cash": "Cash",
-    "payment_transfer": "Bank transfer",
+    "payment_transfer": "Bank \u00b7 incl. GST",
     "payment_unknown": "Unknown",
     "payment_default_hint": "No payment method selected \u2014 treated as Including GST. Choose Cash for cash purchases.",
     "job_label": "Job:",
-    "job_more": "More\u2026",
     "job_hint": "No job selected \u2014 we'll match the job from your text.",
     "job_picker_title": "Select job",
     "job_picker_search": "Search jobs",
@@ -221,7 +239,15 @@
     "submit_to": "Submit \u00b7 {{amount}} \u2192 {{job}}",
     "submit_amount": "Submit \u00b7 {{amount}}",
     "cash_note": "Cash is recorded at face value \u00b7 no GST credit",
-    "bank_note": "GST invoice split: net {{net}} + GST {{gst}}"
+    "bank_note": "GST invoice split: net {{net}} + GST {{gst}}",
+    "all_jobs": "All {{count}} \u25be",
+    "field_amount": "Amount",
+    "field_job": "Job",
+    "field_supplier": "Supplier",
+    "picker_active_one": "Active {{count}}",
+    "picker_active_other": "Active {{count}}",
+    "picker_recent": "Recent",
+    "picker_all": "All projects \u00b7 A\u2192Z"
   },
   "failures": {
     "title": "Failed captures",
@@ -293,7 +319,13 @@
     "correct_error_contributor": "Only admins can correct and approve.",
     "correct_error_archived": "That job is archived \u2014 pick an active job.",
     "correct_error_no_job": "An expense must always have a job.",
-    "correct_error_generic": "Couldn't save the correction."
+    "correct_error_generic": "Couldn't save the correction.",
+    "amount_label_pending": "Amount \u00b7 incl. GST, pending review",
+    "amount_label": "Amount \u00b7 incl. GST",
+    "raw_note": "Raw input \u00b7 fix parsed fields via Edit below",
+    "approved_banner": "Approved \u00b7 net amount posted to {{job}} costs",
+    "invoice_due_banner": "Invoice due \u00b7 \"add receipt later\" was selected",
+    "upload_photo": "Snap & upload"
   },
   "expense_list": {
     "title": "All expenses",
@@ -336,7 +368,8 @@
     "banner_one": "{{count}} pending \u00b7 total {{sum}}",
     "banner_other": "{{count}} pending \u00b7 total {{sum}}",
     "banner_count_only_one": "{{count}} pending",
-    "banner_count_only_other": "{{count}} pending"
+    "banner_count_only_other": "{{count}} pending",
+    "empty_sub": "New captures that need review will appear here."
   },
   "users": {
     "title": "Users",
@@ -511,7 +544,11 @@
     "rate_gap_title": "{{missing}} of {{total}} entries missing hours or a rate \u2014 cost is understated",
     "rate_gap_cta": "Tap to set worker rates",
     "tab_attendance": "Attendance",
-    "saved": "Saved"
+    "saved": "Saved",
+    "unsaved_changes": "Unsaved changes",
+    "saved_check": "Saved \u2713",
+    "save_cta_n_one": "Save attendance \u00b7 {{count}}",
+    "save_cta_n_other": "Save attendance \u00b7 {{count}}"
   },
   "review_reason": {
     "amount_uncertain": "Amount uncertain",
@@ -554,11 +591,22 @@
     "reject_failed": "Couldn't reject \u2014 put back in the queue.",
     "already_handled": "Already handled \u2014 the queue has moved on.",
     "delete_dup": "Delete duplicate",
-    "keep_approve": "Keep & approve"
+    "keep_approve": "Keep & approve",
+    "suggested_label": "Suggested:",
+    "change_job": "Change",
+    "dup_hint": "A similar expense already exists",
+    "compare": "Compare"
   },
   "toast": {
     "approved": "Approved {{sum}}",
     "rejected": "Rejected {{sum}}",
-    "dup_deleted": "Deleted duplicate {{sum}}"
+    "dup_deleted": "Deleted duplicate {{sum}}",
+    "submitted": "Submitted {{sum}} \u2192 {{job}}"
+  },
+  "exp_list": {
+    "all": "All",
+    "pending": "Pending",
+    "cash": "Cash",
+    "no_invoice": "No invoice"
   }
 }

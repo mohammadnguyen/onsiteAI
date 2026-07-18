@@ -8,8 +8,8 @@ import {
   TouchableOpacity,
   RefreshControl,
 } from 'react-native';
-import { BudgetBar, StatusBadge } from '../../src/ui/kit';
-import { tokens } from '../../src/ui/tokens';
+import { StatusBadge } from '../../src/ui/kit';
+import { tokens, toneFill, toneText } from '../../src/ui/tokens';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useJobs, type JobPublic } from '../../src/api/hooks/useJobs';
@@ -105,17 +105,28 @@ export default function JobsScreen() {
   // O2-B: for ADMINS the active slice is ordered by budget pressure
   // (worst first — the retired Dashboard's ranking). Contributors keep
   // the plain order (their rows carry no summary anyway).
+  // Operator 2026-07-18: the list shows ONLY active jobs by default;
+  // archived live behind their own top filter — never mixed in.
+  const [statusFilter, setStatusFilter] = useState<'active' | 'archived'>(
+    'active',
+  );
+  const activeCount = useMemo(
+    () => jobs.filter((j) => j.status === 'active').length,
+    [jobs],
+  );
+  const archivedCount = jobs.length - activeCount;
   const listData = useMemo<JobListItem[]>(() => {
+    if (statusFilter === 'archived') {
+      const archived = jobs.filter((j) => j.status !== 'active');
+      const out: JobListItem[] = [];
+      if (archived.length > 0) out.push({ kind: 'archived-header' });
+      archived.forEach((job) => out.push({ kind: 'job', job }));
+      return out;
+    }
     const activeRaw = jobs.filter((j) => j.status === 'active');
     const active = isAdmin ? rankByPressure(activeRaw) : activeRaw;
-    const archived = jobs.filter((j) => j.status !== 'active');
-    const out: JobListItem[] = active.map((job) => ({ kind: 'job', job }));
-    if (archived.length > 0) {
-      out.push({ kind: 'archived-header' });
-      archived.forEach((job) => out.push({ kind: 'job', job }));
-    }
-    return out;
-  }, [jobs, isAdmin]);
+    return active.map((job) => ({ kind: 'job', job }));
+  }, [jobs, isAdmin, statusFilter]);
 
   return (
     <SafeAreaView style={s.safe} edges={['top', 'bottom', 'left', 'right']}>
@@ -131,8 +142,33 @@ export default function JobsScreen() {
           <Text style={s.newBtnText}>{t('jobs.new')}</Text>
         </TouchableOpacity>
       </View>
-      {/* UI-kit v2 B2: the admin stats cards moved to the Home tab
-          (app/(tabs)/home.tsx) with the IA rework. */}
+      {/* Spec §7 filter row: 进行中 N / 已归档 N — selected = black. */}
+      <View style={s.filterRow} testID="jobs-filter-row">
+        {(
+          [
+            ['active', t('jobs.filter_active', { count: activeCount })],
+            ['archived', t('jobs.filter_archived', { count: archivedCount })],
+          ] as const
+        ).map(([key, label]) => (
+          <TouchableOpacity
+            key={key}
+            style={[s.filterPill, statusFilter === key && s.filterPillOn]}
+            onPress={() => setStatusFilter(key)}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: statusFilter === key }}
+            testID={`jobs-filter-${key}`}
+          >
+            <Text
+              style={[
+                s.filterPillText,
+                statusFilter === key && s.filterPillTextOn,
+              ]}
+            >
+              {label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
       {isLoading ? (
         <View style={s.center}>
           <ActivityIndicator size="large" color="#1e293b" />
@@ -144,9 +180,13 @@ export default function JobsScreen() {
         <View style={s.center}>
           <Text style={s.errText}>{t('common.error')}</Text>
         </View>
-      ) : jobs.length === 0 ? (
+      ) : listData.length === 0 ? (
         <View style={s.center}>
-          <Text style={s.emptyText}>{t('jobs.empty')}</Text>
+          <Text style={s.emptyText}>
+            {statusFilter === 'archived'
+              ? t('jobs.no_archived')
+              : t('jobs.empty')}
+          </Text>
         </View>
       ) : (
         <FlatList
@@ -244,37 +284,68 @@ function JobRow({
       <View style={s.rowTop}>
         <View style={s.rowMain}>
           <Text style={s.rowName}>{job.job_name}</Text>
-          {/* F4 (operator decision): the subline is the SITE ADDRESS —
-              that's how the operator thinks of jobs — falling back to
-              the code when no address is recorded. */}
+          {/* F4 (operator decision): subline = SITE ADDRESS, code as
+              fallback. */}
           {job.site_address || job.job_code ? (
             <Text style={s.rowCode} numberOfLines={1}>
               {job.site_address || job.job_code}
             </Text>
           ) : null}
         </View>
-        <StatusBadge
-          status={job.status}
-          label={localizeJobStatus(job.status, t)}
-        />
+        {/* Fidelity §7: active budget cards carry 已用N% top-right in
+            the band colour; archived cards keep the status badge. */}
+        {band !== 'none' && pct != null ? (
+          <Text
+            style={[s.pctTop, { color: toneText[BAND_TONE[band]] }]}
+            testID={`job-pct-${job.job_id}`}
+          >
+            {t('ui.pct_used', { pct: pct.toFixed(0) })}
+          </Text>
+        ) : (
+          <StatusBadge
+            status={job.status}
+            label={localizeJobStatus(job.status, t)}
+          />
+        )}
       </View>
       {band !== 'none' ? (
         <View style={s.pressureWrap} testID={`job-pressure-${job.job_id}`}>
-          {/* RAW pct on purpose: the label must say "143% used" on an
-              overspent job — BudgetBar clamps only the FILL width. */}
-          <BudgetBar
-            pctUsed={pct ?? 0}
-            tone={BAND_TONE[band]}
-            leftText={
-              remaining != null && remaining < 0
+          {/* Fidelity §7: 8px bar; fill colour = band tone (blue
+              healthy / amber / red). Clamp the FILL only — the pct
+              label above stays raw so an overspent job reads "143%". */}
+          <View style={s.barTrack}>
+            <View
+              style={[
+                s.barFill,
+                {
+                  width: `${Math.min(100, Math.max(0, pct ?? 0))}%`,
+                  backgroundColor: toneFill[BAND_TONE[band]],
+                },
+              ]}
+            />
+          </View>
+          <View style={s.rowBottom}>
+            <Text style={s.leftText} numberOfLines={1}>
+              {remaining != null && remaining < 0
                 ? t('dashboard.over_by', {
                     amount: formatMoney(Math.abs(remaining).toFixed(2)),
                   })
                 : t('dashboard.left', {
                     amount: formatMoney((remaining ?? 0).toFixed(2)),
-                  })
-            }
-          />
+                  })}
+            </Text>
+            {/* Status word: only states we can EVIDENCE from the
+                summary (overspend / near-budget); nothing invented. */}
+            {sum?.overspend ? (
+              <Text style={[s.statusWord, { color: toneText.bad }]}>
+                {t('jobs.status_over')}
+              </Text>
+            ) : band === 'amber' || band === 'red' ? (
+              <Text style={[s.statusWord, { color: toneText[BAND_TONE[band]] }]}>
+                {t('jobs.status_near')}
+              </Text>
+            ) : null}
+          </View>
         </View>
       ) : null}
       {/* O2-C (U8): budget-less ACTIVE jobs still get spend context on
@@ -400,6 +471,28 @@ const base = StyleSheet.create({
     justifyContent: 'center',
   },
   newBtnText: { color: '#ffffff', fontSize: 13, fontWeight: '600' },
+  filterRow: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+  },
+  filterPill: {
+    paddingHorizontal: 13,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: tokens.line,
+    backgroundColor: tokens.surface,
+  },
+  filterPillOn: { backgroundColor: tokens.ink, borderColor: tokens.ink },
+  filterPillText: {
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: tokens.ink2,
+    fontVariant: ['tabular-nums'],
+  },
+  filterPillTextOn: { color: '#ffffff', fontWeight: '700' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   loadingText: { marginTop: 12, color: '#64748b' },
   emptyText: { color: '#64748b', fontSize: 16 },
@@ -407,10 +500,16 @@ const base = StyleSheet.create({
   listContent: { paddingBottom: 24 },
   // O2-B: row is now a column (top line + optional pressure block);
   // rowTop carries the original horizontal name/code/badge layout.
+  // Fidelity §7: each job is a CARD on the grey ground.
   row: {
-    paddingVertical: 14,
-    paddingHorizontal: 16,
+    marginHorizontal: 16,
+    marginBottom: 10,
+    paddingVertical: 13,
+    paddingHorizontal: 14,
     backgroundColor: tokens.surface,
+    borderWidth: 1,
+    borderColor: tokens.line,
+    borderRadius: 16,
     gap: 8,
   },
   rowTop: {
@@ -421,11 +520,36 @@ const base = StyleSheet.create({
   // B2: stats-card styles moved to app/(tabs)/home.tsx with the cards.
   // bar visuals now live in src/ui/kit.tsx (BudgetBar); job status
   // pills in StatusBadge — the old inline styles are removed.
-  pressureWrap: { marginTop: 2 },
+  pressureWrap: { marginTop: 2, gap: 6 },
+  barTrack: {
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: tokens.barTrack,
+    overflow: 'hidden',
+  },
+  barFill: { height: 8, borderRadius: 4 },
+  rowBottom: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  leftText: {
+    flexShrink: 1,
+    fontSize: 12.5,
+    color: tokens.ink2,
+    fontVariant: ['tabular-nums'],
+  },
+  statusWord: { fontSize: 12, fontWeight: '700' },
+  pctTop: {
+    fontSize: 12.5,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
   metricHint: { fontSize: 12, color: '#64748b', paddingVertical: 2 },
   rowName: { fontSize: 16, color: '#0f172a', fontWeight: '500' },
   rowCode: { fontSize: 13, color: '#64748b', marginTop: 2 },
-  sep: { height: 1, backgroundColor: '#e2e8f0' },
+  sep: { height: 0 },
   // Apple HIG: tappable target ≥ 44×44pt. Without this, the bare ×
   // glyph is too small to reach with a thumb, especially in the corner.
   // Tier 1B: Edit button in the job detail modal header.

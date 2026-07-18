@@ -176,6 +176,17 @@ export function ImageIcon({ size = 19, color = '#667085', strokeWidth = 1.9 }: I
   );
 }
 
+export function FaceIdIcon({ size = 18, color = '#2563EB', strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+      <Path d="M3 8V5.5A2.5 2.5 0 0 1 5.5 3H8M16 3h2.5A2.5 2.5 0 0 1 21 5.5V8M21 16v2.5a2.5 2.5 0 0 1-2.5 2.5H16M8 21H5.5A2.5 2.5 0 0 1 3 18.5V16" />
+      <Path d="M8.5 9.2v1.6M15.5 9.2v1.6" />
+      <Path d="M12 9.5v3.6h-1" />
+      <Path d="M8.7 15.6c.9.9 2 1.4 3.3 1.4s2.4-.5 3.3-1.4" />
+    </Svg>
+  );
+}
+
 export function MailIcon({ size = 18, color = '#98A2B3', strokeWidth = 1.9 }: IconProps) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">

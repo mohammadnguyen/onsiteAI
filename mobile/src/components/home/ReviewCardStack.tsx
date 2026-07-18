@@ -262,12 +262,38 @@ function HeadCard({
           >
             {money}
           </Text>
-          <StatusBadge
-            status={expense.review_status}
-            label={t(`expense.status_${expense.review_status}`, {
-              defaultValue: expense.review_status,
-            })}
-          />
+          {/* Fidelity §2: the badge names the EXCEPTION (项目不确定 /
+              疑似重复 …), not a generic 待审核 — that's what the operator
+              needs to triage from. First reason wins the badge slot. */}
+          {row.queue.review_reasons.length > 0 ? (
+            <View
+              style={[
+                s.reasonBadge,
+                row.queue.review_reasons[0] === 'duplicate_suspected' &&
+                  s.reasonBadgeDup,
+              ]}
+            >
+              <Text
+                style={[
+                  s.reasonBadgeText,
+                  row.queue.review_reasons[0] === 'duplicate_suspected' &&
+                    s.reasonBadgeTextDup,
+                ]}
+                numberOfLines={1}
+              >
+                {t(`review_reason.${row.queue.review_reasons[0]}`, {
+                  defaultValue: row.queue.review_reasons[0],
+                })}
+              </Text>
+            </View>
+          ) : (
+            <StatusBadge
+              status={expense.review_status}
+              label={t(`expense.status_${expense.review_status}`, {
+                defaultValue: expense.review_status,
+              })}
+            />
+          )}
         </View>
         <Text style={s.desc} numberOfLines={2}>
           {expense.raw_input_text || expense.description || '—'}
@@ -363,6 +389,21 @@ const base = StyleSheet.create({
   desc: { fontSize: 14, color: tokens.ink2, marginTop: 6, lineHeight: 19 },
   meta: { fontSize: 12, color: tokens.muted, marginTop: 4 },
   degradedTitle: { fontSize: 15, fontWeight: '700', color: tokens.ink },
+  reasonBadge: {
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+    backgroundColor: tokens.warnBg,
+    borderColor: tokens.warnBorder,
+    flexShrink: 1,
+  },
+  reasonBadgeText: { fontSize: 10.5, fontWeight: '700', color: tokens.warn },
+  reasonBadgeDup: {
+    backgroundColor: tokens.badBg,
+    borderColor: tokens.badBorder,
+  },
+  reasonBadgeTextDup: { color: tokens.bad },
   actions: { flexDirection: 'row', gap: 8, marginTop: 12 },
   btn: {
     height: 42,

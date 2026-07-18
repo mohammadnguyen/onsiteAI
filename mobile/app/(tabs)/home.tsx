@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -18,11 +18,12 @@ import {
   usePendingExpenseSummaries,
 } from '../../src/api/hooks/useReviewQueue';
 import { useExpensesSince } from '../../src/api/hooks/useExpenses';
-import { ForeyLogo, GearIcon, PlusIcon } from '../../src/ui/icons';
+import { ForeyLogo, GearIcon, MicIcon, PlusIcon } from '../../src/ui/icons';
 import { useMe } from '../../src/api/hooks/useAuth';
 import { formatMoney } from '../../src/util/format';
 import { monthStart, todayISO, formatTodayLine } from '../../src/util/dates';
 import { useScaledStyles } from '../../src/ui/type';
+import { useToastStore } from '../../src/store/toast';
 import { tokens } from '../../src/ui/tokens';
 import { ReviewCardStack } from '../../src/components/home/ReviewCardStack';
 import { TodayAttendance } from '../../src/components/home/TodayAttendance';
@@ -61,14 +62,11 @@ export default function HomeScreen() {
   const jobs = useJobs();
   // seq: two identical toasts in a row (approve $500 twice) must both
   // fire — the Toast effect keys on it, not on the string.
-  const [toast, setToast] = useState<{ text: string; seq: number } | null>(
-    null,
-  );
-  const toastSeq = useRef(0);
-  const showToast = (text: string) => {
-    toastSeq.current += 1;
-    setToast({ text, seq: toastSeq.current });
-  };
+  // Strict-parity round: the toast is GLOBAL (store) so the capture
+  // sheet can announce 「已提交 $X → 项目」 after it closes.
+  const toast = useToastStore((st) => st.toast);
+  const clearToast = useToastStore((st) => st.clear);
+  const showToast = useToastStore((st) => st.show);
   // Optimistically-cleared review ids. Owned HERE, not in the stack,
   // so the pending card's count + total move with the card the user
   // just cleared instead of lagging until the refetch lands.
@@ -151,7 +149,7 @@ export default function HomeScreen() {
       <Toast
         text={toast?.text ?? null}
         seq={toast?.seq ?? 0}
-        onDone={() => setToast(null)}
+        onDone={clearToast}
       />
     </SafeAreaView>
   );
@@ -177,6 +175,9 @@ function CaptureEntryCard() {
       <Text style={s.capturePlaceholder} numberOfLines={1}>
         {t('home.capture_placeholder')}
       </Text>
+      {/* Spec mic: decorative for now — voice capture is a confirmed
+          upcoming feature (operator 2026-07-18). */}
+      <MicIcon size={18} color={tokens.muted} />
       {/* The design shows a mic here. There is no speech-to-text in the
           app, and a mic that opens a keyboard would be a lie — omitted
           until voice capture is a real slice. */}

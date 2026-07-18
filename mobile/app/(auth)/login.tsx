@@ -8,6 +8,7 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -16,7 +17,7 @@ import { api } from '../../src/api/client';
 import { useAuthStore } from '../../src/store/auth';
 import { setLanguage } from '../../src/i18n';
 import type { TokenPair } from '../../src/api/hooks/useAuth';
-import { ForeyLogo, MailIcon, LockIcon } from '../../src/ui/icons';
+import { ForeyLogo, MailIcon, LockIcon, FaceIdIcon } from '../../src/ui/icons';
 import { tokens } from '../../src/ui/tokens';
 
 /**
@@ -111,6 +112,28 @@ export default function Login() {
           )}
         </TouchableOpacity>
 
+        {/* Spec §1: Face ID + forgot password render per design.
+            Neither has a backing implementation yet — tapping says so
+            honestly (operator-authorised coming-soon pattern, same as
+            the mic). */}
+        <TouchableOpacity
+          style={s.faceIdBtn}
+          onPress={() => Alert.alert(t('settings.coming_soon'))}
+          accessibilityRole="button"
+          testID="login-faceid"
+        >
+          <FaceIdIcon size={19} color={tokens.primary} />
+          <Text style={s.faceIdText}>{t('login.face_id')}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={s.forgotBtn}
+          onPress={() => Alert.alert(t('settings.coming_soon'))}
+          accessibilityRole="button"
+          testID="login-forgot"
+        >
+          <Text style={s.forgotText}>{t('login.forgot')}</Text>
+        </TouchableOpacity>
+
         <View style={s.langWrap}>
           <View style={s.langSeg}>
             <TouchableOpacity
@@ -185,6 +208,21 @@ const s = StyleSheet.create({
   btnDisabled: { opacity: 0.5 },
   btnText: { color: '#ffffff', fontWeight: '700', fontSize: 16 },
   err: { color: tokens.bad, marginBottom: 12, textAlign: 'center' },
+  faceIdBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    height: 52,
+    borderRadius: 14,
+    backgroundColor: tokens.surface,
+    borderWidth: 1,
+    borderColor: tokens.line,
+    marginTop: 12,
+  },
+  faceIdText: { fontSize: 15, fontWeight: '700', color: tokens.primary },
+  forgotBtn: { alignItems: 'center', marginTop: 14 },
+  forgotText: { fontSize: 13, fontWeight: '600', color: tokens.ink3 },
   langWrap: { alignItems: 'center', marginTop: 26 },
   langSeg: {
     flexDirection: 'row',

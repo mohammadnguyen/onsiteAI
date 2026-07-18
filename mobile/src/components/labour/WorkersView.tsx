@@ -449,7 +449,8 @@ export function WorkersView() {
                   style={({ pressed }) => [s.row, pressed && s.rowPressed]}
                 >
                   <View style={s.rowMain}>
-                    <Text style={s.rowName} numberOfLines={1}>
+                    <View style={s.avatarCircle}><Text style={s.avatarInitials}>{item.display_name.slice(0, 2)}</Text></View>
+            <Text style={s.rowName} numberOfLines={1}>
                       {item.display_name}
                     </Text>
                     {item.note ? (
@@ -642,6 +643,18 @@ const s = StyleSheet.create({
   },
   rowPressed: { backgroundColor: '#f1f5f9' },
   rowMain: { flex: 1 },
+  avatarCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: tokens.sel,
+    borderWidth: 1,
+    borderColor: tokens.selBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  avatarInitials: { fontSize: 12.5, fontWeight: '800', color: tokens.selText },
   rowName: { fontSize: 16, fontWeight: '500', color: '#0f172a' },
   rowNote: { fontSize: 13, color: '#64748b', marginTop: 2 },
   rowRight: { alignItems: 'flex-end', gap: 4, marginLeft: 8 },

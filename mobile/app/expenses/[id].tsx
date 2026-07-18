@@ -32,6 +32,7 @@ import { localizeCategoryName } from '../../src/util/category';
 import { useScaledStyles } from '../../src/ui/type';
 import { StatusBadge } from '../../src/ui/kit';
 import { tokens } from '../../src/ui/tokens';
+import { CameraIcon } from '../../src/ui/icons';
 
 /**
  * Mobile Expense Detail (v1) — read-only.
@@ -454,27 +455,75 @@ function DetailBody({
 
   return (
     <>
-      <View style={s.hero}>
-        <View style={s.heroLeft}>
-          <Text style={s.heroAmount} testID="detail-amount">
-            {formatMoney(data.amount_inc_gst)}
-          </Text>
-          {/* P3: expense_date is promoted out of the grid into the
-              hero so the date the expense applies to is the second
-              thing the eye lands on, after the amount. Uses the AU
-              DD/MM/YYYY display form per the i18n contract. */}
-          <Text style={s.heroDate} testID="detail-date">
-            {formatDateAU(data.expense_date)}
+      {/* Fidelity §6: the amount lives in a CARD — label, 34/800
+          amount, badge — with the raw input block inside the same
+          card so "what you typed" sits beside "what it became". */}
+      <View style={s.heroCard}>
+        <Text style={s.heroLabel}>
+          {data.review_status === 'pending'
+            ? t('expense.amount_label_pending')
+            : t('expense.amount_label')}
+        </Text>
+        <View style={s.hero}>
+          <View style={s.heroLeft}>
+            <Text style={s.heroAmount} testID="detail-amount">
+              {formatMoney(data.amount_inc_gst)}
+            </Text>
+            <Text style={s.heroDate} testID="detail-date">
+              {formatDateAU(data.expense_date)}
+            </Text>
+          </View>
+          <StatusBadge
+            status={data.review_status}
+            label={t(`expense.status_${data.review_status}`, {
+              defaultValue: data.review_status,
+            })}
+            testID="detail-status"
+          />
+        </View>
+        {data.raw_input_text ? (
+          <>
+            <View style={s.rawBlock}>
+              <Text style={s.rawText}>{data.raw_input_text}</Text>
+            </View>
+            <Text style={s.rawNote}>{t('expense.raw_note')}</Text>
+          </>
+        ) : null}
+      </View>
+
+      {/* Fidelity §6 已审态: green confirmation banner. */}
+      {data.review_status === 'reviewed' ? (
+        <View style={s.approvedBanner} testID="detail-approved-banner">
+          <View style={s.approvedTick}>
+            <Text style={s.approvedTickText}>{'✓'}</Text>
+          </View>
+          <Text style={s.approvedText}>
+            {t('expense.approved_banner', { job: jobDisplay })}
           </Text>
         </View>
-        <StatusBadge
-          status={data.review_status}
-          label={t(`expense.status_${data.review_status}`, {
-            defaultValue: data.review_status,
-          })}
-          testID="detail-status"
-        />
-      </View>
+      ) : null}
+
+      {/* Fidelity §6 待审态: 发票待补 amber banner. NO upload action —
+          receipts need the Files project; a dead button is worse than
+          none. */}
+      {data.review_status === 'pending' &&
+      data.receipt_status === 'expected_later' ? (
+        <View style={s.invoiceBanner} testID="detail-invoice-banner">
+          <CameraIcon size={18} color={tokens.warnMid} />
+          <Text style={s.invoiceBannerText}>
+            {t('expense.invoice_due_banner')}
+          </Text>
+          {/* Spec §6 拍照上传 — feature needs the Files project; tap
+              says so (operator-authorised coming-soon pattern). */}
+          <Text
+            style={s.uploadLink}
+            onPress={() => Alert.alert(t('settings.coming_soon'))}
+            testID="detail-upload-link"
+          >
+            {t('expense.upload_photo')}
+          </Text>
+        </View>
+      ) : null}
 
       {/* Edit-discoverability slice: dogfooding showed the header
           'Edit' button wasn't naturally found at the moment users
@@ -533,20 +582,24 @@ function DetailBody({
         </View>
       ) : null}
 
-      <View style={s.grid}>
-        {/* O1-S1: ex-GST / GST are admin-only. Contributors never render
-            them (the backend also server-strips them to null). */}
+      {/* Fidelity §6: parsed fields as a TABLE card — full-width rows,
+          label left, value right, hairline separators. GST split rows
+          stay admin-only (server strips them for contributors too). */}
+      <View style={s.fieldCard}>
+        <Field label={t('expense.job')} value={jobDisplay} />
+        <Field label={t('expense.supplier')} value={supplierName} />
+        <Field label={t('expense.category')} value={categoryName} />
+        <Field label={t('expense.payment')} value={paymentLabel} />
+        <Field label={t('expense.receipt_status')} value={receiptLabel} />
         {isAdmin ? (
           <>
-            <Field label={t('expense.amount_ex_gst')} value={formatMoney(data.amount_ex_gst)} />
+            <Field
+              label={t('expense.amount_ex_gst')}
+              value={formatMoney(data.amount_ex_gst)}
+            />
             <Field label={t('expense.gst')} value={formatMoney(data.gst_amount)} />
           </>
         ) : null}
-        <Field label={t('expense.payment')} value={paymentLabel} />
-        <Field label={t('expense.supplier')} value={supplierName} />
-        <Field label={t('expense.category')} value={categoryName} />
-        <Field label={t('expense.job')} value={jobDisplay} />
-        <Field label={t('expense.receipt_status')} value={receiptLabel} />
       </View>
 
       {showReasons && (
@@ -606,15 +659,6 @@ function DetailBody({
         <View style={s.section}>
           <Text style={s.sectionHeading}>{t('expense.notes')}</Text>
           <Text style={s.longText}>{data.notes}</Text>
-        </View>
-      ) : null}
-
-      {data.raw_input_text ? (
-        <View style={s.section}>
-          <Text style={s.sectionHeading}>{t('expense.raw_input')}</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            <Text style={s.rawText}>{data.raw_input_text}</Text>
-          </ScrollView>
         </View>
       ) : null}
 
@@ -779,16 +823,95 @@ const base = StyleSheet.create({
     fontVariant: ['tabular-nums'],
     marginTop: 2,
   },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -8 },
-  field: { width: '50%', paddingHorizontal: 8, paddingVertical: 8 },
-  fieldLabel: {
-    fontSize: 11,
-    color: tokens.ink3,
-    textTransform: 'uppercase',
-    marginBottom: 4,
-    fontWeight: '600',
+  fieldCard: {
+    backgroundColor: tokens.surface,
+    borderWidth: 1,
+    borderColor: tokens.line,
+    borderRadius: 14,
+    paddingHorizontal: 13,
   },
-  fieldValue: { fontSize: 15, color: tokens.ink },
+  field: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    minHeight: 44,
+    paddingVertical: 13,
+    borderBottomWidth: 1,
+    borderBottomColor: tokens.lineSoft,
+  },
+  fieldLabel: { fontSize: 12.5, color: tokens.ink3, minWidth: 64 },
+  fieldValue: {
+    flexShrink: 1,
+    fontSize: 14.5,
+    fontWeight: '700',
+    color: tokens.ink,
+    textAlign: 'right',
+  },
+  heroCard: {
+    backgroundColor: tokens.surface,
+    borderWidth: 1,
+    borderColor: tokens.line,
+    borderRadius: 18,
+    padding: 14,
+    gap: 10,
+    shadowColor: '#101828',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.05,
+    shadowRadius: 14,
+    elevation: 2,
+  },
+  heroLabel: { fontSize: 12, color: tokens.ink3 },
+  rawBlock: {
+    backgroundColor: tokens.surfaceSub,
+    borderRadius: 12,
+    padding: 10,
+  },
+  rawNote: { fontSize: 11, color: tokens.muted },
+  approvedBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: tokens.okBg,
+    borderWidth: 1,
+    borderColor: tokens.okBorder,
+    borderRadius: 14,
+    padding: 12,
+  },
+  approvedTick: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: tokens.okFill,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  approvedTickText: { color: '#ffffff', fontSize: 13, fontWeight: '800' },
+  approvedText: {
+    flex: 1,
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: tokens.ok,
+    lineHeight: 17,
+  },
+  invoiceBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: tokens.warnBg,
+    borderWidth: 1,
+    borderColor: tokens.warnBorder,
+    borderRadius: 14,
+    padding: 12,
+  },
+  invoiceBannerText: {
+    flex: 1,
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: tokens.warn,
+    lineHeight: 17,
+  },
+  uploadLink: { fontSize: 12, fontWeight: '700', color: tokens.primary },
   section: { gap: 8 },
   sectionHeading: {
     fontSize: 13,
@@ -811,13 +934,9 @@ const base = StyleSheet.create({
   dupRef: { color: tokens.badDeep, fontSize: 13, marginTop: 4, fontVariant: ['tabular-nums'] },
   longText: { color: '#0f172a', fontSize: 15, lineHeight: 21 },
   rawText: {
-    color: '#1e293b',
-    fontSize: 12,
-    fontFamily: 'Menlo',
-    backgroundColor: '#f8fafc',
-    borderColor: '#e2e8f0',
-    borderWidth: 1,
-    borderRadius: 6,
-    padding: 8,
+    fontSize: 13.5,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    color: tokens.ink2,
+    lineHeight: 19,
   },
 });

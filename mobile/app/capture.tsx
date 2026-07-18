@@ -4,6 +4,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  Pressable,
   ActivityIndicator,
   StyleSheet,
   KeyboardAvoidingView,
@@ -30,9 +31,7 @@ import {
   useJobZhAliasMap,
   type JobPublic,
 } from '../src/api/hooks/useJobs';
-import { CaptureResultCard } from '../src/components/CaptureResultCard';
 import { JobPickerSheet } from '../src/components/JobPickerSheet';
-import { RecentCapturesList } from '../src/components/RecentCapturesList';
 import { RecentFailuresList } from '../src/components/RecentFailuresList';
 import { DatePills } from '../src/components/DatePills';
 import { ParseChips } from '../src/components/capture/ParseChips';
@@ -45,6 +44,7 @@ import { useScaledStyles } from '../src/ui/type';
 import { Chip } from '../src/ui/kit';
 import { tokens } from '../src/ui/tokens';
 import { useOneShotBack } from '../src/util/navigation';
+import { useToastStore } from '../src/store/toast';
 import type { Href } from 'expo-router';
 
 /**
@@ -100,19 +100,22 @@ export default function CaptureScreen() {
   // renders its own back header. One-shot back; deep-link fallback to
   // the Home tab.
   const onBackHome = useOneShotBack('/(tabs)/home' as unknown as Href);
+  // Strict parity §4: sheet chrome — handle bar + title + ✕ close.
   const screenHeader = (
-    <View style={s.headerRow}>
-      <TouchableOpacity
-        onPress={onBackHome}
-        hitSlop={12}
-        testID="capture-back"
-        accessibilityRole="button"
-        style={s.backBtn}
-      >
-        <Text style={s.backChevron}>{'‹'}</Text>
-      </TouchableOpacity>
-      <Text style={s.title}>{t('capture.title')}</Text>
-      <View style={s.backSpacer} />
+    <View>
+      <View style={s.handle} />
+      <View style={s.headerRow}>
+        <Text style={s.title}>{t('capture.title')}</Text>
+        <TouchableOpacity
+          onPress={onBackHome}
+          hitSlop={12}
+          testID="capture-back"
+          accessibilityRole="button"
+          style={s.closeBtn}
+        >
+          <Text style={s.closeText}>{'✕'}</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
   const createExpense = useCreateExpense();
@@ -156,7 +159,6 @@ export default function CaptureScreen() {
   // DatePills enforces that this only holds a valid ISO YYYY-MM-DD.
   const [expenseDate, setExpenseDate] = useState<string>(() => todayISO());
   const [formError, setFormError] = useState<string | null>(null);
-  const [result, setResult] = useState<ExpenseCreateResponse | null>(null);
   // Multi-item capture (Path A — mobile-only, N parallel API calls).
   // When the user types multi-line input, mobile splits on newlines,
   // treats the first line as a shared preamble if it has no $, then
@@ -185,7 +187,7 @@ export default function CaptureScreen() {
     for (const j of activeJobs) {
       if (!ordered.includes(j)) ordered.push(j);
     }
-    return ordered.slice(0, 4);
+    return ordered.slice(0, 3);
   }, [activeJobs, recentExpenses.data]);
   // zh alias labels (e.g. "工地1") for the chips + the selected job.
   // Only fetched when the app language is Chinese — English users see
@@ -329,7 +331,17 @@ export default function CaptureScreen() {
         const body = buildBody(trimmed);
         try {
           const resp = await createExpense.mutateAsync(body as ExpenseCreateInput);
-          setResult(resp);
+          // Strict parity §4: single-item success closes the sheet and
+          // announces on the screen underneath (global toast store).
+          useToastStore
+            .getState()
+            .show(
+              t('toast.submitted', {
+                sum: formatMoney(resp.expense.amount_inc_gst),
+                job: jobNameFor(resp.expense.job_id),
+              }),
+            );
+          onBackHome();
         } catch (err) {
           const msg = resolveApiErrorMessage(err, t, t('capture.error_network'));
           setFormError(msg);
@@ -412,7 +424,6 @@ export default function CaptureScreen() {
     // the form on "now" matches the iOS-first on-site flow.
     setExpenseDate(todayISO());
     setFormError(null);
-    setResult(null);
     setMultiResult(null);
     setTimeout(() => textareaRef.current?.focus(), 0);
   };
@@ -428,50 +439,22 @@ export default function CaptureScreen() {
 
   if (multiResult) {
     return (
-      <SafeAreaView style={s.safe} edges={['top', 'bottom', 'left', 'right']}>
-        <ScrollView
-          contentContainerStyle={s.scroll}
-          keyboardShouldPersistTaps="handled"
-          refreshControl={refreshControl}
-        >
-          {screenHeader}
-          <MultiCaptureResultCard
-            result={multiResult}
-            onReset={onReset}
-            jobNameFor={jobNameFor}
-          />
-          <RecentCapturesList
-            query={recentExpenses}
-            showViewAll
-            showPendingTriage={isAdmin}
-          />
-        </ScrollView>
-      </SafeAreaView>
-    );
-  }
-
-  if (result) {
-    return (
-      <SafeAreaView style={s.safe} edges={['top', 'bottom', 'left', 'right']}>
-        <ScrollView
-          contentContainerStyle={s.scroll}
-          keyboardShouldPersistTaps="handled"
-          refreshControl={refreshControl}
-        >
-          {screenHeader}
-          <CaptureResultCard
-            result={result}
-            onReset={onReset}
-            isAdmin={isAdmin}
-            jobName={jobNameFor(result.expense.job_id)}
-          />
-          <RecentCapturesList
-            query={recentExpenses}
-            showViewAll
-            showPendingTriage={isAdmin}
-          />
-        </ScrollView>
-      </SafeAreaView>
+      <View style={s.overlay}>
+        <Pressable style={s.backdrop} onPress={onBackHome} />
+        <SafeAreaView style={s.sheet} edges={['bottom']}>
+          <ScrollView
+            contentContainerStyle={s.scroll}
+            keyboardShouldPersistTaps="handled"
+          >
+            {screenHeader}
+            <MultiCaptureResultCard
+              result={multiResult}
+              onReset={onReset}
+              jobNameFor={jobNameFor}
+            />
+          </ScrollView>
+        </SafeAreaView>
+      </View>
     );
   }
 
@@ -483,58 +466,22 @@ export default function CaptureScreen() {
   const submitDisabled = inFlight || rawInputText.trim().length === 0;
 
   return (
-    <SafeAreaView style={s.safe} edges={['top', 'bottom', 'left', 'right']}>
+    <View style={s.overlay}>
+      {/* Backdrop: tap closes (one-shot back guards the double-fire). */}
+      <Pressable
+        style={s.backdrop}
+        onPress={onBackHome}
+        testID="capture-backdrop"
+      />
       <KeyboardAvoidingView
-        style={s.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <ScrollView
-          contentContainerStyle={s.scroll}
-          keyboardShouldPersistTaps="handled"
-          refreshControl={refreshControl}
-        >
-          {screenHeader}
-
-          {/* O2-A (feedback #1): tap a job instead of spelling it. Chips
-              are recent-first active jobs, labelled with the zh alias
-              when one exists. Tapping the active chip deselects (back to
-              parser matching). "More…" opens the searchable full list.
-              Identity only — no money ever renders here. */}
-          {activeJobs.length > 0 ? (
-            <View style={s.jobRow}>
-              <Text style={s.paymentLabel}>{t('capture.job_label')}</Text>
-              {displayChips.map((job) => (
-                <PaymentOption
-                  key={job.job_id}
-                  label={jobLabelFor(job)}
-                  active={jobSel === job.job_id}
-                  disabled={inFlight}
-                  onPress={() =>
-                    setJobSel((prev) =>
-                      prev === job.job_id ? null : job.job_id,
-                    )
-                  }
-                  testID={`job-chip-${job.job_id}`}
-                />
-              ))}
-              <PaymentOption
-                label={
-                  activeJobs.length > displayChips.length
-                    ? `+${activeJobs.length - displayChips.length}`
-                    : t('capture.job_more')
-                }
-                active={false}
-                disabled={inFlight}
-                onPress={() => setJobPickerOpen(true)}
-                testID="job-more"
-              />
-            </View>
-          ) : null}
-          {activeJobs.length > 0 && jobSel === null ? (
-            <Text style={s.paymentHint} testID="job-default-hint">
-              {t('capture.job_hint')}
-            </Text>
-          ) : null}
+        <SafeAreaView style={s.sheet} edges={['bottom']}>
+          <ScrollView
+            contentContainerStyle={s.scroll}
+            keyboardShouldPersistTaps="handled"
+          >
+            {screenHeader}
 
           <TextInput
             ref={textareaRef}
@@ -562,28 +509,94 @@ export default function CaptureScreen() {
             isSettling={preview.isSettling}
           />
 
+          {/* Fidelity §4 order: input → parse chips → 项目 → 日期 → 付款.
+              (O2-A job chips — identity only, no money.) */}
+          {activeJobs.length > 0 ? (
+            <View style={s.jobRow}>
+              <Text style={s.paymentLabel}>{t('capture.job_label')}</Text>
+              {displayChips.map((job) => (
+                <PaymentOption
+                  key={job.job_id}
+                  label={jobLabelFor(job)}
+                  active={jobSel === job.job_id}
+                  disabled={inFlight}
+                  onPress={() =>
+                    setJobSel((prev) =>
+                      prev === job.job_id ? null : job.job_id,
+                    )
+                  }
+                  testID={`job-chip-${job.job_id}`}
+                />
+              ))}
+              <TouchableOpacity
+                onPress={() => setJobPickerOpen(true)}
+                disabled={inFlight}
+                accessibilityRole="button"
+                testID="job-more"
+                style={s.allJobsBtn}
+              >
+                <Text style={s.allJobsText}>
+                  {t('capture.all_jobs', { count: activeJobs.length })}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+          {activeJobs.length > 0 && jobSel === null ? (
+            <Text style={s.paymentHint} testID="job-default-hint">
+              {t('capture.job_hint')}
+            </Text>
+          ) : null}
+
           <DatePills
             value={expenseDate}
             onChange={setExpenseDate}
             disabled={inFlight}
           />
 
-          <View style={s.paymentRow}>
-            <Text style={s.paymentLabel}>{t('capture.payment_label')}</Text>
-            <PaymentOption
-              label={t('capture.payment_cash')}
-              active={paymentSel === 'cash'}
-              disabled={inFlight}
-              onPress={() => setPaymentSel('cash')}
-              testID="payment-cash"
-            />
-            <PaymentOption
-              label={t('capture.payment_transfer')}
-              active={paymentSel === 'transfer'}
-              disabled={inFlight}
-              onPress={() => setPaymentSel('transfer')}
-              testID="payment-transfer"
-            />
+          <View>
+            <Text style={[s.paymentLabel, s.blockLabel]}>
+              {t('capture.payment_label')}
+            </Text>
+            {/* Fidelity §4.5: two 46-high BUTTONS (flex 1 / 1.3),
+                selected = tonal fill + 1.5px primary border. */}
+            <View style={s.payBtnRow}>
+              <TouchableOpacity
+                style={[s.payBtn, paymentSel === 'cash' && s.payBtnOn]}
+                onPress={() => setPaymentSel('cash')}
+                disabled={inFlight}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: paymentSel === 'cash' }}
+                testID="payment-cash"
+              >
+                <Text
+                  style={[s.payBtnText, paymentSel === 'cash' && s.payBtnTextOn]}
+                >
+                  {t('capture.payment_cash')}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  s.payBtn,
+                  s.payBtnWide,
+                  paymentSel === 'transfer' && s.payBtnOn,
+                ]}
+                onPress={() => setPaymentSel('transfer')}
+                disabled={inFlight}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: paymentSel === 'transfer' }}
+                testID="payment-transfer"
+              >
+                <Text
+                  style={[
+                    s.payBtnText,
+                    paymentSel === 'transfer' && s.payBtnTextOn,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {t('capture.payment_transfer')}
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
           {/* O1-S1 #2: when no payment method is picked, make the default
@@ -616,8 +629,8 @@ export default function CaptureScreen() {
                 if (!inFlight) setReceiptLater(v);
               }}
               disabled={inFlight}
-              trackColor={{ true: '#93c5fd', false: tokens.line }}
-              thumbColor={receiptLater ? tokens.primary : tokens.surfaceSub}
+              trackColor={{ true: tokens.primary, false: tokens.line }}
+              thumbColor={'#ffffff'}
               accessibilityLabel={t('capture.receipt_later')}
             />
           </View>
@@ -656,31 +669,21 @@ export default function CaptureScreen() {
             )}
           </TouchableOpacity>
 
-          {/* M0: persisted failed captures (if any) — tap a row to put
-              the text back into the form and retry it. Renders nothing
-              when there are no stored failures. */}
+          {/* M0: persisted failed captures — a capture that failed to
+              save is money at risk; the sheet keeps this list (renders
+              nothing when empty). Recent captures live on Home/lists,
+              per the sheet-is-form-only spec. */}
           <RecentFailuresList onRefill={onRefillFailure} />
-
-          {/* Correction-loop fix: render My Captures below the form even
-              in the pre-submit (empty form) state. Previously this list
-              only appeared after a successful capture, which meant the
-              user had no way to navigate to a past expense detail
-              without first capturing a new one. With the list always
-              visible, the path "I want to fix something I captured
-              earlier" -> scroll -> tap row -> detail -> Edit expense
-              is one tap from the default state of this screen. */}
-          <RecentCapturesList
-            query={recentExpenses}
-            showViewAll
-            showPendingTriage={isAdmin}
-          />
         </ScrollView>
+        </SafeAreaView>
       </KeyboardAvoidingView>
 
-      {/* O2-A: searchable full job list behind the "More…" chip. */}
+      {/* O2-A: searchable full job list behind the 全部N chip. */}
       <JobPickerSheet
         visible={jobPickerOpen}
         jobs={activeJobs}
+        recentJobs={chipJobs}
+        selectedJobId={jobSel}
         labelFor={jobLabelFor}
         onSelect={(jobId) => {
           setJobSel(jobId);
@@ -688,7 +691,7 @@ export default function CaptureScreen() {
         }}
         onClose={() => setJobPickerOpen(false)}
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -827,30 +830,70 @@ function MultiCaptureResultCard({
 }
 
 const base = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: tokens.bg },
-  flex: { flex: 1 },
+  // Strict parity §4: bottom sheet — dark backdrop, radius-24 top,
+  // 38×5 handle. The route is a transparentModal with slide_from_bottom
+  // (app/_layout.tsx), so the sheet itself animates in.
+  overlay: { flex: 1, justifyContent: 'flex-end' },
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(9, 14, 26, 0.45)',
+  },
+  sheet: {
+    backgroundColor: tokens.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: '100%',
+    shadowColor: '#090E1A',
+    shadowOffset: { width: 0, height: -12 },
+    shadowOpacity: 0.35,
+    shadowRadius: 40,
+    elevation: 16,
+  },
+  handle: {
+    alignSelf: 'center',
+    width: 38,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: tokens.disabled,
+    marginTop: 8,
+  },
   scroll: { padding: 16, gap: 14 },
-  headerRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  backBtn: { minWidth: 44, minHeight: 44, justifyContent: 'center' },
-  backChevron: { fontSize: 30, lineHeight: 32, color: tokens.ink2 },
-  backSpacer: { width: 44 },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 6,
+  },
+  closeBtn: {
+    minWidth: 36,
+    minHeight: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  closeText: { fontSize: 17, color: tokens.ink2 },
   title: {
-    fontSize: 24,
-    fontWeight: '600',
+    fontSize: 20,
+    fontWeight: '800',
     color: tokens.ink,
     marginBottom: 4,
   },
+  // Fidelity §4.1: blue 1.5px border + soft blue glow, 17px mono.
   textarea: {
-    minHeight: 120,
+    minHeight: 100,
     borderWidth: 1.5,
-    borderColor: tokens.line,
-    borderRadius: 14,
+    borderColor: tokens.primary,
+    borderRadius: 16,
     padding: 14,
-    fontSize: 16,
+    fontSize: 17,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     color: tokens.ink,
     backgroundColor: tokens.surface,
     textAlignVertical: 'top',
+    shadowColor: tokens.primary,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.12,
+    shadowRadius: 5,
+    elevation: 2,
   },
   paymentRow: {
     flexDirection: 'row',
@@ -858,6 +901,25 @@ const base = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
   },
+  blockLabel: { marginBottom: 7 },
+  payBtnRow: { flexDirection: 'row', gap: 8 },
+  payBtn: {
+    flex: 1,
+    height: 46,
+    borderRadius: 13,
+    borderWidth: 1.5,
+    borderColor: tokens.line,
+    backgroundColor: tokens.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  payBtnWide: { flex: 1.3 },
+  payBtnOn: { backgroundColor: tokens.sel, borderColor: tokens.primary },
+  payBtnText: { fontSize: 14, fontWeight: '600', color: tokens.ink2 },
+  payBtnTextOn: { color: tokens.selText, fontWeight: '800' },
+  allJobsBtn: { paddingVertical: 6, paddingHorizontal: 4 },
+  allJobsText: { fontSize: 13, fontWeight: '700', color: tokens.primary },
   paymentLabel: { color: tokens.ink2, fontSize: 14, marginRight: 4 },
   // B3: chip visuals live in src/ui/kit.tsx (Chip).
   paymentHint: { color: tokens.ink3, fontSize: 12, lineHeight: 16 },

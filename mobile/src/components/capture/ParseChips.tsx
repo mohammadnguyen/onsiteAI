@@ -58,13 +58,25 @@ export function ParseChips({
   return (
     <View style={[s.row, isSettling && s.settling]} testID="capture-parse-chips">
       {amount ? (
-        <Chip kind="ok" text={amount} testID="parse-chip-amount" />
+        <Chip
+          kind="ok"
+          text={t('capture.field_amount') + ' · ' + amount}
+          testID="parse-chip-amount"
+        />
       ) : null}
       {jobLabel ? (
-        <Chip kind="ok" text={jobLabel} testID="parse-chip-job" />
+        <Chip
+          kind="ok"
+          text={t('capture.field_job') + ' · ' + jobLabel}
+          testID="parse-chip-job"
+        />
       ) : null}
       {supplier ? (
-        <Chip kind="ok" text={supplier} testID="parse-chip-supplier" />
+        <Chip
+          kind="ok"
+          text={t('capture.field_supplier') + ' · ' + supplier}
+          testID="parse-chip-supplier"
+        />
       ) : null}
       {jobUnsure ? (
         <Chip
@@ -118,18 +130,18 @@ const base = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    borderRadius: 999,
+    borderRadius: 10,
     borderWidth: 1,
     paddingHorizontal: 11,
-    paddingVertical: 5,
-    maxWidth: 220,
+    paddingVertical: 6,
+    maxWidth: 240,
   },
   chipOk: { backgroundColor: tokens.sel, borderColor: tokens.selBorder },
   chipWarn: { backgroundColor: tokens.warnBg, borderColor: tokens.warnBorder },
   chipMark: { fontSize: 12, fontWeight: '800' },
   chipMarkOk: { color: tokens.selText },
   chipMarkWarn: { color: tokens.warnMid },
-  chipText: { fontSize: 12.5, fontWeight: '600', flexShrink: 1 },
+  chipText: { fontSize: 12.5, fontWeight: '700', flexShrink: 1 },
   chipTextOk: { color: tokens.selText },
   chipTextWarn: { color: tokens.warnMid },
 });

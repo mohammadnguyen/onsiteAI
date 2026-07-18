@@ -40,6 +40,12 @@ import { localizeCategoryName } from '../../../src/util/category';
 import { useScaledStyles } from '../../../src/ui/type';
 import { useOneShotBack } from '../../../src/util/navigation';
 import { BudgetBar, Chip, StatusBadge } from '../../../src/ui/kit';
+import {
+  ReceiptIcon,
+  UsersIcon,
+  FolderIcon,
+  NoteIcon,
+} from '../../../src/ui/icons';
 import { tokens, type Tone } from '../../../src/ui/tokens';
 
 /**
@@ -255,17 +261,18 @@ export default function JobDetailScreen() {
             </Text>
           ) : null}
 
-          <View style={s.tabRow} testID="job-detail-tabs">
-            {TABS.map((tb) => (
-              <Chip
-                key={tb.key}
-                label={tb.label}
-                selected={tab === tb.key}
-                onPress={() => setTab(tb.key)}
-                testID={`job-tab-${tb.key}`}
-              />
-            ))}
-          </View>
+          {tab !== 'overview' ? (
+            <TouchableOpacity
+              onPress={() => setTab('overview')}
+              style={s.subBack}
+              accessibilityRole="button"
+              testID="job-sub-back"
+            >
+              <Text style={s.subBackText}>
+                {'‹ ' + t('job.tab_overview')}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
 
           {tab === 'overview' ? (
             <>
@@ -273,6 +280,7 @@ export default function JobDetailScreen() {
                 <>
                   <FinancialOverviewCard job={data} summary={summary} />
                   <MarginCard job={data} summary={summary} />
+                  <PaidCard summary={summary} />
                 </>
               ) : (
                 <DetailRow
@@ -280,6 +288,30 @@ export default function JobDetailScreen() {
                   value={localizeJobStatus(data.status, t)}
                 />
               )}
+              {/* Fidelity §8 入口宫格: 4 tiles — 支出/用工/文件/备注. */}
+              <View style={s.entryGrid} testID="job-entry-grid">
+                {(
+                  [
+                    ['expenses', t('job.tab_expenses'), ReceiptIcon],
+                    ['labour', t('job.tab_labour'), UsersIcon],
+                    ['files', t('job.tab_files'), FolderIcon],
+                    ['notes', t('job.tab_notes'), NoteIcon],
+                  ] as const
+                ).map(([key, label, Icon]) => (
+                  <TouchableOpacity
+                    key={key}
+                    style={s.entryTile}
+                    onPress={() => setTab(key)}
+                    accessibilityRole="button"
+                    testID={`job-tab-${key}`}
+                  >
+                    <Icon size={19} color={tokens.ink2} />
+                    <Text style={s.entryTileText} numberOfLines={1}>
+                      {label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
               {isAdmin ? (
                 <View style={s.lifecycleSection} testID="job-lifecycle">
                   {data.status === 'active' ? (
@@ -422,31 +454,9 @@ function FinancialOverviewCard({
     <View style={s.card} testID="job-financial-overview">
       <Text style={s.cardTitle}>{t('job.budgets_and_spending')}</Text>
 
-      {/* Revenue hero (job data — renders even while summary loads). */}
-      {storedEx != null ? (
-        <>
-          <Text style={s.revLabel}>{t('job.ex_gst_revenue')}</Text>
-          <Text style={s.revValue} testID="job-revenue">
-            {formatMoney(storedEx)}
-          </Text>
-          <View style={s.contractLine}>
-            <Text style={s.contractText}>
-              {`${t('job.contract_value')} ${entered != null ? formatMoney(entered) : '—'}`}
-            </Text>
-            <View style={s.gstChip}>
-              <Text style={s.gstChipText}>
-                {t(incl ? 'job.gst_including' : 'job.gst_none_cash')}
-              </Text>
-            </View>
-            {entered != null && incl ? (
-              <Text style={s.contractText}>
-                {`· ${t('job.gst_amount')} ${formatMoney(contractGstFromEntered(entered, incl))}`}
-              </Text>
-            ) : null}
-          </View>
-          <View style={s.cardDivider} />
-        </>
-      ) : null}
+      {/* Fidelity §8: the hero is 剩余预算 (34/800) with 「预算 $X ·
+          已用 N%」 beneath. Contract/revenue demote to a secondary
+          line below the bar. */}
 
       {/* Spending 4-grid + bar (summary data, four-state). */}
       {is403 ? null : summary.isLoading ? (
@@ -460,50 +470,55 @@ function FinancialOverviewCard({
         </Text>
       ) : sum ? (
         <View testID="job-spending-body">
-          <View style={s.grid}>
-            <View style={s.gridCell}>
-              <Text style={s.gridLabel}>{t('job.budget')}</Text>
-              <Text style={s.gridValue}>
-                {sum.total_budget_ex_gst != null
-                  ? formatMoney(sum.total_budget_ex_gst)
-                  : t('job.no_budget_set')}
-              </Text>
-            </View>
-            <View style={s.gridCell}>
-              <Text style={s.gridLabel}>{t('job.total_spent')}</Text>
-              <Text style={s.gridValue}>{formatMoney(sum.actual_ex_gst)}</Text>
-            </View>
-            <View style={s.gridCell}>
-              <Text style={s.gridLabel}>{t('job.total_paid_cash_out')}</Text>
-              <Text style={s.gridValue}>{formatMoney(sum.actual_inc_gst)}</Text>
-            </View>
-            <View style={s.gridCell}>
-              <Text style={s.gridLabel}>{t('job.remaining')}</Text>
-              <Text
-                style={[s.gridValue, sum.overspend ? s.overspendValue : null]}
-              >
-                {sum.remaining_ex_gst != null
-                  ? formatMoney(sum.remaining_ex_gst)
-                  : '—'}
-              </Text>
-            </View>
-          </View>
+          <Text style={s.revLabel}>{t('job.remaining_hero_label')}</Text>
+          <Text
+            style={[s.heroRemaining, sum.overspend && s.overspendValue]}
+            testID="job-remaining-hero"
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.7}
+          >
+            {sum.remaining_ex_gst != null
+              ? formatMoney(sum.remaining_ex_gst)
+              : formatMoney(sum.actual_ex_gst)}
+          </Text>
+          <Text style={s.heroSub} numberOfLines={1}>
+            {sum.total_budget_ex_gst != null
+              ? t('job.budget_used_line', {
+                  budget: formatMoney(sum.total_budget_ex_gst),
+                  pct: pct != null ? pct.toFixed(0) : '—',
+                })
+              : t('job.no_budget_set')}
+          </Text>
           {pct != null && tone != null ? (
             <View style={s.barWrap}>
-              <BudgetBar
-                pctUsed={pct}
-                tone={tone}
-                leftText={t('ui.of_budget')}
-              />
+              <BudgetBar pctUsed={pct} tone={tone} leftText={t('ui.of_budget')} />
             </View>
           ) : null}
-          <Text style={s.metricHint} testID="job-total-paid-hint">
-            {t('job.total_paid_hint')}
-          </Text>
           <CompositionBar
             categories={sum.categories ?? []}
             uncategorised={sum.uncategorised_actual_ex_gst}
           />
+          {storedEx != null ? (
+            <>
+              <View style={s.cardDivider} />
+              <View style={s.contractLine}>
+                <Text style={s.contractText}>
+                  {`${t('job.ex_gst_revenue')} ${formatMoney(storedEx)}`}
+                </Text>
+                <View style={s.gstChip}>
+                  <Text style={s.gstChipText}>
+                    {t(incl ? 'job.gst_including' : 'job.gst_none_cash')}
+                  </Text>
+                </View>
+                {entered != null && incl ? (
+                  <Text style={s.contractText}>
+                    {`· ${t('job.gst_amount')} ${formatMoney(contractGstFromEntered(entered, incl))}`}
+                  </Text>
+                ) : null}
+              </View>
+            </>
+          ) : null}
         </View>
       ) : null}
     </View>
@@ -599,6 +614,32 @@ function CompositionBar({
   );
 }
 
+/** Fidelity §8 实付卡: cash-flow view — 现金按面值 + 发票按含GST总额. */
+function PaidCard({
+  summary,
+}: {
+  summary: ReturnType<typeof useJobBudgetSummary>;
+}) {
+  const s = useScaledStyles(base);
+  const { t } = useTranslation();
+  const sum = summary.data;
+  if (!sum) return null;
+  return (
+    <View style={s.card} testID="job-paid-card">
+      <Text style={s.cardTitle}>{t('job.paid_title')}</Text>
+      <Text style={s.metricHint}>{t('job.paid_sub')}</Text>
+      <Text
+        style={s.paidValue}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.7}
+      >
+        {formatMoney(sum.actual_inc_gst)}
+      </Text>
+    </View>
+  );
+}
+
 /* ================= Margin card (moved from the modal, B3 logic) ==== */
 
 function MarginCard({
@@ -641,6 +682,19 @@ function MarginCard({
       ? Number(data.budgeted_profit_ratio_pct)
       : null;
 
+  // Fidelity §8: with NO contract there is no margin to show — render
+  // the dashed set-it-up prompt instead of vanishing (admins only;
+  // contributors have no summary and never reach here).
+  if (contract == null || contract <= 0) {
+    return (
+      <View style={s.card} testID="job-margin-nocontract">
+        <Text style={s.cardTitle}>{t('job.margin_header')}</Text>
+        <View style={s.noContractBox}>
+          <Text style={s.noContractText}>{t('job.no_contract_prompt')}</Text>
+        </View>
+      </View>
+    );
+  }
   if (target == null && current == null && projected == null) return null;
 
   const hero = projected ?? current;
@@ -950,14 +1004,54 @@ const base = StyleSheet.create({
   jobName: { flex: 1, fontSize: 22, fontWeight: '700', color: tokens.ink },
   subline: { fontSize: 12.5, color: tokens.ink3 },
 
-  tabRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginTop: 2 },
+  subBack: { paddingVertical: 4 },
+  subBackText: { fontSize: 14, fontWeight: '600', color: tokens.primary },
+  entryGrid: { flexDirection: 'row', gap: 8 },
+  entryTile: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 14,
+    backgroundColor: tokens.surface,
+    borderWidth: 1,
+    borderColor: tokens.line,
+    borderRadius: 14,
+  },
+  entryTileText: { fontSize: 12, fontWeight: '600', color: tokens.ink2 },
+  heroRemaining: {
+    fontSize: 34,
+    fontWeight: '800',
+    color: tokens.ink,
+    fontVariant: ['tabular-nums'],
+    letterSpacing: -1,
+    marginTop: 2,
+  },
+  heroSub: {
+    fontSize: 12.5,
+    color: tokens.ink2,
+    marginTop: 2,
+    fontVariant: ['tabular-nums'],
+  },
+  paidValue: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: tokens.ink,
+    fontVariant: ['tabular-nums'],
+    letterSpacing: -0.3,
+    marginTop: 6,
+  },
 
   card: {
     borderWidth: 1,
     borderColor: tokens.line,
-    borderRadius: 14,
+    borderRadius: 18,
     padding: 14,
-    backgroundColor: '#ffffff',
+    backgroundColor: tokens.surface,
+    shadowColor: '#101828',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.05,
+    shadowRadius: 14,
+    elevation: 2,
   },
   cardTitle: { fontSize: 13.5, fontWeight: '700', color: tokens.ink },
   cardDivider: {
@@ -1030,6 +1124,15 @@ const base = StyleSheet.create({
   },
   compDot: { width: 9, height: 9, borderRadius: 3 },
   compName: { flexShrink: 1, fontSize: 12, color: tokens.ink2 },
+  noContractBox: {
+    marginTop: 10,
+    borderWidth: 1.5,
+    borderColor: tokens.disabled,
+    borderStyle: 'dashed',
+    borderRadius: 12,
+    padding: 14,
+  },
+  noContractText: { fontSize: 13, color: tokens.ink3, lineHeight: 19 },
   byWorkerWrap: { marginTop: 12, gap: 10 },
   byWorkerTitle: { fontSize: 13, fontWeight: '700', color: tokens.ink },
   bwRow: { gap: 5 },

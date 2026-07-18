@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,7 @@ import {
   FlatList,
   ActivityIndicator,
   Pressable,
+  TouchableOpacity,
   RefreshControl,
   ScrollView,
 } from 'react-native';
@@ -107,6 +108,23 @@ export default function ExpenseListScreen() {
   const setCategoryId = useExpenseListFiltersStore((st) => st.setCategoryId);
 
   const [openPicker, setOpenPicker] = useState<PickerKind | null>(null);
+  // Spec §5 quick pills: 全部 / 待审核 / 现金 / 缺发票. 现金 is a
+  // client-side filter (the list endpoint has no payment param);
+  // 缺发票 maps to the server's receipt_status. The advanced pickers
+  // below stay — they filter dimensions the pills don't cover.
+  const [quick, setQuick] = useState<'all' | 'pending' | 'cash' | 'noinv'>(
+    'all',
+  );
+  // Spec §5: the advanced dropdown filters are gone from the UI —
+  // clear any persisted values once so they can't invisibly filter.
+  useEffect(() => {
+    setJobId(null);
+    setStatus(null);
+    setDatePreset('all' as ExpenseListDatePreset);
+    setSupplierId(null);
+    setCategoryId(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // M2-B review fix: drive the pull-spinner from an explicit "the
   // user pulled" flag — `isRefetching` is also true during background
   // refetches (e.g. post-mutation invalidation), which would pin the
@@ -123,15 +141,17 @@ export default function ExpenseListScreen() {
   // hasn't changed, downstream memos see an identical input.
   const fromDate = presetFromDate(datePreset);
 
+  const effectiveStatus = quick === 'pending' ? 'pending' : status;
   const filters = useMemo<ExpenseListFilters>(
     () => ({
       ...(jobId ? { jobId } : {}),
-      ...(status ? { status } : {}),
+      ...(effectiveStatus ? { status: effectiveStatus } : {}),
       ...(supplierId ? { supplierId } : {}),
       ...(categoryId ? { categoryId } : {}),
       ...(fromDate ? { from: fromDate } : {}),
+      ...(quick === 'noinv' ? { receiptStatus: 'expected_later' as const } : {}),
     }),
-    [jobId, status, supplierId, categoryId, fromDate],
+    [jobId, effectiveStatus, supplierId, categoryId, fromDate, quick],
   );
 
   const list = useExpensesList(filters);
@@ -156,8 +176,13 @@ export default function ExpenseListScreen() {
 
   const items = useMemo(() => {
     const all = (list.data?.pages ?? []).flatMap((p) => p.items);
-    return status ? all : all.filter((e) => e.review_status !== 'rejected');
-  }, [list.data, status]);
+    const base = effectiveStatus
+      ? all
+      : all.filter((e) => e.review_status !== 'rejected');
+    return quick === 'cash'
+      ? base.filter((e) => e.payment_method === 'cash')
+      : base;
+  }, [list.data, effectiveStatus, quick]);
 
   const onBack = useOneShotBack('/(tabs)/home' as unknown as Href);
 
@@ -324,25 +349,32 @@ export default function ExpenseListScreen() {
         <View style={s.headerSpacer} />
       </View>
 
-      <View style={s.chipBarWrap}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={s.chipBar}
-          testID="expense-list-filters"
-        >
-          {(
-            ['job', 'status', 'date', 'supplier', 'category'] as PickerKind[]
-          ).map((kind) => (
-            <Chip
-              key={kind}
-              label={`${chipLabels[kind]} ▾`}
-              selected={chipActive[kind]}
-              onPress={() => setOpenPicker(kind)}
-              testID={`filter-chip-${kind}`}
-            />
-          ))}
-        </ScrollView>
+      {/* Spec §5: one-tap quick pills. 全部 selected = black. */}
+      <View style={s.quickRow} testID="expense-quick-pills">
+        {(
+          [
+            ['all', t('exp_list.all')],
+            ['pending', t('exp_list.pending')],
+            ['cash', t('exp_list.cash')],
+            ['noinv', t('exp_list.no_invoice')],
+          ] as const
+        ).map(([key, label]) => (
+          <TouchableOpacity
+            key={key}
+            style={[s.quickPill, quick === key && s.quickPillOn]}
+            onPress={() => setQuick(key)}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: quick === key }}
+            testID={`quick-pill-${key}`}
+          >
+            <Text
+              style={[s.quickPillText, quick === key && s.quickPillTextOn]}
+              numberOfLines={1}
+            >
+              {label}
+            </Text>
+          </TouchableOpacity>
+        ))}
       </View>
 
       <FlatList
@@ -468,6 +500,24 @@ const s = StyleSheet.create({
     color: '#0f172a',
   },
   headerSpacer: { width: 72 },
+  quickRow: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    backgroundColor: tokens.surface,
+  },
+  quickPill: {
+    paddingHorizontal: 13,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: tokens.line,
+    backgroundColor: tokens.surface,
+  },
+  quickPillOn: { backgroundColor: tokens.ink, borderColor: tokens.ink },
+  quickPillText: { fontSize: 12.5, fontWeight: '600', color: tokens.ink2 },
+  quickPillTextOn: { color: '#ffffff', fontWeight: '700' },
   chipBarWrap: {
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',

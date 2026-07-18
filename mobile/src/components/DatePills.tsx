@@ -267,7 +267,11 @@ export function DatePills({
           testID="date-yesterday"
         />
         <Pill
-          label={t('capture.date_custom')}
+          label={
+            mode === 'custom'
+              ? customPillLabel(value, t('capture.date_custom'))
+              : t('capture.date_custom')
+          }
           active={mode === 'custom'}
           disabled={disabled}
           onPress={selectCustom}
@@ -353,6 +357,24 @@ export function DatePills({
   );
 }
 
+
+/** Spec 4.4: after picking, the pill itself echoes the date
+ * (12/07 周日). Falls back to the plain label pre-pick. */
+function customPillLabel(iso: string, fallback: string): string {
+  const parts = iso.split('-').map(Number);
+  const y = parts[0], m = parts[1], d = parts[2];
+  if (!y || !m || !d) return fallback;
+  try {
+    const date = new Date(y, m - 1, d);
+    const wk = new Intl.DateTimeFormat('zh-CN', { weekday: 'short' }).format(date);
+    const dd = String(d).padStart(2, '0');
+    const mm = String(m).padStart(2, '0');
+    return dd + '/' + mm + ' ' + wk;
+  } catch {
+    return fallback;
+  }
+}
+
 function Pill({
   label,
   active,
@@ -408,9 +430,11 @@ const s = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: '#ffffff',
   },
-  pillActive: { backgroundColor: tokens.sel, borderColor: tokens.selBorder },
+  // Fidelity §4.4: the SELECTED date pill is BLACK #101828 with white
+  // text — the spec's deliberate exception to the tonal family.
+  pillActive: { backgroundColor: tokens.ink, borderColor: tokens.ink },
   pillText: { color: tokens.ink2, fontSize: 12.5, fontWeight: '500' },
-  pillTextActive: { color: tokens.selText, fontWeight: '600' },
+  pillTextActive: { color: '#ffffff', fontWeight: '700' },
   pillTextDisabled: { color: tokens.disabled },
   customWrap: { gap: 4 },
   customInput: {

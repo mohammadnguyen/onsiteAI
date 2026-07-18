@@ -120,7 +120,7 @@ export default function ReviewQueueScreen() {
           style={({ pressed }) => [s.backBtn, pressed && s.backBtnPressed]}
         >
           <Text style={s.backChevron}>{'‹'}</Text>
-          <Text style={s.backLabel}>{t('expense.back')}</Text>
+          <Text style={s.backLabel}>{t('tabs.home')}</Text>
         </Pressable>
         <Text style={s.headerTitle} numberOfLines={1}>
           {t('review_queue.title')}
@@ -146,7 +146,8 @@ export default function ReviewQueueScreen() {
         ListHeaderComponent={
           !loading && rows.length > 0 ? (
             <View style={s.banner} testID="review-queue-banner">
-              <Text style={s.bannerText}>
+              <View style={s.bannerDot} />
+              <Text style={s.bannerText} numberOfLines={1}>
                 {totalKnown
                   ? t('review_queue.banner', {
                       count: rows.length,
@@ -157,7 +158,7 @@ export default function ReviewQueueScreen() {
                     })}
               </Text>
               {oldest ? (
-                <Text style={s.bannerSub}>
+                <Text style={s.bannerSub} numberOfLines={1}>
                   {t('review_queue.earliest', {
                     date: formatDateAU(oldest),
                   })}
@@ -209,11 +210,14 @@ export default function ReviewQueueScreen() {
             </View>
           ) : queue.isSuccess ? (
             // Positive evidence: queue.data is a loaded, empty list.
-            <View style={s.state} testID="review-queue-empty">
-              <View style={s.doneTick}>
-                <Text style={s.doneTickText}>{'✓'}</Text>
+            <View style={s.stateWrap} testID="review-queue-empty">
+              <View style={s.doneCard}>
+                <View style={s.doneTick}>
+                  <Text style={s.doneTickText}>{'✓'}</Text>
+                </View>
+                <Text style={s.doneTitle}>{t('home.all_clear')}</Text>
+                <Text style={s.doneSub}>{t('review_queue.empty_sub')}</Text>
               </View>
-              <Text style={s.stateText}>{t('review_queue.empty')}</Text>
             </View>
           ) : null
         }
@@ -251,6 +255,7 @@ function TriageCard({
   const busy = approve.isPending || reject.isPending || del.isPending;
 
   const isDup = item.review_reasons.includes('duplicate_suspected');
+  const isJobUnsure = item.review_reasons.includes('job_uncertain');
   const money = expense ? formatMoney(expense.amount_inc_gst) : null;
   const openDetail = () =>
     router.push(`/expenses/${item.expense_id}` as unknown as Href);
@@ -299,11 +304,27 @@ function TriageCard({
               {t('review_queue.summary_unavailable')}
             </Text>
           )}
-          <Text style={s.waiting}>
-            {t('review_queue.waiting_since', {
-              date: formatDateAU(item.opened_at.slice(0, 10)),
-            })}
-          </Text>
+          {/* Fidelity §3: reason badges sit top-right beside the amount. */}
+          <View style={s.reasonRowTop}>
+            {item.review_reasons.map((code) => (
+              <View
+                key={code}
+                style={[
+                  s.reasonPill,
+                  code === 'duplicate_suspected' && s.reasonPillDup,
+                ]}
+              >
+                <Text
+                  style={[
+                    s.reasonText,
+                    code === 'duplicate_suspected' && s.reasonTextDup,
+                  ]}
+                >
+                  {t('review_reason.' + code, { defaultValue: code })}
+                </Text>
+              </View>
+            ))}
+          </View>
         </View>
 
         {expense ? (
@@ -319,26 +340,34 @@ function TriageCard({
           </Text>
         ) : null}
 
-        <View style={s.reasonRow}>
-          {item.review_reasons.map((code) => (
-            <View
-              key={code}
-              style={[
-                s.reasonPill,
-                code === 'duplicate_suspected' && s.reasonPillDup,
-              ]}
-            >
-              <Text
-                style={[
-                  s.reasonText,
-                  code === 'duplicate_suspected' && s.reasonTextDup,
-                ]}
-              >
-                {t(`review_reason.${code}`, { defaultValue: code })}
-              </Text>
-            </View>
-          ))}
-        </View>
+        {/* Fidelity §3: job-uncertain cards embed the SUGGESTION block —
+            the parser's best-guess job + 换项目 (opens the detail, which
+            owns the corrections flow). */}
+        {expense && isJobUnsure ? (
+          <View style={s.suggestBlock}>
+            <Text style={s.suggestLabel}>{t('review.suggested_label')}</Text>
+            <Text style={s.suggestName} numberOfLines={1}>
+              {jobName || '—'}
+            </Text>
+            <Text style={s.suggestChange} onPress={openDetail}>
+              {t('review.change_job')}
+            </Text>
+          </View>
+        ) : null}
+        {/* Fidelity §3: duplicate cards carry a red comparison block.
+            The original's figures live on the detail screen — 对比
+            opens it (a per-card fetch of the original here would be a
+            request per row). */}
+        {expense && isDup ? (
+          <View style={s.dupBlock}>
+            <Text style={s.dupBlockText} numberOfLines={1}>
+              {t('review.dup_hint')}
+            </Text>
+            <Text style={s.dupCompare} onPress={openDetail}>
+              {t('review.compare')}
+            </Text>
+          </View>
+        ) : null}
       </Pressable>
 
       {/* Actions need a loaded summary — approving an amount you can't
@@ -473,11 +502,11 @@ const base = StyleSheet.create({
   backBtnPressed: { opacity: 0.5 },
   backChevron: {
     fontSize: 28,
-    color: tokens.ink2,
+    color: tokens.primary,
     marginRight: 4,
     lineHeight: 28,
   },
-  backLabel: { fontSize: 16, color: tokens.ink2 },
+  backLabel: { fontSize: 16, color: tokens.primary },
   headerTitle: {
     flex: 1,
     textAlign: 'center',
@@ -495,19 +524,35 @@ const base = StyleSheet.create({
   linkBtn: { paddingHorizontal: 12, paddingVertical: 8 },
   linkBtnPressed: { opacity: 0.5 },
   linkBtnText: { color: tokens.primary, fontSize: 15, fontWeight: '600' },
+  stateWrap: { paddingHorizontal: 16 },
+  // Fidelity §3: FULL green card — solid #12B76A circle, white tick.
+  doneCard: {
+    backgroundColor: tokens.okBg,
+    borderWidth: 1,
+    borderColor: tokens.okBorder,
+    borderRadius: 18,
+    paddingVertical: 34,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    gap: 10,
+  },
   doneTick: {
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: tokens.okBg,
-    borderWidth: 1,
-    borderColor: tokens.okBorder,
+    backgroundColor: tokens.okFill,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  doneTickText: { fontSize: 22, color: tokens.ok, fontWeight: '800' },
+  doneTickText: { fontSize: 21, color: '#ffffff', fontWeight: '800' },
+  doneTitle: { fontSize: 15, fontWeight: '800', color: tokens.ok },
+  doneSub: { fontSize: 12.5, color: '#3E7A5C', textAlign: 'center' },
 
+  // Fidelity §3: single row — amber dot + bold text + right 最早.
   banner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     backgroundColor: tokens.warnBg,
     borderWidth: 1,
     borderColor: tokens.warnBorder,
@@ -516,13 +561,20 @@ const base = StyleSheet.create({
     paddingVertical: 11,
     marginBottom: 2,
   },
+  bannerDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: tokens.warnFill,
+  },
   bannerText: {
+    flex: 1,
     color: tokens.warn,
-    fontSize: 13.5,
+    fontSize: 13,
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
   },
-  bannerSub: { color: tokens.warnMid, fontSize: 11.5, marginTop: 2 },
+  bannerSub: { color: tokens.warnMid, fontSize: 12 },
   footNote: {
     color: tokens.muted,
     fontSize: 11.5,
@@ -562,7 +614,47 @@ const base = StyleSheet.create({
   degraded: { color: tokens.ink3, fontSize: 14, fontStyle: 'italic' },
   preview: { color: tokens.ink2, fontSize: 14, marginTop: 6, lineHeight: 19 },
   meta: { color: tokens.muted, fontSize: 12, marginTop: 4 },
-  reasonRow: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 8, gap: 6 },
+  reasonRowTop: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    flexShrink: 1,
+    justifyContent: 'flex-end',
+  },
+  suggestBlock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: tokens.surfaceSub,
+    borderWidth: 1,
+    borderColor: tokens.inputBorder,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginTop: 8,
+  },
+  suggestLabel: { fontSize: 12, color: tokens.ink3 },
+  suggestName: {
+    flex: 1,
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: tokens.ink,
+  },
+  suggestChange: { fontSize: 12, fontWeight: '700', color: tokens.primary },
+  dupBlock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FEF6F5',
+    borderWidth: 1,
+    borderColor: '#F9DEDC',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginTop: 8,
+  },
+  dupBlockText: { flex: 1, fontSize: 12, color: tokens.badDeep },
+  dupCompare: { fontSize: 12, fontWeight: '700', color: tokens.bad },
   reasonPill: {
     paddingHorizontal: 9,
     paddingVertical: 3,

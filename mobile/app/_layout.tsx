@@ -254,7 +254,18 @@ export default function RootLayout() {
             headerShown: false,
             contentStyle: { backgroundColor: tokens.bg },
           }}
-        />
+        >
+          {/* Strict parity §4: 记一笔 is a BOTTOM SHEET — transparent
+              modal + slide-up; the screen itself draws backdrop+sheet. */}
+          <Stack.Screen
+            name="capture"
+            options={{
+              presentation: 'transparentModal',
+              animation: 'slide_from_bottom',
+              contentStyle: { backgroundColor: 'transparent' },
+            }}
+          />
+        </Stack>
       </QueryClientProvider>
     </SafeAreaProvider>
   );

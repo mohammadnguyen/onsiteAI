@@ -5,7 +5,9 @@
     "password": "\u5bc6\u7801",
     "submit": "\u767b\u5f55",
     "error": "\u767b\u5f55\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u51ed\u8bc1\u3002",
-    "tagline": "\u4e00\u90e8\u624b\u673a\u7ba1\u7406\u5de5\u5730"
+    "tagline": "\u4e00\u90e8\u624b\u673a\u7ba1\u7406\u5de5\u5730",
+    "face_id": "\u7528 Face ID \u5feb\u901f\u767b\u5f55",
+    "forgot": "\u5fd8\u8bb0\u5bc6\u7801"
   },
   "ui": {
     "pct_used": "\u5df2\u7528 {{pct}}%",
@@ -59,7 +61,14 @@
     "net_profit": "\u51c0\u5229\u6da6",
     "profit_calc": "\u6536\u5165 {{rev}} \u2212 \u6210\u672c {{cost}} \u00b7 \u4e0d\u542bGST",
     "archived_total": "\u603b\u51c0\u5229 {{sum}}",
-    "archived_total_partial": "\u603b\u51c0\u5229 {{sum}}\uff08{{n}}/{{m}} \u4e2a\uff09"
+    "archived_total_partial": "\u603b\u51c0\u5229 {{sum}}\uff08{{n}}/{{m}} \u4e2a\uff09",
+    "status_over": "\u5df2\u8d85\u652f",
+    "status_near": "\u63a5\u8fd1\u9884\u7b97",
+    "filter_active_one": "\u8fdb\u884c\u4e2d {{count}}",
+    "filter_active_other": "\u8fdb\u884c\u4e2d {{count}}",
+    "filter_archived_one": "\u5df2\u5f52\u6863 {{count}}",
+    "filter_archived_other": "\u5df2\u5f52\u6863 {{count}}",
+    "no_archived": "\u6682\u65e0\u5df2\u5f52\u6863\u7684\u9879\u76ee\u3002"
   },
   "job": {
     "status": "\u72b6\u6001",
@@ -117,7 +126,12 @@
     "ruler_target": "\u76ee\u6807 {{target}}%",
     "by_worker": "\u6309\u5de5\u4eba \u00b7 \u4ec5\u672c\u9879\u76ee",
     "bw_days_hours": "{{days}} \u5929 \u00b7 {{hours}} \u5c0f\u65f6",
-    "labour_empty": "\u8be5\u8303\u56f4\u5185\u6682\u65e0\u7528\u5de5\u8bb0\u5f55\u3002"
+    "labour_empty": "\u8be5\u8303\u56f4\u5185\u6682\u65e0\u7528\u5de5\u8bb0\u5f55\u3002",
+    "no_contract_prompt": "\u672a\u8bbe\u7f6e\u5408\u540c\u91d1\u989d \u00b7 \u5728\u300c\u7f16\u8f91\u300d\u91cc\u8865\u5168\u540e\u663e\u793a\u5229\u6da6\u7387\u3002",
+    "remaining_hero_label": "\u5269\u4f59\u9884\u7b97 \u00b7 \u4e0d\u542bGST",
+    "budget_used_line": "\u9884\u7b97 {{budget}} \u00b7 \u5df2\u7528 {{pct}}%",
+    "paid_title": "\u5b9e\u4ed8\u603b\u8ba1 \u00b7 \u73b0\u91d1\u6d41\u53e3\u5f84",
+    "paid_sub": "\u73b0\u91d1\u6309\u9762\u503c + \u53d1\u7968\u6309\u542bGST\u603b\u989d"
   },
   "settings": {
     "title": "\u8bbe\u7f6e",
@@ -135,7 +149,12 @@
     "app_version": "\u5e94\u7528\u7248\u672c",
     "build": "\u6784\u5efa\u53f7",
     "build_commit": "\u6784\u5efa\u63d0\u4ea4",
-    "api_host": "API \u670d\u52a1\u5668"
+    "api_host": "API \u670d\u52a1\u5668",
+    "admin": "\u7ba1\u7406\u5458",
+    "prefs": "\u504f\u597d",
+    "team": "\u56e2\u961f",
+    "data": "\u6570\u636e",
+    "about": "\u5173\u4e8e"
   },
   "export": {
     "entry": "\u5bfc\u51fa\u7ed9\u4f1a\u8ba1",
@@ -174,23 +193,22 @@
     "unavailable_in_this_version": "\u6b64\u529f\u80fd\u6682\u672a\u5f00\u653e\u3002\u5f53\u524d\u7248\u672c\u8bf7\u4f7f\u7528\u300c\u5f00\u652f\u300d\u548c\u300c\u9879\u76ee\u300d\u3002"
   },
   "capture": {
-    "title": "\u65b0\u589e\u652f\u51fa",
+    "title": "\u8bb0\u4e00\u7b14",
     "textarea_placeholder": "\u8f93\u5165\u6216\u7c98\u8d34\u652f\u51fa\u5185\u5bb9\uff0c\u4f8b\u5982\uff1aBunnings 250 Elizabeth Street \u6c34\u6ce5 \u6216 Bunnings $500 \u73b0\u91d1 \u6676\u6676\u5bb6\u3002",
     "receipt_later": "\u7a0d\u540e\u8865\u53d1\u7968",
     "date_label": "\u65e5\u671f\uff1a",
     "date_today": "\u4eca\u5929",
     "date_yesterday": "\u6628\u5929",
-    "date_custom": "\u5176\u4ed6",
+    "date_custom": "\u9009\u65e5\u671f",
     "date_custom_placeholder": "DD/MM \u6216 DD/MM/YYYY",
     "date_custom_hint": "\u793a\u4f8b\uff1a22/05 \u6216 22/05/2026",
     "date_invalid": "\u65e5\u671f\u683c\u5f0f\u65e0\u6548\u2014\u2014\u8bf7\u4f7f\u7528 DD/MM \u6216 DD/MM/YYYY",
     "payment_label": "\u4ed8\u6b3e\uff1a",
     "payment_cash": "\u73b0\u91d1",
-    "payment_transfer": "\u94f6\u884c\u8f6c\u8d26",
+    "payment_transfer": "\u94f6\u884c\u8f6c\u8d26 \u00b7 \u542bGST",
     "payment_unknown": "\u672a\u77e5",
     "payment_default_hint": "\u672a\u9009\u62e9\u4ed8\u6b3e\u65b9\u5f0f\u65f6\uff0c\u7cfb\u7edf\u4f1a\u6309\u542b GST \u5904\u7406\u3002\u73b0\u91d1\u8bf7\u624b\u52a8\u9009\u62e9 Cash\u3002",
     "job_label": "\u9879\u76ee\uff1a",
-    "job_more": "\u66f4\u591a\u2026",
     "job_hint": "\u672a\u9009\u62e9\u9879\u76ee\u65f6\uff0c\u7cfb\u7edf\u4f1a\u6839\u636e\u8f93\u5165\u5185\u5bb9\u81ea\u52a8\u5339\u914d\u9879\u76ee\u3002",
     "job_picker_title": "\u9009\u62e9\u9879\u76ee",
     "job_picker_search": "\u641c\u7d22\u9879\u76ee",
@@ -221,7 +239,15 @@
     "submit_to": "\u63d0\u4ea4 \u00b7 {{amount}} \u2192 {{job}}",
     "submit_amount": "\u63d0\u4ea4 \u00b7 {{amount}}",
     "cash_note": "\u73b0\u91d1\u6309\u9762\u503c\u5165\u8d26 \u00b7 \u4e0d\u8ba1GST\u62b5\u6263",
-    "bank_note": "\u542bGST\u53d1\u7968\u81ea\u52a8\u62c6\u7a0e:\u51c0\u989d {{net}} + GST {{gst}}"
+    "bank_note": "\u542bGST\u53d1\u7968\u81ea\u52a8\u62c6\u7a0e:\u51c0\u989d {{net}} + GST {{gst}}",
+    "all_jobs": "\u5168\u90e8 {{count}} \u25be",
+    "field_amount": "\u91d1\u989d",
+    "field_job": "\u9879\u76ee",
+    "field_supplier": "\u4f9b\u5e94\u5546",
+    "picker_active_one": "\u8fdb\u884c\u4e2d {{count}}",
+    "picker_active_other": "\u8fdb\u884c\u4e2d {{count}}",
+    "picker_recent": "\u6700\u8fd1\u4f7f\u7528",
+    "picker_all": "\u5168\u90e8\u9879\u76ee \u00b7 A\u2192Z"
   },
   "failures": {
     "title": "\u63d0\u4ea4\u5931\u8d25\u7684\u652f\u51fa",
@@ -293,7 +319,13 @@
     "correct_error_contributor": "\u4ec5\u7ba1\u7406\u5458\u53ef\u66f4\u6b63\u5e76\u901a\u8fc7\u3002",
     "correct_error_archived": "\u8be5\u5de5\u7a0b\u5df2\u5f52\u6863 \u2014 \u8bf7\u9009\u62e9\u8fdb\u884c\u4e2d\u7684\u5de5\u7a0b\u3002",
     "correct_error_no_job": "\u8d39\u7528\u5fc5\u987b\u59cb\u7ec8\u5173\u8054\u4e00\u4e2a\u5de5\u7a0b\u3002",
-    "correct_error_generic": "\u65e0\u6cd5\u4fdd\u5b58\u66f4\u6b63\u3002"
+    "correct_error_generic": "\u65e0\u6cd5\u4fdd\u5b58\u66f4\u6b63\u3002",
+    "amount_label_pending": "\u91d1\u989d \u00b7 \u542bGST\u53e3\u5f84\u5f85\u5ba1",
+    "amount_label": "\u91d1\u989d \u00b7 \u542bGST",
+    "raw_note": "\u539f\u59cb\u8f93\u5165 \u00b7 \u89e3\u6790\u7ed3\u679c\u53ef\u901a\u8fc7\u4e0b\u65b9\u300c\u7f16\u8f91\u300d\u9010\u9879\u4fee\u6539",
+    "approved_banner": "\u5df2\u901a\u8fc7 \u00b7 \u51c0\u989d\u5df2\u8ba1\u5165 {{job}} \u6210\u672c",
+    "invoice_due_banner": "\u53d1\u7968\u5f85\u8865 \u00b7 \u63d0\u4ea4\u65f6\u9009\u4e86\u300c\u7a0d\u540e\u8865\u53d1\u7968\u300d",
+    "upload_photo": "\u62cd\u7167\u4e0a\u4f20"
   },
   "expense_list": {
     "title": "\u5168\u90e8\u652f\u51fa",
@@ -336,7 +368,8 @@
     "banner_one": "{{count}} \u7b14\u5f85\u5ba1 \u00b7 \u5408\u8ba1 {{sum}}",
     "banner_other": "{{count}} \u7b14\u5f85\u5ba1 \u00b7 \u5408\u8ba1 {{sum}}",
     "banner_count_only_one": "{{count}} \u7b14\u5f85\u5ba1",
-    "banner_count_only_other": "{{count}} \u7b14\u5f85\u5ba1"
+    "banner_count_only_other": "{{count}} \u7b14\u5f85\u5ba1",
+    "empty_sub": "\u65b0\u7684\u5f85\u5ba1\u6838\u8bb0\u5f55\u4f1a\u51fa\u73b0\u5728\u8fd9\u91cc\u3002"
   },
   "users": {
     "title": "\u7528\u6237",
@@ -511,7 +544,11 @@
     "rate_gap_title": "{{missing}}/{{total}} \u6761\u8bb0\u5f55\u7f3a\u5de5\u65f6\u6216\u65f6\u85aa\uff0c\u6210\u672c\u88ab\u4f4e\u4f30",
     "rate_gap_cta": "\u70b9\u6309\u8865\u5168\u5de5\u4eba\u65f6\u85aa",
     "tab_attendance": "\u8003\u52e4",
-    "saved": "\u5df2\u4fdd\u5b58"
+    "saved": "\u5df2\u4fdd\u5b58",
+    "unsaved_changes": "\u6709\u672a\u4fdd\u5b58\u7684\u4fee\u6539",
+    "saved_check": "\u5df2\u4fdd\u5b58 \u2713",
+    "save_cta_n_one": "\u4fdd\u5b58\u51fa\u52e4 \u00b7 {{count}} \u4eba",
+    "save_cta_n_other": "\u4fdd\u5b58\u51fa\u52e4 \u00b7 {{count}} \u4eba"
   },
   "review_reason": {
     "amount_uncertain": "\u91d1\u989d\u4e0d\u786e\u5b9a",
@@ -554,11 +591,22 @@
     "reject_failed": "\u9a73\u56de\u5931\u8d25 \u2014 \u5df2\u653e\u56de\u961f\u5217\u3002",
     "already_handled": "\u8fd9\u7b14\u5df2\u7ecf\u5904\u7406\u8fc7\u4e86 \u2014 \u961f\u5217\u5df2\u66f4\u65b0\u3002",
     "delete_dup": "\u5220\u9664\u91cd\u590d",
-    "keep_approve": "\u4fdd\u7559\u5e76\u901a\u8fc7"
+    "keep_approve": "\u4fdd\u7559\u5e76\u901a\u8fc7",
+    "suggested_label": "\u5efa\u8bae\u9879\u76ee\uff1a",
+    "change_job": "\u6362\u9879\u76ee",
+    "dup_hint": "\u5df2\u5b58\u5728\u4e00\u7b14\u76f8\u4f3c\u652f\u51fa",
+    "compare": "\u5bf9\u6bd4"
   },
   "toast": {
     "approved": "\u5df2\u901a\u8fc7 {{sum}}",
     "rejected": "\u5df2\u9a73\u56de {{sum}}",
-    "dup_deleted": "\u5df2\u5220\u9664\u91cd\u590d {{sum}}"
+    "dup_deleted": "\u5df2\u5220\u9664\u91cd\u590d {{sum}}",
+    "submitted": "\u5df2\u63d0\u4ea4 {{sum}} \u2192 {{job}}"
+  },
+  "exp_list": {
+    "all": "\u5168\u90e8",
+    "pending": "\u5f85\u5ba1\u6838",
+    "cash": "\u73b0\u91d1",
+    "no_invoice": "\u7f3a\u53d1\u7968"
   }
 }

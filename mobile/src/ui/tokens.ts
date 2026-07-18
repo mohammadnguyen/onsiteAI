@@ -83,8 +83,12 @@ export const toneText: Record<Tone, string> = {
   bad: tokens.bad,
 };
 
+// Fidelity §7/§8: a HEALTHY budget bar is BLUE (#2563EB) in the forey
+// spec — green stays for "done/healthy" TEXT (toneText.ok) and for
+// approve/saved fills, but the bar itself reads blue until the amber
+// threshold.
 export const toneFill: Record<Tone, string> = {
-  ok: tokens.okFill,
+  ok: tokens.primary,
   warn: tokens.warnFill,
   bad: tokens.bad,
 };

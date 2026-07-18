@@ -170,7 +170,8 @@ export function RecordsView({ onEditDay }: RecordsViewProps) {
             accessibilityRole="button"
             testID="records-prev-month"
           >
-            <Text style={s.chevronText}>{'‹'}</Text>
+            <View style={s.savedBadge}><Text style={s.savedBadgeText}>{t('labour.saved')}</Text></View>
+              <Text style={s.chevronText}>{'‹'}</Text>
           </TouchableOpacity>
           <Text style={s.monthLabel}>
             {formatMonthLabel(monthAnchor, i18n.language)}
@@ -332,17 +333,31 @@ const base = StyleSheet.create({
     marginTop: 12,
     borderRadius: 6,
   },
+  // Fidelity §12 记录: each day is a CARD with a green 已保存 badge.
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f1f5f9',
+    gap: 10,
     backgroundColor: tokens.surface,
+    borderWidth: 1,
+    borderColor: tokens.line,
+    borderRadius: 14,
+    paddingHorizontal: 13,
+    paddingVertical: 12,
+    marginBottom: 10,
   },
   rowMain: { flex: 1, gap: 2 },
-  rowWorker: { fontSize: 15, color: '#0f172a', fontWeight: '500' },
-  rowMeta: { fontSize: 13, color: '#64748b' },
+  rowWorker: { fontSize: 15, color: tokens.ink, fontWeight: '600' },
+  rowMeta: { fontSize: 13, color: tokens.ink3 },
+  savedBadge: {
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: tokens.okBg,
+    borderWidth: 1,
+    borderColor: tokens.okBorder,
+  },
+  savedBadgeText: { fontSize: 10.5, fontWeight: '700', color: tokens.ok },
   deleteBtn: {
     paddingHorizontal: 10,
     paddingVertical: 6,

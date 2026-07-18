@@ -696,6 +696,14 @@ export default function LabourScreen() {
           </View>
         ) : null}
 
+        {/* Fidelity §12: unsaved edits announce themselves in amber. */}
+        {hasChanges && entriesReady ? (
+          <View style={s.dirtyBanner} testID="labour-dirty-banner">
+            <Text style={s.dirtyBannerText}>
+              {t('labour.unsaved_changes')}
+            </Text>
+          </View>
+        ) : null}
         <View style={s.footerRow}>
           <Text style={s.summaryText}>
             {totalHours > 0
@@ -711,19 +719,31 @@ export default function LabourScreen() {
           </Text>
         </View>
 
-        <TouchableOpacity
-          onPress={() => void onSave()}
-          disabled={saveDisabled}
-          style={[s.saveBtn, saveDisabled && s.saveBtnDisabled]}
-          accessibilityRole="button"
-          testID="labour-save"
-        >
-          {save.isPending ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={s.saveBtnText}>{t('labour.save_cta')}</Text>
-          )}
-        </TouchableOpacity>
+        {/* Fidelity §12 CTA states: unsaved → solid blue with the
+            headcount; saved-and-clean → green tonal 已保存 ✓. */}
+        {!hasChanges && entriesReady && (entries.data?.length ?? 0) > 0 ? (
+          <View style={s.savedState} testID="labour-saved-state">
+            <Text style={s.savedStateText}>{t('labour.saved_check')}</Text>
+          </View>
+        ) : (
+          <TouchableOpacity
+            onPress={() => void onSave()}
+            disabled={saveDisabled}
+            style={[s.saveBtn, saveDisabled && s.saveBtnDisabled]}
+            accessibilityRole="button"
+            testID="labour-save"
+          >
+            {save.isPending ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={s.saveBtnText}>
+                {tickedRows.length > 0
+                  ? t('labour.save_cta_n', { count: tickedRows.length })
+                  : t('labour.save_cta')}
+              </Text>
+            )}
+          </TouchableOpacity>
+        )}
       </ScrollView>
       </KeyboardAvoidingView>
       </>
@@ -782,7 +802,25 @@ const s = StyleSheet.create({
   bannerOkText: { color: '#065f46', fontSize: 14 },
   bannerErrorText: { color: '#991b1b', fontSize: 14 },
   footerRow: { flexDirection: 'row', justifyContent: 'flex-end' },
-  summaryText: { color: '#475569', fontSize: 14, fontVariant: ['tabular-nums'] },
+  summaryText: { color: tokens.ink2, fontSize: 14, fontVariant: ['tabular-nums'] },
+  dirtyBanner: {
+    backgroundColor: tokens.warnBg,
+    borderWidth: 1,
+    borderColor: tokens.warnBorder,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  dirtyBannerText: { color: tokens.warn, fontSize: 12.5, fontWeight: '700' },
+  savedState: {
+    backgroundColor: tokens.okBg,
+    borderWidth: 1,
+    borderColor: tokens.okBorder,
+    borderRadius: 12,
+    paddingVertical: 13,
+    alignItems: 'center',
+  },
+  savedStateText: { color: tokens.ok, fontSize: 14.5, fontWeight: '700' },
   // B4.5 (design ⑤): with dates/Full-Half/segments all tonal, this is
   // the screen's single solid-primary action.
   saveBtn: {
