@@ -14,8 +14,16 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import verify_password_async
+from app.core.security import hash_password, verify_password_async
 from app.models.user import User
+
+# Security audit 2026-07: a constant decoy hash. When the email is
+# unknown or the account is inactive we still run a bcrypt verify
+# against this decoy so the reject path takes the SAME time as a real
+# password check — otherwise the timing difference (immediate return vs
+# tens of ms of bcrypt) enumerates which emails have active accounts,
+# defeating the uniform "Invalid email or password" message.
+_DECOY_HASH = hash_password("timing-attack-decoy-not-a-real-password")
 
 
 async def authenticate_user(
@@ -25,6 +33,9 @@ async def authenticate_user(
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     if user is None or not user.is_active:
+        # Constant-time reject: spend the same bcrypt cost as a real
+        # verify so latency doesn't leak account existence.
+        await verify_password_async(password, _DECOY_HASH)
         return None
     if not await verify_password_async(password, user.password_hash):
         return None

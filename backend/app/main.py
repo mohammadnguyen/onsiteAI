@@ -116,8 +116,11 @@ def create_app() -> FastAPI:
         # current environment.
         allow_origins=settings.cors_allowed_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        # Security audit 2026-07: explicit method/header allow-lists
+        # instead of "*" (the origins are already validated non-wildcard
+        # by app.config, so credentials are safe; this narrows the rest).
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
         # Phase 4: the admin's Excel-export hook reads the filename out
         # of ``Content-Disposition`` to drive the browser save dialog.
         # That header is not on the CORS "simple response headers" list

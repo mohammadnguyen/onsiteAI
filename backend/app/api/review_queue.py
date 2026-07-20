@@ -135,10 +135,12 @@ async def resolve_queue(
             detail=exc.detail,
         ) from exc
     except ValueError as exc:
-        # Bad FK reference in expense_patch -> 422.
+        # Bad FK reference in expense_patch -> 422. Security audit
+        # 2026-07: return a generic message, not the raw exception text
+        # (which could echo internal detail to the client).
         raise HTTPException(
             status_code=422,
-            detail=str(exc),
+            detail="Invalid reference in the correction.",
         ) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

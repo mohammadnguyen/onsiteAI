@@ -108,7 +108,7 @@ class ExpenseCreate(BaseModel):
     expense_date: ExpenseDateField = None
     category_id: uuid.UUID | None = None
     description: str | None = Field(default=None, max_length=500)
-    notes: str | None = None
+    notes: str | None = Field(default=None, max_length=2000)
     receipt_status: ReceiptStatus = ReceiptStatus.no_receipt
 
 
@@ -134,7 +134,7 @@ class ExpenseUpdate(BaseModel):
     expense_date: ExpenseDateField = None
     category_id: uuid.UUID | None = None
     description: str | None = Field(default=None, max_length=500)
-    notes: str | None = None
+    notes: str | None = Field(default=None, max_length=2000)
     receipt_status: ReceiptStatus | None = None
     review_status: ReviewStatus | None = None
     reason: str | None = Field(default=None, max_length=500)

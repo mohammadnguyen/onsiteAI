@@ -27,7 +27,7 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models import (
     Category,
@@ -232,6 +232,38 @@ async def test_create_structured_skips_parser(client, db_session, world, admin_t
         ExpenseReviewQueue.expense_id == uuid.UUID(body["expense"]["expense_id"])
     )
     assert (await db_session.execute(stmt)).scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_structured_create_is_idempotent_within_window(
+    client, db_session, world, admin_token
+):
+    """Security audit 2026-07: a retried STRUCTURED create (same user, job,
+    amount, date within 90s) returns the SAME expense instead of a twin
+    that would double-count toward job cost."""
+    body = {
+        "job_id": str(world["job_a"].job_id),
+        "amount_inc_gst": "777",
+        "expense_date": _today_iso(),
+        "description": "idempotency probe",
+    }
+    r1 = await client.post("/expenses", headers=_auth(admin_token), json=body)
+    assert r1.status_code == 201, r1.text
+    r2 = await client.post("/expenses", headers=_auth(admin_token), json=body)
+    assert r2.status_code == 201, r2.text
+    # Same row returned, not a second insert.
+    assert r1.json()["expense"]["expense_id"] == r2.json()["expense"]["expense_id"]
+    count = (
+        await db_session.execute(
+            select(func.count())
+            .select_from(Expense)
+            .where(
+                Expense.job_id == world["job_a"].job_id,
+                Expense.amount_inc_gst == Decimal("777"),
+            )
+        )
+    ).scalar_one()
+    assert count == 1
 
 
 @pytest.mark.asyncio

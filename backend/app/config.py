@@ -172,6 +172,12 @@ class Settings(BaseSettings):
     # the app is single-node so an in-process counter is sufficient for V1.
     auth_rate_limit_per_minute: int = 10
 
+    # Security audit 2026-07: a SEPARATE per-IP login cap (on top of the
+    # per-(ip,email) cap) to blunt password-spray — one host trying one
+    # password across many known emails. Higher than the per-account cap
+    # so a shared office NAT isn't locked out at login time. 0 disables.
+    login_ip_rate_limit_per_minute: int = 30
+
     # Comma-separated list of allowed origins. Example value:
     #   CORS_ALLOWED_ORIGINS=https://admin.example.com,https://app.example.com
     # ``NoDecode`` tells pydantic-settings not to JSON-decode the env-var

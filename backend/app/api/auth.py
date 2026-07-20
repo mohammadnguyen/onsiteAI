@@ -44,12 +44,37 @@ router = APIRouter(tags=["auth"])
 
 
 def _client_ip(request: Request) -> str:
+    """The real client IP.
+
+    Security audit 2026-07: on Fly.io every request arrives via the edge
+    proxy, so ``request.client.host`` is the proxy's address — identical
+    for ALL users. Keying a rate limiter on it collapses every user into
+    ONE shared bucket. Fly sets the true client IP in ``Fly-Client-IP``;
+    fall back to the left-most ``X-Forwarded-For`` hop, then the socket
+    peer. These headers are stamped by the trusted Fly proxy.
+    """
+    fly = request.headers.get("fly-client-ip")
+    if fly:
+        return fly.strip()
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
 
 
 def _enforce_auth_rate_limit(key: str) -> None:
     """Raise 429 if ``key`` exceeds the configured per-minute auth cap (E2)."""
     limit = get_settings().auth_rate_limit_per_minute
+    if not auth_rate_limiter.hit_and_check(key, limit):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many attempts. Please wait a minute and try again.",
+        )
+
+
+def _enforce_login_ip_rate_limit(key: str) -> None:
+    """Raise 429 if ``key`` exceeds the per-IP login cap (spray defence)."""
+    limit = get_settings().login_ip_rate_limit_per_minute
     if not auth_rate_limiter.hit_and_check(key, limit):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -66,7 +91,11 @@ async def login(
     request: Request, body: LoginRequest, db: AsyncSession = Depends(get_db)
 ) -> TokenPair:
     """Exchange email + password for an access/refresh token pair."""
-    _enforce_auth_rate_limit(f"login:{_client_ip(request)}:{body.email.strip().lower()}")
+    ip = _client_ip(request)
+    # Per-(ip, email): caps brute-force against a single account.
+    _enforce_auth_rate_limit(f"login:{ip}:{body.email.strip().lower()}")
+    # Per-ip: caps password-spray (one host, one password, many emails).
+    _enforce_login_ip_rate_limit(f"login-ip:{ip}")
     user = await authenticate_user(db, body.email, body.password)
     if user is None:
         raise HTTPException(
@@ -101,7 +130,11 @@ async def refresh(
     request: Request, body: RefreshRequest, db: AsyncSession = Depends(get_db)
 ) -> AccessToken:
     """Issue a new access token given a valid, unexpired refresh token."""
-    _enforce_auth_rate_limit(f"refresh:{_client_ip(request)}")
+    # Security audit 2026-07: decode FIRST, then rate-limit on the token
+    # SUBJECT (a per-user bucket). Keying on IP starved every user's
+    # refresh from one shared proxy-IP bucket — a weak-network session
+    # DoS. A forged/garbage token fails decode below and never reaches
+    # the limiter (no DB touch), so a per-user key is safe here.
     try:
         payload = decode_token(body.refresh_token)
     except jwt.PyJWTError as exc:
@@ -125,6 +158,7 @@ async def refresh(
             detail="Invalid refresh token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    _enforce_auth_rate_limit(f"refresh:{sub}")
     try:
         user_id = uuid.UUID(sub)
     except (ValueError, TypeError) as exc:

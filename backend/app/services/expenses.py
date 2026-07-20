@@ -42,7 +42,7 @@ import base64
 import json
 import uuid
 from dataclasses import asdict
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -662,6 +662,36 @@ async def create_expense(
             parse_result.partial.supplier_conf,
         ]
         confidence_score = Decimal(str(round(min(primary), 2)))
+
+    # Idempotency (security audit 2026-07): weak on-site networks retry a
+    # timed-out POST — or a double-tap beats the client guard — and the
+    # retry would insert a TWIN expense that double-counts toward job
+    # cost. Scope: STRUCTURED-only submissions (no raw_input_text), where
+    # a retry is byte-identical and there is no parser to run. The
+    # raw-text path is deliberately left alone — it already surfaces
+    # repeats via the parser's duplicate_flag + the review queue (see
+    # test_create_detects_duplicate), which flags-not-drops so an admin
+    # decides; silently collapsing there would discard genuine distinct
+    # entries the parser can't tell apart on amount+date alone.
+    if parse_result is None:
+        dedupe_cutoff = datetime.now(UTC) - timedelta(seconds=90)
+        existing = await db.execute(
+            select(Expense)
+            .where(
+                Expense.entered_by_user_id == entered_by.user_id,
+                Expense.job_id == merged["job_id"],
+                Expense.amount_inc_gst == merged["amount_inc_gst"],
+                Expense.expense_date == expense_date,
+                Expense.created_at >= dedupe_cutoff,
+            )
+            .order_by(Expense.created_at.desc())
+            .limit(1)
+        )
+        dupe = existing.scalar_one_or_none()
+        if dupe is not None:
+            # diagnostics is None on the structured path (docstring
+            # contract) — return the existing row unchanged.
+            return dupe, diagnostics
 
     expense = Expense(
         expense_id=uuid.uuid4(),
