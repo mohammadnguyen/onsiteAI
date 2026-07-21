@@ -462,7 +462,6 @@
     "error_future_date": "Attendance can't be recorded for a future date.",
     "error_date_too_old": "That date is too far in the past.",
     "error_too_many": "Too many changes for one save \u2014 save some now and the rest after.",
-    "error_day_total": "A worker's daily total can't exceed 1 day.",
     "error_job_archived": "This job is archived \u2014 pick an active job.",
     "error_worker_deactivated": "A worker has been deactivated \u2014 reactivate them to record new attendance.",
     "error_recorded_by_other": "That entry was recorded by someone else \u2014 only admins can change it.",
@@ -548,7 +547,8 @@
     "unsaved_changes": "Unsaved changes",
     "saved_check": "Saved \u2713",
     "save_cta_n_one": "Save attendance \u00b7 {{count}}",
-    "save_cta_n_other": "Save attendance \u00b7 {{count}}"
+    "save_cta_n_other": "Save attendance \u00b7 {{count}}",
+    "error_day_hours": "Total hours across sites exceeds 24."
   },
   "review_reason": {
     "amount_uncertain": "Amount uncertain",

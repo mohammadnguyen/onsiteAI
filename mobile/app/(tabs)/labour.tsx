@@ -347,8 +347,10 @@ export default function LabourScreen() {
     diff.timesInvalid;
 
   const mapLabourDetail = (detail: string): string => {
-    if (detail.includes('cannot exceed 1.0')) {
-      return `${t('labour.error_day_total')}\n${detail}`;
+    // Multi-site (operator 2026-07-19): the old day_fraction cap is gone;
+    // the server now caps total HOURS across a worker's sites at 24.
+    if (detail.includes('24 hours')) {
+      return `${t('labour.error_day_hours')}\n${detail}`;
     }
     if (detail.includes('Job is archived')) return t('labour.error_job_archived');
     if (detail.includes('too far in the past')) {

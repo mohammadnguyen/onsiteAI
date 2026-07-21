@@ -10,9 +10,14 @@ Core rules enforced here (operator decisions 1-10, L-A plan):
   deactivated never deleted (no delete function exists).
 * Attendance is recorded in day fractions ∈ {0.5, 1.0} against
   ACTIVE jobs and (for new entries) ACTIVE workers only.
-* A worker's total allocation per ``work_date`` across ALL jobs may
-  not exceed 1.0 day. This cross-row rule cannot be a DB CHECK; it is
-  enforced inside the write transaction with ``SELECT … FOR UPDATE``
+* A worker CAN be recorded on MULTIPLE jobs the same ``work_date`` —
+  they split their day across sites (operator 2026-07-19). Labour COST
+  is hours-based (``hours * rate_snapshot``) and stays correct per job;
+  ``day_fraction`` is only the attendance marker. The former "total
+  day_fraction across jobs ≤ 1.0" cap is REPLACED by a plausibility cap
+  on total HOURS across all the worker's jobs that date (≤ 24). This
+  cross-row rule cannot be a DB CHECK; it is enforced inside the write
+  transaction with ``SELECT … FOR UPDATE``
   row locks on the worker's existing rows for that date (workers are
   processed in sorted order to avoid deadlocks between concurrent
   batches).
@@ -92,7 +97,10 @@ class LabourEditForbidden(Exception):
 _FUTURE_TOLERANCE_DAYS = 1
 _MAX_PAST_YEARS = 5
 
-_MAX_DAY_TOTAL = Decimal("1.0")
+# A worker's recorded hours across ALL jobs on one date must stay
+# plausible. Replaces the old day_fraction ≤1.0 cap so a worker can be
+# recorded on multiple sites the same day (hours drive cost, per job).
+_MAX_DAY_HOURS = Decimal("24")
 
 
 def _is_admin(user: User) -> bool:
@@ -330,21 +338,40 @@ async def batch_upsert_entries(
                 else "You can only change your own entries for today"
             )
 
-        other_total = sum(
-            (r.day_fraction for r in locked_rows if r.job_id != job_id),
-            Decimal("0"),
-        )
-        if other_total + fraction > _MAX_DAY_TOTAL:
-            raise LabourValidationError(
-                f"{worker.display_name} already has {other_total} day(s) "
-                f"recorded on {work_date.isoformat()} — the daily total "
-                "cannot exceed 1.0"
-            )
-
         # L-C3: if a start/end range is supplied, hours is DERIVED from it
         # (and the times stored); otherwise None and the hours-only path
         # below applies. Raises on a lone time or end<=start.
         derived = _derive_times(item)
+
+        # Cross-job HOURS plausibility cap (replaces the old day_fraction
+        # ≤1.0 cap — operator 2026-07-19). A worker splits a day across
+        # sites; cost is hours-based per job and stays correct, so only
+        # the TOTAL recorded hours across their jobs that date is
+        # bounded (≤24). Day-fraction-only entries carry no hours and
+        # are not capped (multi-site attendance without hours is fine).
+        if derived is not None:
+            new_hours = derived[0]
+        elif "hours" in item.model_fields_set:
+            new_hours = item.hours
+        elif existing_here is not None:
+            new_hours = existing_here.hours
+        else:
+            new_hours = None
+        if new_hours is not None:
+            other_hours = sum(
+                (
+                    r.hours
+                    for r in locked_rows
+                    if r.job_id != job_id and r.hours is not None
+                ),
+                Decimal("0"),
+            )
+            if other_hours + new_hours > _MAX_DAY_HOURS:
+                raise LabourValidationError(
+                    f"{worker.display_name} already has {other_hours}h "
+                    f"recorded on {work_date.isoformat()} — the daily total "
+                    "across sites cannot exceed 24 hours"
+                )
 
         if existing_here is not None:
             existing_here.day_fraction = fraction

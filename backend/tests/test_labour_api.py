@@ -243,38 +243,58 @@ async def test_batch_upsert_updates_fraction_not_duplicate(
 
 
 @pytest.mark.asyncio
-async def test_batch_allocation_exceeded_rolls_back_whole_batch(
+async def test_worker_recorded_on_two_jobs_same_day(
     client, db_session, seeded_admin, admin_token
 ):
-    """Worker already at 1.0 on job A; a batch on job B containing a
-    valid OTHER worker plus 0.5 for the maxed worker must reject with
-    422 and persist nothing.
-
-    Harness note: the test fixtures share ONE session between client
-    and test (no per-request savepoint), so production's full-request
-    rollback (``app.database.get_db`` rolls back the session on any
-    handler exception — verified) is not independently observable
-    here. To make the no-persistence assertion deterministic under
-    the shared session, the workers get EXPLICIT ids so the violating
-    worker sorts FIRST in the service's deterministic lock order —
-    the violation then fires before any row is added/autoflushed.
-    """
+    """Operator 2026-07-19: a worker splits a day across sites. A worker
+    already recorded 1.0 on job A can ALSO be recorded on job B the same
+    date — the old "daily total cannot exceed 1.0" day_fraction cap is
+    gone (cost is hours-based per job, so multi-site is correct)."""
     job_a = await _mk_job(db_session, seeded_admin, name="Site A")
     job_b = await _mk_job(db_session, seeded_admin, name="Site B")
-    maxed = await _mk_worker(
-        db_session,
-        seeded_admin,
-        name="Maxed",
-        worker_id=uuid.UUID("00000000-0000-4000-8000-000000000001"),
-    )
-    fresh = await _mk_worker(
-        db_session,
-        seeded_admin,
-        name="Fresh",
-        worker_id=uuid.UUID("ffffffff-ffff-4fff-8fff-ffffffffffff"),
-    )
+    w = await _mk_worker(db_session, seeded_admin, name="Splitter")
     await _mk_entry(
-        db_session, worker=maxed, job=job_a, recorded_by=seeded_admin, fraction="1.0"
+        db_session, worker=w, job=job_a, recorded_by=seeded_admin, fraction="1.0"
+    )
+
+    r = await client.post(
+        "/labour-entries/batch",
+        headers=_auth(admin_token),
+        json={
+            "job_id": str(job_b.job_id),
+            "work_date": _today().isoformat(),
+            "entries": [{"worker_id": str(w.worker_id), "day_fraction": "1.0"}],
+        },
+    )
+    assert r.status_code == 200, r.text
+    rows = list(
+        (
+            await db_session.execute(
+                select(LabourEntry).where(LabourEntry.worker_id == w.worker_id)
+            )
+        ).scalars()
+    )
+    # Two entries now — one per job.
+    assert {row.job_id for row in rows} == {job_a.job_id, job_b.job_id}
+
+
+@pytest.mark.asyncio
+async def test_batch_hours_exceeded_across_jobs_rejected(
+    client, db_session, seeded_admin, admin_token
+):
+    """The replacement cap: total recorded HOURS across a worker's jobs
+    on one date must be plausible (≤24). 20h on job A + 6h on job B =
+    26h → 422."""
+    job_a = await _mk_job(db_session, seeded_admin, name="Site A")
+    job_b = await _mk_job(db_session, seeded_admin, name="Site B")
+    w = await _mk_worker(db_session, seeded_admin, name="Overtime")
+    await _mk_entry(
+        db_session,
+        worker=w,
+        job=job_a,
+        recorded_by=seeded_admin,
+        fraction="1.0",
+        hours="20",
     )
 
     r = await client.post(
@@ -284,22 +304,12 @@ async def test_batch_allocation_exceeded_rolls_back_whole_batch(
             "job_id": str(job_b.job_id),
             "work_date": _today().isoformat(),
             "entries": [
-                {"worker_id": str(fresh.worker_id), "day_fraction": "1.0"},
-                {"worker_id": str(maxed.worker_id), "day_fraction": "0.5"},
+                {"worker_id": str(w.worker_id), "day_fraction": "1.0", "hours": "6"}
             ],
         },
     )
     assert r.status_code == 422
-    assert "cannot exceed 1.0" in r.json()["detail"]
-
-    fresh_rows = list(
-        (
-            await db_session.execute(
-                select(LabourEntry).where(LabourEntry.worker_id == fresh.worker_id)
-            )
-        ).scalars()
-    )
-    assert fresh_rows == []  # nothing persisted for the valid row
+    assert "24 hours" in r.json()["detail"]
 
 
 @pytest.mark.asyncio
