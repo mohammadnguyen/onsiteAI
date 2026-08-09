@@ -106,4 +106,7 @@ logs/
 .docker/
 
 # ---------- Claude Code session state ----------
-.claude/
+# Session state stays ignored, but versioned procedure skills are repo files
+# (ADR-001: skills are executable governance, tested like code).
+.claude/*
+!.claude/skills/
