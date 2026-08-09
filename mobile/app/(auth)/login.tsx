@@ -65,7 +65,7 @@ export default function Login() {
       >
         <View style={s.brand}>
           <ForeyLogo size={76} />
-          <Text style={s.wordmark}>forey</Text>
+          <Text style={s.wordmark}>Forey</Text>
           <Text style={s.tagline}>{t('login.tagline')}</Text>
         </View>
 

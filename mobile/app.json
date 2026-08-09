@@ -1,9 +1,9 @@
 {
   "expo": {
-    "name": "SiteTracker",
+    "name": "Forey",
     "slug": "sitetracker",
     "version": "0.1.0",
-    "scheme": "sitetracker",
+    "scheme": "forey",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -15,17 +15,17 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "bundleIdentifier": "com.sitetracker.mobile",
+      "bundleIdentifier": "com.forey.app",
       "supportsTablet": true,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
-      "package": "com.sitetracker.mobile",
+      "package": "com.forey.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#2563EB"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false

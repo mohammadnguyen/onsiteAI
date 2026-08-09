@@ -215,17 +215,18 @@ export function ChevronRightIcon({ size = 15, color = '#98A2B3', strokeWidth = 2
 }
 
 /**
- * forey brand logo — 方案A「框架 F」: blue rounded square (#2563EB,
- * radius ≈ 26%) with three white rounded bars. Sizes per spec: login
- * 76 (radius 19), Home header 30 (radius 8).
+ * Forey brand logo — framed "F": blue rounded square (#2563EB,
+ * radius ≈ 23%) with three white rounded bars (refined proportions).
+ * Scales from the 96-unit viewBox to any `size`; used at 76 (login)
+ * and 30 (Home header).
  */
 export function ForeyLogo({ size = 30 }: { size?: number }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 96 96">
-      <Rect x={0} y={0} width={96} height={96} rx={25} fill="#2563EB" />
-      <Rect x={27} y={17} width={15} height={62} rx={4} fill="#ffffff" />
-      <Rect x={46} y={17} width={26} height={15} rx={4} fill="#ffffff" />
-      <Rect x={46} y={40} width={18} height={15} rx={4} fill="#ffffff" />
+      <Rect x={0} y={0} width={96} height={96} rx={22} fill="#2563EB" />
+      <Rect x={29} y={19} width={14} height={58} rx={4} fill="#ffffff" />
+      <Rect x={45} y={19} width={27} height={14} rx={4} fill="#ffffff" />
+      <Rect x={45} y={40} width={19} height={14} rx={4} fill="#ffffff" />
     </Svg>
   );
 }
