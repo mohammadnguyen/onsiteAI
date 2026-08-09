@@ -58,7 +58,6 @@ from app.models import (
     ExpenseType,
     Job,
     JobStatus,
-    PaymentMethod,
     ReceiptStatus,
     ReviewQueueStatus,
     ReviewReasonCode,
@@ -67,12 +66,40 @@ from app.models import (
     User,
     UserRole,
 )
-from app.models.expense import GstSplitError, reconcile_gst_split
 from app.schemas.expense import (
     ExpenseCreate,
     ExpenseUpdate,
     ParseDiagnostics,
     ParsePreview,
+)
+
+# Shared expense write / audit / GST-split core (single source for the
+# apply-patch, GST-reconcile and audit-diff primitives the review-resolve
+# path also uses). Re-aliased to the historical private names below so the
+# many internal call sites in this module stay untouched. The two domain
+# exceptions are re-exported here too — ``app.api.expenses`` catches them as
+# ``svc.ExpenseValidationError`` / ``svc.JobNotFoundForExpense``.
+from app.services.expense_write import (
+    AUDITABLE_FIELDS as _AUDITABLE_FIELDS,
+)
+from app.services.expense_write import (
+    ExpenseValidationError,
+    JobNotFoundForExpense,
+    diff_auditable,
+    reconcile_money_fields,
+    snapshot_auditable,
+)
+from app.services.expense_write import (
+    coerce_audit_value as _coerce_audit_value,
+)
+from app.services.expense_write import (
+    compute_gst_split as _compute_gst_split,
+)
+from app.services.expense_write import (
+    validate_job_active_for_reassign as _validate_job_active_for_reassign,
+)
+from app.services.expense_write import (
+    validate_save as _validate_save,
 )
 from app.services.parser import LLMParser, ParseResult, parse
 from app.services.parser.tokens import tokenize
@@ -106,22 +133,6 @@ class DeleteForbidden(Exception):
         super().__init__(detail)
 
 
-class ExpenseValidationError(Exception):
-    """Raised on save-time validation errors (amount, job, supplier, date)."""
-
-    def __init__(self, detail: str):
-        self.detail = detail
-        super().__init__(detail)
-
-
-class JobNotFoundForExpense(Exception):
-    """Raised when a structured ``job_id`` doesn't resolve to a job row."""
-
-    def __init__(self, job_id: uuid.UUID):
-        self.job_id = job_id
-        super().__init__(f"Job {job_id} not found")
-
-
 class InvalidCursor(Exception):
     """Raised when a list-pagination ``cursor`` fails to decode (M2-A).
 
@@ -138,23 +149,6 @@ class InvalidCursor(Exception):
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-_MAX_PAST_YEARS = 5
-
-# CHP-4: hard upper bound on persisted amounts (matches the
-# `ExpenseCreate.amount_inc_gst` Pydantic field cap; restated here so
-# the raw_input_text path doesn't bypass it). $10M is well above any
-# legitimate residential-builder line item; anything bigger is a
-# fat-finger and should be rejected at the API edge before it pollutes
-# job rollups.
-_MAX_AMOUNT_INC_GST = Decimal("10000000")
-
-# CHP-5: tolerance for clock-skew between a contributor's phone and
-# the server. Today + this many days is the latest expense_date we
-# accept; anything beyond is a back-dated typo or a future-dated
-# entry-error and should be rejected.
-_FUTURE_DATE_TOLERANCE_DAYS = 1
 
 
 def _diagnostics_from_result(result: ParseResult) -> ParseDiagnostics:
@@ -232,32 +226,6 @@ def _merge_parse_with_overrides(
             draft[key] = getattr(overrides, key)
 
     return draft
-
-
-def _compute_gst_split(
-    amount_inc: Decimal,
-    amount_ex: Decimal | None,
-    gst: Decimal | None,
-    payment_method: PaymentMethod | None,
-) -> tuple[Decimal, Decimal]:
-    """Derive the ex-GST / GST pair from the inclusive total when unset.
-
-    Mirrors the ``_compute_gst_split`` listener on
-    :class:`~app.models.expense.Expense` but runs eagerly in Python so
-    the service can write all three columns in a single INSERT and
-    return consistent values in the wire response without waiting for
-    a ``db.refresh`` round trip.
-
-    The payment-method-aware rule and the ``inc = ex + gst`` invariant live
-    in :func:`app.models.expense.reconcile_gst_split`; this thin wrapper only
-    maps its :class:`GstSplitError` onto the service's
-    :class:`ExpenseValidationError` so an inconsistent caller-supplied triple
-    (audit B-1) surfaces as a 422, not a 500.
-    """
-    try:
-        return reconcile_gst_split(amount_inc, amount_ex, gst, payment_method)
-    except GstSplitError as exc:
-        raise ExpenseValidationError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -467,83 +435,6 @@ async def _validate_fk_refs(
         cat = await db.get(Category, category_id)
         if cat is None:
             raise ExpenseValidationError(f"Category {category_id} not found")
-
-
-def _validate_save(
-    *,
-    job_id: uuid.UUID | None,
-    supplier_id: uuid.UUID | None,
-    amount_inc_gst: Decimal | None,
-    expense_date: date,
-    expense_type: ExpenseType,
-    description: str | None,
-) -> None:
-    """Run save-time validation rules. Raises :class:`ExpenseValidationError`."""
-    if amount_inc_gst is None:
-        raise ExpenseValidationError("Amount is required")
-    if amount_inc_gst <= 0:
-        raise ExpenseValidationError("Amount must be greater than zero")
-    # CHP-4: enforce the upper-bound on the parser-driven path too.
-    # The `ExpenseCreate.amount_inc_gst` Pydantic field already caps
-    # caller-supplied structured amounts at $10M, but a parser-derived
-    # amount comes via the merge dict and bypasses the field validator.
-    # Re-check it here so both paths agree.
-    if amount_inc_gst > _MAX_AMOUNT_INC_GST:
-        raise ExpenseValidationError(
-            f"Amount exceeds maximum (${_MAX_AMOUNT_INC_GST:,.0f})"
-        )
-    # C-6: reject sub-cent precision on both the structured and parser-driven
-    # paths. amount_inc_gst is stored in NUMERIC(12,2), so a 3+-decimal value
-    # (``$305.999``) would otherwise be silently rounded on insert with no
-    # review flag — the stored figure would differ from what the user typed.
-    if amount_inc_gst.as_tuple().exponent < -2:
-        raise ExpenseValidationError("Amount cannot have more than 2 decimal places")
-    if job_id is None:
-        raise ExpenseValidationError("Job is required")
-
-    # supplier-expense rows must have a supplier OR a description so
-    # the row has at least one human-readable anchor beyond the amount.
-    if (
-        expense_type == ExpenseType.supplier_expense
-        and supplier_id is None
-        and not (description and description.strip())
-    ):
-        raise ExpenseValidationError("Supplier or description is required for supplier expenses")
-
-    # Sanity: reject expense_date more than 5 years in the past.
-    cutoff = date.today() - timedelta(days=365 * _MAX_PAST_YEARS)
-    if expense_date < cutoff:
-        raise ExpenseValidationError("Expense date is more than 5 years in the past")
-    # CHP-5: reject future-dated expenses. The +1-day tolerance covers
-    # phone-clock skew and the NSW/UTC seam — a contributor in Sydney
-    # capturing at 11pm local on Mon 12 May submits with their local
-    # date; the server's UTC clock is already Tue 13 May. We accept
-    # that. Anything beyond +1 day is genuinely wrong.
-    future_cutoff = date.today() + timedelta(days=_FUTURE_DATE_TOLERANCE_DAYS)
-    if expense_date > future_cutoff:
-        raise ExpenseValidationError("Expense date is in the future")
-
-
-async def _validate_job_active_for_reassign(
-    db: AsyncSession, job_id: uuid.UUID | None
-) -> None:
-    """A1: validate the TARGET job of a reassignment exists and is ACTIVE.
-
-    Used by the PATCH path (and, via a ValueError adapter, the
-    review-resolve path) when ``job_id`` changes. Mirrors the create-time
-    lookup (``JobNotFoundForExpense`` -> 422) and adds the active-only rule
-    so a correction can never move spend onto an archived/completed job.
-    ``None`` is left for ``_validate_save`` to reject as "Job is required".
-    """
-    if job_id is None:
-        return
-    job = await db.get(Job, job_id)
-    if job is None:
-        raise JobNotFoundForExpense(job_id)
-    if job.status != JobStatus.active:
-        raise ExpenseValidationError(
-            "Cannot reassign to an archived or completed job — reopen it first"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -973,39 +864,6 @@ async def get_expense_with_reasons(
 # Columns an audit row diff may cover. ``review_status`` transitions
 # always write audit rows; the other fields only write audit rows when
 # an admin touches a reviewed row.
-_AUDITABLE_FIELDS: tuple[str, ...] = (
-    # job_id is admin-only + active-job-only to change (see update_expense /
-    # _validate_job_active_for_reassign); included here so a reassignment is
-    # applied and AUDITED on both the PATCH and review-resolve paths.
-    "job_id",
-    "supplier_id",
-    "expense_type",
-    "amount_inc_gst",
-    "amount_ex_gst",
-    "gst_amount",
-    "payment_method",
-    "expense_date",
-    "category_id",
-    "description",
-    "notes",
-    "receipt_status",
-    "review_status",
-)
-
-
-def _coerce_audit_value(value: Any) -> Any:
-    """Convert a value into a JSON-serialisable form for JSONB audit rows."""
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, uuid.UUID):
-        return str(value)
-    if hasattr(value, "value"):
-        return value.value
-    return value
-
-
 # A1b (review-queue lifecycle): which MONEY-integrity reason each
 # explicitly-patched field resolves. A human setting the field is a
 # trusted, deterministic correction — the parser is NOT re-run.
@@ -1146,7 +1004,7 @@ async def update_expense(
 
     # Snapshot the pre-image for every auditable field so we can record
     # the diff after the update is applied.
-    pre_image: dict[str, Any] = {field: getattr(expense, field) for field in _AUDITABLE_FIELDS}
+    pre_image = snapshot_auditable(expense)
 
     # Apply the patch.
     for field in _AUDITABLE_FIELDS:
@@ -1154,21 +1012,7 @@ async def update_expense(
             setattr(expense, field, getattr(patch, field))
 
     # Re-reconcile the GST split whenever ANY money field moves (audit B-2).
-    # A lone-component patch (only gst_amount, or only amount_ex_gst) must
-    # re-derive its sibling so the triple stays consistent; a supplied pair
-    # is validated; cash is forced GST-exclusive. Passing the patched value
-    # (or None to re-derive) preserves the legitimate structured-override
-    # case while making an inconsistent triple impossible.
-    money_fields = {"amount_inc_gst", "payment_method", "amount_ex_gst", "gst_amount"}
-    if patch_set & money_fields:
-        ex_override = expense.amount_ex_gst if "amount_ex_gst" in patch_set else None
-        gst_override = expense.gst_amount if "gst_amount" in patch_set else None
-        expense.amount_ex_gst, expense.gst_amount = _compute_gst_split(
-            expense.amount_inc_gst,
-            ex_override,
-            gst_override,
-            expense.payment_method,
-        )
+    reconcile_money_fields(expense, patch_set)
 
     # Re-validate the post-update expense state.
     _validate_save(
@@ -1192,15 +1036,7 @@ async def update_expense(
     must_audit = is_admin and (pre_status != ReviewStatus.pending or status_changed)
 
     if must_audit:
-        changed_fields: dict[str, dict[str, Any]] = {}
-        for field in _AUDITABLE_FIELDS:
-            old = pre_image[field]
-            new = getattr(expense, field)
-            if old != new:
-                changed_fields[field] = {
-                    "old": _coerce_audit_value(old),
-                    "new": _coerce_audit_value(new),
-                }
+        changed_fields = diff_auditable(pre_image, expense)
         # Only write an audit row when the edit actually changed
         # something. An empty patch on a reviewed row is a no-op.
         if changed_fields:

@@ -51,14 +51,16 @@ from app.models import (
     User,
 )
 from app.schemas.expense import ExpenseUpdate
-from app.services.expenses import (
-    _AUDITABLE_FIELDS,
+from app.services.expense_write import (
+    AUDITABLE_FIELDS,
     ExpenseValidationError,
     JobNotFoundForExpense,
-    _coerce_audit_value,
-    _compute_gst_split,
-    _validate_job_active_for_reassign,
-    _validate_save,
+    coerce_audit_value,
+    diff_auditable,
+    reconcile_money_fields,
+    snapshot_auditable,
+    validate_job_active_for_reassign,
+    validate_save,
 )
 
 # ---------------------------------------------------------------------------
@@ -234,10 +236,10 @@ async def resolve(
     assert expense is not None
 
     # Snapshot pre-image for audit diff computation.
-    pre_image: dict[str, Any] = {field: getattr(expense, field) for field in _AUDITABLE_FIELDS}
+    pre_image = snapshot_auditable(expense)
     pre_status = expense.review_status
 
-    # Apply the optional expense_patch. We re-use the T-M _AUDITABLE_FIELDS
+    # Apply the optional expense_patch. We re-use the shared AUDITABLE_FIELDS
     # tuple so the behaviour is identical to PATCH /expenses/{id}: every
     # field the caller explicitly set is written; unset fields are left
     # alone.
@@ -265,7 +267,7 @@ async def resolve(
         # flip below, so the expense + queue row stay untouched).
         if "job_id" in patch_set:
             # Never allow clearing an expense's job (deliberate contract;
-            # raised here rather than leaving it to _validate_save, which
+            # raised here rather than leaving it to validate_save, which
             # would surface as a 500 on this route).
             if expense_patch.job_id is None:
                 raise ValueError(
@@ -275,32 +277,21 @@ async def resolve(
             # via the route, so no role check here).
             if expense_patch.job_id != expense.job_id:
                 try:
-                    await _validate_job_active_for_reassign(db, expense_patch.job_id)
+                    await validate_job_active_for_reassign(db, expense_patch.job_id)
                 except (JobNotFoundForExpense, ExpenseValidationError) as exc:
                     raise ValueError(str(exc)) from exc
 
-        for field in _AUDITABLE_FIELDS:
+        for field in AUDITABLE_FIELDS:
             if field in patch_set:
                 setattr(expense, field, getattr(expense_patch, field))
 
         # Re-reconcile the GST split whenever ANY money field moves on the
-        # reviewer path (audit X-1 / X-2). The previous hardcoded 1/11 divisor
-        # ignored payment_method (giving cash rows a phantom GST) and skipped
-        # lone-component patches. Delegating to the shared reconciler makes
-        # this path payment-aware and consistent with PATCH /expenses.
-        money_fields = {"amount_inc_gst", "payment_method", "amount_ex_gst", "gst_amount"}
-        if patch_set & money_fields:
-            ex_override = expense.amount_ex_gst if "amount_ex_gst" in patch_set else None
-            gst_override = expense.gst_amount if "gst_amount" in patch_set else None
-            expense.amount_ex_gst, expense.gst_amount = _compute_gst_split(
-                expense.amount_inc_gst,
-                ex_override,
-                gst_override,
-                expense.payment_method,
-            )
+        # reviewer path (audit X-1 / X-2), payment-aware and consistent with
+        # PATCH /expenses via the shared reconciler.
+        reconcile_money_fields(expense, patch_set)
 
         # Re-run save-time validation on the post-patch state.
-        _validate_save(
+        validate_save(
             job_id=expense.job_id,
             supplier_id=expense.supplier_id,
             amount_inc_gst=expense.amount_inc_gst,
@@ -327,20 +318,15 @@ async def resolve(
     # every patched field that actually changed.
     changed_fields: dict[str, dict[str, Any]] = {
         "review_status": {
-            "old": _coerce_audit_value(pre_status),
-            "new": _coerce_audit_value(ReviewStatus.reviewed),
+            "old": coerce_audit_value(pre_status),
+            "new": coerce_audit_value(ReviewStatus.reviewed),
         },
     }
-    for field in _AUDITABLE_FIELDS:
-        if field == "review_status":
-            continue
-        old = pre_image[field]
-        new = getattr(expense, field)
-        if old != new:
-            changed_fields[field] = {
-                "old": _coerce_audit_value(old),
-                "new": _coerce_audit_value(new),
-            }
+    # review_status is seeded above (this path ALWAYS records the
+    # pending -> reviewed transition); diff the remaining fields.
+    changed_fields.update(
+        diff_auditable(pre_image, expense, skip=frozenset({"review_status"}))
+    )
 
     _write_audit(
         db,
@@ -396,8 +382,8 @@ async def reject(
         admin=admin,
         changed_fields={
             "review_status": {
-                "old": _coerce_audit_value(pre_status),
-                "new": _coerce_audit_value(ReviewStatus.rejected),
+                "old": coerce_audit_value(pre_status),
+                "new": coerce_audit_value(ReviewStatus.rejected),
             },
         },
         reason=notes,
