@@ -90,9 +90,15 @@ async def test_concurrent_last_admin_demotions_do_not_zero_out(_test_engine):
 
 
 @pytest.mark.asyncio
-async def test_concurrent_first_labour_inserts_respect_daily_cap(_test_engine):
-    """Two concurrent full-day inserts for one worker/date (different jobs) →
-    exactly one succeeds; the worker's daily total stays at 1.0."""
+async def test_concurrent_labour_inserts_respect_daily_hours_cap(_test_engine):
+    """Two concurrent inserts for one worker/date on different jobs whose
+    hours together exceed the 24h daily cap → the per-(worker, date)
+    advisory lock serialises them, so exactly one succeeds and the
+    worker's recorded hours stay within the cap.
+
+    Pre-cb5b888 this asserted the old day_fraction <= 1.0 cross-job cap;
+    that cap was deliberately removed so a worker can split a day across
+    sites, so the race is now over the replacement 24h hours cap."""
     admin_id = uuid.uuid4()
     worker_id = uuid.uuid4()
     job1_id, job2_id = uuid.uuid4(), uuid.uuid4()
@@ -136,7 +142,13 @@ async def test_concurrent_first_labour_inserts_respect_daily_cap(_test_engine):
                     current_user=admin,
                     job_id=job_id,
                     work_date=work_date,
-                    items=[LabourBatchItem(worker_id=worker_id, day_fraction=Decimal("1.0"))],
+                    items=[
+                        LabourBatchItem(
+                            worker_id=worker_id,
+                            day_fraction=Decimal("1.0"),
+                            hours=Decimal("20"),
+                        )
+                    ],
                 )
                 await s.commit()
                 return "ok"
@@ -148,15 +160,15 @@ async def test_concurrent_first_labour_inserts_respect_daily_cap(_test_engine):
         results = await asyncio.gather(_tick(job1_id), _tick(job2_id))
         assert sorted(results) == ["ok", "rejected"], results
         async with AsyncSession(_test_engine) as s:
-            total = (
+            total_hours = (
                 await s.execute(
-                    select(func.coalesce(func.sum(LabourEntry.day_fraction), 0)).where(
+                    select(func.coalesce(func.sum(LabourEntry.hours), 0)).where(
                         LabourEntry.worker_id == worker_id,
                         LabourEntry.work_date == work_date,
                     )
                 )
             ).scalar_one()
-        assert Decimal(total) == Decimal("1.0"), "daily total must not exceed 1.0"
+        assert Decimal(total_hours) == Decimal("20"), "recorded hours must not exceed the 24h cap"
     finally:
         async with AsyncSession(_test_engine) as s:
             await s.execute(delete(LabourEntry).where(LabourEntry.worker_id == worker_id))

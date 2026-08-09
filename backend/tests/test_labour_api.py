@@ -266,7 +266,7 @@ async def test_worker_recorded_on_two_jobs_same_day(
             "entries": [{"worker_id": str(w.worker_id), "day_fraction": "1.0"}],
         },
     )
-    assert r.status_code == 200, r.text
+    assert r.status_code == 201, r.text
     rows = list(
         (
             await db_session.execute(
