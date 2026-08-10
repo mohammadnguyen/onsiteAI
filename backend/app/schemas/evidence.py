@@ -25,12 +25,19 @@ class EvidenceOut(BaseModel):
     status: EvidenceStatus
     size_bytes: int | None
     sha256: str | None
-    occurred_at: datetime
+    # Nullable at the raw layer (DEC-TIME-001): unknown stays NULL,
+    # never manufactured from upload time.
+    occurred_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
 
 class EvidenceLinkJobIn(BaseModel):
-    """Explicit user action: link evidence to its authoritative Job."""
+    """Explicit user action: link evidence to its authoritative Job.
+
+    ``reason`` is required (non-empty) only for a relink of an
+    already-linked record — admin-only, audited as ``job_relinked``.
+    """
 
     job_id: uuid.UUID
+    reason: str | None = None

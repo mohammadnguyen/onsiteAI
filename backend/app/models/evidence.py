@@ -10,7 +10,9 @@ Design constraints baked into this schema:
   deliberately not designed here.
 * ``occurred_at`` (when the fact happened on site) and the
   ``TimestampMixin`` ``created_at`` (when the record was written) are
-  distinct and both always stored (DEC-TIME-001).
+  distinct concepts and never conflated (DEC-TIME-001). At this raw
+  layer ``occurred_at`` is nullable — unknown stays NULL, never
+  defaulted from upload time.
 * ``job_id`` is CONFIRMED-ONLY: populated exclusively by explicit user
   action — explicit selection at upload or a later ``link-job`` action
   (DEC-JOB-ATTR-001). Suggestion/attribution state belongs to the
@@ -137,9 +139,13 @@ class Evidence(Base, TimestampMixin):
 
     # When the evidence was captured on site — distinct from created_at
     # (DEC-TIME-001). A photo uploaded at night about a morning event
-    # keeps its morning occurred_at.
-    occurred_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
+    # keeps its morning occurred_at. Nullable at the raw layer: unknown
+    # stays NULL rather than being manufactured from upload time (that
+    # defaulting would be exactly the conflation DEC-TIME-001 forbids);
+    # a confirmed Site Log Fact must carry occurred_at or an explicit
+    # unknown/approximate marker (capture-slice concern).
+    occurred_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     uploaded_by: Mapped["User"] = relationship(
@@ -192,7 +198,8 @@ class EvidenceAuditLog(Base):
         nullable=False,
     )
 
-    # "uploaded" | "stored" | "failed" | "job_linked" — application-validated.
+    # "uploaded" | "stored" | "failed" | "job_linked" | "job_relinked"
+    # — application-validated.
     action: Mapped[str] = mapped_column(String(32), nullable=False)
 
     detail: Mapped[dict] = mapped_column(JSONB, nullable=False)

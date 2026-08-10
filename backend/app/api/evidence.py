@@ -14,6 +14,7 @@ job-scoped listing lives under ``/jobs``, same pattern as labour):
 No delete route exists, deliberately (DEC-EVIDENCE-001).
 """
 
+import mimetypes
 import uuid
 from datetime import datetime
 
@@ -43,11 +44,13 @@ router = APIRouter(tags=["evidence"])
 )
 async def upload_evidence(
     file: UploadFile,
-    occurred_at: datetime = Form(
-        ...,
+    occurred_at: datetime | None = Form(
+        default=None,
         description=(
             "When the evidence was captured on site (DEC-TIME-001); "
-            "distinct from the record's created_at."
+            "distinct from the record's created_at. Optional at the raw "
+            "layer: when absent it stays NULL — the server never "
+            "defaults it to upload time or any other value."
         ),
     ),
     job_id: uuid.UUID | None = Form(
@@ -133,7 +136,12 @@ async def download_evidence(
             detail=f"Evidence is {exc.status.value}, no stored bytes",
         ) from exc
 
-    filename = evidence.original_filename or f"{evidence.evidence_id}"
+    # Server-generated safe filename: evidence_id + extension derived
+    # from the stored MIME type. The client-supplied original_filename
+    # never reaches this header (it stays JSON metadata only), so
+    # hostile names (quotes, CRLF, unicode) cannot inject into it.
+    ext = mimetypes.guess_extension(evidence.mime_type) or ""
+    filename = f"{evidence.evidence_id}{ext}"
     # Always attachment — evidence is downloaded, never rendered inline
     # from the API origin (founder ruling; also XSS hygiene for
     # user-supplied content types).
@@ -158,9 +166,14 @@ async def link_evidence_job(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """Initial link (any reader) or admin-only relink with reason.
+
+    Relink is job→job only and always audited (``job_relinked`` with
+    old/new/reason); evidence bytes and storage keys are untouched.
+    """
     try:
         return await evidence_service.link_job(
-            db, user, evidence_id, payload.job_id
+            db, user, evidence_id, payload.job_id, reason=payload.reason
         )
     except evidence_service.EvidenceNotFound as exc:
         raise HTTPException(
@@ -172,10 +185,21 @@ async def link_evidence_job(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Job not found",
         ) from exc
-    except evidence_service.EvidenceAlreadyLinked as exc:
+    except evidence_service.EvidenceRelinkForbidden as exc:
+        # Repo's admin-only convention: 403 "Admin only", matching
+        # app.deps.require_admin.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin only"
+        ) from exc
+    except evidence_service.EvidenceRelinkReasonRequired as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Relink requires a non-empty reason",
+        ) from exc
+    except evidence_service.EvidenceRelinkSameJob as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Evidence is already linked to a job",
+            detail="Evidence is already linked to this job",
         ) from exc
 
 

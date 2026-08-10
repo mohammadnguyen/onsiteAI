@@ -3,14 +3,16 @@
 Covers the founder-ruled behaviours explicitly:
 
 * upload happy path (voice/photo/text) with pending→stored lifecycle,
-  audit rows, and occurred_at ≠ created_at both stored (DEC-TIME-001);
+  audit rows, and occurred_at ≠ created_at (DEC-TIME-001); occurred_at
+  optional — absent stays NULL, never server-defaulted;
 * size-cap rejection → 413 + row failed + audit "failed";
 * storage failure → 502 + row failed + audit "failed";
 * NULL-job access rule: until job-linked, readable only by uploader and
   admin (others get 404, never 403);
 * job_id is CONFIRMED-ONLY: written by exactly the explicit upload field
   and link-job action; the API surface has no suggestion field;
-* link-job: explicit action, audited, one-way (second link → 409);
+* link-job: initial link explicit + audited; relink admin-only with
+  mandatory reason, audited job_relinked (old/new/reason preserved);
 * download always sets Content-Disposition: attachment;
 * cross-job 404 semantics on unknown jobs; auth required everywhere;
 * no delete route exists.
@@ -55,8 +57,11 @@ def _upload_kwargs(
     mime: str = "audio/m4a",
     filename: str = "memo.m4a",
     job_id: uuid.UUID | None = None,
+    occurred_at: str | None = OCCURRED_AT,
 ):
-    data = {"occurred_at": OCCURRED_AT}
+    data = {}
+    if occurred_at is not None:
+        data["occurred_at"] = occurred_at
     if job_id is not None:
         data["job_id"] = str(job_id)
     return {
@@ -136,6 +141,44 @@ async def test_occurred_at_distinct_from_created_at(
     created = _datetime.datetime.fromisoformat(body["created_at"])
     assert occurred == _datetime.datetime.fromisoformat(OCCURRED_AT)
     assert created != occurred  # record written now, event in the past
+
+
+async def test_upload_without_occurred_at_stays_null(
+    client, db_session, contributor_token
+):
+    """Correction 2: absent occurred_at → NULL row, no server default."""
+    resp = await client.post(
+        "/evidence",
+        **_upload_kwargs(occurred_at=None),
+        headers=_auth(contributor_token),
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["occurred_at"] is None
+    assert body["status"] == "stored"
+
+    evidence = await db_session.get(Evidence, uuid.UUID(body["evidence_id"]))
+    assert evidence.occurred_at is None  # NOT defaulted to upload time
+    assert evidence.created_at is not None
+
+
+async def test_no_occurred_at_defaulting_anywhere():
+    """Correction 2: no code path manufactures occurred_at server-side.
+
+    Static guarantees: the model column has no default of any kind, and
+    the service stores the caller value verbatim (asserted behaviourally
+    above); this test pins the schema-level facts so a future "helpful"
+    default breaks loudly.
+    """
+    from app.models.evidence import Evidence as EvidenceModel
+
+    col = EvidenceModel.__table__.columns["occurred_at"]
+    assert col.nullable is True
+    assert col.default is None
+    assert col.server_default is None
+    assert col.onupdate is None
+    created = EvidenceModel.__table__.columns["created_at"]
+    assert created.nullable is False
 
 
 async def test_upload_with_explicit_job(
@@ -380,17 +423,83 @@ async def test_link_job_explicit_action_with_audit(
     ]
 
 
-async def test_link_job_is_one_way(client, db_session, seeded_admin, contributor_token):
+async def test_relink_admin_with_reason_happy_path(
+    client, db_session, seeded_admin, admin_token, contributor_token
+):
+    """Correction 1: admin relink job→job with reason; audit preserves old."""
+    job_a = await _mk_job(db_session, seeded_admin, name="Job A")
+    job_b = await _mk_job(db_session, seeded_admin, name="Job B")
+    body = await _upload_as(client, contributor_token, job_id=job_a.job_id)
+    evidence_id = body["evidence_id"]
+    key_before = (await db_session.get(Evidence, uuid.UUID(evidence_id))).storage_key
+
+    resp = await client.post(
+        f"/evidence/{evidence_id}/link-job",
+        json={"job_id": str(job_b.job_id), "reason": "uploaded to wrong job"},
+        headers=_auth(admin_token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["job_id"] == str(job_b.job_id)
+
+    # Bytes/key untouched — only the metadata column changed.
+    evidence = await db_session.get(Evidence, uuid.UUID(evidence_id))
+    assert evidence.storage_key == key_before
+
+    # Audit row content: old, new, reason, actor, real timestamp.
+    result = await db_session.execute(
+        select(EvidenceAuditLog)
+        .where(EvidenceAuditLog.evidence_id == uuid.UUID(evidence_id))
+        .where(EvidenceAuditLog.action == "job_relinked")
+    )
+    rows = result.scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.detail["old_job_id"] == str(job_a.job_id)
+    assert row.detail["new_job_id"] == str(job_b.job_id)
+    assert row.detail["reason"] == "uploaded to wrong job"
+    assert row.actor_user_id == seeded_admin.user_id
+    assert row.created_at is not None
+
+
+async def test_relink_non_admin_403(
+    client, db_session, seeded_admin, contributor_token
+):
+    """Correction 1: non-admin relink rejected per require_admin convention."""
     job_a = await _mk_job(db_session, seeded_admin, name="Job A")
     job_b = await _mk_job(db_session, seeded_admin, name="Job B")
     body = await _upload_as(client, contributor_token, job_id=job_a.job_id)
 
     resp = await client.post(
         f"/evidence/{body['evidence_id']}/link-job",
-        json={"job_id": str(job_b.job_id)},
+        json={"job_id": str(job_b.job_id), "reason": "still not allowed"},
         headers=_auth(contributor_token),
     )
-    assert resp.status_code == 409
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "Admin only"
+
+
+@pytest.mark.parametrize("reason", [None, "", "   "])
+async def test_relink_missing_reason_422(
+    client, db_session, seeded_admin, admin_token, contributor_token, reason
+):
+    job_a = await _mk_job(db_session, seeded_admin, name="Job A")
+    job_b = await _mk_job(db_session, seeded_admin, name="Job B")
+    body = await _upload_as(client, contributor_token, job_id=job_a.job_id)
+
+    payload = {"job_id": str(job_b.job_id)}
+    if reason is not None:
+        payload["reason"] = reason
+    resp = await client.post(
+        f"/evidence/{body['evidence_id']}/link-job",
+        json=payload,
+        headers=_auth(admin_token),
+    )
+    assert resp.status_code == 422
+    # No audit row was written for the rejected attempt beyond upload/stored.
+    actions = await _audit_actions(
+        db_session, uuid.UUID(body["evidence_id"])
+    )
+    assert "job_relinked" not in actions
 
 
 async def test_link_job_unknown_job_404(client, contributor_token):
@@ -448,7 +557,36 @@ async def test_download_roundtrip_content_disposition_attachment(
     assert resp.content == payload
     disposition = resp.headers["content-disposition"]
     assert disposition.startswith("attachment")
-    assert 'filename="note.txt"' in disposition
+    # Server-generated safe name: evidence_id + extension from MIME.
+    assert f'filename="{body["evidence_id"]}.txt"' in disposition
+    # Original name survives as JSON metadata only.
+    assert body["original_filename"] == "note.txt"
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        'evil";x="y.txt',    # quote breakout
+        "crlf\r\nSet-Cookie: pwned=1.txt",  # header injection attempt
+        "工地照片 🏗.jpg",  # unicode
+    ],
+)
+async def test_download_hostile_filename_never_reaches_header(
+    client, contributor_token, hostile
+):
+    """Acceptance item: hostile client filenames cannot touch the header."""
+    body = await _upload_as(
+        client, contributor_token, filename=hostile, mime="text/plain"
+    )
+    resp = await client.get(
+        f"/evidence/{body['evidence_id']}/download",
+        headers=_auth(contributor_token),
+    )
+    assert resp.status_code == 200
+    disposition = resp.headers["content-disposition"]
+    assert disposition == f'attachment; filename="{body["evidence_id"]}.txt"'
+    assert "\r" not in disposition and "\n" not in disposition
+    assert "evil" not in disposition and "pwned" not in disposition
 
 
 async def test_download_missing_404(client, contributor_token):

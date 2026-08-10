@@ -4,19 +4,21 @@ Evidence Storage foundation slice. Two new tables, purely additive:
 
 * ``evidence`` — one row per raw evidence object (voice/photo/text/
   document). ``occurred_at`` is stored separately from ``created_at``
-  (DEC-TIME-001). ``job_id`` is nullable and CONFIRMED-ONLY — written
-  exclusively by explicit user action (DEC-JOB-ATTR-001). No delete
-  columns exist: raw evidence is never destroyed by any normal product
-  path (DEC-EVIDENCE-001); a future privileged purge would be its own
-  promoted decision and migration.
+  (DEC-TIME-001) and is nullable at this raw layer — unknown stays
+  NULL, never manufactured from upload time. ``job_id`` is nullable
+  and CONFIRMED-ONLY — written exclusively by explicit user action
+  (DEC-JOB-ATTR-001). No delete columns exist: raw evidence is never
+  destroyed by any normal product path (DEC-EVIDENCE-001); a future
+  privileged purge would be its own promoted decision and migration.
 * ``evidence_audit_log`` — append-only lifecycle trail, following the
   ``job_audit_log`` precedent (single-tenant server_default tenant_id,
   ``clock_timestamp()`` created_at).
 
-Reversible: downgrade drops both tables and both enums. Safe while the
-feature is unused; once real evidence exists, downgrading would discard
-those rows — staging/production run this manually per ADR 0003 with
-that understanding.
+Rollback: the downgrade below is structurally available and safe while
+the feature is unused. Once real evidence exists it is NOT the
+operational rollback — it would destroy evidence rows, which
+DEC-EVIDENCE-001 forbids as a normal path. Operational policy: prefer a
+forward fix; downgrade only against empty tables.
 
 Revision ID: a9b8c7d6e5f4
 Revises: f2c3d4e5a6b7
@@ -65,7 +67,7 @@ def upgrade() -> None:
         sa.Column("sha256", sa.String(64), nullable=True),
         sa.Column("storage_backend", sa.String(16), nullable=True),
         sa.Column("storage_key", sa.String(255), nullable=True, unique=True),
-        sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),

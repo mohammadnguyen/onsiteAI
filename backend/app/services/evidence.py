@@ -12,9 +12,13 @@ Write semantics (DEC-EVIDENCE-001 / DEC-TIME-001 / DEC-JOB-ATTR-001):
 
   (No automated sweep in this slice — deliberate.)
 * ``job_id`` is written by exactly two code paths, both explicit user
-  actions: the ``job_id`` form field on upload, and :func:`link_job`.
-  Nothing else may write it — suggestion state belongs to the future
-  capture slice (DEC-JOB-ATTR-001).
+  actions: the ``job_id`` form field on upload, and :func:`link_job`
+  (initial link, or admin-only reasoned relink — see its docstring).
+  Every write carries an audit row; nothing else may write it —
+  suggestion state belongs to the future capture slice
+  (DEC-JOB-ATTR-001).
+* ``occurred_at`` may be NULL (unknown) and is never defaulted
+  server-side (DEC-TIME-001).
 * There is no delete path anywhere in this module.
 
 Read access rule (founder ruling): until job-linked, an evidence record
@@ -66,12 +70,17 @@ class EvidenceJobNotFound(Exception):
         super().__init__(f"job {job_id} not found")
 
 
-class EvidenceAlreadyLinked(Exception):
-    """link-job on an already-linked record — HTTP layer maps to 409."""
+class EvidenceRelinkForbidden(Exception):
+    """Relink attempted by a non-admin — HTTP layer maps to 403 (the
+    repo's admin-only convention, matching ``deps.require_admin``)."""
 
-    def __init__(self, evidence_id: uuid.UUID):
-        self.evidence_id = evidence_id
-        super().__init__(f"evidence {evidence_id} already job-linked")
+
+class EvidenceRelinkReasonRequired(Exception):
+    """Relink without a non-empty reason — HTTP layer maps to 422."""
+
+
+class EvidenceRelinkSameJob(Exception):
+    """Relink to the currently-linked job — nothing to change; 409."""
 
 
 class EvidenceTooLarge(Exception):
@@ -140,7 +149,7 @@ async def create_evidence(
     uploader: User,
     chunks: AsyncIterator[bytes],
     mime_type: str,
-    occurred_at: datetime,
+    occurred_at: datetime | None,
     original_filename: str | None,
     job_id: uuid.UUID | None,
     max_bytes: int,
@@ -150,6 +159,11 @@ async def create_evidence(
     ``job_id``, when provided, is the caller's EXPLICIT selection
     (DEC-JOB-ATTR-001) — the API contract forbids passing a suggested
     or inferred value here.
+
+    ``occurred_at`` is stored exactly as given, including ``None``:
+    unknown stays NULL and is NEVER defaulted to upload time or any
+    other server-side value — that would conflate the two timestamp
+    concepts DEC-TIME-001 exists to separate.
     """
     if job_id is not None:
         job = await db.get(Job, job_id)
@@ -297,34 +311,66 @@ async def link_job(
     user: User,
     evidence_id: uuid.UUID,
     job_id: uuid.UUID,
+    reason: str | None = None,
 ) -> Evidence:
     """Explicit user action linking evidence to its authoritative Job.
 
     One of exactly two writers of ``evidence.job_id`` (the other is the
-    explicit ``job_id`` at upload). One-way in this slice: re-linking an
-    already-linked record is rejected — changing an authoritative link
-    is a future promoted decision.
+    explicit ``job_id`` at upload), and every write lands with an audit
+    row — no code path changes ``job_id`` silently.
+
+    * **Initial link** (``job_id`` currently NULL): any user who can
+      read the record; audited as ``job_linked``.
+    * **Relink** (``job_id`` already set): admin-only in v1, requires a
+      non-empty ``reason``; audited as ``job_relinked`` with
+      ``old_job_id``, ``new_job_id`` and ``reason`` in detail, so the
+      old value is preserved forever. Job→job only — unlinking back to
+      NULL is out of scope. Evidence bytes and storage keys stay
+      immutable throughout; only this metadata column changes.
     """
     evidence = await get_evidence(db, user, evidence_id)
-    if evidence.job_id is not None:
-        raise EvidenceAlreadyLinked(evidence_id)
     job = await db.get(Job, job_id)
     if job is None:
         raise EvidenceJobNotFound(job_id)
 
-    evidence.job_id = job_id
-    db.add(
-        _audit(
-            evidence.evidence_id,
-            user,
-            "job_linked",
-            {"job_id": str(job_id)},
+    if evidence.job_id is None:
+        evidence.job_id = job_id
+        db.add(
+            _audit(
+                evidence.evidence_id,
+                user,
+                "job_linked",
+                {"job_id": str(job_id)},
+            )
         )
-    )
+        action = "job_linked"
+    else:
+        if user.role != UserRole.admin:
+            raise EvidenceRelinkForbidden()
+        if reason is None or not reason.strip():
+            raise EvidenceRelinkReasonRequired()
+        if evidence.job_id == job_id:
+            raise EvidenceRelinkSameJob()
+        old_job_id = evidence.job_id
+        evidence.job_id = job_id
+        db.add(
+            _audit(
+                evidence.evidence_id,
+                user,
+                "job_relinked",
+                {
+                    "old_job_id": str(old_job_id),
+                    "new_job_id": str(job_id),
+                    "reason": reason.strip(),
+                },
+            )
+        )
+        action = "job_relinked"
+
     await db.commit()
     await db.refresh(evidence)
     logger.info(
-        "evidence job_linked evidence_id=%s job_id=%s", evidence_id, job_id
+        "evidence %s evidence_id=%s job_id=%s", action, evidence_id, job_id
     )
     return evidence
 

@@ -74,7 +74,7 @@ Ack: 3f991e60d3e5
 
 ### Two timestamps
 
-`occurred_at` and `created_at` are separate columns on event-like records, both always stored.
+`occurred_at` and `created_at` are separate columns on event-like records, both always stored. At the raw Evidence layer occurred_at is nullable — unknown stays NULL rather than being manufactured from upload time; a confirmed Site Log Fact must carry occurred_at or an explicit unknown/approximate marker (capture-slice concern).
 
 Source: DEC-TIME-001 (Charter §17)
 Ack: 79e4d0c77e8c
