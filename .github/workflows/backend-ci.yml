@@ -30,7 +30,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install pytest
-        run: pip install pytest
+        run: pip install "pytest>=9,<10"
 
       - name: Drift-checker fixture tests
         run: python -m pytest tests/test_check_decision_drift.py -q

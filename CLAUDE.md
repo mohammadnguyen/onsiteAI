@@ -92,7 +92,7 @@ Backend PRs: `ruff check` → `pytest` → `python -m pytest tests/test_check_de
 Mobile PRs: `tsc --noEmit` verbatim.
 
 Two gate tiers ("significant" is defined by the Full Gate list):
-- **Full gate** (plan-review skill + all checks + explicit approval before mutation): schema migrations, auth/security changes, destructive or irreversible actions (including external side effects), architecture changes, public API behaviour changes, changes to PRODUCT.md binding content, significant new capabilities, anything touching the extraction/confirmation pipeline.
+- **Full gate** (plan-review skill + all checks + explicit approval before mutation): schema migrations, auth/security changes, destructive or irreversible actions (including external side effects), architecture changes, public API behaviour changes, changes to PRODUCT.md binding content, significant new capabilities, major new dependencies, anything touching the extraction/confirmation pipeline.
 - **Light gate** (checks + STOP): existing-maintain work, bounded bug fixes, tests, small UX repairs, low-risk internal corrections.
 
 ---
