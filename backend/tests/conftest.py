@@ -13,6 +13,7 @@ dependency override so the ASGI ``client`` reads rows written via
 """
 
 import os
+import tempfile
 
 # Settings must have values before ``app.main`` (which imports ``app.config``)
 # is loaded, so we set defaults here before the ``app.main`` import below.
@@ -40,6 +41,12 @@ os.environ.setdefault("CORS_ALLOWED_ORIGINS", "https://localhost.test")
 # the same client IP + admin email and would otherwise trip a per-minute cap.
 # The focused test in test_auth_rate_limit.py re-enables it explicitly.
 os.environ.setdefault("AUTH_RATE_LIMIT_PER_MINUTE", "0")
+
+# Evidence storage: local filesystem adapter rooted in a per-run temp dir
+# so test uploads never touch the repo tree and runs stay independent.
+os.environ.setdefault(
+    "EVIDENCE_LOCAL_ROOT", tempfile.mkdtemp(prefix="sitetracker-evidence-")
+)
 # Security audit 2026-07: same reasoning for the new per-IP login cap —
 # the suite shares one client IP and would otherwise trip it.
 os.environ.setdefault("LOGIN_IP_RATE_LIMIT_PER_MINUTE", "0")

@@ -185,6 +185,20 @@ class Settings(BaseSettings):
     # ``mode="before"`` field validator below performs the split.
     cors_allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
+    # ---- Evidence storage (DEC-EVIDENCE-001) --------------------------
+    # Backend switch: "local" (filesystem; the dev/test default) or "s3"
+    # (any S3-compatible endpoint — Tigris in staging/production). The
+    # model validator below requires "s3" with full connection settings
+    # in staging/production; credentials come from the standard AWS env
+    # vars injected by ``flyctl secrets`` (never from this file).
+    evidence_storage_backend: str = "local"
+    evidence_local_root: str = "./var/evidence"
+    evidence_s3_endpoint_url: str | None = None
+    evidence_s3_bucket: str | None = None
+    # 25 MiB — covers voice memos and phone photos; raise only with
+    # evidence of real captures exceeding it (H1 friction log).
+    evidence_max_upload_bytes: int = 25 * 1024 * 1024
+
     # Legacy input alias for ``ENVIRONMENT``. Never read this attribute
     # from application code — use :attr:`environment` (which mirrors
     # ``app_env``) instead. Existence on the model is purely so the
@@ -274,6 +288,31 @@ class Settings(BaseSettings):
                     f"Wildcard '*' is not allowed in CORS_ALLOWED_ORIGINS for "
                     f"APP_ENV={self.app_env!r}; list explicit origins."
                 )
+
+        # 3. Evidence storage (DEC-EVIDENCE-001). Backend value must be
+        # known; staging/production must not silently run on the local
+        # filesystem (VMs are stateless — evidence would be lost);
+        # selecting s3 anywhere requires full connection settings.
+        if self.evidence_storage_backend not in {"local", "s3"}:
+            raise ValueError(
+                "EVIDENCE_STORAGE_BACKEND must be 'local' or 's3'; got "
+                f"{self.evidence_storage_backend!r}."
+            )
+        if self.app_env in {"staging", "production"} and (
+            self.evidence_storage_backend != "s3"
+        ):
+            raise ValueError(
+                f"APP_ENV={self.app_env!r} requires "
+                "EVIDENCE_STORAGE_BACKEND=s3 — the local filesystem "
+                "backend would silently lose evidence on stateless VMs."
+            )
+        if self.evidence_storage_backend == "s3" and (
+            not self.evidence_s3_endpoint_url or not self.evidence_s3_bucket
+        ):
+            raise ValueError(
+                "EVIDENCE_STORAGE_BACKEND=s3 requires "
+                "EVIDENCE_S3_ENDPOINT_URL and EVIDENCE_S3_BUCKET."
+            )
 
         return self
 
