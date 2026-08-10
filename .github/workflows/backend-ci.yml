@@ -15,6 +15,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Governance gate (L1): fixture tests for the drift checker, then the drift
+  # check itself. Runs at the REPOSITORY ROOT — the check resolves
+  # docs/product/* and its Binding Scope from there and hard-fails from any
+  # other working directory. No DB, no dependencies beyond pytest.
+  governance:
+    name: decision drift gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: pip install "pytest>=9,<10"
+
+      - name: Drift-checker fixture tests
+        run: python -m pytest tests/test_check_decision_drift.py -q
+
+      - name: Decision drift check (full coverage)
+        run: python scripts/check_decision_drift.py --require-full-coverage
+
   test:
     name: ruff + pytest
     runs-on: ubuntu-latest
