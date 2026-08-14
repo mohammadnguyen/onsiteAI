@@ -35,6 +35,8 @@ DIFF = TOOLS / "label_diff.py"
 sys.path.insert(0, str(TOOLS))
 
 from path_policy import (  # noqa: E402
+    PrivatePathViolation,
+    assert_private_paths,
     is_within,
     registered_worktrees,
 )
@@ -98,6 +100,50 @@ def other_worktree() -> Path:
         if not is_within(REPO_ROOT, tree) and not is_within(tree, REPO_ROOT):
             return tree
     pytest.skip("repository has only one registered worktree")
+
+
+# ------------------------------------------------- policy: deterministic unit
+# The integration test below needs a second real worktree and therefore
+# skips on a single-worktree checkout (e.g. a plain CI runner). This unit
+# test injects the worktree list instead, so the "any registered worktree,
+# not just the current one" rule is verified on EVERY runner, always.
+
+
+def test_second_registered_worktree_is_rejected_without_real_worktrees(tmp_path):
+    first = tmp_path / "wt-primary"
+    second = tmp_path / "wt-linked"
+    outside = tmp_path / "private"
+    for d in (first, second, outside):
+        d.mkdir()
+
+    target = second / "relabel" / "worksheet.md"
+    with pytest.raises(PrivatePathViolation) as excinfo:
+        assert_private_paths({"--worksheet": target}, worktrees=[first, second])
+
+    violation = excinfo.value
+    assert violation.label == "--worksheet"
+    assert is_within(violation.path, second)
+    assert violation.worktree == second
+    assert "worktree" in str(violation)
+
+    # A path under neither worktree is accepted.
+    assert_private_paths(
+        {"--worksheet": outside / "worksheet.md"}, worktrees=[first, second]
+    )
+
+
+def test_first_registered_worktree_is_also_rejected(tmp_path):
+    first = tmp_path / "wt-primary"
+    second = tmp_path / "wt-linked"
+    first.mkdir()
+    second.mkdir()
+
+    with pytest.raises(PrivatePathViolation) as excinfo:
+        assert_private_paths(
+            {"dataset": first / "evals" / "dataset.v0.jsonl"},
+            worktrees=[first, second],
+        )
+    assert excinfo.value.worktree == first
 
 
 # --------------------------------------------------------------- policy: 1-2
@@ -339,3 +385,163 @@ def test_malformed_json_is_a_controlled_error_not_a_traceback(tmp_path):
     assert "invalid JSON" in diffed.stderr
     assert "Traceback" not in diffed.stderr
     assert not (tmp_path / "r.md").exists()
+
+
+# ------------------------------------------- completeness of the label passes
+
+
+def test_blind_shuffle_refuses_incomplete_first_pass(tmp_path):
+    """A blind relabel is meaningless unless pass one is complete."""
+    rows = [
+        case("R-0001", gold=LABELLED),
+        case("R-0002"),  # gold: null
+        case("R-0003"),  # gold: null
+    ]
+    dataset = write_jsonl(tmp_path / "dataset.v0.jsonl", rows)
+    worksheet = tmp_path / "relabel" / "worksheet.md"
+    mapping = tmp_path / "relabel" / "mapping.json"
+
+    proc = run(
+        SHUFFLE,
+        str(dataset),
+        "--seed", "1",
+        "--worksheet", str(worksheet),
+        "--mapping", str(mapping),
+    )
+    assert proc.returncode == 2
+    assert "'gold': null" in proc.stderr
+    assert "R-0002" in proc.stderr and "R-0003" in proc.stderr
+    assert "Traceback" not in proc.stderr
+    assert not worksheet.exists()
+    assert not mapping.exists()
+
+
+def test_label_diff_refuses_null_gold(tmp_path):
+    first = write_jsonl(
+        tmp_path / "first.jsonl",
+        [case("R-0001", gold=LABELLED), case("R-0002")],
+    )
+    second = write_jsonl(
+        tmp_path / "second.jsonl",
+        [case("R-0001", gold=LABELLED), case("R-0002", gold=LABELLED)],
+    )
+    out = tmp_path / "report.md"
+
+    proc = run(DIFF, str(first), str(second), "--out", str(out))
+    assert proc.returncode == 2
+    assert "R-0002" in proc.stderr and "gold" in proc.stderr
+    assert "Traceback" not in proc.stderr
+    assert not out.exists()
+
+
+def test_label_diff_refuses_mismatched_case_sets(tmp_path):
+    first = write_jsonl(
+        tmp_path / "first.jsonl",
+        [case("R-0001", gold=LABELLED), case("R-0002", gold=LABELLED)],
+    )
+    second = write_jsonl(
+        tmp_path / "second.jsonl",
+        [case("R-0001", gold=LABELLED), case("R-0003", gold=LABELLED)],
+    )
+    out = tmp_path / "report.md"
+
+    proc = run(DIFF, str(first), str(second), "--out", str(out))
+    assert proc.returncode == 2
+    assert "different case sets" in proc.stderr
+    assert "R-0002" in proc.stderr and "R-0003" in proc.stderr
+    assert "Traceback" not in proc.stderr
+    assert not out.exists()
+
+
+# --------------------------------------------------- fact alignment collisions
+
+
+def collide(summary_a: str, summary_b: str) -> dict:
+    """Two facts whose alignment keys are identical."""
+    return {
+        "facts": [
+            {"type": "task", "summary": summary_a, "attrs": {}},
+            {"type": "task", "summary": summary_b, "attrs": {}},
+        ],
+        "must_not_infer": [],
+    }
+
+
+LONG_A = "chase the plumber about the ensuite waste relocation before friday"
+LONG_B = "chase the plumber about the ensuite waste relocation after friday"
+
+
+@pytest.mark.parametrize("side", ["first", "second"])
+def test_alignment_key_collision_fails_on_either_side(tmp_path, side):
+    """Identical keys would silently drop a fact — refuse instead."""
+    colliding = case("R-0001", gold=collide(LONG_A, LONG_B))
+    clean = case("R-0001", gold=LABELLED)
+
+    first = write_jsonl(
+        tmp_path / "first.jsonl", [colliding if side == "first" else clean]
+    )
+    second = write_jsonl(
+        tmp_path / "second.jsonl", [colliding if side == "second" else clean]
+    )
+    out = tmp_path / "report.md"
+
+    proc = run(DIFF, str(first), str(second), "--out", str(out))
+    assert proc.returncode == 2
+    assert "R-0001" in proc.stderr
+    assert "alignment key" in proc.stderr
+    assert side.upper() in proc.stderr
+    assert "Traceback" not in proc.stderr
+    assert not out.exists()
+
+
+def test_distinct_summaries_still_align_normally(tmp_path):
+    """The collision guard must not reject legitimate multi-fact cases."""
+    gold = {
+        "facts": [
+            {"type": "task", "summary": "order the flashing", "attrs": {}},
+            {"type": "site_log_fact", "summary": "slab poured", "attrs": {}},
+        ],
+        "must_not_infer": [],
+    }
+    first = write_jsonl(tmp_path / "first.jsonl", [case("R-0001", gold=gold)])
+    second = write_jsonl(tmp_path / "second.jsonl", [case("R-0001", gold=gold)])
+    out = tmp_path / "report.md"
+
+    proc = run(DIFF, str(first), str(second), "--out", str(out))
+    assert proc.returncode == 0, proc.stderr
+    assert "identical labels: 1/1" in proc.stdout
+
+
+# ------------------------------------------------------ must_not_infer shape
+
+
+@pytest.mark.parametrize(
+    "bad_mni", [[{"nested": "object"}], [123], "not-a-list"]
+)
+def test_validator_rejects_malformed_must_not_infer(tmp_path, bad_mni):
+    gold = {
+        "facts": [{"type": "task", "summary": "x", "attrs": {}}],
+        "must_not_infer": bad_mni,
+    }
+    dataset = write_jsonl(tmp_path / "dataset.v0.jsonl", [case("R-0001", gold=gold)])
+    proc = run(VALIDATE, str(dataset))
+    assert proc.returncode == 1
+    assert "must_not_infer" in proc.stdout
+
+
+def test_label_diff_unhashable_must_not_infer_is_controlled(tmp_path):
+    """Malformed data must not surface as an unhashable-type traceback."""
+    gold = {
+        "facts": [{"type": "task", "summary": "x", "attrs": {}}],
+        "must_not_infer": [{"nested": "object"}],
+    }
+    first = write_jsonl(tmp_path / "first.jsonl", [case("R-0001", gold=gold)])
+    second = write_jsonl(tmp_path / "second.jsonl", [case("R-0001", gold=gold)])
+    out = tmp_path / "report.md"
+
+    proc = run(DIFF, str(first), str(second), "--out", str(out))
+    assert proc.returncode == 2
+    assert "must_not_infer" in proc.stderr
+    assert "Traceback" not in proc.stderr
+    assert "unhashable" not in proc.stderr
+    assert not out.exists()

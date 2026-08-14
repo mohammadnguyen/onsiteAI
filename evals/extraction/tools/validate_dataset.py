@@ -235,8 +235,21 @@ def check_line(
                 for i, fact in enumerate(facts):
                     check_fact(fact, f"{where} fact[{i}]", errors)
             mni = gold.get("must_not_infer")
-            if mni is not None and not isinstance(mni, list):
-                errors.append(f"{where}: gold.must_not_infer must be an array")
+            if mni is not None:
+                if not isinstance(mni, list):
+                    errors.append(
+                        f"{where}: gold.must_not_infer must be an array of strings"
+                    )
+                else:
+                    # Non-string entries are unhashable downstream (label_diff
+                    # set-diffs this field), so catch them here rather than as
+                    # a traceback later.
+                    bad = [x for x in mni if not isinstance(x, str)]
+                    if bad:
+                        errors.append(
+                            f"{where}: gold.must_not_infer must contain only "
+                            f"strings (found {type(bad[0]).__name__})"
+                        )
             # 'labelled' means a gold object is PRESENT and structurally
             # valid. It says nothing about independence, blind relabel,
             # disagreement resolution or freeze — those are human facts.

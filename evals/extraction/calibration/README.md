@@ -41,7 +41,7 @@ guard, not the ignore list, is the protection.
 |---|---|---|
 | Shipped worked examples (**public fixture**) | `../dataset.sample.jsonl` (3 lines, `SAMPLE-*`) — in repo | **No** — schema-design material, not independent evidence |
 | Synthetic policy-calibration (**public fixture**, optional) | `synthetic.jsonl` — in repo *or* private | **No** — tests schema/policy behaviour only |
-| Reference examples | private `reference.jsonl` (`REF-*`) | **No** — may have influenced design/prompts; private because it can be real-derived |
+| Reference examples | private `reference.jsonl` (`REF-*`) | **No** — may have influenced design/prompts; **private by safe default** because it can be real-derived. Promotable to a public synthetic fixture only once positively established as wholly fabricated (schema §6). |
 | Raw + labelled real captures | private `dataset.v0.jsonl` (`R-*`) | **Yes**, once founder-labelled and frozen |
 | Held-out real captures | private `dataset.heldout.jsonl` (`meta.held_out: true`) | Reserved — never used to adjust schema or prompts |
 | Blind-relabel order mapping | private, outside repo (tool-enforced) | n/a |
@@ -62,10 +62,16 @@ Rules:
    synthetic/reference/public-fixture item ever substitutes toward the
    threshold.
 3. Blind relabel: `tools/blind_shuffle.py` produces a gold-stripped,
-   shuffled worksheet; the order mapping is refused if it would land
-   inside the repo. `tools/label_diff.py` compares the two founder
-   passes afterwards; disagreements become worked examples (schema §10),
-   also kept private until the founder chooses to generalise one.
+   shuffled worksheet. It **refuses to run unless the first pass is
+   complete** — any `gold: null` is a controlled failure, because a blind
+   relabel of a half-labelled set has nothing to compare against.
+   `tools/label_diff.py` compares the two founder passes afterwards and
+   likewise refuses incomplete input: null gold on either side, case-id
+   sets that differ, duplicate ids, or two facts in one case that share
+   an alignment key (which would silently drop a real disagreement). All
+   of these fail closed with exit 2 and no report. Disagreements become
+   worked examples (schema §10), also kept private until the founder
+   chooses to generalise one.
 4. Founder-maintained, append-only in the private workspace:
    `ambiguity-log.md`.
 

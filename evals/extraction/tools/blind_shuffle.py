@@ -132,12 +132,6 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
-        if d.get("gold") is None:
-            print(
-                f"WARN: {args.dataset.name}:{lineno} ({d.get('id')}) has no "
-                "gold yet — included anyway (relabel treats all the same)",
-                file=sys.stderr,
-            )
         cases.append(d)
 
     if not cases:
@@ -153,6 +147,20 @@ def main() -> int:
             "No output written.",
             file=sys.stderr,
         )
+        return 2
+
+    # A blind relabel only means something against a COMPLETE first pass.
+    # Shuffling a partially-labelled set would silently produce a second
+    # pass with nothing to compare against for the unlabelled cases.
+    unlabelled = [d["id"] for d in cases if d.get("gold") is None]
+    if unlabelled:
+        print(
+            f"ERROR: {len(unlabelled)} case(s) still have 'gold': null — "
+            "the first labelling pass is not complete, so a blind relabel "
+            "cannot be prepared. No output written.",
+            file=sys.stderr,
+        )
+        print(f"  unlabelled case ids: {sorted(unlabelled)}", file=sys.stderr)
         return 2
 
     rng = random.Random(args.seed)
