@@ -69,9 +69,15 @@ The whole eval lives on the line between `reasonable` and unsupported invention.
 
 Stricter commercial standard: for `potential_variation` facts and any attribute with commercial or contractual implications, apply the harder test — *if you would not rely on the inference when reviewing a real Variation, it is unsupported.*
 
-## 6. Privacy
+## 6. Privacy and storage location
 
-Before an item enters the repo: client and subcontractor real names replaced with consistent pseudonyms (one mapping per real person, mapping file kept **outside** the repo); dollar amounts removed or rounded to bands if commercially sensitive; addresses genericised. Dimensions and technical values stay (they are what extraction is for).
+**Storage-policy amendment (2026-08-14).** This section's *storage* rule changed; the JSON shape in §2/§4 did not, so this is not a schema v0.2 — datasets written against v0.1 remain valid.
+
+**Where real material lives.** Real captures, real gold labels, held-out cases, blind-relabel worksheets, order mappings, and any report derived from them (disagreement reports, scoring sheets, baseline write-ups) **never enter the public repository** — not in any branch, not in history. They live in a private workspace outside every registered Git worktree, and `evals/extraction/tools/path_policy.py` enforces this at tool level (fails closed, exit 2, no partial output).
+
+**Scrubbing is still mandatory — and still not sufficient.** Before an item enters the *private dataset*: client and subcontractor real names replaced with consistent pseudonyms (one mapping per real person, mapping file kept outside the repo); dollar amounts removed or rounded to bands if commercially sensitive; addresses genericised. Dimensions and technical values stay (they are what extraction is for). Scrubbing reduces harm if the private workspace leaks; it does **not** make an item committable to a public repo. "Scrubbed" and "publishable" are separate questions, and the answer to the second is no for anything real-derived.
+
+**What may be public.** Only fully synthetic or illustrative fixtures: the shipped `dataset.sample.jsonl` and an optional in-repo `calibration/synthetic.jsonl`. Reference examples default to **private**, because they can be real-derived; a reference set may be promoted to a public synthetic fixture only after it is positively established as wholly fabricated. Public fixtures never count toward the real-capture minimum (see `calibration/README.md`).
 
 ## 7. Corpus composition (per DEC-GATE-H2-001)
 
