@@ -8,10 +8,13 @@ deterministically from a seed, and writes:
 
   1. a relabel worksheet (markdown) with utterance + frozen context and
      a blank gold template per case — NO prior labels anywhere in it;
-  2. an order-mapping JSON (shuffled position -> case id), written
-     OUTSIDE the repository (required; the tool refuses a mapping path
-     inside the repo so the mapping cannot leak into the worksheet's
-     git history or be casually opened during relabelling).
+  2. an order-mapping JSON (shuffled position -> case id).
+
+**All three paths (dataset, worksheet, mapping) must live outside every
+registered Git worktree** — the worksheet carries verbatim utterances and
+frozen context, so it is exactly as sensitive as the dataset. The check
+runs before anything is read or written, fails closed, and leaves no
+partial output (see path_policy.py).
 
 The elapsed week is a human control — this tool does not and cannot
 compress it.
@@ -29,9 +32,9 @@ import random
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-def repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+from path_policy import guard_private_paths  # noqa: E402
 
 
 def render_case(position: int, d: dict) -> str:
@@ -89,17 +92,22 @@ def main() -> int:
                     help="Shuffle seed (record it; makes the order reproducible)")
     ap.add_argument("--worksheet", required=True, type=Path)
     ap.add_argument("--mapping", required=True, type=Path,
-                    help="Order-mapping JSON path — MUST be outside the repository")
+                    help="Order-mapping JSON path — MUST be outside every worktree")
     args = ap.parse_args()
 
+    # Fail closed BEFORE reading or writing anything: dataset, worksheet
+    # and mapping all carry (or reveal) real capture content.
+    guard_private_paths(
+        {
+            "dataset": args.dataset,
+            "--worksheet": args.worksheet,
+            "--mapping": args.mapping,
+        }
+    )
     mapping_path = args.mapping.resolve()
-    root = repo_root().resolve()
-    if root in mapping_path.parents or mapping_path == root:
-        print(
-            f"ERROR: mapping path {mapping_path} is inside the repository "
-            f"({root}). Write it somewhere private outside the repo.",
-            file=sys.stderr,
-        )
+
+    if not args.dataset.exists():
+        print(f"ERROR: dataset {args.dataset} not found", file=sys.stderr)
         return 2
 
     cases = []
@@ -108,7 +116,22 @@ def main() -> int:
     ):
         if not raw.strip():
             continue
-        d = json.loads(raw)
+        try:
+            d = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            print(
+                f"ERROR: {args.dataset.name}:{lineno}: invalid JSON ({exc.msg}). "
+                "No output written.",
+                file=sys.stderr,
+            )
+            return 2
+        if not isinstance(d, dict) or not isinstance(d.get("id"), str):
+            print(
+                f"ERROR: {args.dataset.name}:{lineno}: line has no string 'id'. "
+                "No output written.",
+                file=sys.stderr,
+            )
+            return 2
         if d.get("gold") is None:
             print(
                 f"WARN: {args.dataset.name}:{lineno} ({d.get('id')}) has no "
@@ -119,6 +142,17 @@ def main() -> int:
 
     if not cases:
         print("ERROR: dataset is empty", file=sys.stderr)
+        return 2
+
+    ids = [d["id"] for d in cases]
+    duplicates = sorted({cid for cid in ids if ids.count(cid) > 1})
+    if duplicates:
+        print(
+            f"ERROR: duplicate case id(s) {duplicates} — refusing to shuffle "
+            "a dataset whose ids cannot be re-attached unambiguously. "
+            "No output written.",
+            file=sys.stderr,
+        )
         return 2
 
     rng = random.Random(args.seed)

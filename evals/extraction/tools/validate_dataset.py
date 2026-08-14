@@ -7,21 +7,29 @@ objects, §5 support levels, §6 privacy marker) and reports per-class
 counts. It deliberately refuses to produce one combined total: reference,
 synthetic and real captures are different kinds of evidence.
 
-Real calibration data never lives in this repository (it is public). The
-real/held-out/reference/synthetic files live in a private workspace given
-by --private-root or $FOREY_PRIVATE_CALIBRATION; only the shipped sample
-file is in-repo.
+Two kinds of data, never conflated:
+
+* **Public fixtures** (in-repo): the shipped sample file and an optional
+  in-repo synthetic fixture. Synthetic/illustrative only; they never
+  count toward the real-capture minimum.
+* **Private datasets** (outside every registered Git worktree): real,
+  held-out and reference material, located via --private-root or
+  $FOREY_PRIVATE_CALIBRATION. Any in-repo path that is not a public
+  fixture is refused, and the private root itself is refused if it sits
+  inside any worktree (see path_policy.py — fails closed, exit 2).
 
 Usage:
   python evals/extraction/tools/validate_dataset.py [FILES...]
-      # no FILES: validates the in-repo sample plus every private-root
-      # dataset file that exists
-  python evals/extraction/tools/validate_dataset.py --baseline-ready \
-      --private-root D:/FOREY_PRIVATE_CALIBRATION
-      # exit 0 iff >= 30 REAL cases with frozen (non-null) gold exist in
-      # <private-root>/dataset.v0.jsonl — the Baseline v0.1 gate.
+      # no FILES: validates in-repo public fixtures plus every
+      # private-root dataset file that exists
+  python evals/extraction/tools/validate_dataset.py \
+      --baseline-structure-ready --private-root D:/FOREY_PRIVATE_CALIBRATION
+      # STRUCTURAL minimum-dataset gate only: exit 0 iff >= 30 real cases
+      # carry structurally valid labels. It cannot verify independence,
+      # the elapsed week, disagreement resolution, or freeze — Baseline
+      # v0.1 still requires explicit founder approval of those steps.
 
-Exit codes: 0 = pass, 1 = structural violations, 2 = usage/IO error.
+Exit codes: 0 = pass, 1 = structural violations, 2 = usage/policy error.
 """
 
 from __future__ import annotations
@@ -32,45 +40,73 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from path_policy import (  # noqa: E402
+    WorktreeDiscoveryError,
+    find_violation,
+    is_public_fixture,
+    registered_worktrees,
+)
+
 EXTRACTION_DIR = Path(__file__).resolve().parent.parent
-REPO_ROOT = Path(__file__).resolve().parents[3]
 
 TYPES = {"site_log_fact", "task", "potential_variation"}
 SUPPORT = {"explicit", "reasonable", "unknown", "ambiguous"}
 LANGS = {"en", "zh", "mixed"}
 
-BASELINE_MINIMUM = 30
+# Minimum number of structurally valid labelled real cases. A floor, not
+# a certificate: meeting it says nothing about how the labels were made.
+MINIMUM_REAL_CASES = 30
 
 
-def private_root(cli_value: str | None) -> Path | None:
-    """Resolve the private workspace, refusing any path inside the repo."""
+def worktrees_or_exit() -> list[Path]:
+    try:
+        return registered_worktrees()
+    except WorktreeDiscoveryError as exc:
+        print(
+            f"ERROR: private-path policy cannot be verified ({exc}). "
+            "Refusing to run — this check fails closed.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+
+def private_root(cli_value: str | None, worktrees: list[Path]) -> Path | None:
+    """Resolve the private workspace, refusing any registered worktree."""
     raw = cli_value or os.environ.get("FOREY_PRIVATE_CALIBRATION")
     if not raw:
         return None
-    path = Path(raw).resolve()
-    root = REPO_ROOT.resolve()
-    if path == root or root in path.parents:
-        print(
-            f"ERROR: private root {path} is inside the repository ({root}). "
-            "Real captures and gold labels must never enter this repo.",
-            file=sys.stderr,
-        )
+    path = Path(raw).expanduser().resolve()
+    violation = find_violation("--private-root", path, worktrees)
+    if violation is not None:
+        print(f"ERROR: {violation}", file=sys.stderr)
         sys.exit(2)
     return path
 
 
 def known_files(priv: Path | None) -> dict[str, Path]:
-    files = {"sample": EXTRACTION_DIR / "dataset.sample.jsonl"}
+    """Class -> path. Public fixtures are in-repo; the rest are private."""
+    files = {
+        "sample": EXTRACTION_DIR / "dataset.sample.jsonl",
+        "synthetic": EXTRACTION_DIR / "calibration" / "synthetic.jsonl",
+    }
     if priv is not None:
+        # A private synthetic file is equally acceptable; whichever exists
+        # is classed 'synthetic' and never counts as real evidence.
+        if not files["synthetic"].exists():
+            files["synthetic"] = priv / "synthetic.jsonl"
         files.update(
             {
                 "reference": priv / "reference.jsonl",
-                "synthetic": priv / "synthetic.jsonl",
                 "real": priv / "dataset.v0.jsonl",
                 "heldout": priv / "dataset.heldout.jsonl",
             }
         )
     return files
+
+
+PUBLIC_CLASSES = {"sample", "synthetic"}
 
 
 def classify(path: Path, files: dict[str, Path]) -> str:
@@ -81,6 +117,22 @@ def classify(path: Path, files: dict[str, Path]) -> str:
         except OSError:
             continue
     return "unclassified"
+
+
+def assert_readable_location(path: Path, worktrees: list[Path]) -> None:
+    """In-repo reads are limited to the public fixture allowlist."""
+    if is_public_fixture(path):
+        return
+    violation = find_violation("dataset", path, worktrees)
+    if violation is None:
+        return
+    print(f"ERROR: {violation}", file=sys.stderr)
+    print(
+        "Only the public fixtures (dataset.sample.jsonl, "
+        "calibration/synthetic.jsonl) may be read from inside a worktree.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
 
 
 def check_fact(fact: object, where: str, errors: list[str]) -> None:
@@ -119,7 +171,7 @@ def check_line(
     d: dict, where: str, cls: str, errors: list[str], warnings: list[str]
 ) -> dict:
     """Validate one parsed line; return facts about it for the summary."""
-    info = {"gold_frozen": False}
+    info = {"labelled": False}
 
     cid = d.get("id")
     if not isinstance(cid, str) or not cid.strip():
@@ -185,7 +237,10 @@ def check_line(
             mni = gold.get("must_not_infer")
             if mni is not None and not isinstance(mni, list):
                 errors.append(f"{where}: gold.must_not_infer must be an array")
-            info["gold_frozen"] = True
+            # 'labelled' means a gold object is PRESENT and structurally
+            # valid. It says nothing about independence, blind relabel,
+            # disagreement resolution or freeze — those are human facts.
+            info["labelled"] = True
         else:
             errors.append(f"{where}: gold must be null or an object")
 
@@ -231,45 +286,63 @@ def main() -> int:
              "Must be outside this repository.",
     )
     ap.add_argument(
-        "--baseline-ready",
+        "--baseline-structure-ready",
         action="store_true",
-        help="Check the Baseline v0.1 precondition (>=30 frozen REAL cases)",
+        help=(
+            "STRUCTURAL minimum-dataset gate: >=30 structurally valid "
+            "labelled real cases. Does NOT certify Baseline v0.1."
+        ),
     )
     args = ap.parse_args()
 
-    priv = private_root(args.private_root)
+    worktrees = worktrees_or_exit()
+    priv = private_root(args.private_root, worktrees)
     files = known_files(priv)
 
-    if args.baseline_ready:
+    if args.baseline_structure_ready:
         if priv is None:
             print(
-                "BASELINE GATE: NOT MET — no private workspace given "
-                "(--private-root or $FOREY_PRIVATE_CALIBRATION). Real cases "
-                f"never live in this repo, so 0/{BASELINE_MINIMUM} is the "
-                "in-repo answer by policy."
+                "STRUCTURAL DATASET GATE: NOT MET - no private workspace "
+                "given (--private-root or $FOREY_PRIVATE_CALIBRATION). Real "
+                f"cases never live in this repo, so 0/{MINIMUM_REAL_CASES} "
+                "is the in-repo answer by policy."
             )
             return 1
         real = files["real"]
         if not real.exists():
             print(
-                f"BASELINE GATE: NOT MET — {real} does not exist "
-                f"(0/{BASELINE_MINIMUM} frozen real cases)"
+                f"STRUCTURAL DATASET GATE: NOT MET - {real} does not exist "
+                f"(0/{MINIMUM_REAL_CASES} labelled real cases)"
             )
             return 1
         cls, infos, errors, _ = validate_file(real, files)
-        frozen = sum(1 for i in infos if i["gold_frozen"])
+        labelled = sum(1 for i in infos if i["labelled"])
         if errors:
-            print(f"BASELINE GATE: NOT MET — {len(errors)} structural error(s) first:")
+            print(
+                "STRUCTURAL DATASET GATE: NOT MET - "
+                f"{len(errors)} structural error(s) first:"
+            )
             for e in errors:
                 print(f"  - {e}")
             return 1
-        if frozen < BASELINE_MINIMUM:
+        if labelled < MINIMUM_REAL_CASES:
             print(
-                f"BASELINE GATE: NOT MET — {frozen}/{BASELINE_MINIMUM} frozen "
-                "founder-labelled real cases"
+                f"STRUCTURAL DATASET GATE: NOT MET - {labelled}/"
+                f"{MINIMUM_REAL_CASES} labelled real cases"
             )
             return 1
-        print(f"BASELINE GATE: MET — {frozen} frozen real cases (>= {BASELINE_MINIMUM})")
+        print(
+            f"STRUCTURAL DATASET GATE: MET - {labelled} real cases carry "
+            f"structurally valid labels (>= {MINIMUM_REAL_CASES})."
+        )
+        print()
+        print(
+            "This gate checks STRUCTURE ONLY. It does NOT verify that the "
+            "founder labelled independently, that the one-week blind relabel "
+            "happened, that disagreements were resolved, or that the dataset "
+            "is frozen. Baseline v0.1 is NOT approved by this output - it "
+            "requires the founder's explicit confirmation of those steps."
+        )
         return 0
 
     paths = args.files or [p for p in files.values() if p.exists()]
@@ -279,18 +352,20 @@ def main() -> int:
 
     any_errors = False
     for path in paths:
+        assert_readable_location(path, worktrees)
         if not path.exists():
             print(f"ERROR: {path} not found", file=sys.stderr)
             return 2
         cls, infos, errors, warnings = validate_file(path, files)
-        frozen = sum(1 for i in infos if i["gold_frozen"])
-        unlabelled = len(infos) - frozen
+        labelled = sum(1 for i in infos if i["labelled"])
+        unlabelled = len(infos) - labelled
         langs = {}
         for i in infos:
             langs[i["lang"]] = langs.get(i["lang"], 0) + 1
+        public = " (public fixture - never counts as real evidence)" if cls in PUBLIC_CLASSES else ""
         print(
-            f"{path.as_posix()}  [class: {cls}]  lines: {len(infos)}  "
-            f"gold-frozen: {frozen}  unlabelled: {unlabelled}  langs: {langs}"
+            f"{path.as_posix()}  [class: {cls}]{public}  lines: {len(infos)}  "
+            f"labelled: {labelled}  unlabelled: {unlabelled}  langs: {langs}"
         )
         for w in warnings:
             print(f"  WARN  {w}")
@@ -298,9 +373,12 @@ def main() -> int:
             print(f"  ERROR {e}")
         any_errors = any_errors or bool(errors)
 
+    print()
     print(
-        "\nNOTE: counts above are per-class by design; they are never summed "
-        "into one figure (reference/synthetic/real are different evidence)."
+        "NOTE: counts above are per-class by design; they are never summed "
+        "into one figure (reference/synthetic/real are different evidence). "
+        "'labelled' means a gold object is present and structurally valid - "
+        "not that it was produced independently, blind-relabelled, or frozen."
     )
     return 1 if any_errors else 0
 
