@@ -215,10 +215,17 @@ def check_line(
         )
     if cls == "heldout" and meta.get("held_out") is not True:
         warnings.append(f"{where}: held-out file line lacks meta.held_out: true")
-    if cls == "synthetic" and meta.get("source") == "founder_voice":
+    # Public fixtures (sample + synthetic) live in the repo, so they must
+    # never claim a real-capture provenance: 'founder_voice' on a public
+    # item either mislabels a fabricated example (confusing) or means a
+    # real capture is sitting in a public repo (a leak). Private real and
+    # held-out cases legitimately keep 'founder_voice'.
+    if cls in PUBLIC_CLASSES and meta.get("source") == "founder_voice":
         errors.append(
-            f"{where}: synthetic item claims source 'founder_voice' — "
-            "synthetic data must never masquerade as real capture"
+            f"{where}: public {cls} fixture claims source 'founder_voice' — "
+            "a public fixture must never carry real-capture provenance. Use "
+            "'synthetic_fixture' if it is fabricated; if it is a real "
+            "capture it does not belong in this repository (schema §6)."
         )
 
     if "gold" not in d:
