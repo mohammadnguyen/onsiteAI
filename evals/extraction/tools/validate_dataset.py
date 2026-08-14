@@ -7,12 +7,19 @@ objects, §5 support levels, §6 privacy marker) and reports per-class
 counts. It deliberately refuses to produce one combined total: reference,
 synthetic and real captures are different kinds of evidence.
 
+Real calibration data never lives in this repository (it is public). The
+real/held-out/reference/synthetic files live in a private workspace given
+by --private-root or $FOREY_PRIVATE_CALIBRATION; only the shipped sample
+file is in-repo.
+
 Usage:
   python evals/extraction/tools/validate_dataset.py [FILES...]
-      # no FILES: validates every known dataset file that exists
-  python evals/extraction/tools/validate_dataset.py --baseline-ready
-      # exit 0 iff >= 30 REAL cases with frozen (non-null) gold exist
-      # in dataset.v0.jsonl — the deterministic Baseline v0.1 gate.
+      # no FILES: validates the in-repo sample plus every private-root
+      # dataset file that exists
+  python evals/extraction/tools/validate_dataset.py --baseline-ready \
+      --private-root D:/FOREY_PRIVATE_CALIBRATION
+      # exit 0 iff >= 30 REAL cases with frozen (non-null) gold exist in
+      # <private-root>/dataset.v0.jsonl — the Baseline v0.1 gate.
 
 Exit codes: 0 = pass, 1 = structural violations, 2 = usage/IO error.
 """
@@ -21,30 +28,58 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 EXTRACTION_DIR = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 TYPES = {"site_log_fact", "task", "potential_variation"}
 SUPPORT = {"explicit", "reasonable", "unknown", "ambiguous"}
 LANGS = {"en", "zh", "mixed"}
 
-KNOWN_FILES = {
-    "sample": EXTRACTION_DIR / "dataset.sample.jsonl",
-    "reference": EXTRACTION_DIR / "calibration" / "reference.jsonl",
-    "synthetic": EXTRACTION_DIR / "calibration" / "synthetic.jsonl",
-    "real": EXTRACTION_DIR / "dataset.v0.jsonl",
-    "heldout": EXTRACTION_DIR / "dataset.heldout.jsonl",
-}
-
 BASELINE_MINIMUM = 30
 
 
-def classify(path: Path) -> str:
-    for cls, known in KNOWN_FILES.items():
-        if path.resolve() == known.resolve():
-            return cls
+def private_root(cli_value: str | None) -> Path | None:
+    """Resolve the private workspace, refusing any path inside the repo."""
+    raw = cli_value or os.environ.get("FOREY_PRIVATE_CALIBRATION")
+    if not raw:
+        return None
+    path = Path(raw).resolve()
+    root = REPO_ROOT.resolve()
+    if path == root or root in path.parents:
+        print(
+            f"ERROR: private root {path} is inside the repository ({root}). "
+            "Real captures and gold labels must never enter this repo.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return path
+
+
+def known_files(priv: Path | None) -> dict[str, Path]:
+    files = {"sample": EXTRACTION_DIR / "dataset.sample.jsonl"}
+    if priv is not None:
+        files.update(
+            {
+                "reference": priv / "reference.jsonl",
+                "synthetic": priv / "synthetic.jsonl",
+                "real": priv / "dataset.v0.jsonl",
+                "heldout": priv / "dataset.heldout.jsonl",
+            }
+        )
+    return files
+
+
+def classify(path: Path, files: dict[str, Path]) -> str:
+    for cls, known in files.items():
+        try:
+            if path.resolve() == known.resolve():
+                return cls
+        except OSError:
+            continue
     return "unclassified"
 
 
@@ -157,8 +192,10 @@ def check_line(
     return info
 
 
-def validate_file(path: Path) -> tuple[str, list[dict], list[str], list[str]]:
-    cls = classify(path)
+def validate_file(
+    path: Path, files: dict[str, Path]
+) -> tuple[str, list[dict], list[str], list[str]]:
+    cls = classify(path, files)
     errors: list[str] = []
     warnings: list[str] = []
     infos: list[dict] = []
@@ -188,21 +225,38 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("files", nargs="*", type=Path)
     ap.add_argument(
+        "--private-root",
+        default=None,
+        help="Private calibration workspace (or $FOREY_PRIVATE_CALIBRATION). "
+             "Must be outside this repository.",
+    )
+    ap.add_argument(
         "--baseline-ready",
         action="store_true",
         help="Check the Baseline v0.1 precondition (>=30 frozen REAL cases)",
     )
     args = ap.parse_args()
 
+    priv = private_root(args.private_root)
+    files = known_files(priv)
+
     if args.baseline_ready:
-        real = KNOWN_FILES["real"]
+        if priv is None:
+            print(
+                "BASELINE GATE: NOT MET — no private workspace given "
+                "(--private-root or $FOREY_PRIVATE_CALIBRATION). Real cases "
+                f"never live in this repo, so 0/{BASELINE_MINIMUM} is the "
+                "in-repo answer by policy."
+            )
+            return 1
+        real = files["real"]
         if not real.exists():
             print(
                 f"BASELINE GATE: NOT MET — {real} does not exist "
                 f"(0/{BASELINE_MINIMUM} frozen real cases)"
             )
             return 1
-        cls, infos, errors, _ = validate_file(real)
+        cls, infos, errors, _ = validate_file(real, files)
         frozen = sum(1 for i in infos if i["gold_frozen"])
         if errors:
             print(f"BASELINE GATE: NOT MET — {len(errors)} structural error(s) first:")
@@ -218,7 +272,7 @@ def main() -> int:
         print(f"BASELINE GATE: MET — {frozen} frozen real cases (>= {BASELINE_MINIMUM})")
         return 0
 
-    paths = args.files or [p for p in KNOWN_FILES.values() if p.exists()]
+    paths = args.files or [p for p in files.values() if p.exists()]
     if not paths:
         print("ERROR: no dataset files found or given", file=sys.stderr)
         return 2
@@ -228,7 +282,7 @@ def main() -> int:
         if not path.exists():
             print(f"ERROR: {path} not found", file=sys.stderr)
             return 2
-        cls, infos, errors, warnings = validate_file(path)
+        cls, infos, errors, warnings = validate_file(path, files)
         frozen = sum(1 for i in infos if i["gold_frozen"])
         unlabelled = len(infos) - frozen
         langs = {}
