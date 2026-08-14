@@ -545,3 +545,60 @@ def test_label_diff_unhashable_must_not_infer_is_controlled(tmp_path):
     assert "Traceback" not in proc.stderr
     assert "unhashable" not in proc.stderr
     assert not out.exists()
+
+
+# ------------------------------------------- public fixture provenance rule
+# These tests never write to a tracked repo file: the negative case uses a
+# private-root `synthetic.jsonl` (also a PUBLIC class), and the positive
+# case reads the shipped fixture as committed.
+
+
+def test_public_fixture_rejects_founder_voice_source(tmp_path):
+    """A public fixture claiming real-capture provenance is a failure.
+
+    Either it mislabels a fabricated example, or a real capture is sitting
+    in a public repository. Both need fixing, so neither may pass.
+    """
+    row = case("SYN-001", gold=LABELLED)
+    row["meta"]["source"] = "founder_voice"
+    fixture = write_jsonl(tmp_path / "synthetic.jsonl", [row])
+
+    proc = run(VALIDATE, str(fixture), "--private-root", str(tmp_path))
+    assert proc.returncode == 1
+    assert "founder_voice" in proc.stdout
+    assert "public synthetic fixture" in proc.stdout
+
+
+def test_public_fixture_accepts_synthetic_fixture_source(tmp_path):
+    row = case("SYN-001", gold=LABELLED)
+    row["meta"]["source"] = "synthetic_fixture"
+    fixture = write_jsonl(tmp_path / "synthetic.jsonl", [row])
+
+    proc = run(VALIDATE, str(fixture), "--private-root", str(tmp_path))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "class: synthetic" in proc.stdout
+
+
+def test_private_real_case_may_keep_founder_voice_source(tmp_path):
+    """The rule is about publication, not about the value itself."""
+    row = case("R-0001", gold=LABELLED)
+    row["meta"]["source"] = "founder_voice"
+    dataset = write_jsonl(tmp_path / "dataset.v0.jsonl", [row])
+
+    proc = run(VALIDATE, str(dataset), "--private-root", str(tmp_path))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "class: real" in proc.stdout
+
+
+def test_shipped_sample_fixture_is_declared_synthetic():
+    """The committed fixture must satisfy the rule it introduced."""
+    fixture = REPO_ROOT / "evals" / "extraction" / "dataset.sample.jsonl"
+    sources = {
+        json.loads(line)["meta"]["source"]
+        for line in fixture.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    assert sources == {"synthetic_fixture"}
+
+    proc = run(VALIDATE, str(fixture))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
