@@ -170,7 +170,7 @@ does **not** add `context.jobs` or per-fact Job assignment; that is a
 deferral, not permission to pick one Job. A capture spanning several Jobs
 is routed `meta.routing_case: "multi_job"` with `job_state: "unassigned"`,
 is **excluded from the single-Job extraction Baseline**, and requires later
-human splitting/assignment before any Project Truth. RC-008-shaped cases
+human splitting/assignment before any Project Truth. Such multi-Job cases
 stay reference/routing material only.
 
 ### 3.3 Modality (`meta.modality`, required in v0.2)
