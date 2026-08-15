@@ -1905,6 +1905,8 @@ Section 42 is subordinate to the Slice-1 definition in Section 62. The initial C
 
 Slice-1 confirmed outputs — a Capture may initially produce only: **Site Log Fact; Task; Potential Variation.** Issue may be included only if required to complete a coherent vertical workflow without duplicating another object.
 
+> **Historical status (added 2026-08-15, text above preserved as signed):** the conditional Issue allowance in the sentence above was **superseded by Amendment 10** and is not current implementation authority. Slice 1 currently has exactly three top-level Candidate types — Site Log Fact, Task, Potential Variation — and a future Issue Candidate requires formally reopening DEC-ONTOLOGY-001 first. The Decision Registry, Amendment 10 and PRODUCT.md are authoritative.
+
 Explicitly Ontology v2 or later: Progress Candidate; Rework Candidate; Delay Candidate; EOT Candidate; Forecast Candidate; other commercial/event classifications.
 
 Reasons: (1) **Human attention** — with approximately five normal active Jobs and periods approaching ten, every additional Candidate class increases possible confirmation volume; the product must not solve administrative burden by creating a classification-review burden. (2) **Evaluation cost** — every Candidate class creates a new annotation problem (definition; positive examples; negative examples; ambiguous cases; gold labels; precision/recall measurement; correction tracking). Ontology expansion requires evidence that the existing Capture loop is working.

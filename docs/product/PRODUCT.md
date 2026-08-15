@@ -191,7 +191,7 @@ Ack: 2d12f6e2e943
 
 ### H2 — Extraction quality
 
-Corpus mixes EN / ZH / mixed / shorthand / trade & supplier names; pure-English mandatory from batch 1. Extraction metrics: fact recall & precision, Task precision, PV recall & precision, direct-confirm rate, correction time, wrong person/trade/location rate, commercially-important misses. Wrong-Job suggestion rate is capture-attribution telemetry (H1/product measurement, per DEC-JOB-ATTR-001), not an extraction metric. Raw evidence preserved as reusable eval set. See `evals/extraction/annotation-schema-v0.1.md`.
+Corpus mixes EN / ZH / mixed / shorthand / trade & supplier names; pure-English mandatory from batch 1. Extraction metrics: fact recall & precision, Task precision, PV recall & precision, direct-confirm rate, correction time, wrong person/trade/location rate, commercially-important misses. Wrong-Job suggestion rate is capture-attribution telemetry (H1/product measurement, per DEC-JOB-ATTR-001), not an extraction metric. Raw evidence preserved as reusable eval set. See `evals/extraction/annotation-schema-v0.2.md` (CURRENT; v0.1 definitions apply only where v0.2 explicitly inherits them).
 
 Source: DEC-GATE-H2-001 (Charter §54, Amendment 4)
 Ack: 6a617ad8020d

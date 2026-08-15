@@ -1,9 +1,10 @@
 # Extraction Annotation Schema v0.2
 
 **Status:** CURRENT — new corpora are authored against this version.
-**Predecessor:** `annotation-schema-v0.1.md` is preserved unchanged as the
-historical contract; existing v0.1 datasets remain valid v0.1 datasets and
-are not reinterpreted. A corpus is validated as v0.2 **iff** it carries a
+**Predecessor:** `annotation-schema-v0.1.md` is the historical contract;
+its rules are unchanged (the file carries only an added historical-status
+banner), and existing v0.1 datasets remain valid v0.1 datasets, not
+reinterpreted. A corpus is validated as v0.2 **iff** it carries a
 v0.2 corpus manifest (§2); otherwise the validator applies v0.1 rules.
 
 **Bindings:** DEC-ONTOLOGY-001 (three top-level Candidate types + Amendment

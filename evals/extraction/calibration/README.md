@@ -9,7 +9,8 @@
   (confirmed | unassigned, cross-validated against `context.job`),
   optional `fact_category` on site_log_fact (DEC-ONTOLOGY-001 Amendment
   10), `meta.modality`, and `meta.routing_case: multi_job` exclusion.
-- **`../annotation-schema-v0.1.md` is HISTORICAL** — preserved unchanged;
+- **`../annotation-schema-v0.1.md` is HISTORICAL** — its contract rules
+  are unchanged (only a historical-status banner was added to the file);
   corpora without a manifest validate as legacy v0.1 (warning) and
   contribute ZERO cases to v0.2 Baseline readiness.
 - Provenance is corpus-level and homogeneous (no record-level overrides);

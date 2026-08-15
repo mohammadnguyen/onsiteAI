@@ -910,3 +910,46 @@ def test_verbatim_capture_integer_one_cannot_reach_the_gate(tmp_path):
     proc = gate(tmp_path)
     assert proc.returncode == 1
     assert "verbatim_capture" in proc.stdout
+
+
+# --------------------------------------- worksheet schema-aware instruction
+
+
+def test_worksheet_instruction_v02_when_manifest_present(tmp_path):
+    rows = [v2_case(f"R-{i:04d}", gold=LABELLED) for i in range(1, 3)]
+    dataset = write_jsonl(tmp_path / "dataset.heldout.jsonl", rows)
+    write_manifest(tmp_path, "dataset.heldout.manifest.json")
+    worksheet = tmp_path / "relabel" / "worksheet.md"
+
+    proc = run(
+        SHUFFLE, str(dataset),
+        "--seed", "7",
+        "--worksheet", str(worksheet),
+        "--mapping", str(tmp_path / "relabel" / "mapping.json"),
+    )
+    assert proc.returncode == 0, proc.stderr
+    text = worksheet.read_text(encoding="utf-8")
+    assert "annotation-schema-v0.2" in text
+    assert "CURRENT" in text
+    assert "v0.1 only" not in text
+    assert "LEGACY" not in text
+
+
+def test_worksheet_instruction_legacy_when_no_manifest(tmp_path):
+    rows = [case(f"R-{i:04d}", gold=LABELLED) for i in range(1, 3)]
+    dataset = write_jsonl(tmp_path / "dataset.v0.jsonl", rows)
+    worksheet = tmp_path / "relabel" / "worksheet.md"
+
+    proc = run(
+        SHUFFLE, str(dataset),
+        "--seed", "7",
+        "--worksheet", str(worksheet),
+        "--mapping", str(tmp_path / "relabel" / "mapping.json"),
+    )
+    assert proc.returncode == 0, proc.stderr
+    text = worksheet.read_text(encoding="utf-8")
+    assert "LEGACY v0.1 corpus" in text
+    assert "zero cases to v0.2 Baseline readiness" in text
+    # v0.1 must never be described as the current schema.
+    assert "v0.1 (CURRENT" not in text and "annotation-schema-v0.1 (CURRENT" not in text
+    assert "using annotation-schema-v0.1 only" not in text

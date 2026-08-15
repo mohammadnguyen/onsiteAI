@@ -166,10 +166,33 @@ def main() -> int:
     rng = random.Random(args.seed)
     rng.shuffle(cases)
 
+    # Schema-aware instruction: a v0.2 sidecar manifest makes this a v0.2
+    # corpus; without one it is a legacy v0.1 corpus. The manifest presence
+    # check reads nothing from the records themselves.
+    manifest_name = args.dataset.name
+    if manifest_name.endswith(".jsonl"):
+        manifest_name = manifest_name[: -len(".jsonl")]
+    has_v2_manifest = args.dataset.with_name(
+        manifest_name + ".manifest.json"
+    ).exists()
+    if has_v2_manifest:
+        schema_rule = (
+            "Rules: label every case fresh using annotation-schema-v0.2 "
+            "(CURRENT);\nv0.1 definitions apply only where v0.2 explicitly "
+            "inherits them.\n"
+        )
+    else:
+        schema_rule = (
+            "Rules: this is a LEGACY v0.1 corpus (no v0.2 sidecar manifest).\n"
+            "Label every case fresh using its original annotation-schema-v0.1\n"
+            "contract. Legacy corpora contribute "
+            "zero cases to v0.2 Baseline readiness.\n"
+        )
+
     header = (
         "# Blind relabel worksheet\n\n"
         f"Source: {args.dataset.name} · cases: {len(cases)} · seed: {args.seed}\n\n"
-        "Rules: label every case fresh using annotation-schema-v0.1 only.\n"
+        + schema_rule +
         "Do NOT open the original dataset, the first-pass labels, or the\n"
         "order mapping until every case below is labelled.\n\n---\n\n"
     )
