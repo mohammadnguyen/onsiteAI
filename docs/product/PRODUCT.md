@@ -88,10 +88,10 @@ Ack: 7a156a02619d
 
 ### Slice-1 ontology (closed list)
 
-Extraction may propose only: **Site Log Fact, Task, Potential Variation** (Issue only if the vertical slice cannot cohere without it). Anything else (Progress, Rework, Delay, EOT, Forecast…) is Ontology v2+: not in prompts, not in schema enums as extractable candidates, not in the annotation schema.
+Extraction may propose only three top-level Candidate types: **Site Log Fact, Task, Potential Variation** (Issue only if the vertical slice cannot cohere without it). Anything else (Progress, Rework, Delay, EOT, Forecast…) is Ontology v2+ **as a Candidate type**: not in prompts, not in schema enums as extractable candidate types. Optional classification metadata inside a Site Log Fact (`fact_category`, closed 12-value list, see annotation-schema-v0.2) is not a Candidate type and is permitted; it creates no separate workflow, module or confirmation object. One Raw Evidence item may produce zero or more Facts, Tasks and Potential Variations. Expense and Labour remain outside this ontology in their existing structured modules.
 
-Source: DEC-ONTOLOGY-001 (Charter Amendment 2)
-Ack: 47c2f52a2145
+Source: DEC-ONTOLOGY-001 (Charter Amendment 2, Amendment 10)
+Ack: 1c2f7be526d1
 
 ### Site Log is the fact/evidence layer
 

@@ -295,40 +295,293 @@ def test_private_root_inside_worktree_is_refused(tmp_path):
 # ---------------------------------------------------------------- gate: 7-8
 
 
-def test_twentynine_labelled_cases_do_not_pass_the_minimum_gate(tmp_path):
-    rows = [case(f"R-{i:04d}", gold=LABELLED) for i in range(1, 30)]
-    write_jsonl(tmp_path / "dataset.v0.jsonl", rows)
-    proc = run(
+ELIGIBLE_MANIFEST = {
+    "schema_version": "0.2",
+    "event_origin": "real",
+    "creation_method": "contemporaneous_capture",
+    "verbatim_capture": True,
+    "ai_exposure": "none",
+    "intended_use": "heldout",
+}
+
+
+def v2_case(cid: str, *, gold: dict | None = None, job_state: str = "confirmed",
+            routing: str | None = None) -> dict:
+    """A structurally valid v0.2 line (filler content, never a real capture)."""
+    d = case(cid, gold=gold)
+    d["context"]["job_state"] = job_state
+    if job_state == "unassigned":
+        d["context"]["job"] = None
+    d["meta"] = {
+        "modality": "voice_transcript",
+        "collected_at": "2026-08-15",
+        "privacy": "scrubbed",
+    }
+    if routing:
+        d["meta"]["routing_case"] = routing
+    return d
+
+
+def write_manifest(tmp_path, name: str, **overrides) -> None:
+    m = dict(ELIGIBLE_MANIFEST, **overrides)
+    (tmp_path / name).write_text(json.dumps(m, indent=1), encoding="utf-8")
+
+
+def heldout_corpus(tmp_path, n: int = 30, **manifest_overrides):
+    rows = [v2_case(f"R-{i:04d}", gold=LABELLED) for i in range(1, n + 1)]
+    write_jsonl(tmp_path / "dataset.heldout.jsonl", rows)
+    write_manifest(tmp_path, "dataset.heldout.manifest.json", **manifest_overrides)
+
+
+def gate(tmp_path):
+    return run(
         VALIDATE, "--baseline-structure-ready", "--private-root", str(tmp_path)
     )
+
+
+def test_twentynine_heldout_cases_do_not_pass_the_minimum_gate(tmp_path):
+    heldout_corpus(tmp_path, n=29)
+    proc = gate(tmp_path)
     assert proc.returncode == 1
     assert "NOT MET" in proc.stdout
     assert "29/30" in proc.stdout
 
 
-def test_thirty_labelled_cases_pass_structure_only_and_claim_nothing_more(tmp_path):
-    rows = [case(f"R-{i:04d}", gold=LABELLED) for i in range(1, 31)]
-    write_jsonl(tmp_path / "dataset.v0.jsonl", rows)
-    proc = run(
-        VALIDATE, "--baseline-structure-ready", "--private-root", str(tmp_path)
-    )
-    assert proc.returncode == 0, proc.stderr
+def test_thirty_eligible_heldout_cases_pass_structure_only(tmp_path):
+    heldout_corpus(tmp_path, n=30)
+    proc = gate(tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     out = proc.stdout
 
-    # It reports a structural fact...
-    assert "STRUCTURAL DATASET GATE: MET" in out
+    assert "STRUCTURAL HELD-OUT GATE: MET" in out
     assert "structurally valid labels" in out
-
-    # ...and explicitly disclaims the human process it cannot verify.
-    assert "STRUCTURE ONLY" in out
     assert "Baseline v0.1 is NOT approved" in out
     for human_fact in ("independently", "blind relabel", "frozen"):
         assert human_fact in out
-
-    # It must never announce readiness.
     lowered = out.lower()
     assert "baseline v0.1 ready" not in lowered
     assert "baseline ready" not in lowered
+
+
+def test_development_corpus_never_counts_toward_baseline(tmp_path):
+    """Ruling 9: development data cannot pass as independent Baseline data."""
+    rows = [v2_case(f"R-{i:04d}", gold=LABELLED) for i in range(1, 31)]
+    write_jsonl(tmp_path / "dataset.v0.jsonl", rows)
+    write_manifest(
+        tmp_path, "dataset.v0.manifest.json", intended_use="development"
+    )
+    proc = gate(tmp_path)
+    assert proc.returncode == 1
+    assert "NOT MET" in proc.stdout
+    assert "does not exist" in proc.stdout
+    assert "Development data cannot substitute" in proc.stdout
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "needle"),
+    [
+        ("ai_exposure", "raw_seen", "ai_exposure"),
+        ("ai_exposure", "gold_seen", "ai_exposure"),
+        ("creation_method", "retrospective_reconstruction", "creation_method"),
+        ("event_origin", "synthetic", "event_origin"),
+        ("verbatim_capture", False, "verbatim_capture"),
+    ],
+)
+def test_ineligible_provenance_contributes_zero(tmp_path, field, value, needle):
+    heldout_corpus(tmp_path, n=30, **{field: value})
+    proc = gate(tmp_path)
+    assert proc.returncode == 1
+    assert "eligible" in proc.stdout.lower()
+    assert needle in proc.stdout
+
+
+def test_legacy_corpus_without_manifest_contributes_zero(tmp_path):
+    """Ruling 9: missing provenance is a hard exclusion for the gate."""
+    rows = [case(f"R-{i:04d}", gold=LABELLED) for i in range(1, 31)]
+    fixed = [{**r, "meta": {**r["meta"], "held_out": True}} for r in rows]
+    write_jsonl(tmp_path / "dataset.heldout.jsonl", fixed)
+    proc = gate(tmp_path)
+    assert proc.returncode == 1
+    assert "no v0.2 corpus manifest" in proc.stdout
+    assert "zero" in proc.stdout
+
+
+def test_multi_job_cases_are_excluded_from_baseline_count(tmp_path):
+    """30 labelled cases, but one routed multi_job -> only 29 count."""
+    rows = [v2_case(f"R-{i:04d}", gold=LABELLED) for i in range(1, 30)]
+    rows.append(
+        v2_case("R-0030", gold=LABELLED, job_state="unassigned",
+                routing="multi_job")
+    )
+    write_jsonl(tmp_path / "dataset.heldout.jsonl", rows)
+    write_manifest(tmp_path, "dataset.heldout.manifest.json")
+    proc = gate(tmp_path)
+    assert proc.returncode == 1
+    assert "multi_job" in proc.stdout
+    assert "29/30" in proc.stdout
+
+
+# ------------------------------------------------------ v0.2 record rules
+
+
+def v2_validate(tmp_path, rows, manifest_overrides=None):
+    write_jsonl(tmp_path / "dataset.heldout.jsonl", rows)
+    write_manifest(
+        tmp_path, "dataset.heldout.manifest.json", **(manifest_overrides or {})
+    )
+    return run(
+        VALIDATE,
+        str(tmp_path / "dataset.heldout.jsonl"),
+        "--private-root", str(tmp_path),
+    )
+
+
+def test_v2_confirmed_job_with_job_passes(tmp_path):
+    proc = v2_validate(tmp_path, [v2_case("R-0001", gold=LABELLED)])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "v0.2" in proc.stdout
+
+
+def test_v2_confirmed_job_without_job_fails(tmp_path):
+    row = v2_case("R-0001", gold=LABELLED)
+    row["context"]["job"] = None
+    proc = v2_validate(tmp_path, [row])
+    assert proc.returncode == 1
+    assert "job_state 'confirmed' requires context.job" in proc.stdout
+
+
+def test_v2_unassigned_without_job_passes(tmp_path):
+    proc = v2_validate(
+        tmp_path, [v2_case("R-0001", gold=LABELLED, job_state="unassigned")]
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_v2_unassigned_with_job_fails(tmp_path):
+    row = v2_case("R-0001", gold=LABELLED, job_state="unassigned")
+    row["context"]["job"] = {"name": "JOB-TEST"}
+    proc = v2_validate(tmp_path, [row])
+    assert proc.returncode == 1
+    assert "job_state 'unassigned' requires context.job" in proc.stdout
+
+
+def test_v2_suggested_job_state_is_rejected(tmp_path):
+    """No third state: a suggested Job is never extractor input."""
+    row = v2_case("R-0001", gold=LABELLED)
+    row["context"]["job_state"] = "suggested"
+    proc = v2_validate(tmp_path, [row])
+    assert proc.returncode == 1
+    assert "job_state" in proc.stdout
+
+
+def _fact_with_category(category, ftype="site_log_fact"):
+    return {
+        "facts": [
+            {
+                "type": ftype,
+                "fact_category": category,
+                "summary": "structural filler",
+                "attrs": {},
+            }
+        ],
+        "must_not_infer": [],
+    }
+
+
+def test_v2_valid_fact_category_on_site_log_fact_passes(tmp_path):
+    proc = v2_validate(
+        tmp_path, [v2_case("R-0001", gold=_fact_with_category("delivery"))]
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_v2_invalid_fact_category_fails(tmp_path):
+    proc = v2_validate(
+        tmp_path, [v2_case("R-0001", gold=_fact_with_category("issue"))]
+    )
+    assert proc.returncode == 1
+    assert "fact_category 'issue'" in proc.stdout
+
+
+def test_v2_fact_category_on_task_fails(tmp_path):
+    proc = v2_validate(
+        tmp_path,
+        [v2_case("R-0001", gold=_fact_with_category("delivery", ftype="task"))],
+    )
+    assert proc.returncode == 1
+    assert "only permitted on site_log_fact" in proc.stdout
+
+
+def test_v2_missing_modality_fails(tmp_path):
+    row = v2_case("R-0001", gold=LABELLED)
+    del row["meta"]["modality"]
+    proc = v2_validate(tmp_path, [row])
+    assert proc.returncode == 1
+    assert "meta.modality" in proc.stdout
+
+
+def test_public_corpus_declaring_real_origin_fails(tmp_path):
+    """event_origin: real is forbidden inside the public repository."""
+    fixture = REPO_ROOT / "evals" / "extraction" / "calibration" / "synthetic.jsonl"
+    manifest = (
+        REPO_ROOT / "evals" / "extraction" / "calibration" / "synthetic.manifest.json"
+    )
+    assert not fixture.exists() and not manifest.exists()
+    try:
+        write_jsonl(fixture, [case("SYN-001", gold=LABELLED)])
+        manifest.write_text(
+            json.dumps(dict(ELIGIBLE_MANIFEST, intended_use="reference")),
+            encoding="utf-8",
+        )
+        proc = run(VALIDATE, str(fixture))
+        assert proc.returncode == 1
+        assert "event_origin 'real' is forbidden in the public" in proc.stdout
+    finally:
+        fixture.unlink(missing_ok=True)
+        manifest.unlink(missing_ok=True)
+
+
+def test_path_provenance_mismatch_fails(tmp_path):
+    """heldout-class file declaring development intended_use is an error."""
+    heldout_corpus(tmp_path, n=1, intended_use="development")
+    proc = run(
+        VALIDATE,
+        str(tmp_path / "dataset.heldout.jsonl"),
+        "--private-root", str(tmp_path),
+    )
+    assert proc.returncode == 1
+    assert "disagrees with the storage class" in proc.stdout
+
+
+def test_historical_ai_booleans_are_rejected_as_v2_manifest(tmp_path):
+    """The boolean pair maps for documentation only - never a v0.2 override."""
+    rows = [v2_case("R-0001", gold=LABELLED)]
+    write_jsonl(tmp_path / "dataset.heldout.jsonl", rows)
+    m = dict(ELIGIBLE_MANIFEST)
+    del m["ai_exposure"]
+    m["ai_raw_exposed"] = True
+    m["ai_gold_exposed"] = False
+    (tmp_path / "dataset.heldout.manifest.json").write_text(
+        json.dumps(m), encoding="utf-8"
+    )
+    proc = run(
+        VALIDATE,
+        str(tmp_path / "dataset.heldout.jsonl"),
+        "--private-root", str(tmp_path),
+    )
+    assert proc.returncode == 1
+    assert "ai_raw_exposed/ai_gold_exposed" in proc.stdout
+    assert "ai_exposure" in proc.stdout
+
+
+def test_legacy_v01_records_remain_structurally_valid(tmp_path):
+    """v0.1 records (job present, no job_state/modality) still validate."""
+    rows = [case(f"R-{i:04d}", gold=LABELLED) for i in range(1, 4)]
+    dataset = write_jsonl(tmp_path / "dataset.v0.jsonl", rows)
+    proc = run(VALIDATE, str(dataset), "--private-root", str(tmp_path))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "v0.1-legacy" in proc.stdout
+    assert "no v0.2 corpus manifest" in proc.stdout
 
 
 # --------------------------------------------------------------- robustness

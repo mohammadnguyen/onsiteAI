@@ -1,5 +1,9 @@
 # Extraction Annotation Schema v0.1
 
+> **Status: HISTORICAL.** Superseded by `annotation-schema-v0.2.md` for new
+> corpora. Existing v0.1 datasets remain valid v0.1 datasets; this file is
+> preserved unchanged as their contract and is not reinterpreted.
+
 **Governs:** `evals/extraction/dataset*.jsonl`
 **Bindings:** DEC-ONTOLOGY-001 (three types only), DEC-GATE-H2-001 (corpus mix + metrics), DEC-LANG-001 (pure English mandatory), DEC-EVIDENCE-001 (raw evidence preserved).
 **Scoring in v0.1 is manual.** No automated scorer, no LLM judge. Failures are classified by type, never aggregated into a weighted score (sample sizes are too small for aggregate numbers to mean anything).

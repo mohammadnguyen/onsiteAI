@@ -73,7 +73,7 @@ Authoritative Job attribution requires explicit user selection or confirmation i
 ### DEC-ONTOLOGY-001 — Slice-1 ontology [DECIDED]
 Applies-To: slice-1
 
-Slice-1 capture ontology is limited to: Site Log Fact, Task, Potential Variation. Issue may be included only if the vertical slice cannot form a coherent workflow without it. Progress, Rework, Delay, EOT and further classifications are Ontology v2 or later and require evidence that the existing capture loop works.
+Slice-1 capture ontology is limited to exactly three top-level Candidate types: Site Log Fact, Task, Potential Variation. Issue may be included only if the vertical slice cannot form a coherent workflow without it; no other top-level Candidate type may be added. Progress, Rework, Delay, EOT and further classifications remain excluded as Candidate types (Ontology v2 or later, requiring evidence that the existing capture loop works). Optional classification metadata inside a Site Log Fact (such as a fact_category value) is not a Candidate type and is permitted, provided it creates no separate workflow, module or additional confirmation object.
 
 ### DEC-CAPTURE-001 — Low-friction capture wedge [DECIDED]
 Applies-To: slice-1
@@ -1978,6 +1978,10 @@ Mechanism: every registry entry carries `Applies-To:` routing metadata (global, 
 Deliberate scoping call: DEC-GATE-H3-001 is scoped slice-1, not deferred — Amendment 4 defines H1→H2→H3 as one continuous validation arc and H3's clock runs during Slice-1 usage.
 
 Registry IDs freeze at repository landing. The rename in Amendment 8 (draft DEC-LEGACY-001 → DEC-EXISTING-001) was the last free in-place rename; after landing, a rename requires a new entry plus a tombstone note.
+
+### Amendment 10 — Fact-category metadata inside the closed ontology (2026-08-15)
+
+DEC-ONTOLOGY-001's registry text is amended to state explicitly that the closed list applies to **top-level Candidate types**, and that optional classification metadata inside a Site Log Fact (a `fact_category` value such as attendance, progress, site_condition, quality, delivery, inspection, safety, delay, incident, instruction, weather, other) is **not** a Candidate type and is permitted, provided it creates no separate workflow, module or additional confirmation object. Rationale: Amendment 2's constraints target Candidate classes because each class multiplies confirmation volume and annotation cost; a tag on an already-confirmed atomic fact does neither. A complex capture is split into atomic facts rather than given a compound category; generic `issue` is not a category because quality/safety/delivery/delay issues would overlap. Expense and Labour remain outside the Slice-1 Candidate ontology in their existing structured modules. The amended registry text is re-acknowledged in PRODUCT.md through the drift mechanism in the same commit.
 
 ### Repository Authority Split
 

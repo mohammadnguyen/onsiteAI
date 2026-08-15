@@ -1,5 +1,29 @@
 # Calibration data layout and separation rules
 
+## Schema routing
+
+- **`../annotation-schema-v0.2.md` is CURRENT** — new corpora are authored
+  against it. A corpus is validated as v0.2 iff a sidecar
+  `<name>.manifest.json` exists (schema_version "0.2" + the five provenance
+  fields). v0.2 adds: corpus provenance manifest, `context.job_state`
+  (confirmed | unassigned, cross-validated against `context.job`),
+  optional `fact_category` on site_log_fact (DEC-ONTOLOGY-001 Amendment
+  10), `meta.modality`, and `meta.routing_case: multi_job` exclusion.
+- **`../annotation-schema-v0.1.md` is HISTORICAL** — preserved unchanged;
+  corpora without a manifest validate as legacy v0.1 (warning) and
+  contribute ZERO cases to v0.2 Baseline readiness.
+- Provenance is corpus-level and homogeneous (no record-level overrides);
+  declared provenance is authoritative, and the storage path must agree
+  with it. `event_origin: real` is forbidden anywhere in this public repo.
+- Independent Baseline eligibility (all five required): event_origin real,
+  creation_method contemporaneous_capture, verbatim_capture true,
+  ai_exposure none, intended_use **heldout**. Development corpora are
+  development-ready only — never Baseline evidence.
+- Historical private manifests using ai_raw_exposed/ai_gold_exposed map to
+  ai_exposure for documentation only (raw_seen = raw true + gold false;
+  gold_seen = gold true regardless of raw; none = both false) and are not
+  accepted as v0.2 manifests.
+
 **Governing schema:** `../annotation-schema-v0.1.md` (types, support levels, privacy).
 **Independence rules:** founder labels real captures first and independently; the
 one-week blind relabel is real elapsed time — neither is ever produced,
