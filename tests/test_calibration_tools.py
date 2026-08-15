@@ -855,3 +855,58 @@ def test_shipped_sample_fixture_is_declared_synthetic():
 
     proc = run(VALIDATE, str(fixture))
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+# ---------------------------------------------- verbatim_capture strictness
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_verbatim_capture_json_booleans_pass(tmp_path, value):
+    overrides = {"verbatim_capture": value}
+    if value is False:
+        # false is structurally valid but Baseline-ineligible; validate the
+        # file directly rather than the gate.
+        heldout_corpus(tmp_path, n=1, **overrides)
+        proc = run(
+            VALIDATE,
+            str(tmp_path / "dataset.heldout.jsonl"),
+            "--private-root", str(tmp_path),
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+    else:
+        heldout_corpus(tmp_path, n=30, **overrides)
+        assert gate(tmp_path).returncode == 0
+
+
+def test_verbatim_capture_unknown_string_passes_validation(tmp_path):
+    heldout_corpus(tmp_path, n=1, verbatim_capture="unknown")
+    proc = run(
+        VALIDATE,
+        str(tmp_path / "dataset.heldout.jsonl"),
+        "--private-root", str(tmp_path),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize(
+    "bad", [0, 1, None, "true", "false", "yes", 2, [], {}]
+)
+def test_verbatim_capture_rejects_non_boolean_values(tmp_path, bad):
+    """Type-strict: 0/1 compare equal to False/True in Python and MUST
+    still be rejected; so must null, string booleans and other types."""
+    heldout_corpus(tmp_path, n=1, verbatim_capture=bad)
+    proc = run(
+        VALIDATE,
+        str(tmp_path / "dataset.heldout.jsonl"),
+        "--private-root", str(tmp_path),
+    )
+    assert proc.returncode == 1
+    assert "verbatim_capture" in proc.stdout
+
+
+def test_verbatim_capture_integer_one_cannot_reach_the_gate(tmp_path):
+    """Even at the gate, integer 1 must not satisfy the True requirement."""
+    heldout_corpus(tmp_path, n=30, verbatim_capture=1)
+    proc = gate(tmp_path)
+    assert proc.returncode == 1
+    assert "verbatim_capture" in proc.stdout

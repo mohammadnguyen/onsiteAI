@@ -1,6 +1,6 @@
 # Baseline Runner Spec (v0)
 
-**Purpose:** produce the first ugly numbers. The runner's job is to make model output easy to hand-score against gold, per annotation-schema-v0.1 §9. Claude Code implements this; keep it boring.
+**Purpose:** produce the first ugly numbers. The runner's job is to make model output easy to hand-score against gold. **The runner's current contract is annotation-schema-v0.2**; v0.1 definitions (types, support levels, scoring procedure §9, privacy) apply only where v0.2 explicitly inherits them. Claude Code implements this; keep it boring.
 
 **Data location (binding, founder ruling 2026-08-14):** this repository is public, so it never holds a real utterance, real gold label, model output over real data, or a scoring report. The runner reads the real dataset from the private workspace (`--private-root` / `$FOREY_PRIVATE_CALIBRATION`, outside every registered Git worktree) and writes every artefact back there. The same `path_policy.py` guard the calibration tools use applies to the runner: fail closed, exit 2, no partial output. Public synthetic fixtures may stay in the repo for smoke tests but never count toward a real baseline.
 
@@ -15,7 +15,7 @@
    - System: you extract structured site facts for an Australian residential builder. Output JSON only: `{"facts":[{"type":"site_log_fact|task|potential_variation","summary":...,"attrs":{...}}]}`. Extract only what the utterance and provided context support. If nothing is actionable, return `{"facts":[]}`.
    - User: the frozen `context` object + the `utterance`, verbatim.
    - No few-shot examples, no schema hints beyond the above, temperature 0. That's the point of a baseline.
-   - Note: the `job` in context is the user-confirmed Job (DEC-JOB-ATTR-001). The model consumes it; it does not predict it, and Job attribution is not scored by this eval.
+   - Note: Job is an input context STATE, never a model-prediction target (DEC-JOB-ATTR-001), and Job attribution is not scored by this eval. Not every case has a confirmed Job: for `job_state: confirmed` the runner passes the confirmed Job verbatim; for `job_state: unassigned` it passes an explicit unknown/unassigned Job context. It never passes a suggested Job.
 3. Write `<private-root>/results/<YYYY-MM-DD>-baseline/outputs.jsonl` — one line per case: `{id, gold, model_output, error?}`. This file contains real gold and model output over real utterances, so it is private by construction and must never be written inside a worktree.
 4. Write `run-meta.json` in the same folder (mandatory): `{provider, model, model_version_or_snapshot, prompt_version, dataset_version, sample_count, temperature, retries_used, token_usage (est/actual where available), api_cost (est/actual where available), run_date}` — cost fields exist so future model comparisons weigh accuracy AND cost.
 5. Generate `scoring_sheets.md`: one section per case showing utterance, context summary, gold facts as a checklist, model facts as a checklist, and blank tally lines (`captured / missed / hallucinated / attr-wrong: person|trade|time|location`).
@@ -30,6 +30,26 @@ EVAL_MODEL=<model id>
 ```
 
 One thin `call_model(system, user) -> text` adapter per provider; adding a provider must not touch the harness logic. Retries: 2 with backoff. Batch budget: support `--limit N` and an inter-call delay (env `EVAL_CALL_DELAY_MS`, default 0); a full baseline run is ~30–50 calls. Malformed JSON from the model is recorded as `error`, not repaired (a baseline that needs repair is itself a finding).
+
+## Held-out and AI-exposure lifecycle
+
+`ai_exposure` in a corpus manifest records AI exposure during corpus
+construction, annotation, schema/prompt development and pre-evaluation
+preparation. **Running the frozen corpus through the model under
+evaluation does not mutate the corpus manifest** — no automatic manifest
+mutation exists or is added. Every run records dataset version, prompt
+version and model version in `run-meta.json`; independence is judged
+against that record, not against the manifest alone.
+
+A held-out corpus is valid for a given run only if it was not used to
+design or tune that run's prompt/model configuration. Once humans inspect
+its failures and use them to tune a later configuration, it is no longer
+independent Held-out evidence **for that later configuration** — later
+independent Baseline claims require a fresh held-out corpus or a clearly
+pre-registered untouched partition. Cross-provider comparison on one
+held-out corpus is valid only when the compared configurations are fixed
+before any results are inspected; sequential tuning against the same
+held-out failures is not a Held-out comparison.
 
 ## After scoring
 

@@ -71,7 +71,26 @@ Rules:
 
 A mismatch is a validation **error**, not a warning.
 
-### 2.2 `ai_exposure` — canonical enum and historical mapping
+### 2.2 `ai_exposure` and the Held-out lifecycle
+
+`ai_exposure` records AI exposure during **corpus construction,
+annotation, schema/prompt development and pre-evaluation preparation**.
+Running the frozen corpus through the model under evaluation does **not**
+mutate the corpus manifest (no automatic manifest mutation exists); every
+run instead records dataset version, prompt version and model version in
+its `run-meta.json`, and independence is judged against that record.
+
+A held-out corpus is valid for a given run only if it was not used to
+design or tune that run's prompt/model configuration. Once humans inspect
+its failures and use them to tune a later configuration, it is no longer
+independent Held-out evidence for that later configuration — later
+independent Baseline claims require a fresh held-out corpus or a clearly
+pre-registered untouched partition. Cross-provider comparison on one
+held-out corpus is valid only when the compared configurations are fixed
+before any results are inspected; sequential tuning against the same
+held-out failures is not a Held-out comparison.
+
+### 2.3 `ai_exposure` — canonical enum and historical mapping
 
 `ai_exposure` is the single canonical field. Historical private corpus
 manifests that used the boolean pair `ai_raw_exposed` / `ai_gold_exposed`
@@ -85,6 +104,10 @@ remain untouched as frozen records; they map as documentation only:
 
 The booleans are **not** accepted as a v0.2 manifest; the mapping exists so
 historical manifests can be read unambiguously, never as an override.
+
+`verbatim_capture` is type-strict: JSON boolean `true`, JSON boolean
+`false`, or the string `"unknown"`. Integers `0`/`1`, `null` and the
+strings `"true"`/`"false"` are invalid.
 
 ## 3. Record line format (v0.2)
 

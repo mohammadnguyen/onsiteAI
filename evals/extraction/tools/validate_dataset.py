@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Structural validator for extraction calibration/eval JSONL files.
 
-Checks SHAPE only — never semantics. It validates that lines conform to
-annotation-schema-v0.1 (§2 line format, §3 closed type list, §4 gold fact
-objects, §5 support levels, §6 privacy marker) and reports per-class
-counts. It deliberately refuses to produce one combined total: reference,
-synthetic and real captures are different kinds of evidence.
+Checks SHAPE only — never semantics. The current contract is
+annotation-schema-v0.2: a corpus with a sidecar `<name>.manifest.json`
+is validated as v0.2 (corpus provenance manifest, context.job_state,
+optional fact_category, meta.modality, multi_job routing); a corpus
+without one is validated as legacy v0.1 (warning) and contributes zero
+cases to v0.2 Baseline readiness. Per-class counts are reported and
+deliberately never combined into one total: reference, synthetic,
+development and held-out captures are different kinds of evidence.
 
 Two kinds of data, never conflated:
 
@@ -24,10 +27,14 @@ Usage:
       # private-root dataset file that exists
   python evals/extraction/tools/validate_dataset.py \
       --baseline-structure-ready --private-root D:/FOREY_PRIVATE_CALIBRATION
-      # STRUCTURAL minimum-dataset gate only: exit 0 iff >= 30 real cases
-      # carry structurally valid labels. It cannot verify independence,
-      # the elapsed week, disagreement resolution, or freeze — Baseline
-      # v0.1 still requires explicit founder approval of those steps.
+      # STRUCTURAL HELD-OUT gate: exit 0 iff the held-out corpus's v0.2
+      # manifest satisfies the full eligibility quintuple (real,
+      # contemporaneous_capture, verbatim true, ai_exposure none,
+      # intended_use heldout) AND >= 30 structurally valid labelled
+      # cases remain after excluding multi_job routing. Development,
+      # legacy and AI-exposed data contribute zero. It cannot verify
+      # independence, the elapsed week, disagreement resolution, or
+      # freeze — Baseline v0.1 still requires explicit founder approval.
 
 Exit codes: 0 = pass, 1 = structural violations, 2 = usage/policy error.
 """
@@ -77,7 +84,11 @@ CREATION_METHODS = {
     "contemporaneous_capture", "retrospective_reconstruction",
     "constructed_example",
 }
-VERBATIM_VALUES = {True, False, "unknown"}
+# NOTE: verbatim_capture is validated type-strictly by
+# valid_verbatim_capture() below, NOT by set membership — in Python,
+# 0 == False and 1 == True, so `0 in {True, False, "unknown"}` would
+# wrongly accept integers.
+VERBATIM_DISPLAY = "true | false | \"unknown\""
 AI_EXPOSURES = {"none", "raw_seen", "gold_seen"}
 INTENDED_USES = {"reference", "development", "heldout"}
 
@@ -100,6 +111,19 @@ BASELINE_ELIGIBILITY = {
     "ai_exposure": "none",
     "intended_use": "heldout",
 }
+
+
+def valid_verbatim_capture(value: object) -> bool:
+    """Type-strict check: JSON true/false or the string \"unknown\" only.
+
+    isinstance(value, bool) must be checked FIRST and int rejected
+    explicitly — bool is a subclass of int and 0/1 compare equal to
+    False/True, so ordinary equality or set membership would let the
+    integers through.
+    """
+    if isinstance(value, bool):
+        return True
+    return value == "unknown" and isinstance(value, str)
 
 
 def manifest_path_for(dataset: Path) -> Path:
@@ -148,7 +172,6 @@ def load_manifest(
     checks = [
         ("event_origin", EVENT_ORIGINS),
         ("creation_method", CREATION_METHODS),
-        ("verbatim_capture", VERBATIM_VALUES),
         ("ai_exposure", AI_EXPOSURES),
         ("intended_use", INTENDED_USES),
     ]
@@ -159,6 +182,14 @@ def load_manifest(
             errors.append(
                 f"{where}: {field} = {m[field]!r} not in {sorted(map(str, allowed))}"
             )
+    if "verbatim_capture" not in m:
+        errors.append(f"{where}: missing required field 'verbatim_capture'")
+    elif not valid_verbatim_capture(m["verbatim_capture"]):
+        errors.append(
+            f"{where}: verbatim_capture = {m['verbatim_capture']!r} must be "
+            f"exactly {VERBATIM_DISPLAY} (JSON booleans; integers 0/1, null "
+            "and string booleans are invalid)"
+        )
 
     # Declared provenance is authoritative, but path must agree.
     want_use = INTENDED_USE_BY_CLASS.get(cls)
@@ -185,11 +216,18 @@ def manifest_is_baseline_eligible(m: dict | None) -> tuple[bool, list[str]]:
             "no v0.2 corpus manifest — legacy data contributes zero cases "
             "to v0.2 Baseline readiness"
         ]
-    reasons = [
-        f"{field} = {m.get(field)!r} (required: {required!r})"
-        for field, required in BASELINE_ELIGIBILITY.items()
-        if m.get(field) != required
-    ]
+    reasons = []
+    for field, required in BASELINE_ELIGIBILITY.items():
+        value = m.get(field)
+        # Type-strict for verbatim_capture: 1 == True in Python, so a plain
+        # != comparison would let integer 1 satisfy the True requirement.
+        ok = (
+            value is True
+            if field == "verbatim_capture"
+            else value == required
+        )
+        if not ok:
+            reasons.append(f"{field} = {value!r} (required: {required!r})")
     return not reasons, reasons
 
 
