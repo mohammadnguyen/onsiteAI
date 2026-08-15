@@ -73,7 +73,7 @@ Authoritative Job attribution requires explicit user selection or confirmation i
 ### DEC-ONTOLOGY-001 — Slice-1 ontology [DECIDED]
 Applies-To: slice-1
 
-Slice-1 capture ontology is limited to: Site Log Fact, Task, Potential Variation. Issue may be included only if the vertical slice cannot form a coherent workflow without it. Progress, Rework, Delay, EOT and further classifications are Ontology v2 or later and require evidence that the existing capture loop works.
+Slice-1 capture ontology has exactly three top-level Candidate types: Site Log Fact, Task, Potential Variation. No other top-level Candidate type may be added; Issue is not a fourth conditional type — if future evidence shows a separate Issue workflow is necessary, this decision must first be formally reopened and amended. Progress, Rework, Delay, EOT and further classifications remain excluded as Candidate types (Ontology v2 or later, requiring evidence that the existing capture loop works). Optional classification metadata inside a Site Log Fact (such as a fact_category value) is not a Candidate type and is permitted, provided it creates no separate workflow, module or additional confirmation object.
 
 ### DEC-CAPTURE-001 — Low-friction capture wedge [DECIDED]
 Applies-To: slice-1
@@ -1905,6 +1905,8 @@ Section 42 is subordinate to the Slice-1 definition in Section 62. The initial C
 
 Slice-1 confirmed outputs — a Capture may initially produce only: **Site Log Fact; Task; Potential Variation.** Issue may be included only if required to complete a coherent vertical workflow without duplicating another object.
 
+> **Historical status (added 2026-08-15, text above preserved as signed):** the conditional Issue allowance in the sentence above was **superseded by Amendment 10** and is not current implementation authority. Slice 1 currently has exactly three top-level Candidate types — Site Log Fact, Task, Potential Variation — and a future Issue Candidate requires formally reopening DEC-ONTOLOGY-001 first. The Decision Registry, Amendment 10 and PRODUCT.md are authoritative.
+
 Explicitly Ontology v2 or later: Progress Candidate; Rework Candidate; Delay Candidate; EOT Candidate; Forecast Candidate; other commercial/event classifications.
 
 Reasons: (1) **Human attention** — with approximately five normal active Jobs and periods approaching ten, every additional Candidate class increases possible confirmation volume; the product must not solve administrative burden by creating a classification-review burden. (2) **Evaluation cost** — every Candidate class creates a new annotation problem (definition; positive examples; negative examples; ambiguous cases; gold labels; precision/recall measurement; correction tracking). Ontology expansion requires evidence that the existing Capture loop is working.
@@ -1978,6 +1980,10 @@ Mechanism: every registry entry carries `Applies-To:` routing metadata (global, 
 Deliberate scoping call: DEC-GATE-H3-001 is scoped slice-1, not deferred — Amendment 4 defines H1→H2→H3 as one continuous validation arc and H3's clock runs during Slice-1 usage.
 
 Registry IDs freeze at repository landing. The rename in Amendment 8 (draft DEC-LEGACY-001 → DEC-EXISTING-001) was the last free in-place rename; after landing, a rename requires a new entry plus a tombstone note.
+
+### Amendment 10 — Fact-category metadata inside the closed ontology (2026-08-15)
+
+DEC-ONTOLOGY-001's registry text is amended to state explicitly that the closed list applies to **top-level Candidate types**, that the earlier conditional Issue clause is removed (Slice 1 has exactly three Candidate types; a future Issue workflow requires formally reopening this decision first), and that optional classification metadata inside a Site Log Fact (a `fact_category` value such as attendance, progress, site_condition, quality, delivery, inspection, safety, delay, incident, instruction, weather, other) is **not** a Candidate type and is permitted, provided it creates no separate workflow, module or additional confirmation object. Rationale: Amendment 2's constraints target Candidate classes because each class multiplies confirmation volume and annotation cost; a tag on an already-confirmed atomic fact does neither. A complex capture is split into atomic facts rather than given a compound category; generic `issue` is not a category because quality/safety/delivery/delay issues would overlap. Expense and Labour remain outside the Slice-1 Candidate ontology in their existing structured modules. The amended registry text is re-acknowledged in PRODUCT.md through the drift mechanism in the same commit.
 
 ### Repository Authority Split
 

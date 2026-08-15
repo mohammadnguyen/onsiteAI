@@ -88,10 +88,10 @@ Ack: 7a156a02619d
 
 ### Slice-1 ontology (closed list)
 
-Extraction may propose only: **Site Log Fact, Task, Potential Variation** (Issue only if the vertical slice cannot cohere without it). Anything else (Progress, Rework, Delay, EOT, Forecast…) is Ontology v2+: not in prompts, not in schema enums as extractable candidates, not in the annotation schema.
+Extraction may propose exactly three top-level Candidate types: **Site Log Fact, Task, Potential Variation**. Issue is not a fourth conditional type — a future Issue workflow requires formally reopening DEC-ONTOLOGY-001 first. Anything else (Progress, Rework, Delay, EOT, Forecast…) is Ontology v2+ **as a Candidate type**: not in prompts, not in schema enums as extractable candidate types. Optional classification metadata inside a Site Log Fact (`fact_category`, closed 12-value list, see annotation-schema-v0.2) is not a Candidate type and is permitted; it creates no separate workflow, module or confirmation object. One Raw Evidence item may produce zero or more Facts, Tasks and Potential Variations. Expense and Labour remain outside this ontology in their existing structured modules.
 
-Source: DEC-ONTOLOGY-001 (Charter Amendment 2)
-Ack: 47c2f52a2145
+Source: DEC-ONTOLOGY-001 (Charter Amendment 2, Amendment 10)
+Ack: 48604a8dd3b6
 
 ### Site Log is the fact/evidence layer
 
@@ -191,7 +191,7 @@ Ack: 2d12f6e2e943
 
 ### H2 — Extraction quality
 
-Corpus mixes EN / ZH / mixed / shorthand / trade & supplier names; pure-English mandatory from batch 1. Extraction metrics: fact recall & precision, Task precision, PV recall & precision, direct-confirm rate, correction time, wrong person/trade/location rate, commercially-important misses. Wrong-Job suggestion rate is capture-attribution telemetry (H1/product measurement, per DEC-JOB-ATTR-001), not an extraction metric. Raw evidence preserved as reusable eval set. See `evals/extraction/annotation-schema-v0.1.md`.
+Corpus mixes EN / ZH / mixed / shorthand / trade & supplier names; pure-English mandatory from batch 1. Extraction metrics: fact recall & precision, Task precision, PV recall & precision, direct-confirm rate, correction time, wrong person/trade/location rate, commercially-important misses. Wrong-Job suggestion rate is capture-attribution telemetry (H1/product measurement, per DEC-JOB-ATTR-001), not an extraction metric. Raw evidence preserved as reusable eval set. See `evals/extraction/annotation-schema-v0.2.md` (CURRENT; v0.1 definitions apply only where v0.2 explicitly inherits them).
 
 Source: DEC-GATE-H2-001 (Charter §54, Amendment 4)
 Ack: 6a617ad8020d
