@@ -65,6 +65,9 @@ def test_cors_origins_split_strips_and_drops_blanks() -> None:
         database_url=_VALID_DB_URL,
         jwt_secret=_VALID_SECRET,
         cors_allowed_origins="https://admin.example.com, https://app.example.com , ,",
+        evidence_storage_backend="s3",
+        evidence_s3_endpoint_url="https://storage.example.com",
+        evidence_s3_bucket="evidence-test",
     )
     assert s.cors_allowed_origins == [
         "https://admin.example.com",
@@ -79,6 +82,9 @@ def test_cors_origins_already_a_list_passes_through() -> None:
         database_url=_VALID_DB_URL,
         jwt_secret=_VALID_SECRET,
         cors_allowed_origins=[_VALID_ORIGIN, "https://app.example.com"],
+        evidence_storage_backend="s3",
+        evidence_s3_endpoint_url="https://storage.example.com",
+        evidence_s3_bucket="evidence-test",
     )
     assert s.cors_allowed_origins == [_VALID_ORIGIN, "https://app.example.com"]
 
@@ -121,6 +127,9 @@ def test_valid_secret_accepted_in_production() -> None:
         database_url=_VALID_DB_URL,
         jwt_secret=_VALID_SECRET,
         cors_allowed_origins=[_VALID_ORIGIN],
+        evidence_storage_backend="s3",
+        evidence_s3_endpoint_url="https://storage.example.com",
+        evidence_s3_bucket="evidence-test",
     )
     assert s.app_env == "production"
     assert s.jwt_secret_is_valid is True
@@ -251,6 +260,9 @@ def test_env_var_app_env_resolves(monkeypatch: pytest.MonkeyPatch, tmp_path) -> 
     monkeypatch.setenv("DATABASE_URL", _VALID_DB_URL)
     monkeypatch.setenv("JWT_SECRET", _VALID_SECRET)
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", f"{_VALID_ORIGIN},https://app.example.com")
+    monkeypatch.setenv("EVIDENCE_STORAGE_BACKEND", "s3")
+    monkeypatch.setenv("EVIDENCE_S3_ENDPOINT_URL", "https://storage.example.com")
+    monkeypatch.setenv("EVIDENCE_S3_BUCKET", "evidence-test")
 
     s = get_settings()
     assert s.app_env == "production"
@@ -392,3 +404,39 @@ def test_resolve_app_env_strips_and_lowercases(monkeypatch: pytest.MonkeyPatch) 
     _clean_env(monkeypatch)
     monkeypatch.setenv("APP_ENV", "  PRODUCTION  ")
     assert _resolve_app_env() == "production"
+
+
+# -- evidence storage gates (DEC-EVIDENCE-001) --------------------------
+
+
+def test_staging_rejects_local_evidence_backend() -> None:
+    with pytest.raises(ValidationError, match="EVIDENCE_STORAGE_BACKEND=s3"):
+        Settings(
+            _env_file=None,
+            app_env="staging",
+            database_url=_VALID_DB_URL,
+            jwt_secret=_VALID_SECRET,
+            cors_allowed_origins=[_VALID_ORIGIN],
+        )
+
+
+def test_s3_backend_requires_endpoint_and_bucket() -> None:
+    with pytest.raises(ValidationError, match="EVIDENCE_S3_ENDPOINT_URL"):
+        Settings(
+            _env_file=None,
+            app_env="development",
+            database_url=_VALID_DB_URL,
+            jwt_secret=_VALID_SECRET,
+            evidence_storage_backend="s3",
+        )
+
+
+def test_unknown_evidence_backend_rejected() -> None:
+    with pytest.raises(ValidationError, match="must be 'local' or 's3'"):
+        Settings(
+            _env_file=None,
+            app_env="development",
+            database_url=_VALID_DB_URL,
+            jwt_secret=_VALID_SECRET,
+            evidence_storage_backend="ftp",
+        )

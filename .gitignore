@@ -105,5 +105,28 @@ logs/
 # ---------- Docker ----------
 .docker/
 
+# ---------- Calibration private data (defence-in-depth) ----------
+# Real captures, gold labels, relabel worksheets, order mappings and
+# scoring reports live OUTSIDE every worktree; the calibration tools
+# refuse in-repo paths (evals/extraction/tools/path_policy.py). These
+# patterns are a narrow backstop for a hand-created file or a stray
+# copy — they reduce the blast radius, they do NOT make an accidental
+# commit impossible (a renamed or relocated file still slips past).
+# Deliberately narrow: the public fixtures (dataset.sample.jsonl and
+# calibration/synthetic.jsonl) stay committable. reference.jsonl is
+# ignored on the safe default — reference examples can be real-derived,
+# so they are private until positively established as wholly fabricated,
+# at which point they become a synthetic fixture under a public name.
+evals/extraction/dataset.v0.jsonl
+evals/extraction/dataset.heldout.jsonl
+evals/extraction/calibration/reference.jsonl
+evals/extraction/results/
+evals/extraction/**/relabel/
+evals/extraction/**/pseudonyms.json
+evals/extraction/**/ambiguity-log.md
+
 # ---------- Claude Code session state ----------
-.claude/
+# Session state stays ignored, but versioned procedure skills are repo files
+# (ADR-001: skills are executable governance, tested like code).
+.claude/*
+!.claude/skills/

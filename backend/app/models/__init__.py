@@ -7,6 +7,12 @@ them for autogenerate.
 
 from app.models.base import Base
 from app.models.category import Category
+from app.models.evidence import (
+    Evidence,
+    EvidenceAuditLog,
+    EvidenceMediaType,
+    EvidenceStatus,
+)
 from app.models.expense import (
     Expense,
     ExpenseType,
@@ -29,6 +35,10 @@ from app.models.user import LanguageCode, User, UserRole
 __all__ = [
     "Base",
     "Category",
+    "Evidence",
+    "EvidenceAuditLog",
+    "EvidenceMediaType",
+    "EvidenceStatus",
     "Expense",
     "ExpenseAuditLog",
     "ExpenseReviewQueue",

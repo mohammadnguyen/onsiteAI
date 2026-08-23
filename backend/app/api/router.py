@@ -10,6 +10,7 @@ from fastapi import APIRouter
 from app.api import (
     auth,
     categories,
+    evidence,
     expenses,
     jobs,
     labour,
@@ -27,6 +28,9 @@ api_router.include_router(jobs.router, prefix="/jobs")
 # Labour spans /workers, /labour-entries and /labour-summary (one
 # feature, three roots) — included unprefixed with absolute paths.
 api_router.include_router(labour.router)
+# Evidence spans /evidence and /jobs/{id}/evidence — unprefixed,
+# absolute paths, same pattern as labour.
+api_router.include_router(evidence.router)
 api_router.include_router(reports.router, prefix="/reports")
 api_router.include_router(review_queue.router, prefix="/review-queue")
 api_router.include_router(suppliers.router, prefix="/suppliers")

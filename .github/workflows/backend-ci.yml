@@ -15,6 +15,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Root gate (L1): lint + the whole root test suite (drift-checker fixtures
+  # AND the calibration-tooling path-policy tests) + the drift check itself.
+  # Runs at the REPOSITORY ROOT — the drift check resolves docs/product/* and
+  # its Binding Scope from there and hard-fails from any other working
+  # directory, and the path-policy tests need `git worktree list` against the
+  # real checkout. No DB required.
+  #
+  # Versions are pinned so a new upstream release cannot turn this gate red
+  # (or silently green) on its own: ruff matches the version locked in
+  # backend/uv.lock. NOTE: there is no ruff config at the repository root, so
+  # this lint runs on ruff defaults, not backend/pyproject.toml's rule set.
+  governance:
+    name: root governance + calibration tooling
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned tooling
+        run: pip install "pytest>=9,<10" "ruff==0.15.11"
+
+      - name: Ruff (calibration tooling + root tests)
+        run: ruff check evals/extraction/tools tests
+
+      - name: Root test suite (drift fixtures + calibration path policy)
+        run: python -m pytest tests/ -q
+
+      - name: Decision drift check (full coverage)
+        run: python scripts/check_decision_drift.py --require-full-coverage
+
   test:
     name: ruff + pytest
     runs-on: ubuntu-latest
