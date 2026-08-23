@@ -1087,7 +1087,9 @@ async def test_summary_labour_cost_and_completeness(
 ):
     job = await _mk_job(db_session, seeded_admin, name="Site A")
     w = await _mk_worker(db_session, seeded_admin, name="Sam", hourly_rate="40.00")
-    # One costable entry (hours + snapshot) and one without hours.
+    # One entry with recorded hours and one without — the hours-less
+    # entry now derives cost from day_fraction * org default_day_hours
+    # (10.00 default): 1.0 * 10 * 40 = 400 (founder 2026-08-24).
     await _mk_entry(
         db_session, worker=w, job=job, recorded_by=seeded_admin,
         work_date=_today(), hours="8", rate_snapshot="40.00",
@@ -1101,11 +1103,12 @@ async def test_summary_labour_cost_and_completeness(
     assert r.status_code == 200, r.text
     body = r.json()
     wr = body["workers"][0]
+    # total_hours still counts RECORDED hours only — days stay days.
     assert Decimal(wr["total_hours"]) == Decimal("8")
-    assert Decimal(wr["labour_cost"]) == Decimal("320")  # 8 * 40, the no-hours row excluded
+    assert Decimal(wr["labour_cost"]) == Decimal("720")  # 8*40 + 1.0*10*40
     assert wr["entries_total"] == 2
-    assert wr["entries_costed"] == 1
-    assert Decimal(body["total_labour_cost"]) == Decimal("320")
+    assert wr["entries_costed"] == 2  # rate present on both
+    assert Decimal(body["total_labour_cost"]) == Decimal("720")
 
 
 @pytest.mark.asyncio

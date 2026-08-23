@@ -14,6 +14,7 @@ from app.api import (
     expenses,
     jobs,
     labour,
+    org_settings,
     reports,
     review_queue,
     suppliers,
@@ -31,6 +32,7 @@ api_router.include_router(labour.router)
 # Evidence spans /evidence and /jobs/{id}/evidence — unprefixed,
 # absolute paths, same pattern as labour.
 api_router.include_router(evidence.router)
+api_router.include_router(org_settings.router)
 api_router.include_router(reports.router, prefix="/reports")
 api_router.include_router(review_queue.router, prefix="/review-queue")
 api_router.include_router(suppliers.router, prefix="/suppliers")
