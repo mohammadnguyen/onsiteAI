@@ -6,6 +6,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Pressable,
+  TextInput,
   TouchableOpacity,
   RefreshControl,
 } from 'react-native';
@@ -13,6 +14,10 @@ import { useTranslation } from 'react-i18next';
 import axios from 'axios';
 
 import { useLabourSummary } from '../../api/hooks/useLabour';
+import {
+  useOrgSettings,
+  useUpdateOrgSettings,
+} from '../../api/hooks/useOrgSettings';
 import { useJobs } from '../../api/hooks/useJobs';
 import { useMe } from '../../api/hooks/useAuth';
 import { OptionPickerModal } from '../OptionPickerModal';
@@ -470,6 +475,11 @@ export function SummaryView({ onFixRates }: SummaryViewProps) {
               )}
             </>
           ) : null}
+
+          {/* Founder 2026-08-24: day-only entries cost via this org
+              parameter (day_fraction × default hours × rate). Admin-
+              only surface — this whole branch is already admin-gated. */}
+          <DayHoursSetting />
         </ScrollView>
       )}
 
@@ -486,6 +496,119 @@ export function SummaryView({ onFixRates }: SummaryViewProps) {
   );
 }
 
+
+/**
+ * Founder 2026-08-24: org default day-hours setting. A labour entry
+ * recorded as day(s) without hours costs ``day_fraction × this value ×
+ * rate``; changing it re-prices ALL hours-less entries, past and
+ * future (deliberate — it is a pricing rule, not a per-entry fact).
+ * Entries with recorded hours never move.
+ */
+function DayHoursSetting() {
+  const s = useScaledStyles(base);
+  const { t } = useTranslation();
+  const settings = useOrgSettings(true);
+  const update = useUpdateOrgSettings();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [invalid, setInvalid] = useState(false);
+
+  const current =
+    settings.data != null ? parseFloat(settings.data.default_day_hours) : null;
+
+  const onSave = () => {
+    const v = parseFloat(draft.replace(',', '.'));
+    if (!Number.isFinite(v) || v <= 0 || v > 24) {
+      setInvalid(true);
+      return;
+    }
+    update.mutate(
+      { default_day_hours: v.toFixed(2) },
+      {
+        onSuccess: () => {
+          setEditing(false);
+          setInvalid(false);
+        },
+      },
+    );
+  };
+
+  if (settings.isLoading || settings.isError || current == null) return null;
+
+  return (
+    <View style={s.settingCard} testID="day-hours-setting">
+      <View style={s.settingRow}>
+        <View style={s.settingTextWrap}>
+          <Text style={s.settingLabel}>
+            {t('labour.default_day_hours_label')}
+          </Text>
+          <Text style={s.settingHint}>
+            {t('labour.default_day_hours_hint')}
+          </Text>
+        </View>
+        {editing ? null : (
+          <TouchableOpacity
+            onPress={() => {
+              setDraft(String(current));
+              setInvalid(false);
+              setEditing(true);
+            }}
+            style={s.settingValueBtn}
+            accessibilityRole="button"
+            testID="day-hours-edit"
+          >
+            <Text style={s.settingValue}>
+              {t('labour.hours_value', { hours: String(current) })}
+            </Text>
+          </TouchableOpacity>
+        )}
+      </View>
+      {editing ? (
+        <View style={s.settingEditRow}>
+          <TextInput
+            style={[s.settingInput, invalid && s.settingInputBad]}
+            value={draft}
+            onChangeText={(v) => {
+              setDraft(v);
+              setInvalid(false);
+            }}
+            keyboardType="decimal-pad"
+            maxLength={5}
+            autoFocus
+            testID="day-hours-input"
+          />
+          <TouchableOpacity
+            onPress={() => setEditing(false)}
+            style={s.settingBtn}
+            accessibilityRole="button"
+            testID="day-hours-cancel"
+          >
+            <Text style={s.settingBtnText}>{t('common.cancel')}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={onSave}
+            disabled={update.isPending}
+            style={[s.settingBtn, s.settingBtnPrimary]}
+            accessibilityRole="button"
+            testID="day-hours-save"
+          >
+            <Text style={s.settingBtnPrimaryText}>{t('common.save')}</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+      {invalid ? (
+        <Text style={s.settingError} testID="day-hours-invalid">
+          {t('labour.default_day_hours_invalid')}
+        </Text>
+      ) : null}
+      {update.isError ? (
+        <Text style={s.settingError} testID="day-hours-error">
+          {t('common.error')}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
 
 /** B4-3: minimal categorical bar (no chart library) — width is the
  *  worker's share of the range max; colour cycles cat-1..4. */
@@ -528,6 +651,65 @@ const base = StyleSheet.create({
   // B3: mode toggle now uses the kit Segmented (old modeChip styles
   // removed); the incomplete-cost note is the kit RateGapBanner.
   modeHint: { fontSize: 12, color: '#64748b', marginTop: 6 },
+  settingCard: {
+    marginTop: 4,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: tokens.line,
+    borderRadius: 12,
+    backgroundColor: tokens.surface,
+    gap: 8,
+  },
+  settingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  settingTextWrap: { flex: 1, gap: 2 },
+  settingLabel: { fontSize: 14, fontWeight: '600', color: tokens.ink },
+  settingHint: { fontSize: 11.5, color: tokens.ink3, lineHeight: 15 },
+  settingValueBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: tokens.line,
+    backgroundColor: tokens.bg,
+  },
+  settingValue: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: tokens.primary,
+    fontVariant: ['tabular-nums'],
+  },
+  settingEditRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  settingInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: tokens.line,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 15,
+    color: tokens.ink,
+    backgroundColor: tokens.bg,
+  },
+  settingInputBad: { borderColor: tokens.bad },
+  settingBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: tokens.line,
+  },
+  settingBtnText: { fontSize: 13.5, fontWeight: '600', color: tokens.ink2 },
+  settingBtnPrimary: {
+    backgroundColor: tokens.primary,
+    borderColor: tokens.primary,
+  },
+  settingBtnPrimaryText: { fontSize: 13.5, fontWeight: '700', color: '#fff' },
+  settingError: { fontSize: 12, color: tokens.bad },
   state: { alignItems: 'center', padding: 24, gap: 12 },
   stateText: { color: '#64748b', fontSize: 15, textAlign: 'center' },
   errorText: { color: '#b91c1c' },
