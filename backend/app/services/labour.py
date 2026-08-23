@@ -39,7 +39,7 @@ import uuid
 from datetime import date, time, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import Numeric, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Job, JobStatus, LabourEntry, User, UserRole, Worker
@@ -528,8 +528,13 @@ async def summarize(
     # entries by design. rate_snapshot stays the write-once per-entry
     # fact; cost remains computed on read, never stored.
     default_day_hours = await get_default_day_hours(db)
+    # literal() with an EXPLICIT Numeric(4,2): without it SQLAlchemy
+    # types the bind from the left operand — day_fraction NUMERIC(2,1)
+    # — and Postgres rejects 10.00 with "numeric field overflow"
+    # (caught by CI on PR #9's first run).
     _eff_hours = func.coalesce(
-        LabourEntry.hours, LabourEntry.day_fraction * default_day_hours
+        LabourEntry.hours,
+        LabourEntry.day_fraction * literal(default_day_hours, Numeric(4, 2)),
     )
     _cost = func.sum(_eff_hours * LabourEntry.rate_snapshot)
     _hours = func.sum(LabourEntry.hours)
