@@ -147,9 +147,11 @@ class WorkerDaysRow(BaseModel):
 
     ``total_days`` is worker-days (sum of day fractions) — kept for
     backward compatibility. v2 adds ``total_hours`` and ``labour_cost``
-    (sum of ``hours * rate_snapshot``; null when no entry is costable).
-    ``entries_total`` vs ``entries_costed`` lets the client flag an
-    incomplete cost (some entries missing hours or rate).
+    (sum of ``effective_hours * rate_snapshot``, where an hours-less
+    entry derives hours from ``day_fraction * org default_day_hours``;
+    null when no entry has a rate snapshot). ``entries_total`` vs
+    ``entries_costed`` lets the client flag an incomplete cost (some
+    entries missing a rate).
     """
 
     worker_id: uuid.UUID

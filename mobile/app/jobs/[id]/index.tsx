@@ -39,7 +39,7 @@ import { localizeJobStatus } from '../../../src/util/jobStatus';
 import { localizeCategoryName } from '../../../src/util/category';
 import { useScaledStyles } from '../../../src/ui/type';
 import { useOneShotBack } from '../../../src/util/navigation';
-import { BudgetBar, Chip, StatusBadge } from '../../../src/ui/kit';
+import { Chip, StatusBadge } from '../../../src/ui/kit';
 import {
   ReceiptIcon,
   UsersIcon,
@@ -408,18 +408,6 @@ export default function JobDetailScreen() {
 
 /* ================= Financial overview (B4-1) ================= */
 
-/** Budget-usage tone from the SERVER's per-job summary (same rule as
- *  the list's bandFor: overspend/red → bad, amber → warn, else ok). */
-function summaryTone(sum: JobBudgetSummary): Tone | null {
-  if (sum.percent_consumed == null) return null;
-  const pct = parseFloat(sum.percent_consumed);
-  if (sum.overspend || pct >= parseFloat(sum.effective_warning_red_pct)) {
-    return 'bad';
-  }
-  if (pct >= parseFloat(sum.effective_warning_amber_pct)) return 'warn';
-  return 'ok';
-}
-
 function FinancialOverviewCard({
   job,
   summary,
@@ -448,7 +436,6 @@ function FinancialOverviewCard({
   const sum = summary.data;
   const pct =
     sum?.percent_consumed != null ? parseFloat(sum.percent_consumed) : null;
-  const tone = sum ? summaryTone(sum) : null;
 
   return (
     <View style={s.card} testID="job-financial-overview">
@@ -470,34 +457,75 @@ function FinancialOverviewCard({
         </Text>
       ) : sum ? (
         <View testID="job-spending-body">
-          <Text style={s.revLabel}>{t('job.remaining_hero_label')}</Text>
-          <Text
-            style={[s.heroRemaining, sum.overspend && s.overspendValue]}
-            testID="job-remaining-hero"
-            numberOfLines={1}
-            adjustsFontSizeToFit
-            minimumFontScale={0.7}
-          >
-            {sum.remaining_ex_gst != null
-              ? formatMoney(sum.remaining_ex_gst)
-              : formatMoney(sum.actual_ex_gst)}
-          </Text>
-          <Text style={s.heroSub} numberOfLines={1}>
-            {sum.total_budget_ex_gst != null
-              ? t('job.budget_used_line', {
-                  budget: formatMoney(sum.total_budget_ex_gst),
-                  pct: pct != null ? pct.toFixed(0) : '—',
-                })
-              : t('job.no_budget_set')}
-          </Text>
-          {pct != null && tone != null ? (
-            <View style={s.barWrap}>
-              <BudgetBar pctUsed={pct} tone={tone} leftText={t('ui.of_budget')} />
+          {/* Dogfood 2026-08-24: the operator could never see SPENT
+              without mental math (the old card showed only remaining +
+              two duplicate 62% bars). Twin heroes put all three numbers
+              on screen: spent (+% of budget) and remaining (+budget);
+              the category bar below scales to BUDGET so its grey tail
+              IS the remaining share — one bar, no duplicate. */}
+          {sum.total_budget_ex_gst != null && sum.remaining_ex_gst != null ? (
+            <View style={s.heroRow}>
+              <View style={s.heroCol}>
+                <Text style={s.revLabel}>{t('job.spent_hero_label')}</Text>
+                <Text
+                  style={s.heroTwin}
+                  testID="job-spent-hero"
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.6}
+                >
+                  {formatMoney(sum.actual_ex_gst)}
+                </Text>
+                <Text style={s.heroSub} numberOfLines={1}>
+                  {pct != null
+                    ? t('job.pct_of_budget', { pct: pct.toFixed(0) })
+                    : ' '}
+                </Text>
+              </View>
+              <View style={s.heroColRight}>
+                <Text style={s.revLabel}>
+                  {t('job.remaining_label_short')}
+                </Text>
+                <Text
+                  style={[
+                    s.heroTwin,
+                    sum.overspend ? s.overspendValue : s.remainOkValue,
+                  ]}
+                  testID="job-remaining-hero"
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.6}
+                >
+                  {formatMoney(sum.remaining_ex_gst)}
+                </Text>
+                <Text style={s.heroSub} numberOfLines={1}>
+                  {t('job.of_budget_total', {
+                    budget: formatMoney(sum.total_budget_ex_gst),
+                  })}
+                </Text>
+              </View>
             </View>
-          ) : null}
+          ) : (
+            <>
+              <Text style={s.revLabel}>{t('job.spent_hero_label')}</Text>
+              <Text
+                style={s.heroRemaining}
+                testID="job-spent-hero"
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.7}
+              >
+                {formatMoney(sum.actual_ex_gst)}
+              </Text>
+              <Text style={s.heroSub} numberOfLines={1}>
+                {t('job.no_budget_set')}
+              </Text>
+            </>
+          )}
           <CompositionBar
             categories={sum.categories ?? []}
             uncategorised={sum.uncategorised_actual_ex_gst}
+            budgetTotal={sum.total_budget_ex_gst}
           />
           {storedEx != null ? (
             <>
@@ -538,6 +566,7 @@ const CAT_COLOURS = [tokens.cat1, tokens.cat2, tokens.cat3, tokens.cat4];
 function CompositionBar({
   categories,
   uncategorised,
+  budgetTotal,
 }: {
   categories: Array<{
     category_id: string;
@@ -548,6 +577,11 @@ function CompositionBar({
    *  backend returns it separately so the bar can reconcile with the
    *  card's 已支出 total — it belongs in the 其他 bucket. */
   uncategorised: string | null | undefined;
+  /** Job budget (ex GST). When it exceeds total spend the bar scales
+   *  to the BUDGET, so the grey track tail visually IS the remaining
+   *  share — replaces the old separate %-used bar. Overspend (or no
+   *  budget) falls back to scaling by spend, a full bar. */
+  budgetTotal: string | null | undefined;
 }) {
   const s = useScaledStyles(base);
   const { t } = useTranslation();
@@ -564,6 +598,10 @@ function CompositionBar({
   const total =
     catTotal + (uncategorised != null && Number.isFinite(parseFloat(uncategorised)) && parseFloat(uncategorised) > 0 ? parseFloat(uncategorised) : 0);
   if (total <= 0) return null;
+
+  const budget = budgetTotal != null ? parseFloat(budgetTotal) : NaN;
+  const denom =
+    Number.isFinite(budget) && budget > total ? budget : total;
 
   const top = spent.slice(0, 3);
   const uncat = uncategorised != null ? parseFloat(uncategorised) : 0;
@@ -584,11 +622,14 @@ function CompositionBar({
           <View
             key={seg.id}
             style={{
-              flex: seg.value / total,
+              flex: seg.value / denom,
               backgroundColor: CAT_COLOURS[i % CAT_COLOURS.length],
             }}
           />
         ))}
+        {denom > total ? (
+          <View style={{ flex: (denom - total) / denom }} />
+        ) : null}
       </View>
       <View style={s.compLegend}>
         {segs.map((seg, i) => (
@@ -913,10 +954,18 @@ function LabourDaysSection({
                     <Text style={s.bwMeta} numberOfLines={1}>
                       {[
                         w.cost != null ? formatMoney(w.cost.toFixed(2)) : null,
-                        t('job.bw_days_hours', {
-                          days: formatDays(w.days),
-                          hours: w.hours ?? '0',
-                        }),
+                        // Day-only entries now cost via the org
+                        // default-day-hours parameter, so "· 0 h" next
+                        // to money read as contradiction — hours only
+                        // renders when hours were actually recorded.
+                        w.hours != null
+                          ? t('job.bw_days_hours', {
+                              days: formatDays(w.days),
+                              hours: w.hours,
+                            })
+                          : t('job.bw_days_only', {
+                              days: formatDays(w.days),
+                            }),
                       ]
                         .filter(Boolean)
                         .join(' · ')}
@@ -1032,6 +1081,18 @@ const base = StyleSheet.create({
     marginTop: 2,
     fontVariant: ['tabular-nums'],
   },
+  heroRow: { flexDirection: 'row', gap: 12, marginTop: 2 },
+  heroCol: { flex: 1 },
+  heroColRight: { flex: 1, alignItems: 'flex-end' },
+  heroTwin: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: tokens.ink,
+    fontVariant: ['tabular-nums'],
+    letterSpacing: -0.6,
+    marginTop: 2,
+  },
+  remainOkValue: { color: tokens.ok },
   paidValue: {
     fontSize: 22,
     fontWeight: '800',

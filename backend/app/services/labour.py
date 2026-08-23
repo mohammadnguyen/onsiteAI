@@ -12,7 +12,9 @@ Core rules enforced here (operator decisions 1-10, L-A plan):
   ACTIVE jobs and (for new entries) ACTIVE workers only.
 * A worker CAN be recorded on MULTIPLE jobs the same ``work_date`` —
   they split their day across sites (operator 2026-07-19). Labour COST
-  is hours-based (``hours * rate_snapshot``) and stays correct per job;
+  is hours-based (``hours * rate_snapshot``; an hours-less entry derives
+  hours from ``day_fraction * org default_day_hours`` at read time,
+  founder 2026-08-24) and stays correct per job;
   ``day_fraction`` is only the attendance marker. The former "total
   day_fraction across jobs ≤ 1.0" cap is REPLACED by a plausibility cap
   on total HOURS across all the worker's jobs that date (≤ 24). This
@@ -37,10 +39,11 @@ import uuid
 from datetime import date, time, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import Numeric, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Job, JobStatus, LabourEntry, User, UserRole, Worker
+from app.services.org_settings import get_default_day_hours
 
 
 def _day_lock_key(worker_id: uuid.UUID, work_date: date) -> int:
@@ -487,8 +490,11 @@ async def summarize(
     Each grouping carries (v2):
     * ``total_days`` — worker-days (sum of day fractions).
     * ``total_hours`` — sum of recorded hours (null when none recorded).
-    * ``labour_cost`` — sum of ``hours * rate_snapshot``; null when no
-      entry in the group is costable. Computed on read, never stored.
+    * ``labour_cost`` — sum of ``effective_hours * rate_snapshot``,
+      where effective hours = recorded hours, or ``day_fraction *
+      org default_day_hours`` when the entry has none (founder decision
+      2026-08-24); null when no entry in the group has a rate snapshot.
+      Computed on read, never stored.
     * ``entries_total`` / ``entries_costed`` — lets the client flag an
       incomplete cost (some entries miss hours or a rate snapshot).
     Per job additionally: ``days_on_site`` — distinct dates anyone was
@@ -498,10 +504,11 @@ async def summarize(
     separate so "4 workers x 1 day" reads as 4 labourers / 4
     worker-days / 1 day on site, not "4 days".
 
-    Cost math relies on SQL: ``hours * rate_snapshot`` is null when
-    either operand is null, and ``sum``/``count(...) filter`` ignore
-    nulls — so incomplete rows neither corrupt nor are guessed into the
-    total.
+    Cost math relies on SQL: ``effective_hours * rate_snapshot`` is
+    null when ``rate_snapshot`` is null (effective hours always exist —
+    ``day_fraction`` is NOT NULL), and ``sum``/``count(...) filter``
+    ignore nulls — so rate-less rows neither corrupt nor are guessed
+    into the total.
     """
 
     def _filtered(stmt):
@@ -513,11 +520,29 @@ async def summarize(
             stmt = stmt.where(LabourEntry.job_id == job_id)
         return stmt
 
-    _cost = func.sum(LabourEntry.hours * LabourEntry.rate_snapshot)
+    # Founder decision 2026-08-24: an hours-less entry is costed from
+    # its day fraction — effective hours = COALESCE(hours, day_fraction
+    # * default_day_hours). Days stay days (total_hours still sums only
+    # RECORDED hours); only the COST derives. The parameter is read
+    # fresh per call, so adjusting it re-prices historical day-only
+    # entries by design. rate_snapshot stays the write-once per-entry
+    # fact; cost remains computed on read, never stored.
+    default_day_hours = await get_default_day_hours(db)
+    # literal() with an EXPLICIT Numeric(4,2): without it SQLAlchemy
+    # types the bind from the left operand — day_fraction NUMERIC(2,1)
+    # — and Postgres rejects 10.00 with "numeric field overflow"
+    # (caught by CI on PR #9's first run).
+    _eff_hours = func.coalesce(
+        LabourEntry.hours,
+        LabourEntry.day_fraction * literal(default_day_hours, Numeric(4, 2)),
+    )
+    _cost = func.sum(_eff_hours * LabourEntry.rate_snapshot)
     _hours = func.sum(LabourEntry.hours)
     _total_entries = func.count(LabourEntry.entry_id)
+    # An entry is costable iff it has a rate snapshot (hours no longer
+    # required — day_fraction is NOT NULL, so effective hours always
+    # exist). Missing-rate entries still surface via costed < total.
     _costed_entries = func.count(LabourEntry.entry_id).filter(
-        LabourEntry.hours.isnot(None),
         LabourEntry.rate_snapshot.isnot(None),
     )
 

@@ -19,6 +19,8 @@ from app.models import (  # noqa: F401  # ensure metadata is registered
     expense,
     job,
     job_audit_log,
+    labour,
+    org_settings,
     review_queue,
     supplier,
     user,
