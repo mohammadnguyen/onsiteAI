@@ -188,10 +188,10 @@ async def test_site_log_migration_round_trip(scratch_db):
 
     # ---- FK / ON DELETE enumeration (retention proof) --------------------
     # confdeltype: a = NO ACTION, n = SET NULL, c = CASCADE, r = RESTRICT,
-    # d = SET DEFAULT. Append-only history (revisions, audit, eligibility,
-    # attachment provenance) must never cascade away, and the only SET
-    # NULL permitted is the job link on the event itself (the evidence
-    # precedent: the capture outlives a hard-deleted empty Job).
+    # d = SET DEFAULT. Every FK is NO ACTION: append-only history never
+    # cascades away, and a Job referenced by a capture is not empty, so
+    # deleting it is rejected — job_id NULL means only "not yet
+    # confirmed", never "confirmed Job later deleted".
     fk_rows = await _query(
         "SELECT conrelid::regclass::text AS child, conname, "
         "       confrelid::regclass::text AS parent, confdeltype::text "
@@ -205,7 +205,7 @@ async def test_site_log_migration_round_trip(scratch_db):
     }
     expected_fks = {
         ("site_log_events", "users"): "a",
-        ("site_log_events", "jobs"): "n",
+        ("site_log_events", "jobs"): "a",
         ("site_log_event_revisions", "site_log_events"): "a",
         ("site_log_event_revisions", "users"): "a",
         ("site_log_event_attachments", "site_log_events"): "a",
@@ -216,12 +216,10 @@ async def test_site_log_migration_round_trip(scratch_db):
         ("capture_eligibility_transitions", "users"): "a",
     }
     assert fks == expected_fks, f"FK/ON DELETE mismatch: {fks}"
-    assert "c" not in fks.values(), "CASCADE would erase append-only history"
-    assert "d" not in fks.values()
-    # Exactly one SET NULL: the event's job link, nothing history-bearing.
-    assert [k for k, v in fks.items() if v == "n"] == [
-        ("site_log_events", "jobs")
-    ]
+    # NO ACTION everywhere: no CASCADE, no SET DEFAULT, and no SET NULL —
+    # deleting a Job referenced by a capture must be rejected, never
+    # silently detached.
+    assert set(fks.values()) == {"a"}
 
     # -- downgrade to the pre-WP-A head ------------------------------------
     down = _alembic("downgrade", "b7e9f3a2d815")

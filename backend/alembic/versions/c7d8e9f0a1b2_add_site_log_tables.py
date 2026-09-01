@@ -104,9 +104,12 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column(
+            # NO ACTION: a Job referenced by a capture is not empty and
+            # cannot be hard-deleted; NULL means only "not yet
+            # confirmed", never "confirmed Job later deleted".
             "job_id",
             UUID(as_uuid=True),
-            sa.ForeignKey("jobs.job_id", ondelete="SET NULL"),
+            sa.ForeignKey("jobs.job_id"),
             nullable=True,
         ),
         sa.Column("capture_client_id", UUID(as_uuid=True), nullable=False),

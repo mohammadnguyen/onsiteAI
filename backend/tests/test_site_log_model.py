@@ -225,6 +225,29 @@ async def test_audit_row_roundtrip(db_session, seeded_admin):
     await db_session.flush()
 
 
+@pytest.mark.asyncio
+async def test_job_with_capture_cannot_be_deleted(db_session, seeded_admin):
+    """FK is NO ACTION: a Job referenced by a capture is not an empty Job
+    and hard-deleting it is rejected. job_id NULL must mean only "not yet
+    confirmed", never "confirmed Job later deleted"."""
+    from app.models import Job, JobStatus
+
+    job = Job(
+        job_id=uuid.uuid4(),
+        job_name="Referenced Job",
+        status=JobStatus.active,
+        created_by=seeded_admin.user_id,
+    )
+    db_session.add(job)
+    await db_session.flush()
+    db_session.add(_event(seeded_admin, job_id=job.job_id))
+    await db_session.flush()
+
+    await db_session.delete(job)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+
 # --------------------------------------------------- uniqueness invariants
 
 

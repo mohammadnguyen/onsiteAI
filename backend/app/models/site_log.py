@@ -228,11 +228,15 @@ class SiteLogEvent(Base, TimestampMixin):
     # CONFIRMED-ONLY (DEC-JOB-ATTR-001): written exclusively by explicit
     # user action. NULL means unassigned — job_state is DERIVED from
     # this nullability; there is deliberately no stored job_state column.
-    # SET NULL mirrors the evidence precedent: the capture outlives a
-    # hard-deleted empty Job and returns to the unassigned inbox.
+    # NO ACTION (the repo's default-FK form): a Job referenced by a
+    # capture is not an empty Job, so hard-deleting it is REJECTED.
+    # NULL must mean "no Job confirmed yet" — never "the confirmed Job
+    # was later deleted"; silently nulling would destroy the relational
+    # attribution even though audit rows retain the UUID. Empty Jobs
+    # with no referencing captures remain deletable.
     job_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("jobs.job_id", ondelete="SET NULL"),
+        ForeignKey("jobs.job_id"),
         nullable=True,
     )
 
