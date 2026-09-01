@@ -30,11 +30,26 @@ from app.models.review_queue import (
     ReviewQueueStatus,
     ReviewReasonCode,
 )
+from app.models.site_log import (
+    AttachmentState,
+    CaptureEligibilityState,
+    CaptureEligibilityTransition,
+    CaptureStatus,
+    SiteLogAuditAction,
+    SiteLogEvent,
+    SiteLogEventAttachment,
+    SiteLogEventAuditLog,
+    SiteLogEventRevision,
+)
 from app.models.supplier import Supplier, SupplierAlias
 from app.models.user import LanguageCode, User, UserRole
 
 __all__ = [
+    "AttachmentState",
     "Base",
+    "CaptureEligibilityState",
+    "CaptureEligibilityTransition",
+    "CaptureStatus",
     "Category",
     "Evidence",
     "EvidenceAuditLog",
@@ -57,6 +72,11 @@ __all__ = [
     "ReviewQueueStatus",
     "ReviewReasonCode",
     "ReviewStatus",
+    "SiteLogAuditAction",
+    "SiteLogEvent",
+    "SiteLogEventAttachment",
+    "SiteLogEventAuditLog",
+    "SiteLogEventRevision",
     "Supplier",
     "SupplierAlias",
     "User",
