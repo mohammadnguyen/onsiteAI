@@ -186,6 +186,43 @@ async def test_site_log_migration_round_trip(scratch_db):
         for r in tenant_defaults
     )
 
+    # ---- FK / ON DELETE enumeration (retention proof) --------------------
+    # confdeltype: a = NO ACTION, n = SET NULL, c = CASCADE, r = RESTRICT,
+    # d = SET DEFAULT. Append-only history (revisions, audit, eligibility,
+    # attachment provenance) must never cascade away, and the only SET
+    # NULL permitted is the job link on the event itself (the evidence
+    # precedent: the capture outlives a hard-deleted empty Job).
+    fk_rows = await _query(
+        "SELECT conrelid::regclass::text AS child, conname, "
+        "       confrelid::regclass::text AS parent, confdeltype::text "
+        "FROM pg_constraint "
+        "WHERE contype = 'f' AND conrelid::regclass::text = ANY($1::text[]) "
+        "ORDER BY child, conname",
+        SITE_LOG_TABLES,
+    )
+    fks = {
+        (r["child"], r["parent"]): r["confdeltype"] for r in fk_rows
+    }
+    expected_fks = {
+        ("site_log_events", "users"): "a",
+        ("site_log_events", "jobs"): "n",
+        ("site_log_event_revisions", "site_log_events"): "a",
+        ("site_log_event_revisions", "users"): "a",
+        ("site_log_event_attachments", "site_log_events"): "a",
+        ("site_log_event_attachments", "evidence"): "a",
+        ("site_log_event_audit_log", "site_log_events"): "a",
+        ("site_log_event_audit_log", "users"): "a",
+        ("capture_eligibility_transitions", "site_log_events"): "a",
+        ("capture_eligibility_transitions", "users"): "a",
+    }
+    assert fks == expected_fks, f"FK/ON DELETE mismatch: {fks}"
+    assert "c" not in fks.values(), "CASCADE would erase append-only history"
+    assert "d" not in fks.values()
+    # Exactly one SET NULL: the event's job link, nothing history-bearing.
+    assert [k for k, v in fks.items() if v == "n"] == [
+        ("site_log_events", "jobs")
+    ]
+
     # -- downgrade to the pre-WP-A head ------------------------------------
     down = _alembic("downgrade", "b7e9f3a2d815")
     assert down.returncode == 0, f"downgrade failed:\n{down.stdout}\n{down.stderr}"

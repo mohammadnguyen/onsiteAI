@@ -14,10 +14,12 @@ rulings O1/O2:
   touched by any revision.
 * ``site_log_event_attachments`` — the attachment manifest (O1). Declared
   at event creation with a device-generated ``attachment_client_id`` so
-  uploads retry safely; ``evidence_id`` transitions once NULL→final;
-  ``state`` is the only repeatedly mutable domain field and is an
-  operational upload projection — not Raw Evidence, not eligibility,
-  not Truth.
+  uploads retry safely; ``evidence_id`` is REQUIRED to transition once,
+  NULL→final — the database enforces exclusivity and stored⇒bound, and
+  the once-only rule itself is a mandatory A2 service invariant (see
+  the class docstring for the exact boundary); ``state`` is the only
+  repeatedly mutable domain field and is an operational upload
+  projection — not Raw Evidence, not eligibility, not Truth.
 * ``site_log_event_audit_log`` — append-only who-did-what trail on the
   ``job_audit_log`` precedent. Content-free: raw text, audio/photo
   content and body snapshots never appear here (the revisions table is
@@ -380,14 +382,23 @@ class SiteLogEventAttachment(Base, TimestampMixin):
 
     Immutable after declaration: identity, tenant, parent event,
     ``attachment_client_id`` and the declared media metadata never
-    change. ``evidence_id`` transitions exactly once, NULL → final.
-    ``state`` is the only repeatedly mutable domain field (plus the
-    TimestampMixin operational timestamps); its closed transition graph
-    is ``ATTACHMENT_STATE_TRANSITIONS``. Rows are never deleted, never
-    reassigned to another event, never reused by another capture — there
-    is no code path for any of those, and ``evidence_id`` uniqueness
-    plus the tenant-scoped client-id uniqueness make reuse a constraint
-    violation rather than a review catch.
+    change. ``evidence_id`` is required to transition exactly once,
+    NULL → final. **Enforcement boundary, stated precisely:** the
+    database enforces (a) exclusivity — the partial UNIQUE keeps one
+    Evidence on at most one attachment row — and (b) stored⇒bound — the
+    CHECK forbids a ``stored`` row with a NULL ``evidence_id``. The
+    once-only rule itself (never rebind a non-null ``evidence_id`` to a
+    different Evidence; never clear it outside ``stored``) is NOT
+    database-enforced: it is a MANDATORY A2 service invariant, on the
+    repository precedent that write-path immutability lives in the
+    service layer (``evidence.job_id`` has exactly two explicit writers
+    and no DB guard). ``state`` is the only repeatedly mutable domain
+    field (plus the TimestampMixin operational timestamps); its closed
+    transition graph is ``ATTACHMENT_STATE_TRANSITIONS``. Rows are never
+    deleted, never reassigned to another event, never reused by another
+    capture — no code path for any of those exists, and ``evidence_id``
+    uniqueness plus the tenant-scoped client-id uniqueness make reuse a
+    constraint violation rather than a review catch.
     """
 
     __tablename__ = "site_log_event_attachments"

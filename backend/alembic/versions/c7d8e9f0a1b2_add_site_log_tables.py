@@ -14,10 +14,17 @@ Slice 1 Work Package A, PR A1. Five new tables, purely additive:
 * ``site_log_event_attachments`` — the attachment manifest (O1): the
   server's authoritative statement of how many attachments a capture
   declared, keyed by device-generated ``attachment_client_id`` so
-  uploads retry without duplicating Evidence. ``evidence_id`` fills
-  exactly once; the partial unique index keeps one Evidence attached to
-  at most one event. ``state`` is an operational upload projection —
-  not Raw Evidence, not eligibility, not Truth.
+  uploads retry without duplicating Evidence. Enforcement boundary,
+  stated precisely: the DATABASE enforces exclusivity (the partial
+  unique index keeps one Evidence attached to at most one attachment
+  row) and stored⇒bound (the CHECK forbids clearing ``evidence_id``
+  while ``state = 'stored'``). Once-only binding — never rebinding a
+  non-null ``evidence_id`` to a different Evidence — is NOT
+  database-enforced; it is a MANDATORY A2 service invariant, following
+  the repository precedent that write-path immutability lives in the
+  service layer (``evidence.job_id`` has exactly two explicit writers
+  and no DB guard). ``state`` is an operational upload projection — not
+  Raw Evidence, not eligibility, not Truth.
 * ``site_log_event_audit_log`` — append-only who-did-what trail on the
   job_audit_log precedent; content-free by rule (raw text and file
   content never appear; the revisions table is the content history).
