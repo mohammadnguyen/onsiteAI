@@ -63,13 +63,49 @@ def make_object_key(evidence_id: str, sha256_hex: str) -> str:
     return f"evidence/{evidence_id}/{sha256_hex[:16]}"
 
 
+def staging_suffix(attempt_no: int | None) -> str:
+    """Attempt-scoped staging discriminator (WP A A1b).
+
+    ``None`` (the default everywhere today) yields the empty suffix, so
+    every existing caller — the Expense/Evidence upload path included —
+    keeps its exact legacy staging location. A positive integer isolates
+    that attempt's STAGING target only: the discriminator never reaches
+    :func:`make_object_key`, so final Evidence identity is untouched.
+
+    Validation happens here, before any storage mutation: anything other
+    than ``None`` or a positive ``int`` (bools rejected — they are ints
+    in Python) raises ``ValueError``.
+    """
+    if attempt_no is None:
+        return ""
+    if isinstance(attempt_no, bool) or not isinstance(attempt_no, int):
+        raise ValueError("attempt_no must be a positive integer or None")
+    if attempt_no < 1:
+        raise ValueError("attempt_no must be a positive integer or None")
+    return f".a{attempt_no}"
+
+
+def local_staging_name(evidence_id: str, attempt_no: int | None) -> str:
+    """Local staging filename: ``{evidence_id}[.aN].part``."""
+    return f"{evidence_id}{staging_suffix(attempt_no)}.part"
+
+
+def s3_staging_key(evidence_id: str, attempt_no: int | None) -> str:
+    """S3 staging key: ``evidence/{evidence_id}/.staging[.aN]``."""
+    return f"evidence/{evidence_id}/.staging{staging_suffix(attempt_no)}"
+
+
 class EvidenceStorage(Protocol):
     """Storage backend contract. put / open / exists — nothing else."""
 
     backend_name: str
 
     async def put(
-        self, evidence_id: str, chunks: AsyncIterator[bytes]
+        self,
+        evidence_id: str,
+        chunks: AsyncIterator[bytes],
+        *,
+        attempt_no: int | None = None,
     ) -> StoredObject: ...
 
     def open(self, key: str) -> AsyncIterator[bytes]: ...
@@ -95,11 +131,17 @@ class LocalEvidenceStorage:
         return self._root / key
 
     async def put(
-        self, evidence_id: str, chunks: AsyncIterator[bytes]
+        self,
+        evidence_id: str,
+        chunks: AsyncIterator[bytes],
+        *,
+        attempt_no: int | None = None,
     ) -> StoredObject:
+        # Validate the discriminator BEFORE any storage mutation.
+        staging_name = local_staging_name(evidence_id, attempt_no)
         staging_dir = self._root / ".staging"
         staging_dir.mkdir(parents=True, exist_ok=True)
-        staging = staging_dir / f"{evidence_id}.part"
+        staging = staging_dir / staging_name
 
         hasher = hashlib.sha256()
         size = 0
@@ -167,9 +209,14 @@ class S3EvidenceStorage:
         return self._session.client("s3", endpoint_url=self._endpoint_url)
 
     async def put(
-        self, evidence_id: str, chunks: AsyncIterator[bytes]
+        self,
+        evidence_id: str,
+        chunks: AsyncIterator[bytes],
+        *,
+        attempt_no: int | None = None,
     ) -> StoredObject:
-        staging_key = f"evidence/{evidence_id}/.staging"
+        # Validate the discriminator BEFORE any storage mutation.
+        staging_key = s3_staging_key(evidence_id, attempt_no)
         hasher = hashlib.sha256()
         size = 0
         async with self._client() as s3:

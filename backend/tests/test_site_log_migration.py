@@ -1,10 +1,12 @@
-"""WP A (A1): Alembic round-trip test for c7d8e9f0a1b2_add_site_log_tables.
+"""WP A (A1+A1b): Alembic round-trip test for the Site Log chain.
 
 Runs the real migration chain against a dedicated scratch database
 (``sitetracker_migration_test``) so the main ``sitetracker_test`` DB —
 whose schema conftest builds from metadata — is never touched:
 
-    upgrade head → verify → downgrade b7e9f3a2d815 → verify gone →
+    upgrade head → verify (incl. A1b upload_attempt_no) →
+    downgrade c7d8e9f0a1b2 → A1b column gone, A1 intact →
+    downgrade b7e9f3a2d815 → all gone →
     upgrade head → verify again
 
 Alembic is invoked as a subprocess because ``alembic/env.py`` drives an
@@ -125,7 +127,7 @@ async def test_site_log_migration_round_trip(scratch_db):
     # -- upgrade to head ---------------------------------------------------
     up = _alembic("upgrade", "head")
     assert up.returncode == 0, f"upgrade failed:\n{up.stdout}\n{up.stderr}"
-    assert await _version() == "c7d8e9f0a1b2"
+    assert await _version() == "d9e0f1a2b3c4"
 
     tables = await _table_names()
     for t in SITE_LOG_TABLES:
@@ -164,6 +166,7 @@ async def test_site_log_migration_round_trip(scratch_db):
         "ck_slog_attachment_stored_has_evidence",
         "ck_slog_eligibility_no_ge_1",
         "ck_slog_eligibility_from_state",
+        "ck_slog_attachment_attempt_nonneg",
     ):
         assert name in checks, f"missing CHECK {name}"
 
@@ -185,6 +188,18 @@ async def test_site_log_migration_round_trip(scratch_db):
         "00000000-0000-0000-0000-000000000001" in r["column_default"]
         for r in tenant_defaults
     )
+
+    # ---- A1b: upload_attempt_no column -----------------------------------
+    attempt_col = await _query(
+        "SELECT is_nullable, data_type, column_default "
+        "FROM information_schema.columns "
+        "WHERE table_name = 'site_log_event_attachments' "
+        "AND column_name = 'upload_attempt_no'"
+    )
+    assert len(attempt_col) == 1, "upload_attempt_no missing"
+    assert attempt_col[0]["is_nullable"] == "NO"
+    assert attempt_col[0]["data_type"] == "integer"
+    assert attempt_col[0]["column_default"] == "0"
 
     # ---- FK / ON DELETE enumeration (retention proof) --------------------
     # confdeltype: a = NO ACTION, n = SET NULL, c = CASCADE, r = RESTRICT,
@@ -221,6 +236,22 @@ async def test_site_log_migration_round_trip(scratch_db):
     # silently detached.
     assert set(fks.values()) == {"a"}
 
+    # -- downgrade A1b only: column gone, A1 tables intact ----------------
+    down_a1b = _alembic("downgrade", "c7d8e9f0a1b2")
+    assert down_a1b.returncode == 0, (
+        f"A1b downgrade failed:\n{down_a1b.stdout}\n{down_a1b.stderr}"
+    )
+    assert await _version() == "c7d8e9f0a1b2"
+    attempt_col = await _query(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'site_log_event_attachments' "
+        "AND column_name = 'upload_attempt_no'"
+    )
+    assert attempt_col == [], "upload_attempt_no survived A1b downgrade"
+    tables = await _table_names()
+    for t in SITE_LOG_TABLES:
+        assert t in tables, f"A1 table {t} lost by A1b downgrade"
+
     # -- downgrade to the pre-WP-A head ------------------------------------
     down = _alembic("downgrade", "b7e9f3a2d815")
     assert down.returncode == 0, f"downgrade failed:\n{down.stdout}\n{down.stderr}"
@@ -238,7 +269,7 @@ async def test_site_log_migration_round_trip(scratch_db):
     # -- upgrade again (round trip completes) ------------------------------
     up2 = _alembic("upgrade", "head")
     assert up2.returncode == 0, f"re-upgrade failed:\n{up2.stdout}\n{up2.stderr}"
-    assert await _version() == "c7d8e9f0a1b2"
+    assert await _version() == "d9e0f1a2b3c4"
     tables = await _table_names()
     for t in SITE_LOG_TABLES:
         assert t in tables, f"missing table {t} after re-upgrade"
