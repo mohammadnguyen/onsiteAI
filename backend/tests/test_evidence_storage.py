@@ -124,3 +124,142 @@ def test_interface_has_no_delete():
         if hasattr(EvidenceStorage, name) or hasattr(LocalEvidenceStorage, name)
     ]
     assert forbidden == []
+
+
+# ---------------------------------------------------------------------------
+# WP A A1b: attempt-scoped staging discriminator.
+# The discriminator isolates STAGING only; final Evidence identity
+# (make_object_key) never sees it. Omitted => exact legacy behaviour.
+# ---------------------------------------------------------------------------
+
+from app.services.evidence_storage import (  # noqa: E402
+    S3EvidenceStorage,
+    local_staging_name,
+    s3_staging_key,
+    staging_suffix,
+)
+
+
+def test_staging_suffix_validation():
+    assert staging_suffix(None) == ""
+    assert staging_suffix(1) == ".a1"
+    assert staging_suffix(42) == ".a42"
+    for bad in (0, -1, True, False, "1", 1.5):
+        with pytest.raises(ValueError):
+            staging_suffix(bad)
+
+
+def test_legacy_staging_paths_are_byte_identical_for_both_backends():
+    """Omitted discriminator == the exact pre-A1b staging locations."""
+    eid = str(uuid.uuid4())
+    assert local_staging_name(eid, None) == f"{eid}.part"
+    assert s3_staging_key(eid, None) == f"evidence/{eid}/.staging"
+
+
+def test_attempt_staging_isolated_per_attempt_both_backends():
+    eid = str(uuid.uuid4())
+    local = {local_staging_name(eid, n) for n in (1, 2, 3)}
+    local.add(local_staging_name(eid, None))
+    assert len(local) == 4  # legacy + three attempts, all distinct
+    s3 = {s3_staging_key(eid, n) for n in (1, 2, 3)}
+    s3.add(s3_staging_key(eid, None))
+    assert len(s3) == 4
+
+
+async def test_final_key_unchanged_by_attempt(tmp_path):
+    """The discriminator scopes staging only — final keys are identical
+    to what the same content would produce without it."""
+    storage = LocalEvidenceStorage(tmp_path)
+    payload = b"attempt-scoped staging, legacy final key"
+    eid = str(uuid.uuid4())
+    stored = await storage.put(eid, _chunks(payload), attempt_no=3)
+    expected = make_object_key(eid, hashlib.sha256(payload).hexdigest())
+    assert stored.key == expected
+    assert ".a3" not in stored.key
+    assert await storage.exists(stored.key)
+
+
+async def test_same_content_collision_unchanged_with_attempts(tmp_path):
+    """ObjectAlreadyExists semantics survive the discriminator: two
+    attempts with identical bytes collide on the same final key."""
+    storage = LocalEvidenceStorage(tmp_path)
+    payload = b"identical bytes across attempts"
+    eid = str(uuid.uuid4())
+    await storage.put(eid, _chunks(payload), attempt_no=1)
+    with pytest.raises(ObjectAlreadyExists):
+        await storage.put(eid, _chunks(payload), attempt_no=2)
+
+
+async def test_attempt_staging_observed_and_isolated_mid_stream(tmp_path):
+    """While attempt 2 streams, its staging file is the attempt-scoped
+    name — and a pre-existing attempt-1 staging file is untouched."""
+    storage = LocalEvidenceStorage(tmp_path)
+    eid = str(uuid.uuid4())
+    staging_dir = tmp_path / ".staging"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    other = staging_dir / local_staging_name(eid, 1)
+    other.write_bytes(b"attempt-1 in-flight bytes")
+
+    seen: list[str] = []
+
+    async def observing_chunks():
+        yield b"first"
+        seen.extend(sorted(p.name for p in staging_dir.iterdir()))
+        yield b"second"
+
+    await storage.put(eid, observing_chunks(), attempt_no=2)
+    assert local_staging_name(eid, 2) in seen
+    assert other.read_bytes() == b"attempt-1 in-flight bytes"
+
+
+async def test_failed_attempt_cleanup_cannot_affect_other_attempt(tmp_path):
+    storage = LocalEvidenceStorage(tmp_path)
+    eid = str(uuid.uuid4())
+    staging_dir = tmp_path / ".staging"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    survivor = staging_dir / local_staging_name(eid, 2)
+    survivor.write_bytes(b"newer attempt in flight")
+
+    async def exploding():
+        yield b"partial"
+        raise OSError("disk gone")
+
+    with pytest.raises(EvidenceStorageError):
+        await storage.put(eid, exploding(), attempt_no=1)
+
+    assert not (staging_dir / local_staging_name(eid, 1)).exists()
+    assert survivor.read_bytes() == b"newer attempt in flight"
+    assert not (tmp_path / "evidence").exists()
+
+
+async def test_invalid_attempt_rejected_before_any_mutation(tmp_path):
+    storage = LocalEvidenceStorage(tmp_path)
+    eid = str(uuid.uuid4())
+    with pytest.raises(ValueError):
+        await storage.put(eid, _chunks(b"payload"), attempt_no=0)
+    assert not (tmp_path / ".staging").exists()
+    assert not (tmp_path / "evidence").exists()
+
+
+async def test_s3_invalid_attempt_rejected_before_any_client_use():
+    """Validation precedes the client context: no network is attempted."""
+    storage = S3EvidenceStorage(
+        endpoint_url="http://storage.invalid.localdomain:1", bucket="never"
+    )
+    with pytest.raises(ValueError):
+        await storage.put(str(uuid.uuid4()), _chunks(b"x"), attempt_no=-1)
+
+
+async def test_no_payload_content_in_logs(tmp_path, caplog):
+    storage = LocalEvidenceStorage(tmp_path)
+    marker = b"SECRET-CAPTURE-CONTENT-MARKER"
+
+    async def exploding():
+        yield marker
+        raise OSError("disk gone")
+
+    with caplog.at_level("DEBUG"):
+        with pytest.raises(EvidenceStorageError):
+            await storage.put(str(uuid.uuid4()), exploding(), attempt_no=1)
+        await storage.put(str(uuid.uuid4()), _chunks(marker), attempt_no=1)
+    assert marker.decode() not in caplog.text
