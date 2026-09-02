@@ -263,3 +263,142 @@ async def test_no_payload_content_in_logs(tmp_path, caplog):
             await storage.put(str(uuid.uuid4()), exploding(), attempt_no=1)
         await storage.put(str(uuid.uuid4()), _chunks(marker), attempt_no=1)
     assert marker.decode() not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# WP A A1b follow-up: prove the ACTUAL S3 put() wires the attempt
+# discriminator — the pure-helper tests above are not sufficient for that.
+# A minimal recording fake stands in for the aioboto3 client; no new
+# dependency, no network.
+# ---------------------------------------------------------------------------
+
+
+class _FakeS3Client:
+    """Records every (operation, Key) the S3 put() path performs."""
+
+    def __init__(self, calls: list[tuple[str, str]], *, fail_on: str | None = None):
+        self._calls = calls
+        self._fail_on = fail_on
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def _record(self, op: str, key: str):
+        self._calls.append((op, key))
+        if self._fail_on == op:
+            raise RuntimeError(f"injected failure in {op}")
+
+    async def create_multipart_upload(self, *, Bucket, Key):
+        self._record("create_multipart_upload", Key)
+        return {"UploadId": "fake-upload-id"}
+
+    async def upload_part(self, *, Bucket, Key, UploadId, PartNumber, Body):
+        self._record("upload_part", Key)
+        return {"ETag": f"etag-{PartNumber}"}
+
+    async def complete_multipart_upload(self, *, Bucket, Key, UploadId, MultipartUpload):
+        self._record("complete_multipart_upload", Key)
+        return {}
+
+    async def abort_multipart_upload(self, *, Bucket, Key, UploadId):
+        self._record("abort_multipart_upload", Key)
+        return {}
+
+    async def head_object(self, *, Bucket, Key):
+        self._record("head_object", Key)
+        raise KeyError("404: no such key")  # final key is always free here
+
+    async def copy_object(self, *, Bucket, Key, CopySource):
+        self._record("copy_object:dest", Key)
+        self._record("copy_object:source", CopySource["Key"])
+        return {}
+
+    async def delete_object(self, *, Bucket, Key):
+        self._record("delete_object", Key)
+        return {}
+
+
+def _fake_s3_storage(calls, **kw):
+    storage = S3EvidenceStorage(
+        endpoint_url="http://storage.invalid.localdomain:1", bucket="test-bucket"
+    )
+    storage._client = lambda: _FakeS3Client(calls, **kw)  # type: ignore[method-assign]
+    return storage
+
+
+async def test_s3_put_wires_attempt_scoped_staging_key():
+    calls: list[tuple[str, str]] = []
+    storage = _fake_s3_storage(calls)
+    payload = b"s3 attempt wiring"
+    eid = str(uuid.uuid4())
+
+    stored = await storage.put(eid, _chunks(payload), attempt_no=2)
+
+    expected_staging = f"evidence/{eid}/.staging.a2"
+    legacy_staging = f"evidence/{eid}/.staging"
+    expected_final = make_object_key(eid, hashlib.sha256(payload).hexdigest())
+
+    staging_ops = {
+        "create_multipart_upload",
+        "upload_part",
+        "complete_multipart_upload",
+        "copy_object:source",
+        "delete_object",
+    }
+    for op, key in calls:
+        if op in staging_ops:
+            assert key == expected_staging, (op, key)
+    # No silent fallback: the legacy key never appears anywhere.
+    assert all(key != legacy_staging for _, key in calls)
+    # Final identity untouched by the discriminator.
+    assert stored.key == expected_final
+    assert ".a2" not in stored.key
+    assert ("copy_object:dest", expected_final) in calls
+    assert ("head_object", expected_final) in calls
+    # Staging cleanup deleted exactly the current attempt's staging key.
+    assert [k for op, k in calls if op == "delete_object"] == [expected_staging]
+
+
+async def test_s3_put_legacy_path_uses_exact_legacy_staging_key():
+    calls: list[tuple[str, str]] = []
+    storage = _fake_s3_storage(calls)
+    payload = b"s3 legacy wiring"
+    eid = str(uuid.uuid4())
+
+    stored = await storage.put(eid, _chunks(payload))
+
+    legacy_staging = f"evidence/{eid}/.staging"
+    for op, key in calls:
+        if op in {
+            "create_multipart_upload",
+            "upload_part",
+            "complete_multipart_upload",
+            "copy_object:source",
+            "delete_object",
+        }:
+            assert key == legacy_staging, (op, key)
+    assert ".a" not in stored.key
+    assert stored.key == make_object_key(
+        eid, hashlib.sha256(payload).hexdigest()
+    )
+
+
+async def test_s3_failure_touches_only_current_attempt_staging_key():
+    """A failing attempt-3 upload never touches attempt-2's staging key,
+    the legacy key, or any final key."""
+    calls: list[tuple[str, str]] = []
+    storage = _fake_s3_storage(calls, fail_on="complete_multipart_upload")
+    eid = str(uuid.uuid4())
+
+    with pytest.raises(EvidenceStorageError):
+        await storage.put(eid, _chunks(b"doomed bytes"), attempt_no=3)
+
+    own_staging = f"evidence/{eid}/.staging.a3"
+    assert calls, "fake client saw no calls"
+    for _, key in calls:
+        assert key == own_staging, key
+    assert all(k != f"evidence/{eid}/.staging" for _, k in calls)
+    assert all(k != f"evidence/{eid}/.staging.a2" for _, k in calls)
