@@ -1,7 +1,9 @@
 """Phase 4 — admin-only reporting endpoints.
 
-V1 ships the accountant Excel export only. See
-``docs/phase-4-plan.md`` for the operator-decided scope.
+V1 shipped the accountant Excel export. The PDF expense report
+(founder decision 2026-08-24) adds a second, JSON-shaped route that
+feeds the client-rendered report; the Excel export is unchanged and
+remains the accountant's export.
 
 Auth: every route in this module requires admin role.
 """
@@ -22,10 +24,12 @@ from app.database import get_db
 from app.deps import require_admin
 from app.models.job import Job
 from app.models.user import User
+from app.schemas.expense_report import ExpenseReportData
 from app.services.excel_export import (
     build_export_filename,
     build_workbook,
 )
+from app.services.expense_report import build_report_data
 from app.services.jobs import JobNotFound
 
 router = APIRouter(tags=["reports"])
@@ -126,3 +130,51 @@ async def get_expenses_excel_endpoint(
             )
         },
     )
+
+
+@router.get(
+    "/expenses-report",
+    response_model=ExpenseReportData,
+    status_code=status.HTTP_200_OK,
+)
+async def get_expenses_report_endpoint(
+    from_date: date | None = Query(default=None),
+    to_date: date | None = Query(default=None),
+    job_id: uuid.UUID | None = Query(default=None),
+    include_pending: bool = Query(default=False),
+    _admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> ExpenseReportData:
+    """Report data for the client-rendered PDF expense report.
+
+    Same filters and the same frozen inclusion rule as
+    ``/expenses-excel`` (reviewed always; pending on explicit opt-in;
+    rejected never) — the two exports share
+    :func:`fetch_export_expenses` so they cannot drift apart.
+
+    Every aggregate is computed server-side; the client lays out and
+    formats only. Admin-only, matching the Excel export and the wider
+    money-visibility posture.
+    """
+    if from_date is not None and to_date is not None and from_date > to_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="from_date must be on or before to_date",
+        )
+    if job_id is not None:
+        exists = (
+            await db.execute(select(Job.job_id).where(Job.job_id == job_id))
+        ).scalar_one_or_none()
+        if exists is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+            )
+
+    data = await build_report_data(
+        db,
+        from_date=from_date,
+        to_date=to_date,
+        job_id=job_id,
+        include_pending=include_pending,
+    )
+    return ExpenseReportData.model_validate(data)

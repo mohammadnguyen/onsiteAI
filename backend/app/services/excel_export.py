@@ -316,7 +316,7 @@ def _period_label(
     return f"Export period: {fd} to {td}"
 
 
-async def _fetch_expenses(
+async def fetch_export_expenses(
     db: AsyncSession,
     *,
     from_date: date | None,
@@ -325,6 +325,10 @@ async def _fetch_expenses(
     include_pending: bool,
 ) -> list[Expense]:
     """Load the expenses inside the active inclusion rule + filters.
+
+    Public because the PDF report service consumes the SAME frozen
+    inclusion rule — duplicating it would let the two accountant-facing
+    exports drift apart.
 
     Inclusion rule (frozen, distinct from Phase 3 Lite):
 
@@ -709,7 +713,7 @@ async def build_workbook(
         if job is None:
             raise JobNotFound(job_id)
 
-    expenses = await _fetch_expenses(
+    expenses = await fetch_export_expenses(
         db,
         from_date=from_date,
         to_date=to_date,

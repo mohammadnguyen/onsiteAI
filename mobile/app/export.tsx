@@ -35,6 +35,7 @@ import {
   ExportError,
   type ExportErrorKind,
 } from '../src/api/reports';
+import { exportExpenseReportPdf } from '../src/report/exportExpenseReportPdf';
 
 /**
  * A4: accountant Excel export (admin-only).
@@ -69,7 +70,7 @@ function errorKey(kind: ExportErrorKind): string {
 }
 
 export default function ExportScreen() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const meQuery = useMe();
   const { data: me, isLoading: meLoading } = meQuery;
   const isAdmin = me?.role === 'admin';
@@ -100,7 +101,7 @@ export default function ExportScreen() {
 
   const onBack = useOneShotBack('/settings' as unknown as Href);
 
-  const onExport = async () => {
+  const onExport = async (format: 'xlsx' | 'pdf' = 'xlsx') => {
     if (busy) return;
     setError(null);
     setFromError(false);
@@ -148,13 +149,19 @@ export default function ExportScreen() {
         setError(t('export.error_sharing_unavailable'));
         return;
       }
-      const result = await downloadExpensesExcel({
+      const params = {
         fromDate: fromISO,
         toDate: toISO,
         includePending,
-      });
-      // A 200 with no matching rows is still a valid workbook — sharing an
-      // empty/headers-only sheet is the documented success path for v1.
+      };
+      // Both formats share this screen's validation, share sheet and
+      // error vocabulary — only the producer differs.
+      const result =
+        format === 'pdf'
+          ? await exportExpenseReportPdf(params, t, i18n.language)
+          : await downloadExpensesExcel(params);
+      // A 200 with no matching rows is still a valid export — sharing an
+      // empty workbook / an empty-state report is the success path.
       await Sharing.shareAsync(result.uri, {
         mimeType: result.mimeType,
         UTI: result.uti,
@@ -324,6 +331,24 @@ export default function ExportScreen() {
               <Text style={s.ctaText}>{t('export.cta')}</Text>
             )}
           </Pressable>
+
+          {/* PDF project report (founder decision 2026-08-24). Same
+              filters and the same share sheet; the Excel export above
+              stays the accountant's export. */}
+          <Pressable
+            onPress={() => void onExport('pdf')}
+            disabled={busy}
+            style={({ pressed }) => [
+              s.ctaSecondary,
+              busy && s.disabled,
+              pressed && s.pressed,
+            ]}
+            testID="export-cta-pdf"
+            accessibilityRole="button"
+          >
+            <Text style={s.ctaSecondaryText}>{t('export.cta_pdf')}</Text>
+          </Pressable>
+          <Text style={s.pdfHint}>{t('export.pdf_hint')}</Text>
         </ScrollView>
       )}
     </SafeAreaView>
@@ -406,6 +431,16 @@ const s = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
   },
+  ctaSecondary: {
+    marginTop: 10,
+    borderWidth: 1.5,
+    borderColor: '#15803d',
+    paddingVertical: 13,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  ctaSecondaryText: { color: '#15803d', fontWeight: '700', fontSize: 16 },
+  pdfHint: { marginTop: 8, fontSize: 12, color: '#64748b', lineHeight: 17 },
   ctaBusy: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   ctaText: { color: '#ffffff', fontWeight: '700', fontSize: 16 },
   disabled: { opacity: 0.6 },
