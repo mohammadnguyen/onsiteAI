@@ -456,6 +456,16 @@ class SiteLogEventAttachment(Base, TimestampMixin):
         server_default=AttachmentState.awaiting_upload.value,
     )
 
+    # Upload-attempt counter (WP A A1b). 0 = no attempt acquired yet.
+    # A2's upload Txn A increments it under the manifest-row lock and
+    # Txn B completes only via CAS on (state='pending' AND
+    # upload_attempt_no = acquired) — so an obsolete attempt can never
+    # validate a newer one. A1b ships the column only: no increment,
+    # reset or CAS service exists yet.
+    upload_attempt_no: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+
     event: Mapped["SiteLogEvent"] = relationship(
         lazy="select", back_populates="attachments"
     )
@@ -483,6 +493,10 @@ class SiteLogEventAttachment(Base, TimestampMixin):
         CheckConstraint(
             "declared_size_bytes IS NULL OR declared_size_bytes >= 0",
             name="ck_slog_attachment_size_nonneg",
+        ),
+        CheckConstraint(
+            "upload_attempt_no >= 0",
+            name="ck_slog_attachment_attempt_nonneg",
         ),
         # A stored attachment must reference its Evidence row.
         CheckConstraint(

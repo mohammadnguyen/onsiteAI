@@ -422,3 +422,40 @@ async def test_later_transition_must_have_from_state(db_session, seeded_admin):
     )
     with pytest.raises(IntegrityError):
         await db_session.flush()
+
+
+# ------------------------------------------------------ A1b attempt counter
+
+
+@pytest.mark.asyncio
+async def test_upload_attempt_no_defaults_to_zero(db_session, seeded_admin):
+    """A1b: column exists, NOT NULL, defaults to 0 (no attempt acquired)."""
+    event = _event(seeded_admin)
+    db_session.add(event)
+    await db_session.flush()
+    att = _attachment(event)
+    db_session.add(att)
+    await db_session.flush()
+    assert att.upload_attempt_no == 0
+
+
+@pytest.mark.asyncio
+async def test_upload_attempt_no_accepts_increasing_values(
+    db_session, seeded_admin
+):
+    event = _event(seeded_admin)
+    db_session.add(event)
+    await db_session.flush()
+    for n in (0, 1, 5):
+        db_session.add(_attachment(event, upload_attempt_no=n))
+    await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_upload_attempt_no_rejects_negative(db_session, seeded_admin):
+    event = _event(seeded_admin)
+    db_session.add(event)
+    await db_session.flush()
+    db_session.add(_attachment(event, upload_attempt_no=-1))
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
