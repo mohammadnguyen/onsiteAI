@@ -28,6 +28,7 @@ payload is never held in application memory (512MB VM constraint).
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -35,6 +36,11 @@ from pathlib import Path
 from typing import Protocol
 
 CHUNK_SIZE = 1024 * 1024  # 1 MiB read/write granularity
+
+
+# Content-free by rule: this module logs keys, upload ids and exception
+# classes only — never payload bytes or client-supplied names.
+logger = logging.getLogger(__name__)
 
 
 class EvidenceStorageError(RuntimeError):
@@ -220,6 +226,8 @@ class S3EvidenceStorage:
         hasher = hashlib.sha256()
         size = 0
         async with self._client() as s3:
+            upload_id: str | None = None
+            completed = False
             try:
                 mpu = await s3.create_multipart_upload(
                     Bucket=self._bucket, Key=staging_key
@@ -263,6 +271,7 @@ class S3EvidenceStorage:
                         Key=staging_key,
                         UploadId=upload_id,
                     )
+                    upload_id = None  # already aborted; no second abort
                     raise EvidenceStorageError("empty payload")
 
                 await s3.complete_multipart_upload(
@@ -271,6 +280,7 @@ class S3EvidenceStorage:
                     UploadId=upload_id,
                     MultipartUpload={"Parts": parts},
                 )
+                completed = True  # cleanup boundary: abort → delete
 
                 sha = hasher.hexdigest()
                 key = make_object_key(evidence_id, sha)
@@ -287,13 +297,54 @@ class S3EvidenceStorage:
                     CopySource={"Bucket": self._bucket, "Key": staging_key},
                 )
                 # Staging cleanup is internal pre-commit state removal,
-                # not evidence deletion.
-                await s3.delete_object(Bucket=self._bucket, Key=staging_key)
+                # not evidence deletion. The final object is confirmed
+                # valid at this point: a cleanup failure is logged and the
+                # store still succeeds — never downgraded to failed.
+                try:
+                    await s3.delete_object(Bucket=self._bucket, Key=staging_key)
+                except Exception as cleanup_exc:  # botocore surface is broad
+                    logger.warning(
+                        "s3 staging cleanup failed after valid final object "
+                        "staging_key=%s error=%s",
+                        staging_key,
+                        type(cleanup_exc).__name__,
+                    )
                 return StoredObject(key=key, size_bytes=size, sha256=sha)
             except (ObjectAlreadyExists, EvidenceStorageError):
+                await self._cleanup_staging(s3, staging_key, upload_id, completed)
                 raise
             except Exception as exc:  # botocore error surface is broad
+                await self._cleanup_staging(s3, staging_key, upload_id, completed)
                 raise EvidenceStorageError(str(exc)) from exc
+
+    async def _cleanup_staging(
+        self, s3, staging_key: str, upload_id: str | None, completed: bool
+    ) -> None:
+        """Best-effort cleanup of THIS attempt's staging only (WP A A2a).
+
+        * before completion: abort the multipart upload (exact staging
+          key + upload id);
+        * after completion: delete the staging object.
+
+        Never touches a final content-addressed key. Any cleanup failure
+        is logged content-free and swallowed so the primary error is
+        never masked. Hard process death cannot reach here — incomplete
+        multipart residue is a bucket lifecycle policy (infra gate).
+        """
+        try:
+            if completed:
+                await s3.delete_object(Bucket=self._bucket, Key=staging_key)
+            elif upload_id is not None:
+                await s3.abort_multipart_upload(
+                    Bucket=self._bucket, Key=staging_key, UploadId=upload_id
+                )
+        except Exception as cleanup_exc:  # botocore surface is broad
+            logger.warning(
+                "s3 staging cleanup failed staging_key=%s completed=%s error=%s",
+                staging_key,
+                completed,
+                type(cleanup_exc).__name__,
+            )
 
     async def _iter_object(self, key: str) -> AsyncIterator[bytes]:
         async with self._client() as s3:

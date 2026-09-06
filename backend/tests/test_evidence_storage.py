@@ -12,6 +12,7 @@ The interface guarantees under test:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import uuid
 
@@ -274,11 +275,28 @@ async def test_no_payload_content_in_logs(tmp_path, caplog):
 
 
 class _FakeS3Client:
-    """Records every (operation, Key) the S3 put() path performs."""
+    """Records every (operation, Key) the S3 put() path performs.
 
-    def __init__(self, calls: list[tuple[str, str]], *, fail_on: str | None = None):
+    ``fail_on``: operation name that raises; ``cleanup_fail``: abort and
+    delete raise too (WP A A2a cleanup-never-masks tests);
+    ``final_exists``: ``head_object`` reports the final key present.
+    ``aborts`` records ``(Key, UploadId)`` of every abort call.
+    """
+
+    def __init__(
+        self,
+        calls: list[tuple[str, str]],
+        *,
+        fail_on: str | None = None,
+        cleanup_fail: bool = False,
+        final_exists: bool = False,
+        aborts: list[tuple[str, str]] | None = None,
+    ):
         self._calls = calls
         self._fail_on = fail_on
+        self._cleanup_fail = cleanup_fail
+        self._final_exists = final_exists
+        self.aborts = aborts if aborts is not None else []
 
     async def __aenter__(self):
         return self
@@ -304,12 +322,17 @@ class _FakeS3Client:
         return {}
 
     async def abort_multipart_upload(self, *, Bucket, Key, UploadId):
+        self.aborts.append((Key, UploadId))
         self._record("abort_multipart_upload", Key)
+        if self._cleanup_fail:
+            raise RuntimeError("injected cleanup failure in abort")
         return {}
 
     async def head_object(self, *, Bucket, Key):
         self._record("head_object", Key)
-        raise KeyError("404: no such key")  # final key is always free here
+        if self._final_exists:
+            return {}
+        raise KeyError("404: no such key")
 
     async def copy_object(self, *, Bucket, Key, CopySource):
         self._record("copy_object:dest", Key)
@@ -318,6 +341,8 @@ class _FakeS3Client:
 
     async def delete_object(self, *, Bucket, Key):
         self._record("delete_object", Key)
+        if self._cleanup_fail:
+            raise RuntimeError("injected cleanup failure in delete")
         return {}
 
 
@@ -402,3 +427,121 @@ async def test_s3_failure_touches_only_current_attempt_staging_key():
         assert key == own_staging, key
     assert all(k != f"evidence/{eid}/.staging" for _, k in calls)
     assert all(k != f"evidence/{eid}/.staging.a2" for _, k in calls)
+
+
+# ---------------------------------------------------------------------------
+# WP A A2a — S3 staging cleanup contract (Revision 2.1 §5):
+#   * failure BEFORE completion → abort THIS attempt's multipart upload
+#     (exact staging key + upload id); never a delete;
+#   * failure AFTER completion (copy / collision) → delete THIS attempt's
+#     staging object; never an abort;
+#   * a cleanup failure never masks the primary error;
+#   * a failed delete after a valid final object still succeeds;
+#   * delete_object never receives a final content-addressed key;
+#   * create_multipart_upload failing → nothing to abort, nothing deleted.
+# ---------------------------------------------------------------------------
+
+
+def _ops(calls, op):
+    return [k for o, k in calls if o == op]
+
+
+async def test_s3_pre_completion_failure_aborts_exact_attempt():
+    calls, aborts = [], []
+    storage = _fake_s3_storage(calls, fail_on="upload_part", aborts=aborts)
+    eid = str(uuid.uuid4())
+    with pytest.raises(EvidenceStorageError) as info:
+        await storage.put(eid, _chunks(b"doomed"), attempt_no=4)
+    assert "injected failure in upload_part" in str(info.value)
+    staging = f"evidence/{eid}/.staging.a4"
+    assert aborts == [(staging, "fake-upload-id")]
+    assert _ops(calls, "delete_object") == []
+    assert all(k == staging for _, k in calls)
+
+
+async def test_s3_post_completion_failure_deletes_staging_not_final():
+    calls, aborts = [], []
+    storage = _fake_s3_storage(calls, fail_on="copy_object:dest", aborts=aborts)
+    eid = str(uuid.uuid4())
+    payload = b"copy fails"
+    with pytest.raises(EvidenceStorageError):
+        await storage.put(eid, _chunks(payload), attempt_no=1)
+    staging = f"evidence/{eid}/.staging.a1"
+    final = make_object_key(eid, hashlib.sha256(payload).hexdigest())
+    assert aborts == []
+    assert _ops(calls, "delete_object") == [staging]
+    assert final not in _ops(calls, "delete_object")
+
+
+async def test_s3_collision_deletes_own_staging_never_final():
+    calls, aborts = [], []
+    storage = _fake_s3_storage(calls, final_exists=True, aborts=aborts)
+    eid = str(uuid.uuid4())
+    payload = b"identical bytes"
+    with pytest.raises(ObjectAlreadyExists) as info:
+        await storage.put(eid, _chunks(payload), attempt_no=2)
+    final = make_object_key(eid, hashlib.sha256(payload).hexdigest())
+    assert str(info.value) == final
+    assert aborts == []
+    assert _ops(calls, "delete_object") == [f"evidence/{eid}/.staging.a2"]
+    assert _ops(calls, "copy_object:dest") == []  # no second copy over final
+
+
+async def test_s3_cleanup_failure_never_masks_primary_error(caplog):
+    calls = []
+    storage = _fake_s3_storage(calls, fail_on="upload_part", cleanup_fail=True)
+    with caplog.at_level("WARNING"), pytest.raises(EvidenceStorageError) as info:
+        await storage.put(str(uuid.uuid4()), _chunks(b"x"), attempt_no=1)
+    assert "injected failure in upload_part" in str(info.value)
+    assert "cleanup" not in str(info.value)
+    assert any("staging cleanup failed" in r.getMessage() for r in caplog.records)
+    # post-completion variant
+    calls2 = []
+    storage2 = _fake_s3_storage(calls2, fail_on="copy_object:dest", cleanup_fail=True)
+    with pytest.raises(EvidenceStorageError) as info2:
+        await storage2.put(str(uuid.uuid4()), _chunks(b"y"), attempt_no=1)
+    assert "injected failure in copy_object:dest" in str(info2.value)
+
+
+async def test_s3_delete_failure_after_valid_final_still_succeeds(caplog):
+    calls = []
+    storage = _fake_s3_storage(calls, cleanup_fail=True)
+    eid = str(uuid.uuid4())
+    payload = b"final is valid"
+    with caplog.at_level("WARNING"):
+        stored = await storage.put(eid, _chunks(payload), attempt_no=3)
+    assert stored.key == make_object_key(eid, hashlib.sha256(payload).hexdigest())
+    assert stored.sha256 == hashlib.sha256(payload).hexdigest()
+    assert _ops(calls, "delete_object") == [f"evidence/{eid}/.staging.a3"]
+    assert any("cleanup failed after valid final object" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "fail_on, final_exists",
+    [(None, False), ("upload_part", False), ("complete_multipart_upload", False),
+     ("copy_object:dest", False), (None, True), ("create_multipart_upload", False)],
+)
+async def test_s3_delete_never_receives_final_key(fail_on, final_exists):
+    calls, aborts = [], []
+    storage = _fake_s3_storage(
+        calls, fail_on=fail_on, final_exists=final_exists, aborts=aborts
+    )
+    eid = str(uuid.uuid4())
+    payload = b"never delete final"
+    final = make_object_key(eid, hashlib.sha256(payload).hexdigest())
+    with contextlib.suppress(EvidenceStorageError):
+        await storage.put(eid, _chunks(payload), attempt_no=1)
+    for key in _ops(calls, "delete_object") + [k for k, _ in aborts]:
+        assert key == f"evidence/{eid}/.staging.a1"
+        assert key != final
+    if fail_on == "create_multipart_upload":
+        assert aborts == [] and _ops(calls, "delete_object") == []
+
+
+async def test_s3_legacy_path_abort_uses_legacy_key():
+    calls, aborts = [], []
+    storage = _fake_s3_storage(calls, fail_on="upload_part", aborts=aborts)
+    eid = str(uuid.uuid4())
+    with pytest.raises(EvidenceStorageError):
+        await storage.put(eid, _chunks(b"legacy"))
+    assert aborts == [(f"evidence/{eid}/.staging", "fake-upload-id")]
