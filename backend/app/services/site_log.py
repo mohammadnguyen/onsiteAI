@@ -31,7 +31,21 @@ Governing rules baked in:
   constant at event creation), never from client input; every query
   filters on it.
 
+* **Transaction ownership** (founder ruling B): every locked section runs
+  in :func:`_lock_scope` — a SAVEPOINT. A denial, conflict, not-found or
+  no-write replay rolls back only that SAVEPOINT (locks release, the
+  caller's outer transaction and unrelated pending state are untouched);
+  only a positive write path commits.
+
 Services raise domain exceptions only — the API layer maps them.
+
+**Binding for this module (founder ruling D, A2a):** this file is
+accepted at its current size only because transaction ownership is
+concentrated here and heavily tested. No A2b behaviour may be added to
+it. Before A2b implementation or any staging deployment, a separate
+behaviour-preserving A2a.1 structural-refactor checkpoint must split it
+into cohesive modules while retaining ONE public mutation boundary and
+the global lock order.
 """
 
 from __future__ import annotations
@@ -48,7 +62,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction
 
 from app.models.evidence import Evidence, EvidenceAuditLog, EvidenceStatus
 from app.models.job import Job, JobStatus
@@ -348,16 +362,41 @@ async def _lock_evidence_rows(
     return list((await db.execute(q)).scalars().all())
 
 
-async def _release_locks(db: AsyncSession) -> None:
-    """End a transaction that only took row locks (denial / replay paths).
+@contextlib.asynccontextmanager
+async def _lock_scope(db: AsyncSession) -> AsyncIterator[AsyncSessionTransaction]:
+    """SAVEPOINT that owns every row lock taken inside it.
 
-    Nothing is dirty at these points, so committing is a pure lock
-    release. ``rollback()`` is deliberately not used: it expires every
-    object in the session, and a later attribute read on the caller's
-    ``user``/``event`` would attempt lazy IO outside a greenlet context.
+    Transaction ownership rule (founder ruling B): a negative or no-write
+    Site Log result must neither commit nor discard the caller's unrelated
+    state. So:
+
+    * ``begin_nested`` first flushes the caller's pending state into the
+      caller's own outer transaction (SQLAlchemy semantics, pinned by the
+      sentinel tests), then opens a SAVEPOINT; every ``FOR UPDATE`` read
+      in the block is taken inside it.
+    * a domain exception, or an explicit ``await sp.rollback()`` before a
+      no-write return, rolls back only the SAVEPOINT: Postgres releases
+      the locks acquired inside it, the outer transaction stays open and
+      untouched, and SQLAlchemy expires only objects written inside the
+      SAVEPOINT — the caller's ``user``/``event`` remain readable without
+      lazy IO.
+    * a positive outcome releases the SAVEPOINT; the writes stay in the
+      outer transaction until the explicit ``db.commit()`` that the
+      positive path issues afterwards (same convention as
+      ``services/evidence.py``: short transactions around byte streaming).
+
+    Never ``db.commit()`` / ``db.rollback()`` here.
     """
-    assert not (db.new or db.dirty or db.deleted), "release_locks with pending writes"
-    await db.commit()
+    sp = await db.begin_nested()
+    try:
+        yield sp
+    except BaseException:
+        if sp.is_active:
+            await sp.rollback()
+        raise
+    else:
+        if sp.is_active:
+            await sp.commit()  # RELEASE SAVEPOINT — not a transaction commit
 
 
 async def _next_transition_no(db: AsyncSession, event: SiteLogEvent) -> int:
@@ -695,89 +734,85 @@ async def acquire_attachment(
     Returns ``(attachment, evidence, attempt_no, replay)``. ``replay`` is
     True when the row is already ``stored`` — nothing is written.
     """
-    event = await _lock_event(db, event_id)
-    job = None if event is None or event.job_id is None else await db.get(Job, event.job_id)
-    if event is None or not can_read_event(user, event, job):
-        await _release_locks(db)
-        raise SiteLogNotFound()
-    if user.role != UserRole.admin and event.author_user_id != user.user_id:
-        await _release_locks(db)
-        raise SiteLogNotFound()  # only author/admin upload; existence hidden
-    att = await _lock_attachment(db, event, attachment_client_id)
-    if att is None:
-        await _release_locks(db)
-        raise SiteLogNotFound()
-    if att.state is AttachmentState.stored:
-        evidence = await db.get(Evidence, att.evidence_id)
-        await _release_locks(db)
-        return att, evidence, att.upload_attempt_no, True
-    if att.state is AttachmentState.pending:
-        await _release_locks(db)
-        raise SiteLogUploadInProgress()
-    if derive_media_type(mime_type).value != att.declared_media_type:
-        await _release_locks(db)
-        raise SiteLogMediaMismatch()  # rejected before acquisition
+    async with _lock_scope(db) as sp:
+        event = await _lock_event(db, event_id)
+        job = None if event is None or event.job_id is None else await db.get(Job, event.job_id)
+        if event is None or not can_read_event(user, event, job):
+            raise SiteLogNotFound()
+        if user.role != UserRole.admin and event.author_user_id != user.user_id:
+            raise SiteLogNotFound()  # only author/admin upload; existence hidden
+        att = await _lock_attachment(db, event, attachment_client_id)
+        if att is None:
+            raise SiteLogNotFound()
+        if att.state is AttachmentState.stored:
+            evidence = await db.get(Evidence, att.evidence_id)
+            await sp.rollback()  # no-write replay: release locks only
+            return att, evidence, att.upload_attempt_no, True
+        if att.state is AttachmentState.pending:
+            raise SiteLogUploadInProgress()
+        if derive_media_type(mime_type).value != att.declared_media_type:
+            raise SiteLogMediaMismatch()  # rejected before acquisition
 
-    assert AttachmentState.pending in ATTACHMENT_STATE_TRANSITIONS[att.state]
-    prev_state = att.state
-    new_attempt = att.upload_attempt_no + 1
+        assert AttachmentState.pending in ATTACHMENT_STATE_TRANSITIONS[att.state]
+        prev_state = att.state
+        new_attempt = att.upload_attempt_no + 1
 
-    if att.evidence_id is None:
-        # The ONLY NULL→value write of evidence_id in the codebase, and the
-        # only Evidence creation site on the Site Log path.
-        evidence = Evidence(
-            evidence_id=uuid.uuid4(),
-            job_id=event.job_id,
-            uploaded_by_user_id=user.user_id,
-            media_type=derive_media_type(mime_type),
-            mime_type=mime_type,
-            original_filename=None,
-            status=EvidenceStatus.pending,
-            occurred_at=None,
-        )
-        db.add(evidence)
-        await db.flush()
-        att.evidence_id = evidence.evidence_id
+        if att.evidence_id is None:
+            # The ONLY NULL→value write of evidence_id in the codebase, and
+            # the only Evidence creation site on the Site Log path.
+            evidence = Evidence(
+                evidence_id=uuid.uuid4(),
+                job_id=event.job_id,
+                uploaded_by_user_id=user.user_id,
+                media_type=derive_media_type(mime_type),
+                mime_type=mime_type,
+                original_filename=None,
+                status=EvidenceStatus.pending,
+                occurred_at=None,
+            )
+            db.add(evidence)
+            await db.flush()
+            att.evidence_id = evidence.evidence_id
+            db.add(
+                _evidence_audit(
+                    evidence.evidence_id,
+                    user.user_id,
+                    "uploaded",
+                    {"mime_type": mime_type, "attempt_no": new_attempt,
+                     "site_log_event_id": str(event.site_log_event_id)},
+                )
+            )
+        else:
+            rows = await _lock_evidence_rows(db, [att.evidence_id])
+            evidence = rows[0]
+            assert evidence.status is not EvidenceStatus.stored
+            evidence.status = EvidenceStatus.pending  # failed → pending (row 9)
+            db.add(
+                _evidence_audit(
+                    evidence.evidence_id,
+                    user.user_id,
+                    "uploaded",
+                    {"attempt_no": new_attempt, "retry": True},
+                )
+            )
+
+        att.state = AttachmentState.pending
+        att.upload_attempt_no = new_attempt
         db.add(
-            _evidence_audit(
-                evidence.evidence_id,
+            _audit(
+                event.site_log_event_id,
+                event.tenant_id,
                 user.user_id,
-                "uploaded",
-                {"mime_type": mime_type, "attempt_no": new_attempt,
-                 "site_log_event_id": str(event.site_log_event_id)},
+                SiteLogAuditAction.attachment_state_changed,
+                {
+                    "attachment_client_id": str(attachment_client_id),
+                    "from": prev_state.value,
+                    "to": AttachmentState.pending.value,
+                    "attempt_no": new_attempt,
+                },
             )
         )
-    else:
-        rows = await _lock_evidence_rows(db, [att.evidence_id])
-        evidence = rows[0]
-        assert evidence.status is not EvidenceStatus.stored
-        evidence.status = EvidenceStatus.pending  # failed → pending (row 9)
-        db.add(
-            _evidence_audit(
-                evidence.evidence_id,
-                user.user_id,
-                "uploaded",
-                {"attempt_no": new_attempt, "retry": True},
-            )
-        )
-
-    att.state = AttachmentState.pending
-    att.upload_attempt_no = new_attempt
-    db.add(
-        _audit(
-            event.site_log_event_id,
-            event.tenant_id,
-            user.user_id,
-            SiteLogAuditAction.attachment_state_changed,
-            {
-                "attachment_client_id": str(attachment_client_id),
-                "from": prev_state.value,
-                "to": AttachmentState.pending.value,
-                "attempt_no": new_attempt,
-            },
-        )
-    )
-    await db.commit()
+    await db.commit()  # Txn A: governed row is durable before any byte
     return att, evidence, new_attempt, False
 
 
@@ -791,38 +826,42 @@ async def _fail_attachment(
     reason: str,
 ) -> None:
     """Rows 4/5: manifest pending→failed and Evidence pending→failed,
-    atomically, under the global lock order. Commits."""
-    event = await _lock_event(db, event_id)
-    if event is None:
-        await _release_locks(db)
-        return
-    atts = [a for a in await _lock_attachments(db, event) if a.attachment_id == attachment_id]
-    if not atts:
-        await _release_locks(db)
-        return
-    att = atts[0]
-    if att.state is not AttachmentState.pending or att.upload_attempt_no != attempt_no:
-        await _release_locks(db)  # superseded; nothing to fail
-        return
-    ev_rows = await _lock_evidence_rows(db, [att.evidence_id])
-    att.state = AttachmentState.failed
-    for ev in ev_rows:
-        ev.status = EvidenceStatus.failed
+    atomically, under the global lock order. Commits on write; a
+    superseded or vanished row is a no-write return."""
+    async with _lock_scope(db) as sp:
+        event = await _lock_event(db, event_id)
+        if event is None:
+            await sp.rollback()
+            return
+        atts = [
+            a for a in await _lock_attachments(db, event) if a.attachment_id == attachment_id
+        ]
+        if not atts:
+            await sp.rollback()
+            return
+        att = atts[0]
+        if att.state is not AttachmentState.pending or att.upload_attempt_no != attempt_no:
+            await sp.rollback()  # superseded; nothing to fail
+            return
+        ev_rows = await _lock_evidence_rows(db, [att.evidence_id])
+        att.state = AttachmentState.failed
+        for ev in ev_rows:
+            ev.status = EvidenceStatus.failed
+            db.add(
+                _evidence_audit(
+                    ev.evidence_id, actor.user_id, "failed",
+                    {"reason": reason, "attempt_no": attempt_no},
+                )
+            )
         db.add(
-            _evidence_audit(
-                ev.evidence_id, actor.user_id, "failed",
-                {"reason": reason, "attempt_no": attempt_no},
+            _audit(
+                event.site_log_event_id, event.tenant_id, actor.user_id,
+                SiteLogAuditAction.attachment_state_changed,
+                {"attachment_client_id": str(att.attachment_client_id),
+                 "from": "pending", "to": "failed",
+                 "attempt_no": attempt_no, "reason": reason},
             )
         )
-    db.add(
-        _audit(
-            event.site_log_event_id, event.tenant_id, actor.user_id,
-            SiteLogAuditAction.attachment_state_changed,
-            {"attachment_client_id": str(att.attachment_client_id),
-             "from": "pending", "to": "failed",
-             "attempt_no": attempt_no, "reason": reason},
-        )
-    )
     await db.commit()
 
 
@@ -1010,46 +1049,49 @@ async def reset_attachment(
     now: datetime,
 ) -> SiteLogEventAttachment:
     """Row 8: pending→failed on manifest AND Evidence, atomically, under
-    the global lock order. Admin only, non-empty reason, age ≥ 15 min."""
-    if admin.role != UserRole.admin:
-        raise SiteLogForbidden()
-    if not reason or not reason.strip():
-        raise SiteLogReasonRequired()
-    event = await _lock_event(db, event_id)
-    if event is None:
-        await _release_locks(db)
-        raise SiteLogNotFound()
-    att = await _lock_attachment(db, event, attachment_client_id)
-    if att is None:
-        await _release_locks(db)
-        raise SiteLogNotFound()
-    if att.state is not AttachmentState.pending:
-        await _release_locks(db)
-        raise SiteLogNothingToReset()
-    age = now - att.updated_at
-    if age < RESET_MIN_AGE:
-        await _release_locks(db)
-        raise SiteLogResetNotEligible()
-    ev_rows = await _lock_evidence_rows(db, [att.evidence_id])
-    att.state = AttachmentState.failed
-    for ev in ev_rows:
-        ev.status = EvidenceStatus.failed
+    the global lock order. Admin only, non-empty reason, age ≥ 15 min.
+
+    Denial order (founder ruling A): unknown / cross-tenant / unreadable
+    event → not found (existence hidden); readable event, non-admin →
+    forbidden; then validation and state conflicts.
+    """
+    async with _lock_scope(db):
+        event = await _lock_event(db, event_id)
+        job = None if event is None or event.job_id is None else await db.get(Job, event.job_id)
+        if event is None or not can_read_event(admin, event, job):
+            raise SiteLogNotFound()
+        if admin.role != UserRole.admin:
+            raise SiteLogForbidden()
+        att = await _lock_attachment(db, event, attachment_client_id)
+        if att is None:
+            raise SiteLogNotFound()
+        if not reason or not reason.strip():
+            raise SiteLogReasonRequired()
+        if att.state is not AttachmentState.pending:
+            raise SiteLogNothingToReset()
+        age = now - att.updated_at
+        if age < RESET_MIN_AGE:
+            raise SiteLogResetNotEligible()
+        ev_rows = await _lock_evidence_rows(db, [att.evidence_id])
+        att.state = AttachmentState.failed
+        for ev in ev_rows:
+            ev.status = EvidenceStatus.failed
+            db.add(
+                _evidence_audit(
+                    ev.evidence_id, admin.user_id, "failed",
+                    {"reason": "admin_reset", "attempt_no": att.upload_attempt_no},
+                )
+            )
         db.add(
-            _evidence_audit(
-                ev.evidence_id, admin.user_id, "failed",
-                {"reason": "admin_reset", "attempt_no": att.upload_attempt_no},
+            _audit(
+                event.site_log_event_id, event.tenant_id, admin.user_id,
+                SiteLogAuditAction.attachment_state_changed,
+                {"attachment_client_id": str(attachment_client_id),
+                 "from": "pending", "to": "failed", "admin_reset": True,
+                 "reason": reason.strip(), "attempt_no": att.upload_attempt_no,
+                 "age_seconds": int(age.total_seconds())},
             )
         )
-    db.add(
-        _audit(
-            event.site_log_event_id, event.tenant_id, admin.user_id,
-            SiteLogAuditAction.attachment_state_changed,
-            {"attachment_client_id": str(attachment_client_id),
-             "from": "pending", "to": "failed", "admin_reset": True,
-             "reason": reason.strip(), "attempt_no": att.upload_attempt_no,
-             "age_seconds": int(age.total_seconds())},
-        )
-    )
     await db.commit()
     return att
 
@@ -1061,41 +1103,39 @@ async def finalize_capture(
     db: AsyncSession, *, user: User, event_id: uuid.UUID
 ) -> EventView:
     """complete / repairable partial_failed / not-ready; idempotent."""
-    event = await _lock_event(db, event_id)
-    job = None if event is None or event.job_id is None else await db.get(Job, event.job_id)
-    if event is None or not can_read_event(user, event, job):
-        await _release_locks(db)
-        raise SiteLogNotFound()
-    if user.role != UserRole.admin and event.author_user_id != user.user_id:
-        await _release_locks(db)
-        raise SiteLogNotFound()
-    atts = await _lock_attachments(db, event)
-    states = {str(a.attachment_client_id): a.state.value for a in atts}
-    in_flight = [
-        a
-        for a in atts
-        if a.state in (AttachmentState.awaiting_upload, AttachmentState.pending)
-    ]
-    if in_flight:
-        await _release_locks(db)
-        raise SiteLogNotReady(states)
-    target = (
-        CaptureStatus.complete
-        if all(a.state is AttachmentState.stored for a in atts)
-        else CaptureStatus.partial_failed
-    )
-    if event.capture_status is target:
-        await _release_locks(db)  # same-state replay: no write, no audit
-        return await _view(db, event)
-    prev = event.capture_status
-    event.capture_status = target
-    db.add(
-        _audit(
-            event.site_log_event_id, event.tenant_id, user.user_id,
-            SiteLogAuditAction.finalized,
-            {"from": prev.value, "to": target.value, "attachment_states": states},
+    async with _lock_scope(db) as sp:
+        event = await _lock_event(db, event_id)
+        job = None if event is None or event.job_id is None else await db.get(Job, event.job_id)
+        if event is None or not can_read_event(user, event, job):
+            raise SiteLogNotFound()
+        if user.role != UserRole.admin and event.author_user_id != user.user_id:
+            raise SiteLogNotFound()
+        atts = await _lock_attachments(db, event)
+        states = {str(a.attachment_client_id): a.state.value for a in atts}
+        in_flight = [
+            a
+            for a in atts
+            if a.state in (AttachmentState.awaiting_upload, AttachmentState.pending)
+        ]
+        if in_flight:
+            raise SiteLogNotReady(states)
+        target = (
+            CaptureStatus.complete
+            if all(a.state is AttachmentState.stored for a in atts)
+            else CaptureStatus.partial_failed
         )
-    )
+        if event.capture_status is target:
+            await sp.rollback()  # same-state replay: no write, no audit
+            return await _view(db, event)
+        prev = event.capture_status
+        event.capture_status = target
+        db.add(
+            _audit(
+                event.site_log_event_id, event.tenant_id, user.user_id,
+                SiteLogAuditAction.finalized,
+                {"from": prev.value, "to": target.value, "attachment_states": states},
+            )
+        )
     await db.commit()
     return await _view(db, event)
 
@@ -1112,7 +1152,8 @@ async def _sync_job(
     action: SiteLogAuditAction,
     reason: str | None,
 ) -> None:
-    """Event + every bound Evidence row, one transaction, global order."""
+    """Event + every bound Evidence row, global order. Writes only — the
+    caller owns the lock scope and the commit."""
     old_job_id = event.job_id
     atts = await _lock_attachments(db, event)
     ev_rows = await _lock_evidence_rows(db, [a.evidence_id for a in atts if a.evidence_id])
@@ -1136,29 +1177,24 @@ async def _sync_job(
              "evidence_rows_synced": len(ev_rows)},
         )
     )
-    await db.commit()
 
 
 async def assign_job(
     db: AsyncSession, *, user: User, event_id: uuid.UUID, job_id: uuid.UUID
 ) -> EventView:
     """First assignment from unassigned — author or admin."""
-    event = await _lock_event(db, event_id)
-    if event is None or not (
-        user.role == UserRole.admin or event.author_user_id == user.user_id
-    ):
-        await _release_locks(db)
-        raise SiteLogNotFound()
-    if event.job_id is not None:
-        await _release_locks(db)
-        raise SiteLogAlreadyAssigned()
-    try:
+    async with _lock_scope(db):
+        event = await _lock_event(db, event_id)
+        if event is None or not (
+            user.role == UserRole.admin or event.author_user_id == user.user_id
+        ):
+            raise SiteLogNotFound()
+        if event.job_id is not None:
+            raise SiteLogAlreadyAssigned()
         job = await _target_job(db, job_id, user)
-    except SiteLogError:
-        await _release_locks(db)
-        raise
-    await _sync_job(db, actor=user, event=event, new_job=job,
-                    action=SiteLogAuditAction.job_assigned, reason=None)
+        await _sync_job(db, actor=user, event=event, new_job=job,
+                        action=SiteLogAuditAction.job_assigned, reason=None)
+    await db.commit()
     return await _view(db, event)
 
 
@@ -1166,31 +1202,30 @@ async def relink_job(
     db: AsyncSession, *, user: User, event_id: uuid.UUID,
     job_id: uuid.UUID, reason: str | None,
 ) -> EventView:
-    """Reassignment — admin only, non-empty reason, same-job → 409."""
-    event = await _lock_event(db, event_id)
-    job_cur = None if event is None or event.job_id is None else await db.get(Job, event.job_id)
-    if event is None or not can_read_event(user, event, job_cur):
-        await _release_locks(db)
-        raise SiteLogNotFound()
-    if user.role != UserRole.admin:
-        await _release_locks(db)
-        raise SiteLogForbidden()
-    if event.job_id is None:
-        await _release_locks(db)
-        raise SiteLogAlreadyAssigned()  # nothing to relink: use assign
-    if not reason or not reason.strip():
-        await _release_locks(db)
-        raise SiteLogReasonRequired()
-    if event.job_id == job_id:
-        await _release_locks(db)
-        raise SiteLogSameJob()
-    try:
+    """Reassignment — admin only, non-empty reason, same-job → 409.
+
+    Denial order (founder ruling A): unreadable → not found; readable,
+    non-admin → forbidden; then state and validation.
+    """
+    async with _lock_scope(db):
+        event = await _lock_event(db, event_id)
+        job_cur = (
+            None if event is None or event.job_id is None else await db.get(Job, event.job_id)
+        )
+        if event is None or not can_read_event(user, event, job_cur):
+            raise SiteLogNotFound()
+        if user.role != UserRole.admin:
+            raise SiteLogForbidden()
+        if event.job_id is None:
+            raise SiteLogAlreadyAssigned()  # nothing to relink: use assign
+        if not reason or not reason.strip():
+            raise SiteLogReasonRequired()
+        if event.job_id == job_id:
+            raise SiteLogSameJob()
         job = await _target_job(db, job_id, user)
-    except SiteLogError:
-        await _release_locks(db)
-        raise
-    await _sync_job(db, actor=user, event=event, new_job=job,
-                    action=SiteLogAuditAction.job_relinked, reason=reason.strip())
+        await _sync_job(db, actor=user, event=event, new_job=job,
+                        action=SiteLogAuditAction.job_relinked, reason=reason.strip())
+    await db.commit()
     return await _view(db, event)
 
 

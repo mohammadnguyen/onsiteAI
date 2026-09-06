@@ -14,8 +14,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import func, inspect, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     AttachmentState,
@@ -439,8 +440,10 @@ async def test_reset_rules_and_atomic_coupled_failure(
     db_session, seeded_admin, seeded_contributor, storage, site_log_session_factory
 ):
     att = _att()
+    # Authored by the contributor: readable by author (403 on reset) and
+    # admin; unreadable by anyone else while unassigned (404).
     res = await _declare(
-        db_session, storage, site_log_session_factory, seeded_admin, attachments=[att]
+        db_session, storage, site_log_session_factory, seeded_contributor, attachments=[att]
     )
     eid, cid = res.view.event.site_log_event_id, att["attachment_client_id"]
     now = datetime.now(UTC)
@@ -450,12 +453,17 @@ async def test_reset_rules_and_atomic_coupled_failure(
             attachment_client_id=cid, reason="stuck", now=now,
         )
     await svc.acquire_attachment(
-        db_session, user=seeded_admin, event_id=eid,
+        db_session, user=seeded_contributor, event_id=eid,
         attachment_client_id=cid, mime_type="audio/m4a",
     )
     with pytest.raises(svc.SiteLogForbidden):
         await svc.reset_attachment(
             db_session, admin=seeded_contributor, event_id=eid,
+            attachment_client_id=cid, reason="stuck", now=now,
+        )
+    with pytest.raises(svc.SiteLogNotFound):  # unknown event: 404 even for non-admin
+        await svc.reset_attachment(
+            db_session, admin=seeded_contributor, event_id=uuid.uuid4(),
             attachment_client_id=cid, reason="stuck", now=now,
         )
     with pytest.raises(svc.SiteLogReasonRequired):
@@ -538,14 +546,15 @@ async def test_txn_b_retries_on_fresh_session_then_succeeds(
     row = await _att_row(db_session, eid, cid)
     stored = await storage.put(str(ev.evidence_id), _chunks(b"bytes"), attempt_no=n)
 
-    sessions, sleeps = [], []
+    sessions, sleeps, events = [], [], []
     real = site_log_session_factory
 
     class _Flaky:
-        """First session raises a retryable error on its first execute."""
+        """First session raises a retryable error on its first execute;
+        records the lifecycle so the fresh-session contract is provable."""
 
-        def __init__(self, inner, fail):
-            self._inner, self._fail = inner, fail
+        def __init__(self, inner, fail, idx):
+            self._inner, self._fail, self.idx = inner, fail, idx
 
         def __getattr__(self, name):
             return getattr(self._inner, name)
@@ -553,11 +562,23 @@ async def test_txn_b_retries_on_fresh_session_then_succeeds(
         async def execute(self, *a, **k):
             if self._fail:
                 self._fail = False
+                # Poison the identity map so reuse would be detectable.
+                events.append(("execute-fail", self.idx))
                 raise _dbapi("40001")
+            events.append(("execute", self.idx))
             return await self._inner.execute(*a, **k)
 
+        async def rollback(self):
+            events.append(("rollback", self.idx))
+            await self._inner.rollback()
+
+        async def close(self):
+            events.append(("close", self.idx))
+            await self._inner.close()
+
     def factory():
-        s = _Flaky(real(), fail=len(sessions) == 0)
+        s = _Flaky(real(), fail=len(sessions) == 0, idx=len(sessions))
+        events.append(("create", s.idx, len(s._inner.identity_map)))
         sessions.append(s)
         return s
 
@@ -571,8 +592,67 @@ async def test_txn_b_retries_on_fresh_session_then_succeeds(
         backend_name=storage.backend_name,
     )
     assert out.state is AttachmentState.stored
-    assert len(sessions) == 2 and sessions[0] is not sessions[1]
+    # Distinct AsyncSession instances, each created with an EMPTY identity
+    # map; the failed session is rolled back and closed BEFORE the retry
+    # session exists — no failed transaction or ORM state is reused.
+    assert len(sessions) == 2
+    assert sessions[0]._inner is not sessions[1]._inner
+    assert isinstance(sessions[0]._inner, AsyncSession)
+    assert isinstance(sessions[1]._inner, AsyncSession)
+    assert events[:5] == [
+        ("create", 0, 0), ("execute-fail", 0), ("rollback", 0), ("close", 0), ("create", 1, 0),
+    ]
+    assert all(e[1] == 1 for e in events[5:] if e[0] == "execute")
     assert sleeps == [0.1]
+
+
+async def test_txn_b_exhausts_retries_then_raises(
+    db_session, seeded_admin, storage, site_log_session_factory, monkeypatch
+):
+    att = _att()
+    res = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin, attachments=[att]
+    )
+    eid, cid = res.view.event.site_log_event_id, att["attachment_client_id"]
+    _, ev, n, _ = await svc.acquire_attachment(
+        db_session, user=seeded_admin, event_id=eid,
+        attachment_client_id=cid, mime_type="audio/m4a",
+    )
+    row = await _att_row(db_session, eid, cid)
+    stored = await storage.put(str(ev.evidence_id), _chunks(b"bytes"), attempt_no=n)
+    created, sleeps = [], []
+
+    class _AlwaysDeadlock:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def execute(self, *a, **k):
+            raise _dbapi("40P01")
+
+    def factory():
+        s = _AlwaysDeadlock(site_log_session_factory())
+        created.append(s._inner)
+        return s
+
+    async def fake_sleep(secs):
+        sleeps.append(secs)
+
+    monkeypatch.setattr(svc.asyncio, "sleep", fake_sleep)
+    with pytest.raises(DBAPIError):
+        await svc.complete_attachment(
+            factory, actor_id=seeded_admin.user_id, event_id=eid,
+            attachment_id=row.attachment_id, attempt_no=n, stored=stored,
+            backend_name=storage.backend_name,
+        )
+    assert len(created) == svc.TXN_B_ATTEMPTS == 3
+    assert len({id(s) for s in created}) == 3
+    assert sleeps == list(svc.TXN_B_BACKOFF_SECONDS) == [0.1, 0.3]
+    # Nothing completed: row still pending at the acquired attempt.
+    row = await _att_row(db_session, eid, cid)
+    assert (row.state, row.upload_attempt_no) == (AttachmentState.pending, n)
 
 
 async def test_txn_b_does_not_retry_non_whitelisted(
@@ -834,3 +914,264 @@ def test_lock_order_invariant():
             att_idx = [i for i, n in enumerate(order) if n in att_names]
             if ev_idx and att_idx:
                 assert max(att_idx) < min(ev_idx), (fn.name, order)
+
+
+# ------------------------------------------ transaction ownership (ruling B)
+#
+# A negative or no-write Site Log result must neither commit nor discard
+# the caller's unrelated state. The spy records every commit()/rollback()
+# on the caller's session; the sentinel is an unrelated pending change in
+# the caller's outer transaction. The scratch-DB tests in
+# test_site_log_concurrency.py repeat this with REAL commits and a second
+# physical connection as the observer; here the rollback harness proves
+# the session-level contract and MissingGreenlet-freedom.
+
+
+class _SpySession:
+    """Proxy around the caller's AsyncSession counting transaction calls."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.commits = 0
+        self.rollbacks = 0
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def commit(self):
+        self.commits += 1
+        await self._inner.commit()
+
+    async def rollback(self):
+        self.rollbacks += 1
+        await self._inner.rollback()
+
+
+async def _sentinel(db, admin):
+    """Unrelated pending change: a flushed new Job + an unflushed rename."""
+    job = await _mk_job(db, admin, name="SENTINEL-new")
+    admin.full_name = "SENTINEL-renamed"  # dirty, not yet flushed
+    return job
+
+
+async def _sentinel_intact(db, admin, job):
+    assert db.in_transaction(), "caller outer transaction was terminated"
+    assert not inspect(admin).expired and not inspect(job).expired
+    assert admin.full_name == "SENTINEL-renamed"  # no lazy IO, not reverted
+    names = (
+        await db.execute(select(Job.job_name).where(Job.job_id == job.job_id))
+    ).scalars().all()
+    assert names == ["SENTINEL-new"]  # still present in the outer transaction
+
+
+async def test_negative_paths_never_commit_or_rollback_caller_session(
+    db_session, seeded_admin, seeded_contributor, storage, site_log_session_factory
+):
+    # Fixture: one assigned event with a stored attachment and a pending
+    # attachment, plus one unassigned, finalized event by the contributor.
+    job = await _mk_job(db_session, seeded_admin, name="Assigned")
+    stored_att, pending_att = _att(), _att()
+    res = await _declare(
+        db_session, storage, site_log_session_factory, seeded_contributor,
+        job_id=job.job_id, attachments=[stored_att, pending_att],
+    )
+    eid = res.view.event.site_log_event_id
+    await _upload(db_session, storage, site_log_session_factory, seeded_contributor,
+                  eid, stored_att["attachment_client_id"])
+    await svc.acquire_attachment(
+        db_session, user=seeded_contributor, event_id=eid,
+        attachment_client_id=pending_att["attachment_client_id"], mime_type="audio/m4a",
+    )
+    other = await _declare(db_session, storage, site_log_session_factory,
+                           seeded_contributor, body_text="unassigned")
+    other_eid = other.view.event.site_log_event_id
+
+    sentinel_job = await _sentinel(db_session, seeded_admin)
+    spy = _SpySession(db_session)
+    audit_before = await _count(db_session, SiteLogEventAuditLog)
+    ev_audit_before = await _count(db_session, EvidenceAuditLog)
+    now = datetime.now(UTC)
+    sc, ad = seeded_contributor, seeded_admin
+    missing = uuid.uuid4()
+    pend_cid = pending_att["attachment_client_id"]
+    stored_cid = stored_att["attachment_client_id"]
+
+    async def expect(exc, coro):
+        with pytest.raises(exc):
+            await coro
+
+    async def declare_replay():
+        return await svc.declare_capture(
+            spy, storage, site_log_session_factory, user=sc,
+            capture_client_id=other.view.event.capture_client_id, job_id=None,
+            occurred_at=None, internal_location=None, body_text="unassigned",
+            attachments=[], max_bytes=MAX_BYTES,
+        )
+
+    async def upload_replay():
+        return await svc.upload_attachment(
+            spy, storage, site_log_session_factory, user=sc, event_id=eid,
+            attachment_client_id=stored_cid, mime_type="audio/m4a",
+            chunks=_chunks(b"ignored"), max_bytes=MAX_BYTES,
+        )
+
+    paths = {
+        # unreadable / not found
+        "finalize unknown": lambda: expect(
+            svc.SiteLogNotFound, svc.finalize_capture(spy, user=ad, event_id=missing)),
+        "acquire unknown": lambda: expect(
+            svc.SiteLogNotFound,
+            svc.acquire_attachment(spy, user=ad, event_id=missing,
+                                   attachment_client_id=missing, mime_type="audio/m4a")),
+        "assign unknown": lambda: expect(
+            svc.SiteLogNotFound,
+            svc.assign_job(spy, user=ad, event_id=missing, job_id=job.job_id)),
+        "relink unknown": lambda: expect(
+            svc.SiteLogNotFound,
+            svc.relink_job(spy, user=ad, event_id=missing, job_id=job.job_id, reason="r")),
+        "reset unknown": lambda: expect(
+            svc.SiteLogNotFound,
+            svc.reset_attachment(spy, admin=ad, event_id=missing,
+                                 attachment_client_id=missing, reason="r", now=now)),
+        "fail superseded": lambda: svc._fail_attachment(
+            spy, actor=ad, event_id=eid, attachment_id=missing, attempt_no=1, reason="x"),
+        # readable but forbidden
+        "relink forbidden": lambda: expect(
+            svc.SiteLogForbidden,
+            svc.relink_job(spy, user=sc, event_id=eid, job_id=job.job_id, reason="r")),
+        "reset forbidden": lambda: expect(
+            svc.SiteLogForbidden,
+            svc.reset_attachment(spy, admin=sc, event_id=eid, attachment_client_id=pend_cid,
+                                 reason="r", now=now)),
+        # state conflict
+        "acquire in progress": lambda: expect(
+            svc.SiteLogUploadInProgress,
+            svc.acquire_attachment(spy, user=sc, event_id=eid, attachment_client_id=pend_cid,
+                                   mime_type="audio/m4a")),
+        "assign already": lambda: expect(
+            svc.SiteLogAlreadyAssigned,
+            svc.assign_job(spy, user=sc, event_id=eid, job_id=job.job_id)),
+        "finalize not ready": lambda: expect(
+            svc.SiteLogNotReady, svc.finalize_capture(spy, user=sc, event_id=eid)),
+        "reset nothing": lambda: expect(
+            svc.SiteLogNothingToReset,
+            svc.reset_attachment(spy, admin=ad, event_id=eid, attachment_client_id=stored_cid,
+                                 reason="r", now=now)),
+        "relink same job": lambda: expect(
+            svc.SiteLogSameJob,
+            svc.relink_job(spy, user=ad, event_id=eid, job_id=job.job_id, reason="r")),
+        # idempotent no-write replay
+        "upload replay": upload_replay,
+        "finalize replay": lambda: svc.finalize_capture(spy, user=sc, event_id=other_eid),
+        "declare identical replay": declare_replay,
+    }
+    for name, run in paths.items():
+        await run()
+        assert (spy.commits, spy.rollbacks) == (0, 0), name
+        await _sentinel_intact(db_session, seeded_admin, sentinel_job)
+        assert await _count(db_session, SiteLogEventAuditLog) == audit_before, name
+        assert await _count(db_session, EvidenceAuditLog) == ev_audit_before, name
+
+    # Replay results are readable domain objects: nothing expired, no lazy IO.
+    up = await upload_replay()
+    assert up.replay and not inspect(up.attachment).expired_attributes
+    assert up.attachment.state is AttachmentState.stored and up.evidence.sha256
+    view = await svc.finalize_capture(spy, user=sc, event_id=other_eid)
+    assert view.event.capture_status is CaptureStatus.complete
+    assert not inspect(view.event).expired_attributes
+    rep = await declare_replay()
+    assert not rep.created and rep.view.event.site_log_event_id == other_eid
+    assert (spy.commits, spy.rollbacks) == (0, 0)
+
+
+async def test_positive_write_paths_commit_explicitly(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """Documented convention (evidence.py precedent): a positive write path
+    commits the caller's session once per short transaction."""
+    spy = _SpySession(db_session)
+    att = _att()
+    res = await _declare(spy, storage, site_log_session_factory, seeded_admin,
+                         attachments=[att])
+    assert spy.commits == 1  # declare
+    eid, cid = res.view.event.site_log_event_id, att["attachment_client_id"]
+    await svc.upload_attachment(
+        spy, storage, site_log_session_factory, user=seeded_admin, event_id=eid,
+        attachment_client_id=cid, mime_type="audio/m4a", chunks=_chunks(b"b"),
+        max_bytes=MAX_BYTES,
+    )
+    assert spy.commits == 2  # Txn A on the caller's session; Txn B on its own
+    await svc.finalize_capture(spy, user=seeded_admin, event_id=eid)
+    assert spy.commits == 3
+    assert spy.rollbacks == 0
+
+
+async def test_pending_inline_replay_returns_without_mutation(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """A prior process died mid-upload of the inline row (pending@1). The
+    declare replay must return the durable state untouched: no new attempt,
+    no audit, no finalize, no transaction side effect."""
+    cid = uuid.uuid4()
+    res = await _declare(db_session, storage, site_log_session_factory, seeded_admin,
+                         capture_client_id=cid, body_text="note")
+    eid = res.view.event.site_log_event_id
+    inline_id = svc.inline_attachment_id(cid)
+    att_id = (await _att_row(db_session, eid, inline_id)).attachment_id
+    await db_session.execute(
+        update(SiteLogEventAttachment)
+        .where(SiteLogEventAttachment.attachment_id == att_id)
+        .values(state="pending", upload_attempt_no=1)
+    )
+    await db_session.execute(
+        update(SiteLogEvent)
+        .where(SiteLogEvent.site_log_event_id == eid)
+        .values(capture_status="pending_upload")
+    )
+    audits = await _count(db_session, SiteLogEventAuditLog, site_log_event_id=eid)
+    spy = _SpySession(db_session)
+    again = await _declare(spy, storage, site_log_session_factory, seeded_admin,
+                           capture_client_id=cid, body_text="note")
+    assert not again.created and not again.inline_failed
+    assert again.view.event.capture_status is CaptureStatus.pending_upload
+    row = await _att_row(db_session, eid, inline_id)
+    assert (row.state, row.upload_attempt_no) == (AttachmentState.pending, 1)
+    assert await _count(db_session, SiteLogEventAuditLog, site_log_event_id=eid) == audits
+    assert (spy.commits, spy.rollbacks) == (0, 0)
+
+
+async def test_failed_inline_replay_502_again_then_200(
+    db_session, seeded_admin, storage, tmp_path, site_log_session_factory
+):
+    """failed@N inline row: a replay retries; 502-equivalent (inline_failed)
+    while the backend stays broken, success once it recovers."""
+
+    class _Broken:
+        backend_name = "broken"
+
+        async def put(self, evidence_id, chunks, *, attempt_no=None):
+            raise EvidenceStorageError("backend down")
+
+        def open(self, key):
+            raise AssertionError
+
+        async def exists(self, key):
+            return False
+
+    cid = uuid.uuid4()
+    first = await _declare(db_session, _Broken(), site_log_session_factory, seeded_admin,
+                           capture_client_id=cid, body_text="note")
+    assert first.created and first.inline_failed
+    again = await _declare(db_session, _Broken(), site_log_session_factory, seeded_admin,
+                           capture_client_id=cid, body_text="note")
+    assert not again.created and again.inline_failed
+    row = await _att_row(db_session, first.view.event.site_log_event_id,
+                         svc.inline_attachment_id(cid))
+    assert (row.state, row.upload_attempt_no) == (AttachmentState.failed, 2)
+    ok = await _declare(db_session, storage, site_log_session_factory, seeded_admin,
+                        capture_client_id=cid, body_text="note")
+    assert not ok.created and not ok.inline_failed
+    assert ok.view.event.capture_status is CaptureStatus.complete
+    row = await _att_row(db_session, first.view.event.site_log_event_id,
+                         svc.inline_attachment_id(cid))
+    assert (row.state, row.upload_attempt_no) == (AttachmentState.stored, 3)

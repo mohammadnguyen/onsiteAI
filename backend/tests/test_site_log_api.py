@@ -23,6 +23,7 @@ from app.models import (
     SiteLogEventAttachment,
     SiteLogEventAuditLog,
 )
+from app.models.user import User
 from app.services import site_log as svc
 
 pytestmark = pytest.mark.asyncio
@@ -433,3 +434,164 @@ async def test_cross_tenant_denials_write_no_audit(
         await _count(db_session, EvidenceAuditLog),
     )
     assert after == before
+
+
+# ------------------------------------------------ admin-only matrix (ruling A)
+
+
+async def _audit_counts(db):
+    return (
+        await _count(db, SiteLogEventAuditLog),
+        await _count(db, EvidenceAuditLog),
+    )
+
+
+async def _att_state(db, acid):
+    return (
+        await db.execute(
+            select(SiteLogEventAttachment.state, SiteLogEventAttachment.upload_attempt_no)
+            .where(SiteLogEventAttachment.attachment_client_id == uuid.UUID(acid))
+        )
+    ).one()
+
+
+async def test_admin_only_matrix_reset_and_relink(
+    client, db_session, seeded_admin, contributor_token, admin_token, other_token,
+    site_log_session_factory,
+):
+    """unknown / cross-tenant / unreadable → 404; readable non-admin → 403;
+    admin → normal; every denial leaves zero state change and zero audit."""
+    job_a = await _mk_job(db_session, seeded_admin, name="A")
+    job_b = await _mk_job(db_session, seeded_admin, name="B")
+    # Unassigned event authored by the contributor, attachment left pending.
+    att_u = _att()
+    r = await _declare(client, contributor_token, attachments=[att_u])
+    eid_u, acid_u = r.json()["site_log_event_id"], att_u["attachment_client_id"]
+    # Assigned event authored by the contributor (readable by everyone).
+    att_a = _att()
+    r = await _declare(client, contributor_token, attachments=[att_a], job_id=str(job_a.job_id))
+    eid_a, acid_a = r.json()["site_log_event_id"], att_a["attachment_client_id"]
+    for eid, acid in ((eid_u, acid_u), (eid_a, acid_a)):
+        att_id = (
+            await db_session.execute(
+                select(SiteLogEventAttachment.attachment_id)
+                .where(SiteLogEventAttachment.attachment_client_id == uuid.UUID(acid))
+            )
+        ).scalar_one()
+        await svc.acquire_attachment(
+            db_session, user=(await db_session.get(User, uuid.UUID(r.json()["author_user_id"]))),
+            event_id=uuid.UUID(eid), attachment_client_id=uuid.UUID(acid), mime_type="audio/m4a",
+        )
+        await db_session.execute(
+            update(SiteLogEventAttachment)
+            .where(SiteLogEventAttachment.attachment_id == att_id)
+            .values(updated_at=func.now() - func.make_interval(0, 0, 0, 0, 0, 20))
+        )
+    # Cross-tenant copy of an assigned event.
+    att_x = _att()
+    r = await _declare(client, admin_token, attachments=[att_x], job_id=str(job_a.job_id))
+    eid_x, acid_x = r.json()["site_log_event_id"], att_x["attachment_client_id"]
+    await db_session.execute(
+        update(SiteLogEvent).where(SiteLogEvent.site_log_event_id == uuid.UUID(eid_x))
+        .values(tenant_id=uuid.UUID("00000000-0000-0000-0000-00000000dead"))
+    )
+
+    reset = lambda eid, acid: f"/site-log-events/{eid}/attachments/{acid}/reset"  # noqa: E731
+    relink = lambda eid: f"/site-log-events/{eid}/relink-job"  # noqa: E731
+    reset_body = {"reason": "stuck"}
+    relink_body = {"job_id": str(job_b.job_id), "reason": "misfiled"}
+    unknown = uuid.uuid4()
+    denials = [
+        # (label, method, url, body, token, expected)
+        ("reset unknown/contributor", reset(unknown, acid_u), reset_body, contributor_token, 404),
+        ("reset unknown/admin", reset(unknown, acid_u), reset_body, admin_token, 404),
+        ("reset cross-tenant/admin", reset(eid_x, acid_x), reset_body, admin_token, 404),
+        ("reset unreadable/other", reset(eid_u, acid_u), reset_body, other_token, 404),
+        ("reset readable-author/403", reset(eid_u, acid_u), reset_body, contributor_token, 403),
+        ("reset readable-via-job/403", reset(eid_a, acid_a), reset_body, other_token, 403),
+        ("relink unknown/contributor", relink(unknown), relink_body, contributor_token, 404),
+        ("relink unknown/admin", relink(unknown), relink_body, admin_token, 404),
+        ("relink cross-tenant/admin", relink(eid_x), relink_body, admin_token, 404),
+        ("relink unreadable/other", relink(eid_u), relink_body, other_token, 404),
+        ("relink readable-author/403", relink(eid_a), relink_body, contributor_token, 403),
+        ("relink readable-via-job/403", relink(eid_a), relink_body, other_token, 403),
+    ]
+    before = await _audit_counts(db_session)
+    states_before = {acid: await _att_state(db_session, acid) for acid in (acid_u, acid_a)}
+    for label, url, body, token, expected in denials:
+        resp = await client.post(url, json=body, headers=_auth(token))
+        assert resp.status_code == expected, (label, resp.status_code, resp.text)
+        assert await _audit_counts(db_session) == before, label
+        for acid in (acid_u, acid_a):
+            assert await _att_state(db_session, acid) == states_before[acid], label
+        for eid, job in ((eid_u, None), (eid_a, job_a.job_id)):
+            cur = (
+                await db_session.execute(
+                    select(SiteLogEvent.job_id)
+                    .where(SiteLogEvent.site_log_event_id == uuid.UUID(eid))
+                )
+            ).scalar_one()
+            assert cur == job, label
+    # Authorized admin: normal operation on both.
+    ok = await client.post(reset(eid_a, acid_a), json=reset_body, headers=_auth(admin_token))
+    assert ok.status_code == 200 and ok.json()["state"] == "failed"
+    ok = await client.post(relink(eid_a), json=relink_body, headers=_auth(admin_token))
+    assert ok.status_code == 200 and ok.json()["job_id"] == str(job_b.job_id)
+
+
+async def test_inline_replay_edge_cases_over_http(
+    client, db_session, contributor_token, site_log_session_factory
+):
+    """failed inline replay: 502 while the backend stays broken, 200 once it
+    works; pending inline replay: 200 without any mutation."""
+    from app.main import app
+    from app.services.evidence_storage import EvidenceStorageError, get_evidence_storage
+
+    class _Broken:
+        backend_name = "broken"
+
+        async def put(self, evidence_id, chunks, *, attempt_no=None):
+            raise EvidenceStorageError("backend down")
+
+        def open(self, key):
+            raise AssertionError
+
+        async def exists(self, key):
+            return False
+
+    cid = str(uuid.uuid4())
+    app.dependency_overrides[get_evidence_storage] = lambda: _Broken()
+    try:
+        r1 = await _declare(client, contributor_token, capture_client_id=cid, body_text="x")
+        r2 = await _declare(client, contributor_token, capture_client_id=cid, body_text="x")
+    finally:
+        app.dependency_overrides.pop(get_evidence_storage, None)
+    assert (r1.status_code, r2.status_code) == (502, 502)
+    inline = svc.inline_attachment_id(uuid.UUID(cid))
+    assert await _att_state(db_session, str(inline)) == ("failed", 2)
+    r3 = await _declare(client, contributor_token, capture_client_id=cid, body_text="x")
+    assert r3.status_code == 200 and r3.json()["capture_status"] == "complete"
+    assert await _att_state(db_session, str(inline)) == ("stored", 3)
+
+    # pending inline (prior process death): replay 200, nothing changes.
+    cid2 = str(uuid.uuid4())
+    ok = await _declare(client, contributor_token, capture_client_id=cid2, body_text="y")
+    assert ok.status_code == 201
+    inline2 = svc.inline_attachment_id(uuid.UUID(cid2))
+    await db_session.execute(
+        update(SiteLogEventAttachment)
+        .where(SiteLogEventAttachment.attachment_client_id == inline2)
+        .values(state="pending")
+    )
+    await db_session.execute(
+        update(SiteLogEvent)
+        .where(SiteLogEvent.site_log_event_id == uuid.UUID(ok.json()["site_log_event_id"]))
+        .values(capture_status="pending_upload")
+    )
+    before = await _audit_counts(db_session)
+    rep = await _declare(client, contributor_token, capture_client_id=cid2, body_text="y")
+    assert rep.status_code == 200, rep.text
+    assert rep.json()["capture_status"] == "pending_upload"
+    assert rep.json()["attachments"][0]["state"] == "pending"
+    assert await _att_state(db_session, str(inline2)) == ("pending", 1)
+    assert await _audit_counts(db_session) == before
