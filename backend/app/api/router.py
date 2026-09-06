@@ -17,6 +17,7 @@ from app.api import (
     org_settings,
     reports,
     review_queue,
+    site_log,
     suppliers,
     users,
 )
@@ -32,6 +33,9 @@ api_router.include_router(labour.router)
 # Evidence spans /evidence and /jobs/{id}/evidence — unprefixed,
 # absolute paths, same pattern as labour.
 api_router.include_router(evidence.router)
+# Site Log spans /site-log-events and /jobs/{id}/site-log-events —
+# unprefixed, absolute paths, same pattern as evidence.
+api_router.include_router(site_log.router)
 api_router.include_router(org_settings.router)
 api_router.include_router(reports.router, prefix="/reports")
 api_router.include_router(review_queue.router, prefix="/review-queue")

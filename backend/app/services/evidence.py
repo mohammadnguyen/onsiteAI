@@ -50,6 +50,11 @@ from app.services.evidence_storage import (
     EvidenceStorage,
     EvidenceStorageError,
 )
+from app.services.site_log_access import (
+    binding_for_evidence,
+    can_read_event,
+    load_event_for_access,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +90,11 @@ class EvidenceRelinkSameJob(Exception):
 
 class EvidenceTooLarge(Exception):
     """Upload exceeded the configured cap — HTTP layer maps to 413."""
+
+
+class EvidenceBoundToEvent(Exception):
+    """Evidence is attached to a Site Log event: its Job is synchronized
+    only through the event's assign/relink actions — 409 (WP A A2a)."""
 
 
 class EvidenceNotStored(Exception):
@@ -268,12 +278,25 @@ async def create_evidence(
     return evidence
 
 
+async def _can_read_async(
+    db: AsyncSession, user: User, evidence: Evidence
+) -> bool:
+    """WP A A2a: Evidence bound to a Site Log event inherits the parent
+    event's rule (via the single access helper); unattached Evidence keeps
+    the V1 rule in :func:`_can_read` byte-for-byte."""
+    binding = await binding_for_evidence(db, evidence.evidence_id)
+    if binding is None:
+        return _can_read(user, evidence)
+    event, job = await load_event_for_access(db, binding.site_log_event_id)
+    return event is not None and can_read_event(user, event, job)
+
+
 async def get_evidence(
     db: AsyncSession, user: User, evidence_id: uuid.UUID
 ) -> Evidence:
     """Fetch one evidence record the caller may read, else 404."""
     evidence = await db.get(Evidence, evidence_id)
-    if evidence is None or not _can_read(user, evidence):
+    if evidence is None or not await _can_read_async(db, user, evidence):
         raise EvidenceNotFound(evidence_id)
     return evidence
 
@@ -329,6 +352,11 @@ async def link_job(
       immutable throughout; only this metadata column changes.
     """
     evidence = await get_evidence(db, user, evidence_id)
+    # WP A A2a: once attached to a Site Log event, this legacy path may
+    # not move the Evidence's Job independently — the event is the single
+    # writer and synchronizes every bound row atomically.
+    if await binding_for_evidence(db, evidence.evidence_id) is not None:
+        raise EvidenceBoundToEvent()
     job = await db.get(Job, job_id)
     if job is None:
         raise EvidenceJobNotFound(job_id)

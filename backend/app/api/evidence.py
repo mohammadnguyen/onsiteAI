@@ -180,6 +180,15 @@ async def link_evidence_job(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Evidence not found",
         ) from exc
+    except evidence_service.EvidenceBoundToEvent as exc:
+        # WP A A2a: bound Evidence follows its Site Log event's Job.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Evidence is attached to a site log event; change the "
+                "job via the event's assign-job / relink-job actions"
+            ),
+        ) from exc
     except evidence_service.EvidenceJobNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -198,6 +198,37 @@ async def contributor_token(seeded_contributor) -> str:
 
 
 @pytest_asyncio.fixture
+async def site_log_session_factory(db_session):
+    """WP A A2a: fresh-session factory for upload Txn B retries.
+
+    Production hands the service ``get_sessionmaker()`` (fresh pooled
+    connection per retry). Inside the rollback harness a fresh pooled
+    connection could not see the test's uncommitted rows and would block
+    on its row locks, so here each retry gets a NEW ``AsyncSession`` object
+    on the SAME test connection in ``create_savepoint`` mode — a genuinely
+    fresh session/transaction (no reuse of failed transaction or expired
+    ORM state), still inside the fixture's rollback. The
+    ``get_session_factory`` dependency is overridden for the client.
+    """
+    from app.api.site_log import get_session_factory
+
+    conn = db_session.bind
+
+    def factory() -> AsyncSession:
+        return AsyncSession(
+            bind=conn,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
+
+    app.dependency_overrides[get_session_factory] = lambda: factory
+    try:
+        yield factory
+    finally:
+        app.dependency_overrides.pop(get_session_factory, None)
+
+
+@pytest_asyncio.fixture
 async def seed_categories(db_session):
     """Populate the 23 builder categories within the current transaction."""
     from app.core.seed import seed_builder_categories
