@@ -61,12 +61,25 @@ SCRATCH_URL = f"postgresql+asyncpg://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{SC
 MAX_BYTES = 1024 * 1024
 
 UNCONFIRMED = "persistence UNCONFIRMED"
-# The one sanctioned way to mention an outcome: as an explicit disjunction
-# that resolves to "read the row". Anything else claiming an outcome is a
-# defect, so the disjunction is removed before the scan below.
-DISJUNCTION = re.compile(
-    r"the (?:attempt|row) is either failed or still pending[^\n]*", re.IGNORECASE
+# The one sanctioned way to mention an outcome: an explicit disjunction that
+# resolves to "read the row". These are matched literally — an earlier
+# version of this guard ended its pattern with a greedy tail, which silently
+# swallowed anything appended after the disjunction and would have accepted
+# a note that went on to claim an outcome (Codex round 6).
+SANCTIONED_DISJUNCTIONS = (
+    "the attempt is either failed or still pending — read the row to determine which",
+    "the row is either failed or still pending — read it to determine which",
 )
+# The note is validated as a WHOLE, so no text can be appended after the
+# disjunction at all; the claim scan below is the second line of defence
+# against a reworded diagnosis.
+NOTE_TEMPLATE = re.compile(
+    r"^(?:site_log|evidence) failed transition persistence UNCONFIRMED "
+    r"\([^)]*\): [A-Za-z_][A-Za-z0-9_]*; (?:"
+    + "|".join(re.escape(d) for d in SANCTIONED_DISJUNCTIONS)
+    + r")$"
+)
+LOG_SUFFIX = re.compile(r"^ upload_error=[A-Za-z_][A-Za-z0-9_]*$")
 # Wordings the diagnosis must never use: each asserts an outcome the
 # service cannot know at that point.
 FORBIDDEN_CLAIMS = (
@@ -185,15 +198,32 @@ def _notes(exc: BaseException) -> list[str]:
     return list(getattr(exc, "__notes__", []))
 
 
+def _strip_sanctioned(text: str) -> str:
+    for disjunction in SANCTIONED_DISJUNCTIONS:
+        text = text.replace(disjunction, "")
+    return text
+
+
 def _assert_unconfirmed(exc: BaseException, caplog) -> None:
     """The diagnosis names the uncertainty and claims neither outcome."""
     notes = _notes(exc)
-    assert any(UNCONFIRMED in n for n in notes), notes
-    assert any(DISJUNCTION.search(n) for n in notes), notes
+    unconfirmed = [n for n in notes if UNCONFIRMED in n]
+    assert unconfirmed, notes
+    # Whole-note match: nothing may precede or follow the sanctioned text.
+    for note in unconfirmed:
+        assert NOTE_TEMPLATE.match(note), note
+
     messages = [r.getMessage() for r in caplog.records]
-    assert any(UNCONFIRMED in m for m in messages), messages
-    # Outside the sanctioned disjunction, no outcome may be asserted.
-    scanned = [DISJUNCTION.sub("", t) for t in notes + messages]
+    logged = [m for m in messages if UNCONFIRMED in m]
+    assert logged, messages
+    for message in logged:
+        note = next((n for n in unconfirmed if message.startswith(n)), None)
+        assert note is not None, (message, unconfirmed)
+        assert LOG_SUFFIX.match(message[len(note):]), message
+
+    # Second line of defence: outside the sanctioned disjunction, no text in
+    # any note or log line may assert an outcome.
+    scanned = [_strip_sanctioned(t) for t in notes + messages]
     for claim in FORBIDDEN_CLAIMS:
         assert not any(claim in t for t in scanned), (claim, scanned)
 
@@ -421,3 +451,75 @@ async def test_both_fault_shapes_produce_the_same_diagnosis(
         ).scalars().all():
             statuses.add(ev.status)
     assert statuses == {EvidenceStatus.pending, EvidenceStatus.failed}
+
+
+# ------------------------------------------------- the guard guards itself
+
+
+class _FakeRecord:
+    def __init__(self, message: str):
+        self._message = message
+
+    def getMessage(self) -> str:
+        return self._message
+
+
+class _FakeCaplog:
+    def __init__(self, *messages: str):
+        self.records = [_FakeRecord(m) for m in messages]
+
+
+def _diagnosis(disjunction: str, *, suffix: str = "") -> str:
+    return (
+        "evidence failed transition persistence UNCONFIRMED "
+        f"(evidence_id=00000000-0000-0000-0000-000000000000): RuntimeError; "
+        f"{disjunction}{suffix}"
+    )
+
+
+async def test_guard_accepts_exactly_the_sanctioned_diagnosis():
+    note = _diagnosis(SANCTIONED_DISJUNCTIONS[1])
+    exc = RuntimeError("original")
+    exc.add_note(note)
+    _assert_unconfirmed(exc, _FakeCaplog(note + " upload_error=OSError"))
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "; failed transition NOT persisted, row stays pending",
+        " (the row is still pending)",
+        " — no durable failure was written",
+    ],
+)
+async def test_guard_rejects_a_claim_appended_after_the_disjunction(suffix):
+    """An earlier guard ended its pattern with a greedy tail and silently
+    swallowed anything after the sanctioned disjunction, so a note that went
+    on to assert an outcome passed (Codex round 6). It must not."""
+    note = _diagnosis(SANCTIONED_DISJUNCTIONS[1], suffix=suffix)
+    exc = RuntimeError("original")
+    exc.add_note(note)
+    with pytest.raises(AssertionError):
+        _assert_unconfirmed(exc, _FakeCaplog(note + " upload_error=OSError"))
+
+
+async def test_guard_rejects_a_claim_only_present_in_the_log_line():
+    note = _diagnosis(SANCTIONED_DISJUNCTIONS[1])
+    exc = RuntimeError("original")
+    exc.add_note(note)
+    with pytest.raises(AssertionError):
+        _assert_unconfirmed(
+            exc, _FakeCaplog(note + " upload_error=OSError; row stays pending")
+        )
+
+
+async def test_guard_rejects_a_diagnosis_that_asserts_instead_of_disjoining():
+    note = (
+        "evidence failed transition persistence UNCONFIRMED "
+        "(evidence_id=00000000-0000-0000-0000-000000000000): RuntimeError; "
+        "the row is still pending"
+    )
+    exc = RuntimeError("original")
+    exc.add_note(note)
+    with pytest.raises(AssertionError):
+        _assert_unconfirmed(exc, _FakeCaplog(note + " upload_error=OSError"))
