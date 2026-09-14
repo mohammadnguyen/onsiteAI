@@ -111,6 +111,7 @@ class FakeS3Client:
         return self
 
     async def __aexit__(self, *exc):
+        self._state.calls.append(("client_exit", ""))
         return False
 
     # -- helpers -----------------------------------------------------------

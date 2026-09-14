@@ -88,14 +88,17 @@ primary error; a secondary adapter failure raised while unwinding a source
 failure is logged and the source exception stays the one raised. A final
 (content-addressed) object is never deleted by any path in this module.
 Cancellation precedence: the S3 abort / delete cleanup runs as its own
-task shielded from outer cancellation; a cancellation that lands while it
-is in flight is remembered, the cleanup gets a bounded grace period
-(``CLEANUP_GRACE_SECONDS``) to finish over the still-open client, and then
+task that outer cancellation cannot interrupt. Whether the cancellation
+was what interrupted the upload or arrives while the cleanup is in flight,
+the cleanup gets one fixed deadline (``CLEANUP_GRACE_SECONDS`` after the
+first cancellation) to finish over the still-open client — repeated
+cancellations neither shorten it nor close the client under it — and then
 the cancellation propagates (the primary failure stays attached as its
-``__context__``). Only a cleanup that outlives the grace period leaves the
-multipart upload or staging object to the bucket lifecycle policy (the
-existing infra gate for incomplete multipart uploads); no final object is
-affected either way.
+``__context__``). A cleanup already started on the success path is never
+followed by a second one. Only a cleanup that outlives the deadline leaves
+the multipart upload or staging object to the bucket lifecycle policy
+(the existing infra gate for incomplete multipart uploads); no final
+object is affected either way.
 Caller note (a change from the base): before WP-S-core the S3 adapter
 wrapped EVERY source exception into ``EvidenceStorageError`` and the local
 adapter wrapped a source ``OSError``, so the upload services marked the row
@@ -480,14 +483,16 @@ def _primary(exc: BaseException, source: _SourceGuard, *, op: str) -> BaseExcept
     return None
 
 
-def _log_late_cleanup(task: asyncio.Task) -> None:
-    """Retrieve the outcome of a cleanup that outlived the grace period so
-    it never surfaces as an unretrieved task exception."""
+def _retrieve_cleanup_outcome(task: asyncio.Task) -> None:
+    """Outcome hook for supervised cleanup tasks (installed before any
+    cancellable wait): retrieves an unexpected failure so it never surfaces
+    as an unretrieved task exception. Cleanup coroutines log their own
+    expected failures, so this only fires for something abnormal."""
     if task.cancelled():
         return
     exc = task.exception()
     if exc is not None:
-        logger.warning("late s3 staging cleanup failed error=%s", type(exc).__name__)
+        logger.warning("s3 staging cleanup task failed error=%s", type(exc).__name__)
 
 
 class EvidenceStorage(Protocol):
@@ -687,6 +692,7 @@ class S3EvidenceStorage:
         async with self._connect(op="put") as s3:
             upload_id: str | None = None
             completed = False
+            cleanup_started = False
             try:
                 mpu = await s3.create_multipart_upload(
                     Bucket=self._bucket, Key=staging_key
@@ -754,32 +760,25 @@ class S3EvidenceStorage:
                     Key=key,
                     CopySource={"Bucket": self._bucket, "Key": staging_key},
                 )
-                # Staging cleanup is internal pre-commit state removal,
-                # not evidence deletion. The final object is confirmed
-                # valid at this point: a cleanup failure is logged and the
-                # store still succeeds — never downgraded to failed.
-                try:
-                    await self._finish_uncancellable(
-                        s3.delete_object(Bucket=self._bucket, Key=staging_key),
-                        staging_key=staging_key,
-                    )
-                except Exception as cleanup_exc:  # botocore surface is broad
-                    logger.warning(
-                        "s3 staging cleanup failed after valid final object "
-                        "staging_key=%s error=%s",
-                        staging_key,
-                        type(cleanup_exc).__name__,
-                    )
+                # The final object is confirmed valid: remove this attempt's
+                # staging object (supervised — see _supervise_cleanup). From
+                # here on no second cleanup may start, whatever propagates.
+                cleanup_started = True
+                await self._supervise_cleanup(
+                    self._delete_staging_after_success(s3, staging_key),
+                    staging_key=staging_key,
+                )
                 return StoredObject(key=key, size_bytes=size, sha256=sha)
             except BaseException as exc:
-                # Cleanup THIS attempt's staging first (shielded from a
+                # Cleanup THIS attempt's staging first (supervised against a
                 # cancellation arriving meanwhile), then re-raise: source
                 # exceptions and cancellation unchanged, SDK errors classified.
-                await self._finish_uncancellable(
-                    self._cleanup_staging(s3, staging_key, upload_id, completed),
-                    staging_key=staging_key,
-                    primary=exc,
-                )
+                if not cleanup_started:
+                    await self._supervise_cleanup(
+                        self._cleanup_staging(s3, staging_key, upload_id, completed),
+                        staging_key=staging_key,
+                        primary=exc,
+                    )
                 primary = _primary(exc, source, op="s3 put")
                 if primary is exc:
                     raise
@@ -790,43 +789,75 @@ class S3EvidenceStorage:
                 raise _wrap_backend_error(exc, op="put") from exc
 
     @staticmethod
-    async def _finish_uncancellable(
-        coro: Coroutine[Any, Any, Any],
+    async def _supervise_cleanup(
+        coro: Coroutine[Any, Any, None],
         *,
         staging_key: str,
         primary: BaseException | None = None,
-    ):
-        """Await a cleanup coroutine as a task shielded from outer
-        cancellation. A cancellation that arrives while it runs is
-        remembered; the task gets ``CLEANUP_GRACE_SECONDS`` to finish over
-        the still-open client (a second cancellation during that wait
-        propagates immediately); then the cancellation propagates, carrying
-        ``primary`` (the failure that triggered the cleanup) as its
-        ``__context__`` — a thrown-in CancelledError does not inherit the
-        outer handler's exception on its own. The task's own exception, if
-        any, is re-raised to the caller when no cancellation intervened and
-        otherwise retrieved and logged."""
+    ) -> None:
+        """Run a cleanup coroutine as a task that outer cancellation cannot
+        interrupt, with ONE fixed deadline.
+
+        * Not yet cancelled: await the task shielded. A cancellation that
+          arrives meanwhile is remembered (with ``primary`` — the failure
+          that triggered the cleanup — attached as its ``__context__``,
+          since a thrown-in CancelledError does not inherit it on its own).
+        * Already cancelled (``primary`` is the delivered CancelledError) or
+          cancelled meanwhile: wait for the task until a single deadline,
+          ``CLEANUP_GRACE_SECONDS`` after the first cancellation, absorbing
+          repeated cancellations (they cannot shorten the grace period nor
+          close the client under the cleanup); then propagate.
+
+        Cleanup coroutines swallow and log their own failures, so the task
+        never raises; the outcome hook installed before any cancellable wait
+        retrieves anything unexpected so no exception goes unretrieved.
+        """
         task = asyncio.ensure_future(coro)
-        try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError as cancelled:
-            if primary is not None and cancelled.__context__ is None:
-                cancelled.__context__ = primary
-            done, _ = await asyncio.wait({task}, timeout=CLEANUP_GRACE_SECONDS)
-            if not done:
+        task.add_done_callback(_retrieve_cleanup_outcome)
+        cancelled: asyncio.CancelledError | None = (
+            primary if isinstance(primary, asyncio.CancelledError) else None
+        )
+        if cancelled is None:
+            try:
+                await asyncio.shield(task)
+                return
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+                if primary is not None and exc.__context__ is None:
+                    exc.__context__ = primary
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + CLEANUP_GRACE_SECONDS
+        while not task.done():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
                 logger.warning(
                     "s3 staging cleanup still in flight when cancellation propagated "
                     "staging_key=%s",
                     staging_key,
                 )
-                task.add_done_callback(_log_late_cleanup)
-            elif not task.cancelled() and task.exception() is not None:
-                logger.warning(
-                    "s3 staging cleanup failed during cancellation staging_key=%s error=%s",
-                    staging_key,
-                    type(task.exception()).__name__,
-                )
-            raise
+                break
+            try:
+                await asyncio.wait({task}, timeout=remaining)
+            except asyncio.CancelledError:
+                continue  # repeated cancellation: the deadline stays fixed
+        if cancelled is primary:
+            return  # the caller re-raises the cancellation it already holds
+        raise cancelled
+
+    async def _delete_staging_after_success(self, s3, staging_key: str) -> None:
+        """Staging cleanup is internal pre-commit state removal, not
+        evidence deletion. The final object is confirmed valid at this
+        point: a cleanup failure is logged and the store still succeeds —
+        never downgraded to failed."""
+        try:
+            await s3.delete_object(Bucket=self._bucket, Key=staging_key)
+        except Exception as cleanup_exc:  # botocore surface is broad
+            logger.warning(
+                "s3 staging cleanup failed after valid final object "
+                "staging_key=%s error=%s",
+                staging_key,
+                type(cleanup_exc).__name__,
+            )
 
     async def _cleanup_staging(
         self, s3, staging_key: str, upload_id: str | None, completed: bool

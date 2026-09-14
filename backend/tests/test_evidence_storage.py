@@ -558,8 +558,9 @@ async def test_s3_failure_touches_only_current_attempt_staging_key():  # legitim
 
     own_staging = f"evidence/{eid}/.staging.a3"
     assert state.calls, "fake client saw no calls"
-    for _, key in state.calls:
-        assert key == own_staging, key
+    for op, key in state.calls:
+        if op != "client_exit":
+            assert key == own_staging, key
     assert all(k != f"evidence/{eid}/.staging" for _, k in state.calls)
     assert all(k != f"evidence/{eid}/.staging.a2" for _, k in state.calls)
 
@@ -580,7 +581,7 @@ async def test_s3_pre_completion_failure_aborts_exact_attempt():
     staging = f"evidence/{eid}/.staging.a4"
     assert state.aborts == [(staging, "fake-upload-id-1")]
     assert ops(state, "delete_object") == []
-    assert all(k == staging for _, k in state.calls)
+    assert all(k == staging for op, k in state.calls if op != "client_exit")
 
 
 async def test_s3_post_completion_failure_deletes_staging_not_final():
@@ -1096,6 +1097,97 @@ async def test_s3_cleanup_outliving_the_grace_period_still_propagates_cancellati
     assert ("abort_multipart_upload", staging) in state.parked  # it was really in flight
     never.set()  # let the parked fake finish so no task is left pending
     await asyncio.sleep(0)
+
+
+async def test_s3_cancellation_at_source_with_stalled_cleanup_is_bounded(monkeypatch, caplog):
+    """The cancellation itself interrupted the upload (primary is the
+    CancelledError): a stalled abort still gets only the grace period."""
+    import app.services.evidence_storage as es
+
+    monkeypatch.setattr(es, "CLEANUP_GRACE_SECONDS", 0.05)
+    eid = str(uuid.uuid4())
+    staging = s3_staging_key(eid, 1)
+    never = asyncio.Event()
+    state = FakeS3State()
+    storage, _ = fake_s3_storage(state, park={("abort_multipart_upload", staging): never})
+    started = asyncio.Event()
+
+    async def stalled():
+        yield b"first"
+        started.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(storage.put(eid, stalled(), attempt_no=1))
+    await started.wait()
+    task.cancel()
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    with caplog.at_level("WARNING"), pytest.raises(asyncio.CancelledError):
+        await task
+    assert loop.time() - t0 < 2.0  # bounded by the grace period, not by the stall
+    assert ("abort_multipart_upload", staging) in state.parked
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("still in flight when cancellation propagated" in m for m in messages)
+    never.set()
+    await asyncio.sleep(0)
+
+
+async def test_s3_post_copy_cancellation_starts_no_second_cleanup(monkeypatch):
+    """Cancellation during the success-path delete that outlives the grace
+    period propagates without the failure handler launching another delete."""
+    import app.services.evidence_storage as es
+
+    monkeypatch.setattr(es, "CLEANUP_GRACE_SECONDS", 0.05)
+    eid = str(uuid.uuid4())
+    payload = b"post-copy cancellation"
+    staging = s3_staging_key(eid, 2)
+    final = make_object_key(eid, hashlib.sha256(payload).hexdigest(), 2)
+    release = asyncio.Event()
+    state = FakeS3State()
+    storage, _ = fake_s3_storage(state, park={("delete_object", staging): release})
+
+    task = asyncio.create_task(storage.put(eid, _chunks(payload), attempt_no=2))
+    await until(lambda: ("delete_object", staging) in state.parked)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert state.parked.count(("delete_object", staging)) == 1  # no second delete
+    assert ops(state, "delete_object") == []  # the first one is still parked
+    assert final in state.objects and state.objects[final].data == payload
+    release.set()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert ops(state, "delete_object") == [staging]
+    assert staging not in state.objects
+    assert final in state.objects  # a final object is never deleted
+
+
+async def test_s3_repeated_cancellation_keeps_client_open_until_cleanup_finishes():
+    eid = str(uuid.uuid4())
+    staging = s3_staging_key(eid, 1)
+    release = asyncio.Event()
+    state = FakeS3State()
+    storage, _ = fake_s3_storage(state, park={("abort_multipart_upload", staging): release})
+
+    async def capped():
+        yield b"first"
+        raise SiteLogTooLarge()
+
+    task = asyncio.create_task(storage.put(eid, capped(), attempt_no=1))
+    await until(lambda: ("abort_multipart_upload", staging) in state.parked)
+    task.cancel()
+    for _ in range(3):
+        await asyncio.sleep(0)
+    task.cancel()  # repeated cancellation while the cleanup is supervised
+    for _ in range(3):
+        await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert state.aborts == [(staging, "fake-upload-id-1")]
+    assert state.uploads == {}
+    order = [op for op, _ in state.calls]
+    assert order.index("abort_multipart_upload") < order.index("client_exit")
 
 
 async def _nothing():
