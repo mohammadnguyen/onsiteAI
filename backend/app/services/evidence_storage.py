@@ -87,11 +87,15 @@ exception); a cleanup failure is logged content-free and never masks the
 primary error; a secondary adapter failure raised while unwinding a source
 failure is logged and the source exception stays the one raised. A final
 (content-addressed) object is never deleted by any path in this module.
-Honest limit: a cancellation that lands while the cleanup call itself is
-in flight (abort / delete over the network) interrupts that cleanup and
-replaces the primary exception — the multipart upload or staging object
-is then left for the bucket lifecycle policy (the existing infra gate for
-incomplete multipart uploads); no final object is affected.
+Cancellation precedence: the S3 abort / delete cleanup runs as its own
+task shielded from outer cancellation; a cancellation that lands while it
+is in flight is remembered, the cleanup gets a bounded grace period
+(``CLEANUP_GRACE_SECONDS``) to finish over the still-open client, and then
+the cancellation propagates (the primary failure stays attached as its
+``__context__``). Only a cleanup that outlives the grace period leaves the
+multipart upload or staging object to the bucket lifecycle policy (the
+existing infra gate for incomplete multipart uploads); no final object is
+affected either way.
 Caller note (a change from the base): before WP-S-core the S3 adapter
 wrapped EVERY source exception into ``EvidenceStorageError`` and the local
 adapter wrapped a source ``OSError``, so the upload services marked the row
@@ -134,17 +138,23 @@ with WP-S-hardening (2) metadata or (5) checker hooks.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import errno
 import hashlib
 import logging
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 CHUNK_SIZE = 1024 * 1024  # 1 MiB read/write granularity
+
+# How long an in-flight S3 staging cleanup (abort / delete) may keep running
+# after the surrounding task was cancelled, before the cancellation propagates
+# regardless. One network round trip is expected; 10 s bounds a stalled one.
+CLEANUP_GRACE_SECONDS = 10.0
 
 
 # Content-free by rule: this module logs keys, upload ids and exception
@@ -470,6 +480,16 @@ def _primary(exc: BaseException, source: _SourceGuard, *, op: str) -> BaseExcept
     return None
 
 
+def _log_late_cleanup(task: asyncio.Task) -> None:
+    """Retrieve the outcome of a cleanup that outlived the grace period so
+    it never surfaces as an unretrieved task exception."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("late s3 staging cleanup failed error=%s", type(exc).__name__)
+
+
 class EvidenceStorage(Protocol):
     """Storage backend contract. put / open / exists — nothing else."""
 
@@ -739,7 +759,10 @@ class S3EvidenceStorage:
                 # valid at this point: a cleanup failure is logged and the
                 # store still succeeds — never downgraded to failed.
                 try:
-                    await s3.delete_object(Bucket=self._bucket, Key=staging_key)
+                    await self._finish_uncancellable(
+                        s3.delete_object(Bucket=self._bucket, Key=staging_key),
+                        staging_key=staging_key,
+                    )
                 except Exception as cleanup_exc:  # botocore surface is broad
                     logger.warning(
                         "s3 staging cleanup failed after valid final object "
@@ -749,9 +772,14 @@ class S3EvidenceStorage:
                     )
                 return StoredObject(key=key, size_bytes=size, sha256=sha)
             except BaseException as exc:
-                # Cleanup THIS attempt's staging first, then re-raise: source
+                # Cleanup THIS attempt's staging first (shielded from a
+                # cancellation arriving meanwhile), then re-raise: source
                 # exceptions and cancellation unchanged, SDK errors classified.
-                await self._cleanup_staging(s3, staging_key, upload_id, completed)
+                await self._finish_uncancellable(
+                    self._cleanup_staging(s3, staging_key, upload_id, completed),
+                    staging_key=staging_key,
+                    primary=exc,
+                )
                 primary = _primary(exc, source, op="s3 put")
                 if primary is exc:
                     raise
@@ -760,6 +788,45 @@ class S3EvidenceStorage:
                     # failure stays attached as its __context__ (logged).
                     raise primary  # noqa: B904
                 raise _wrap_backend_error(exc, op="put") from exc
+
+    @staticmethod
+    async def _finish_uncancellable(
+        coro: Coroutine[Any, Any, Any],
+        *,
+        staging_key: str,
+        primary: BaseException | None = None,
+    ):
+        """Await a cleanup coroutine as a task shielded from outer
+        cancellation. A cancellation that arrives while it runs is
+        remembered; the task gets ``CLEANUP_GRACE_SECONDS`` to finish over
+        the still-open client (a second cancellation during that wait
+        propagates immediately); then the cancellation propagates, carrying
+        ``primary`` (the failure that triggered the cleanup) as its
+        ``__context__`` — a thrown-in CancelledError does not inherit the
+        outer handler's exception on its own. The task's own exception, if
+        any, is re-raised to the caller when no cancellation intervened and
+        otherwise retrieved and logged."""
+        task = asyncio.ensure_future(coro)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError as cancelled:
+            if primary is not None and cancelled.__context__ is None:
+                cancelled.__context__ = primary
+            done, _ = await asyncio.wait({task}, timeout=CLEANUP_GRACE_SECONDS)
+            if not done:
+                logger.warning(
+                    "s3 staging cleanup still in flight when cancellation propagated "
+                    "staging_key=%s",
+                    staging_key,
+                )
+                task.add_done_callback(_log_late_cleanup)
+            elif not task.cancelled() and task.exception() is not None:
+                logger.warning(
+                    "s3 staging cleanup failed during cancellation staging_key=%s error=%s",
+                    staging_key,
+                    type(task.exception()).__name__,
+                )
+            raise
 
     async def _cleanup_staging(
         self, s3, staging_key: str, upload_id: str | None, completed: bool

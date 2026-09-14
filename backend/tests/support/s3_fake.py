@@ -151,6 +151,7 @@ class FakeS3Client:
         return {}
 
     async def abort_multipart_upload(self, *, Bucket, Key, UploadId):
+        await self._gate("abort_multipart_upload", Key)
         self._state.aborts.append((Key, UploadId))
         self._record("abort_multipart_upload", Key)
         if self._cleanup_fail:
@@ -179,6 +180,7 @@ class FakeS3Client:
         return {}
 
     async def delete_object(self, *, Bucket, Key):
+        await self._gate("delete_object", Key)
         self._record("delete_object", Key)
         if self._cleanup_fail:
             raise RuntimeError("injected cleanup failure in delete")
