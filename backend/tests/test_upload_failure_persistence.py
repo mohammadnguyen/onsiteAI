@@ -26,6 +26,7 @@ the same because the service cannot tell them apart.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import subprocess
@@ -97,6 +98,16 @@ NOTE_TEMPLATES = (
     ),
 )
 LOG_SUFFIX = re.compile(rf"^ upload_error={_CLASS}$")
+SERVICE_LOGGERS = ("app.services.site_log", "app.services.evidence")
+SOURCE_LOG_TEMPLATES = (
+    re.compile(
+        rf"^site_log upload source failure event_id={_UUID} "
+        rf"attachment_id={_UUID} attempt_no=[1-9][0-9]* error={_CLASS}$"
+    ),
+    re.compile(
+        rf"^evidence upload failed \(source\) evidence_id={_UUID} error={_CLASS}$"
+    ),
+)
 # Wordings the diagnosis must never use: each asserts an outcome the
 # service cannot know at that point.
 FORBIDDEN_CLAIMS = (
@@ -231,26 +242,36 @@ def _strip_sanctioned(text: str) -> str:
 
 
 def _assert_unconfirmed(exc: BaseException, caplog) -> None:
-    """The diagnosis names the uncertainty and claims neither outcome."""
+    """The diagnosis names the uncertainty and claims neither outcome.
+
+    The whole diagnosis is asserted, not just the part carrying the marker:
+    an earlier version inspected only text containing ``UNCONFIRMED``, so a
+    SECOND note or error record asserting an outcome slipped past whenever
+    its wording was outside the forbidden list (Codex round 8). Exactly one
+    note and exactly two service error records may exist.
+    """
     notes = _notes(exc)
-    unconfirmed = [n for n in notes if UNCONFIRMED in n]
-    assert unconfirmed, notes
+    assert len(notes) == 1, notes
+    note = notes[0]
+    assert UNCONFIRMED in note, note
     # Whole-note match against a constrained template: no free text in the
     # metadata block, nothing before or after the sanctioned disjunction.
-    for note in unconfirmed:
-        assert any(t.match(note) for t in NOTE_TEMPLATES), note
+    assert any(t.match(note) for t in NOTE_TEMPLATES), note
 
-    messages = [r.getMessage() for r in caplog.records]
-    logged = [m for m in messages if UNCONFIRMED in m]
-    assert logged, messages
-    for message in logged:
-        note = next((n for n in unconfirmed if message.startswith(n)), None)
-        assert note is not None, (message, unconfirmed)
-        assert LOG_SUFFIX.match(message[len(note):]), message
+    records = [
+        r for r in caplog.records
+        if r.levelno >= logging.ERROR and r.name in SERVICE_LOGGERS
+    ]
+    messages = [r.getMessage() for r in records]
+    # The service's own upload-failure line, then the diagnosis. Nothing else.
+    assert len(messages) == 2, messages
+    assert any(t.match(messages[0]) for t in SOURCE_LOG_TEMPLATES), messages[0]
+    assert messages[1].startswith(note), (messages[1], note)
+    assert LOG_SUFFIX.match(messages[1][len(note):]), messages[1]
 
     # Second line of defence: outside the sanctioned disjunction, no text in
-    # any note or log line may assert an outcome.
-    scanned = [_strip_sanctioned(t) for t in notes + messages]
+    # the note or in any service error record may assert an outcome.
+    scanned = [_strip_sanctioned(t) for t in [note, *messages]]
     for claim in FORBIDDEN_CLAIMS:
         assert not any(claim in t for t in scanned), (claim, scanned)
 
@@ -484,16 +505,41 @@ async def test_both_fault_shapes_produce_the_same_diagnosis(
 
 
 class _FakeRecord:
-    def __init__(self, message: str):
+    def __init__(self, message: str, *, name: str = "app.services.evidence"):
         self._message = message
+        self.name = name
+        self.levelno = logging.ERROR
 
     def getMessage(self) -> str:
         return self._message
 
 
 class _FakeCaplog:
-    def __init__(self, *messages: str):
-        self.records = [_FakeRecord(m) for m in messages]
+    def __init__(self, *messages, name: str = "app.services.evidence"):
+        self.records = [
+            m if isinstance(m, _FakeRecord) else _FakeRecord(m, name=name)
+            for m in messages
+        ]
+
+
+EVIDENCE_SOURCE_LOG = (
+    "evidence upload failed (source) "
+    "evidence_id=00000000-0000-0000-0000-000000000000 error=OSError"
+)
+SITE_LOG_SOURCE_LOG = (
+    "site_log upload source failure "
+    "event_id=00000000-0000-0000-0000-000000000000 "
+    "attachment_id=11111111-1111-1111-1111-111111111111 "
+    "attempt_no=1 error=OSError"
+)
+
+
+def _caplog_for(note: str, *extra, name: str = "app.services.evidence") -> _FakeCaplog:
+    """The two records the evidence service really emits, plus anything the
+    test wants to add."""
+    return _FakeCaplog(
+        EVIDENCE_SOURCE_LOG, note + " upload_error=OSError", *extra, name=name
+    )
 
 
 def _diagnosis(disjunction: str, *, suffix: str = "", metadata: str | None = None) -> str:
@@ -508,7 +554,7 @@ async def test_guard_accepts_exactly_the_sanctioned_diagnosis():
     note = _diagnosis(SANCTIONED_DISJUNCTIONS[1])
     exc = RuntimeError("original")
     exc.add_note(note)
-    _assert_unconfirmed(exc, _FakeCaplog(note + " upload_error=OSError"))
+    _assert_unconfirmed(exc, _caplog_for(note))
 
 
 @pytest.mark.parametrize(
@@ -527,7 +573,7 @@ async def test_guard_rejects_a_claim_appended_after_the_disjunction(suffix):
     exc = RuntimeError("original")
     exc.add_note(note)
     with pytest.raises(AssertionError):
-        _assert_unconfirmed(exc, _FakeCaplog(note + " upload_error=OSError"))
+        _assert_unconfirmed(exc, _caplog_for(note))
 
 
 async def test_guard_rejects_a_claim_only_present_in_the_log_line():
@@ -536,7 +582,11 @@ async def test_guard_rejects_a_claim_only_present_in_the_log_line():
     exc.add_note(note)
     with pytest.raises(AssertionError):
         _assert_unconfirmed(
-            exc, _FakeCaplog(note + " upload_error=OSError; row stays pending")
+            exc,
+            _FakeCaplog(
+                EVIDENCE_SOURCE_LOG,
+                note + " upload_error=OSError; row stays pending",
+            ),
         )
 
 
@@ -549,7 +599,7 @@ async def test_guard_rejects_a_diagnosis_that_asserts_instead_of_disjoining():
     exc = RuntimeError("original")
     exc.add_note(note)
     with pytest.raises(AssertionError):
-        _assert_unconfirmed(exc, _FakeCaplog(note + " upload_error=OSError"))
+        _assert_unconfirmed(exc, _caplog_for(note))
 
 
 @pytest.mark.parametrize(
@@ -570,7 +620,7 @@ async def test_guard_rejects_a_claim_hidden_in_the_metadata_block(metadata):
     exc = RuntimeError("original")
     exc.add_note(note)
     with pytest.raises(AssertionError):
-        _assert_unconfirmed(exc, _FakeCaplog(note + " upload_error=OSError"))
+        _assert_unconfirmed(exc, _caplog_for(note))
 
 
 async def test_guard_rejects_an_unlisted_claim_appended_to_the_note():
@@ -582,7 +632,7 @@ async def test_guard_rejects_an_unlisted_claim_appended_to_the_note():
     exc = RuntimeError("original")
     exc.add_note(note)
     with pytest.raises(AssertionError):
-        _assert_unconfirmed(exc, _FakeCaplog(note + " upload_error=OSError"))
+        _assert_unconfirmed(exc, _caplog_for(note))
 
 
 async def test_guard_rejects_an_unlisted_claim_appended_to_the_log_line():
@@ -595,7 +645,8 @@ async def test_guard_rejects_an_unlisted_claim_appended_to_the_log_line():
         _assert_unconfirmed(
             exc,
             _FakeCaplog(
-                note + " upload_error=OSError; the failed transition was committed"
+                EVIDENCE_SOURCE_LOG,
+                note + " upload_error=OSError; the failed transition was committed",
             ),
         )
 
@@ -611,4 +662,46 @@ async def test_guard_accepts_the_real_site_log_note_shape():
     )
     exc = RuntimeError("original")
     exc.add_note(note)
-    _assert_unconfirmed(exc, _FakeCaplog(note + " upload_error=OSError"))
+    _assert_unconfirmed(
+        exc,
+        _FakeCaplog(
+            SITE_LOG_SOURCE_LOG,
+            note + " upload_error=OSError",
+            name="app.services.site_log",
+        ),
+    )
+
+
+async def test_guard_rejects_a_second_note_that_asserts_an_outcome():
+    """An extra note is not covered by the marker-based checks, so only the
+    completeness assertion can reject it (Codex round 8)."""
+    note = _diagnosis(SANCTIONED_DISJUNCTIONS[1])
+    exc = RuntimeError("original")
+    exc.add_note(note)
+    exc.add_note("The failed transition was committed; the database write is confirmed.")
+    with pytest.raises(AssertionError):
+        _assert_unconfirmed(exc, _caplog_for(note))
+
+
+async def test_guard_rejects_an_extra_error_record_that_asserts_an_outcome():
+    note = _diagnosis(SANCTIONED_DISJUNCTIONS[1])
+    exc = RuntimeError("original")
+    exc.add_note(note)
+    with pytest.raises(AssertionError):
+        _assert_unconfirmed(
+            exc,
+            _caplog_for(
+                note,
+                "The failed transition was committed; the database write is confirmed.",
+            ),
+        )
+
+
+async def test_guard_rejects_a_missing_service_upload_failure_record():
+    """The complete expected output includes the service's own
+    upload-failure line; dropping it must not pass unnoticed."""
+    note = _diagnosis(SANCTIONED_DISJUNCTIONS[1])
+    exc = RuntimeError("original")
+    exc.add_note(note)
+    with pytest.raises(AssertionError):
+        _assert_unconfirmed(exc, _FakeCaplog(note + " upload_error=OSError"))
