@@ -113,9 +113,12 @@ source failure is still an unhandled 500) while the row is immediately
 retryable rather than stuck ``pending``. The adoption reads ``exists`` /
 ``open`` that ``services/site_log.py`` performs inside its ``except
 ObjectAlreadyExists`` handler are inside that same failure boundary.
-Honest limits: a process death, a cancellation, or a failure of the
-bookkeeping write itself still leaves the row ``pending`` for the admin
-reset path (RESET_MIN_AGE). Still A2a.2 scope (design A5 / B6 / B11):
+Honest limits: a process death or a cancellation still leaves the row
+``pending`` for the admin reset path (RESET_MIN_AGE); if the bookkeeping
+write itself fails, its persistence outcome is unconfirmed — the row is
+either ``failed`` (the commit landed and only its acknowledgement was
+lost) or still ``pending``, and the services say exactly that rather than
+asserting one. Still A2a.2 scope (design A5 / B6 / B11):
 removing the adoption branch, and the persisted ``failure_class`` /
 ``failure_code`` columns that replace the audit-only reason recorded today.
 

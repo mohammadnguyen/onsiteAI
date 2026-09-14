@@ -1107,14 +1107,17 @@ async def _fail_upload_attempt(
     pinned by tests. A late failure from a superseded attempt is therefore a
     no-write return and cannot touch a newer attempt.
 
-    If the bookkeeping itself fails, the transition is NOT committed: the
-    rows it touched were written inside the caller's transaction, which the
-    failed commit leaves unusable until it is rolled back (the request path
-    discards it), so the attachment is still ``pending`` and recovers through
-    the admin reset. That outcome is logged and attached to ``error`` for
-    diagnosis — never reported as a durable failure. Only the ``size_cap``
-    and ``storage_error`` classes keep their established handling, where such
-    a bookkeeping failure propagates instead of being attached here.
+    If the bookkeeping itself fails, its persistence outcome is UNKNOWN to
+    this function. The exception can arrive before the write was committed
+    (nothing persisted — the attempt is still ``pending`` and recovers
+    through the admin reset) or after the database committed it and only the
+    acknowledgement was lost (the attempt is already ``failed``). Nothing
+    available here distinguishes the two, so the log line and the note
+    attached to ``error`` state the uncertainty instead of asserting either
+    outcome; the row itself is the evidence. No retry, no reset and no
+    further state transition is attempted. Only the ``size_cap`` and
+    ``storage_error`` classes keep their established handling, where such a
+    bookkeeping failure propagates instead of being attached here.
 
     Content-free by rule: identifiers, the reason and exception class names.
     """
@@ -1125,11 +1128,14 @@ async def _fail_upload_attempt(
             detail={"error_class": type(error).__name__},
         )
     except Exception as bookkeeping_error:
+        # Raised before the commit, or after it succeeded and only the
+        # acknowledgement was lost — indistinguishable from here.
         note = (
-            "site_log failed transition NOT persisted "
+            "site_log failed transition persistence UNCONFIRMED "
             f"(event_id={event_id} attachment_id={attachment_id} "
             f"attempt_no={attempt_no} reason=internal_error): "
-            f"{type(bookkeeping_error).__name__}"
+            f"{type(bookkeeping_error).__name__}; the attempt is either "
+            "failed or still pending — read the row to determine which"
         )
         logger.error("%s upload_error=%s", note, type(error).__name__)
         error.add_note(note)

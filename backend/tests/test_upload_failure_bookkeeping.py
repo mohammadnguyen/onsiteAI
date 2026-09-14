@@ -17,7 +17,14 @@ Covered: both services; exception type preserved; local adapter and the
 recording S3 fake; the adoption reads (``exists`` / ``open``) inside the
 failure boundary; a late failure from a superseded attempt; cancellation
 and post-upload failures NOT recorded as upload failures; a bookkeeping
-commit failure that must not claim a durable ``failed``.
+commit failure, whose persistence outcome the service must report as
+unconfirmed rather than claiming either ``failed`` or ``pending``.
+
+The rollback harness used here cannot observe a row that survived a real
+commit, so the durable outcome of BOTH bookkeeping-fault shapes (fault
+before the commit, and fault after a commit that landed) is pinned in
+test_upload_failure_persistence.py against a scratch database read over an
+independent connection.
 """
 
 from __future__ import annotations
@@ -406,7 +413,9 @@ async def test_late_failure_of_superseded_attempt_leaves_new_attempt_intact(
     assert await _ev_status(db_session, row.evidence_id) is EvidenceStatus.stored
     assert await _ev_storage_key(db_session, row.evidence_id) == key_before
     assert await _event_audits(db_session, eid) == audits_before  # no-write return
-    assert not getattr(stale, "__notes__", [])  # nothing was "not persisted"
+    # No diagnosis attached: a no-write return is a definite outcome, not an
+    # unconfirmed one.
+    assert not getattr(stale, "__notes__", [])
 
 
 async def test_post_upload_failure_is_not_recorded_as_upload_failure(  # regression
@@ -464,11 +473,17 @@ async def test_cancellation_leaves_the_row_pending(  # regression
     assert await _ev_audit_actions(db_session, row.evidence_id) == ["uploaded"]
 
 
-async def test_bookkeeping_failure_never_claims_a_persisted_failure(
+async def test_bookkeeping_failure_reports_persistence_as_unconfirmed(
     db_session, seeded_admin, storage, site_log_session_factory, monkeypatch, caplog
 ):
-    """If the failed transition cannot be written, the row stays pending
-    and that is what is reported — the original exception still wins."""
+    """When the bookkeeping commit fails, the service may claim neither a
+    durable ``failed`` nor a surviving ``pending``: it reports the
+    persistence outcome as unconfirmed and the original exception wins.
+
+    This case injects the fault before the commit reaches the database, so
+    the row here is in fact still pending — asserted below AFTER discarding
+    the uncommitted work. test_upload_failure_persistence.py pins both fault
+    shapes against a real committing database."""
     eid, cid = await _declare_one(db_session, storage, site_log_session_factory, seeded_admin)
 
     # Let the REAL _fail_attachment run (so manifest + Evidence + both
@@ -502,9 +517,9 @@ async def test_bookkeeping_failure_never_claims_a_persisted_failure(
         )
 
     notes = getattr(info.value, "__notes__", [])
-    assert any("NOT persisted" in note for note in notes)
+    assert any("persistence UNCONFIRMED" in note for note in notes)
     assert any("RuntimeError" in note for note in notes)
-    assert any("NOT persisted" in r.getMessage() for r in caplog.records)
+    assert any("persistence UNCONFIRMED" in r.getMessage() for r in caplog.records)
     # Nothing was committed: after discarding the uncommitted work the row
     # is still pending, exactly as the contract claims.
     monkeypatch.undo()
@@ -681,7 +696,7 @@ async def test_legacy_evidence_cap_and_storage_paths_unchanged(  # regression
     assert reasons == ["size_cap_exceeded", "storage_error"]
 
 
-async def test_legacy_evidence_bookkeeping_failure_never_claims_persisted(
+async def test_legacy_evidence_bookkeeping_failure_reports_unconfirmed(
     db_session, seeded_admin, storage, monkeypatch, caplog
 ):
     uploader_id = seeded_admin.user_id
@@ -705,8 +720,8 @@ async def test_legacy_evidence_bookkeeping_failure_never_claims_persisted(
             occurred_at=None, original_filename=None, job_id=None, max_bytes=MAX_BYTES,
         )
     notes = getattr(info.value, "__notes__", [])
-    assert any("NOT persisted" in note for note in notes)
-    assert any("NOT persisted" in r.getMessage() for r in caplog.records)
+    assert any("persistence UNCONFIRMED" in note for note in notes)
+    assert any("persistence UNCONFIRMED" in r.getMessage() for r in caplog.records)
     monkeypatch.undo()
     await db_session.rollback()
     ids = (
@@ -852,8 +867,10 @@ async def test_legacy_bookkeeping_flush_failure_does_not_mask_the_source_error(
             occurred_at=None, original_filename=None, job_id=None, max_bytes=MAX_BYTES,
         )
     assert info.value.errno == 5  # the original exception, not a masking one
-    assert any("NOT persisted" in n for n in getattr(info.value, "__notes__", []))
-    assert any("NOT persisted" in r.getMessage() for r in caplog.records)
+    assert any(
+        "persistence UNCONFIRMED" in n for n in getattr(info.value, "__notes__", [])
+    )
+    assert any("persistence UNCONFIRMED" in r.getMessage() for r in caplog.records)
 
     monkeypatch.undo()
     await db_session.rollback()

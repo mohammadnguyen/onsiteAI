@@ -283,16 +283,19 @@ async def create_evidence(
             )
             await db.commit()
         except Exception as bookkeeping_error:
-            # The failed transition was NOT committed. What it touched lives
-            # in this session's transaction, which the failed commit leaves
-            # unusable until it is rolled back (the request path discards
-            # it), so the row is still pending. Say that, and attach it to
-            # the original exception — never report a durable failure that
-            # was not written.
+            # The persistence outcome is UNKNOWN here: this exception can be
+            # raised before the write was committed (nothing persisted — the
+            # row is still pending) or after the database committed it and
+            # only the acknowledgement was lost (the row is already failed).
+            # Nothing available here distinguishes the two, so the log line
+            # and the note state the uncertainty instead of asserting either
+            # outcome; the row itself is the evidence. No retry and no
+            # further state transition is attempted.
             note = (
-                "evidence failed transition NOT persisted "
+                "evidence failed transition persistence UNCONFIRMED "
                 f"(evidence_id={evidence_id}): "
-                f"{type(bookkeeping_error).__name__}"
+                f"{type(bookkeeping_error).__name__}; the row is either "
+                "failed or still pending — read it to determine which"
             )
             logger.error("%s upload_error=%s", note, type(exc).__name__)
             exc.add_note(note)
