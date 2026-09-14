@@ -56,9 +56,14 @@ pytestmark = pytest.mark.asyncio
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 PG_HOST, PG_PORT = "localhost", 5433
 PG_USER = PG_PASS = "sitetracker"
-SCRATCH_DB = "sitetracker_persistence_test"
-SCRATCH_URL = f"postgresql+asyncpg://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{SCRATCH_DB}"
+# One database per fixture invocation: two overlapping runs of this module
+# must not drop or collide with each other's schema (Codex round 7).
+SCRATCH_DB_PREFIX = "sitetracker_persistence_test"
 MAX_BYTES = 1024 * 1024
+
+
+def _scratch_url(db_name: str) -> str:
+    return f"postgresql+asyncpg://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{db_name}"
 
 UNCONFIRMED = "persistence UNCONFIRMED"
 # The one sanctioned way to mention an outcome: an explicit disjunction that
@@ -70,16 +75,28 @@ SANCTIONED_DISJUNCTIONS = (
     "the attempt is either failed or still pending — read the row to determine which",
     "the row is either failed or still pending — read it to determine which",
 )
-# The note is validated as a WHOLE, so no text can be appended after the
-# disjunction at all; the claim scan below is the second line of defence
-# against a reworded diagnosis.
-NOTE_TEMPLATE = re.compile(
-    r"^(?:site_log|evidence) failed transition persistence UNCONFIRMED "
-    r"\([^)]*\): [A-Za-z_][A-Za-z0-9_]*; (?:"
-    + "|".join(re.escape(d) for d in SANCTIONED_DISJUNCTIONS)
-    + r")$"
+# The note is validated as a WHOLE against a per-service template: the
+# metadata block is constrained to identifier fields, so no free text can
+# hide a claim there, and nothing may follow the disjunction. The claim scan
+# below is the second line of defence against a reworded diagnosis.
+_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_CLASS = r"[A-Za-z_][A-Za-z0-9_]*"
+NOTE_TEMPLATES = (
+    re.compile(
+        r"^site_log failed transition persistence UNCONFIRMED "
+        rf"\(event_id={_UUID} attachment_id={_UUID} attempt_no=[1-9][0-9]* "
+        rf"reason=internal_error\): {_CLASS}; "
+        + re.escape(SANCTIONED_DISJUNCTIONS[0])
+        + r"$"
+    ),
+    re.compile(
+        r"^evidence failed transition persistence UNCONFIRMED "
+        rf"\(evidence_id={_UUID}\): {_CLASS}; "
+        + re.escape(SANCTIONED_DISJUNCTIONS[1])
+        + r"$"
+    ),
 )
-LOG_SUFFIX = re.compile(r"^ upload_error=[A-Za-z_][A-Za-z0-9_]*$")
+LOG_SUFFIX = re.compile(rf"^ upload_error={_CLASS}$")
 # Wordings the diagnosis must never use: each asserts an outcome the
 # service cannot know at that point.
 FORBIDDEN_CLAIMS = (
@@ -93,9 +110,9 @@ FORBIDDEN_CLAIMS = (
 )
 
 
-def _alembic(*args: str) -> subprocess.CompletedProcess:
+def _alembic(url: str, *args: str) -> subprocess.CompletedProcess:
     env = dict(os.environ)
-    env["DATABASE_URL"] = SCRATCH_URL
+    env["DATABASE_URL"] = url
     env.pop("ENVIRONMENT", None)
     env.setdefault("APP_ENV", "test")
     return subprocess.run(
@@ -113,22 +130,31 @@ async def _admin_conn():
 
 @pytest.fixture(scope="module")
 async def engine():
+    db_name = f"{SCRATCH_DB_PREFIX}_{uuid.uuid4().hex[:12]}"
+    url = _scratch_url(db_name)
     conn = await _admin_conn()
     try:
-        await conn.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB}"')
-        await conn.execute(f'CREATE DATABASE "{SCRATCH_DB}"')
+        await conn.execute(f'CREATE DATABASE "{db_name}"')
     finally:
         await conn.close()
-    up = _alembic("upgrade", "head")
-    assert up.returncode == 0, f"upgrade failed:\n{up.stdout}\n{up.stderr}"
-    eng = create_async_engine(SCRATCH_URL, pool_size=6, max_overflow=4)
-    yield eng
-    await eng.dispose()
-    conn = await _admin_conn()
+    eng = None
     try:
-        await conn.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB}"')
+        # Inside the try: a migration failure or timeout must still drop the
+        # database this invocation owns.
+        up = _alembic(url, "upgrade", "head")
+        assert up.returncode == 0, f"upgrade failed:\n{up.stdout}\n{up.stderr}"
+        eng = create_async_engine(url, pool_size=6, max_overflow=4)
+        yield eng
     finally:
-        await conn.close()
+        if eng is not None:
+            await eng.dispose()
+        conn = await _admin_conn()
+        try:
+            # FORCE (PG 13+) also evicts a connection left behind by a
+            # failed test, so the drop cannot leak the database.
+            await conn.execute(f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)')
+        finally:
+            await conn.close()
 
 
 @pytest.fixture
@@ -209,9 +235,10 @@ def _assert_unconfirmed(exc: BaseException, caplog) -> None:
     notes = _notes(exc)
     unconfirmed = [n for n in notes if UNCONFIRMED in n]
     assert unconfirmed, notes
-    # Whole-note match: nothing may precede or follow the sanctioned text.
+    # Whole-note match against a constrained template: no free text in the
+    # metadata block, nothing before or after the sanctioned disjunction.
     for note in unconfirmed:
-        assert NOTE_TEMPLATE.match(note), note
+        assert any(t.match(note) for t in NOTE_TEMPLATES), note
 
     messages = [r.getMessage() for r in caplog.records]
     logged = [m for m in messages if UNCONFIRMED in m]
@@ -469,11 +496,11 @@ class _FakeCaplog:
         self.records = [_FakeRecord(m) for m in messages]
 
 
-def _diagnosis(disjunction: str, *, suffix: str = "") -> str:
+def _diagnosis(disjunction: str, *, suffix: str = "", metadata: str | None = None) -> str:
+    inner = metadata or "evidence_id=00000000-0000-0000-0000-000000000000"
     return (
         "evidence failed transition persistence UNCONFIRMED "
-        f"(evidence_id=00000000-0000-0000-0000-000000000000): RuntimeError; "
-        f"{disjunction}{suffix}"
+        f"({inner}): RuntimeError; {disjunction}{suffix}"
     )
 
 
@@ -523,3 +550,65 @@ async def test_guard_rejects_a_diagnosis_that_asserts_instead_of_disjoining():
     exc.add_note(note)
     with pytest.raises(AssertionError):
         _assert_unconfirmed(exc, _FakeCaplog(note + " upload_error=OSError"))
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "the failed transition was committed; "
+        "evidence_id=00000000-0000-0000-0000-000000000000",
+        "evidence_id=00000000-0000-0000-0000-000000000000, write confirmed",
+        "evidence_id=not-a-uuid",
+    ],
+)
+async def test_guard_rejects_a_claim_hidden_in_the_metadata_block(metadata):
+    """Free text inside the parentheses could carry an assertion the
+    forbidden-claim list does not know (Codex round 7). Only the
+    constrained template catches these, so they are mutation coverage for
+    the structural validation itself."""
+    note = _diagnosis(SANCTIONED_DISJUNCTIONS[1], metadata=metadata)
+    exc = RuntimeError("original")
+    exc.add_note(note)
+    with pytest.raises(AssertionError):
+        _assert_unconfirmed(exc, _FakeCaplog(note + " upload_error=OSError"))
+
+
+async def test_guard_rejects_an_unlisted_claim_appended_to_the_note():
+    """Wording outside FORBIDDEN_CLAIMS: only the whole-note template can
+    reject it."""
+    note = _diagnosis(
+        SANCTIONED_DISJUNCTIONS[1], suffix="; the failed transition was committed"
+    )
+    exc = RuntimeError("original")
+    exc.add_note(note)
+    with pytest.raises(AssertionError):
+        _assert_unconfirmed(exc, _FakeCaplog(note + " upload_error=OSError"))
+
+
+async def test_guard_rejects_an_unlisted_claim_appended_to_the_log_line():
+    """Same wording, this time only in the log line: only LOG_SUFFIX can
+    reject it."""
+    note = _diagnosis(SANCTIONED_DISJUNCTIONS[1])
+    exc = RuntimeError("original")
+    exc.add_note(note)
+    with pytest.raises(AssertionError):
+        _assert_unconfirmed(
+            exc,
+            _FakeCaplog(
+                note + " upload_error=OSError; the failed transition was committed"
+            ),
+        )
+
+
+async def test_guard_accepts_the_real_site_log_note_shape():
+    """The site-log template is exercised too, not only the evidence one."""
+    note = (
+        "site_log failed transition persistence UNCONFIRMED "
+        "(event_id=00000000-0000-0000-0000-000000000000 "
+        "attachment_id=11111111-1111-1111-1111-111111111111 "
+        "attempt_no=1 reason=internal_error): RuntimeError; "
+        + SANCTIONED_DISJUNCTIONS[0]
+    )
+    exc = RuntimeError("original")
+    exc.add_note(note)
+    _assert_unconfirmed(exc, _FakeCaplog(note + " upload_error=OSError"))
