@@ -27,14 +27,13 @@ Object keys — contract history (provenance kept on purpose):
   rewritten. Accepted consequence: two attempts storing identical bytes
   produce two distinct objects; the unreferenced one is residue that
   read-only tooling may enumerate and nothing deletes.
-* Known stale references left for the slices that own them (recorded, not
-  silent): ``services/site_log.py: upload_attachment`` still describes an
-  ``ObjectAlreadyExists`` as "identical bytes to an earlier attempt" and
-  adopts the existing object — under FD1 a collision can only be a
-  same-``(evidence_id, attempt_no)`` re-put (e.g. after a database restore
-  rewound the attempt counter), and that adoption branch is removed by
-  A2a.2 (design A5); ``models/evidence.py`` documents the key as
-  "evidence_id + content-hash prefix" without the ``.a{N}`` form.
+* Known stale reference left for the slice that owns it (recorded, not
+  silent): ``models/evidence.py`` documents the key as "evidence_id +
+  content-hash prefix" without the ``.a{N}`` form. (The adoption branch in
+  ``services/site_log.py: _stream_to_storage`` now describes the collision
+  correctly — under FD1 it can only be a same-``(evidence_id, attempt_no)``
+  re-put, e.g. after a database restore rewound the attempt counter — and
+  A2a.2 removes it, design A5.)
 
 Why attempt-scoped keys: a stale writer for attempt N-1 can publish only at
 its own key, so it can never overwrite — or be adopted onto — the key a
@@ -99,24 +98,26 @@ followed by a second one. Only a cleanup that outlives the deadline leaves
 the multipart upload or staging object to the bucket lifecycle policy
 (the existing infra gate for incomplete multipart uploads); no final
 object is affected either way.
-Caller note (a change from the base): before WP-S-core the S3 adapter
-wrapped EVERY source exception into ``EvidenceStorageError`` and the local
-adapter wrapped a source ``OSError``, so the upload services marked the row
-``failed`` (audit reason ``storage_error``, HTTP 502). Now only the two
-size-cap exceptions are handled by those services; any other source
-exception (an I/O error reading the spooled request body — the only
-producer on the current API, since the body is fully spooled before the
-handler runs) reaches the API as an unhandled 500 and leaves the
-Evidence/attachment row ``pending`` — for a Site Log attachment that means
-409 on retry until the admin reset path (RESET_MIN_AGE) frees it. The
-failed-transition bookkeeping for that case is A2a.2 scope (design B6);
-the consequence is recorded here so it is not mistaken for adapter
-behaviour. Also recorded: ``services/site_log.py`` calls ``exists`` /
-``open`` inside its ``except ObjectAlreadyExists`` handler; a classified
-error raised there is not routed through ``_fail_attachment`` (same shape as
-the pre-existing ``ObjectNotFound`` case; reachable only through the
-same-attempt collision described above; closed when A2a.2 removes the
-adoption branch).
+Caller note: before WP-S-core the S3 adapter wrapped EVERY source exception
+into ``EvidenceStorageError`` and the local adapter wrapped a source
+``OSError``, so the upload services marked the row ``failed`` by accident of
+that wrapping. The adapters no longer wrap them — and the two upload
+services (``services/site_log.py``, ``services/evidence.py``) record the
+failed attempt explicitly instead: any non-cap exception out of the upload
+phase, including one raised by the chunk source (an I/O error reading the
+spooled request body — the only producer on the current API, since the body
+is fully spooled before the handler runs), is written as an attempt-checked
+``failed`` transition with reason ``internal_error`` and the ORIGINAL
+exception still propagates, so the HTTP status is unchanged (an ordinary
+source failure is still an unhandled 500) while the row is immediately
+retryable rather than stuck ``pending``. The adoption reads ``exists`` /
+``open`` that ``services/site_log.py`` performs inside its ``except
+ObjectAlreadyExists`` handler are inside that same failure boundary.
+Honest limits: a process death, a cancellation, or a failure of the
+bookkeeping write itself still leaves the row ``pending`` for the admin
+reset path (RESET_MIN_AGE). Still A2a.2 scope (design A5 / B6 / B11):
+removing the adoption branch, and the persisted ``failure_class`` /
+``failure_code`` columns that replace the audit-only reason recorded today.
 
 Two implementations:
 

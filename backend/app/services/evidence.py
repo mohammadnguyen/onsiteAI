@@ -277,9 +277,12 @@ async def create_evidence(
             )
             await db.commit()
         except Exception as bookkeeping_error:
-            # The failed transition did not persist: the row stays pending.
-            # Say so, and attach it to the original exception — never report
-            # a durable failure that was not written.
+            # The failed transition was NOT committed. What it touched lives
+            # in this session's transaction, which the failed commit leaves
+            # unusable until it is rolled back (the request path discards
+            # it), so the row is still pending. Say that, and attach it to
+            # the original exception — never report a durable failure that
+            # was not written.
             note = (
                 "evidence failed transition NOT persisted "
                 f"(evidence_id={evidence.evidence_id}): "

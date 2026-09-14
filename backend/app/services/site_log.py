@@ -824,10 +824,15 @@ async def _fail_attachment(
     attachment_id: uuid.UUID,
     attempt_no: int,
     reason: str,
+    detail: dict | None = None,
 ) -> None:
     """Rows 4/5: manifest pending→failed and Evidence pending→failed,
     atomically, under the global lock order. Commits on write; a
-    superseded or vanished row is a no-write return."""
+    superseded or vanished row is a no-write return.
+
+    ``detail`` merges extra content-free keys (e.g. the exception class of
+    an unexpected failure) into both audit payloads; omitted, the payloads
+    are byte-identical to every earlier caller's."""
     async with _lock_scope(db) as sp:
         event = await _lock_event(db, event_id)
         if event is None:
@@ -850,7 +855,7 @@ async def _fail_attachment(
             db.add(
                 _evidence_audit(
                     ev.evidence_id, actor.user_id, "failed",
-                    {"reason": reason, "attempt_no": attempt_no},
+                    {"reason": reason, "attempt_no": attempt_no, **(detail or {})},
                 )
             )
         db.add(
@@ -859,7 +864,8 @@ async def _fail_attachment(
                 SiteLogAuditAction.attachment_state_changed,
                 {"attachment_client_id": str(att.attachment_client_id),
                  "from": "pending", "to": "failed",
-                 "attempt_no": attempt_no, "reason": reason},
+                 "attempt_no": attempt_no, "reason": reason,
+                 **(detail or {})},
             )
         )
     await db.commit()
@@ -995,16 +1001,19 @@ async def upload_attachment(
             max_bytes=max_bytes,
             attempt_no=attempt_no,
         )
-    except SiteLogTooLarge as exc:
-        await _fail_upload_attempt(
+    except SiteLogTooLarge:
+        # Established handling, unchanged: a failure of the bookkeeping
+        # write itself propagates here rather than being swallowed, so the
+        # client is never told 413 over a row that stayed pending.
+        await _fail_attachment(
             db, actor=user, event_id=event_id, attachment_id=attachment_id,
-            attempt_no=attempt_no, reason="size_cap", error=exc,
+            attempt_no=attempt_no, reason="size_cap",
         )
         raise
-    except EvidenceStorageError as exc:
-        await _fail_upload_attempt(
+    except EvidenceStorageError:
+        await _fail_attachment(
             db, actor=user, event_id=event_id, attachment_id=attachment_id,
-            attempt_no=attempt_no, reason="storage_error", error=exc,
+            attempt_no=attempt_no, reason="storage_error",
         )
         raise
     except Exception as exc:
@@ -1022,7 +1031,7 @@ async def upload_attachment(
         )
         await _fail_upload_attempt(
             db, actor=user, event_id=event_id, attachment_id=attachment_id,
-            attempt_no=attempt_no, reason="internal_error", error=exc,
+            attempt_no=attempt_no, error=exc,
         )
         raise
 
@@ -1085,11 +1094,12 @@ async def _fail_upload_attempt(
     event_id: uuid.UUID,
     attachment_id: uuid.UUID,
     attempt_no: int,
-    reason: str,
     error: BaseException,
 ) -> None:
-    """Record the failed transition for the attempt whose upload phase
-    raised ``error``; the caller then re-raises ``error`` unchanged.
+    """Record the ``internal_error`` failed transition for the attempt whose
+    upload phase raised ``error``; the caller then re-raises the SAME
+    exception object (type and identity preserved — a diagnostic note may be
+    attached to it on the bookkeeping-failure path below).
 
     The write itself is :func:`_fail_attachment` — reused, not reimplemented,
     so the attempt check, the global lock order and the one-commit atomicity
@@ -1097,21 +1107,28 @@ async def _fail_upload_attempt(
     pinned by tests. A late failure from a superseded attempt is therefore a
     no-write return and cannot touch a newer attempt.
 
-    If the bookkeeping itself fails, the row stays ``pending`` for the admin
-    reset path: that is logged as NOT persisted and attached to ``error`` for
-    diagnosis — never reported as a durable failure. Content-free by rule:
-    identifiers, the reason and exception class names only.
+    If the bookkeeping itself fails, the transition is NOT committed: the
+    rows it touched were written inside the caller's transaction, which the
+    failed commit leaves unusable until it is rolled back (the request path
+    discards it), so the attachment is still ``pending`` and recovers through
+    the admin reset. That outcome is logged and attached to ``error`` for
+    diagnosis — never reported as a durable failure. Only the ``size_cap``
+    and ``storage_error`` classes keep their established handling, where such
+    a bookkeeping failure propagates instead of being attached here.
+
+    Content-free by rule: identifiers, the reason and exception class names.
     """
     try:
         await _fail_attachment(
             db, actor=actor, event_id=event_id, attachment_id=attachment_id,
-            attempt_no=attempt_no, reason=reason,
+            attempt_no=attempt_no, reason="internal_error",
+            detail={"error_class": type(error).__name__},
         )
     except Exception as bookkeeping_error:
         note = (
             "site_log failed transition NOT persisted "
             f"(event_id={event_id} attachment_id={attachment_id} "
-            f"attempt_no={attempt_no} reason={reason}): "
+            f"attempt_no={attempt_no} reason=internal_error): "
             f"{type(bookkeeping_error).__name__}"
         )
         logger.error("%s upload_error=%s", note, type(error).__name__)

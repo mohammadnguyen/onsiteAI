@@ -45,8 +45,9 @@ from app.services.evidence_storage import (
     ObjectNotFound,
     StoragePermanentError,
     StorageTransientError,
+    make_object_key,
 )
-from tests.support.s3_fake import fake_s3_storage
+from tests.support.s3_fake import client_error, fake_s3_storage
 
 MAX_BYTES = 1024 * 1024
 
@@ -128,13 +129,30 @@ async def _event_audits(db, event_id) -> int:
     return (await db.execute(q)).scalar_one()
 
 
-async def _assert_failed_recorded(db, event_id, cid, *, attempt_no=1):
-    """The durable state every failed upload attempt must leave behind."""
+async def _assert_failed_recorded(db, event_id, cid, *, attempt_no=1, error_class=None):
+    """The DURABLE state every failed upload attempt must leave behind.
+
+    The rollback first is what makes this a durability assertion: the test
+    harness runs the whole test inside one transaction, so a write that was
+    only flushed (never committed by the service) is still visible to a
+    plain read-back. Rolling back the caller's session discards exactly the
+    uncommitted part, so what survives is what the service committed.
+    """
+    await db.rollback()
     row = await _row(db, event_id, cid)
     assert row.state is AttachmentState.failed
     assert row.upload_attempt_no == attempt_no
     assert await _ev_status(db, row.evidence_id) is EvidenceStatus.failed
     assert await _ev_audit_actions(db, row.evidence_id) == ["uploaded", "failed"]
+    if error_class is not None:
+        details = (
+            await db.execute(
+                select(EvidenceAuditLog.detail).where(
+                    EvidenceAuditLog.evidence_id == row.evidence_id
+                )
+            )
+        ).scalars().all()
+        assert any(d.get("error_class") == error_class for d in details), details
     return row
 
 
@@ -146,8 +164,12 @@ class _CollidingStorage:
 
     backend_name = "local"
 
-    def __init__(self, *, exists_error=None, exists=True, open_error=None, payload=b"adopted"):
-        self.key = f"evidence/{uuid.uuid4()}/deadbeefdeadbeef.a1"
+    def __init__(
+        self, *, exists_error=None, exists=True, open_error=None,
+        open_raises_sync=False, payload=b"adopted",
+    ):
+        self.key = None  # set from the real evidence_id at put time
+        self._open_raises_sync = open_raises_sync
         self._exists_error = exists_error
         self._exists = exists
         self._open_error = open_error
@@ -156,6 +178,10 @@ class _CollidingStorage:
     async def put(self, evidence_id, chunks, *, attempt_no=None):
         async for _ in chunks:
             pass
+        # The collision is at THIS attempt's own key (the only shape FD1
+        # leaves reachable), so the adopted key stays inside the row's own
+        # evidence_id prefix.
+        self.key = make_object_key(str(evidence_id), "de" * 32, attempt_no)
         raise ObjectAlreadyExists(self.key)
 
     async def exists(self, key):
@@ -166,6 +192,9 @@ class _CollidingStorage:
     def open(self, key):
         open_error = self._open_error
         payload = self._payload
+        if open_error is not None and self._open_raises_sync:
+            # LocalEvidenceStorage.open raises before any iteration.
+            raise open_error
 
         async def _iter():
             if open_error is not None:
@@ -194,7 +223,7 @@ async def test_site_log_source_failure_records_failed_and_keeps_type(
     assert not isinstance(info.value, EvidenceStorageError)  # type preserved
     assert info.value.errno == 5
 
-    await _assert_failed_recorded(db_session, eid, cid)
+    await _assert_failed_recorded(db_session, eid, cid, error_class="OSError")
 
 
 async def test_site_log_source_failure_records_failed_on_s3_backend(
@@ -280,7 +309,26 @@ async def test_adoption_read_failure_records_failed(
     await _assert_failed_recorded(db_session, eid, cid)
 
 
-async def test_collision_without_object_still_records_failed(
+async def test_adoption_read_failure_raised_synchronously_records_failed(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """The local adapter raises from ``open`` itself, before iteration."""
+    eid, cid = await _declare_one(db_session, storage, site_log_session_factory, seeded_admin)
+    colliding = _CollidingStorage(
+        open_error=ObjectNotFound("evidence/x/gone"), open_raises_sync=True
+    )
+
+    with pytest.raises(ObjectNotFound):
+        await svc.upload_attachment(
+            db_session, colliding, site_log_session_factory, user=seeded_admin,
+            event_id=eid, attachment_client_id=cid, mime_type="audio/m4a",
+            chunks=_chunks(), max_bytes=MAX_BYTES,
+        )
+
+    await _assert_failed_recorded(db_session, eid, cid)
+
+
+async def test_collision_without_object_still_records_failed(  # regression
     db_session, seeded_admin, storage, site_log_session_factory
 ):
     """Unchanged behaviour: a collision whose object is absent is a
@@ -316,6 +364,7 @@ async def test_successful_adoption_behaviour_unchanged(  # regression
     assert result.attachment.state is AttachmentState.stored
     assert result.evidence.status is EvidenceStatus.stored
     assert result.evidence.storage_key == colliding.key
+    assert colliding.key.startswith(f"evidence/{result.evidence.evidence_id}/")
     assert result.evidence.size_bytes == len(b"adopted bytes")
 
 
@@ -349,8 +398,7 @@ async def test_late_failure_of_superseded_attempt_leaves_new_attempt_intact(
     stale = OSError(5, "late attempt-1 failure")
     await svc._fail_upload_attempt(
         db_session, actor=seeded_admin, event_id=eid,
-        attachment_id=ok.attachment.attachment_id, attempt_no=1,
-        reason="internal_error", error=stale,
+        attachment_id=ok.attachment.attachment_id, attempt_no=1, error=stale,
     )
 
     row = await _row(db_session, eid, cid)
@@ -423,10 +471,29 @@ async def test_bookkeeping_failure_never_claims_a_persisted_failure(
     and that is what is reported — the original exception still wins."""
     eid, cid = await _declare_one(db_session, storage, site_log_session_factory, seeded_admin)
 
-    async def broken(*args, **kwargs):
-        raise RuntimeError("failure commit lost the connection")
+    # Let the REAL _fail_attachment run (so manifest + Evidence + both
+    # audit rows are actually mutated and flushed) and fail only at its
+    # final commit — the exact case the contract describes.
+    real_commit = type(db_session).commit
+    armed = {"on": False}
 
-    monkeypatch.setattr(svc, "_fail_attachment", broken)
+    async def flaky_commit(self):
+        if armed["on"]:
+            armed["on"] = False
+            raise RuntimeError("failure commit lost the connection")
+        return await real_commit(self)
+
+    real_fail = svc._fail_attachment
+
+    async def arming_fail(*args, **kwargs):
+        armed["on"] = True
+        try:
+            return await real_fail(*args, **kwargs)
+        finally:
+            armed["on"] = False
+
+    monkeypatch.setattr(type(db_session), "commit", flaky_commit)
+    monkeypatch.setattr(svc, "_fail_attachment", arming_fail)
     with caplog.at_level("ERROR"), pytest.raises(OSError) as info:
         await svc.upload_attachment(
             db_session, storage, site_log_session_factory, user=seeded_admin,
@@ -438,8 +505,15 @@ async def test_bookkeeping_failure_never_claims_a_persisted_failure(
     assert any("NOT persisted" in note for note in notes)
     assert any("RuntimeError" in note for note in notes)
     assert any("NOT persisted" in r.getMessage() for r in caplog.records)
+    # Nothing was committed: after discarding the uncommitted work the row
+    # is still pending, exactly as the contract claims.
+    monkeypatch.undo()
+    await db_session.rollback()
     row = await _row(db_session, eid, cid)
-    assert row.state is AttachmentState.pending  # honestly still pending
+    assert row.state is AttachmentState.pending
+    assert row.upload_attempt_no == 1
+    assert await _ev_status(db_session, row.evidence_id) is EvidenceStatus.pending
+    assert await _ev_audit_actions(db_session, row.evidence_id) == ["uploaded"]
 
 
 # ------------------------------------------------- cap / storage regressions
@@ -448,8 +522,8 @@ async def test_bookkeeping_failure_never_claims_a_persisted_failure(
 async def test_size_cap_and_storage_error_reasons_unchanged(  # regression
     db_session, seeded_admin, storage, site_log_session_factory
 ):
-    """Established handling for the cap and adapter classes is untouched:
-    both still record failed with their own reason."""
+    """Established handling for the cap and the adapter classes is
+    untouched: both still record failed with their own reason."""
     eid, cid = await _declare_one(db_session, storage, site_log_session_factory, seeded_admin)
     with pytest.raises(svc.SiteLogTooLarge):
         await svc.upload_attachment(
@@ -459,16 +533,16 @@ async def test_size_cap_and_storage_error_reasons_unchanged(  # regression
         )
     row = await _assert_failed_recorded(db_session, eid, cid)
 
-    async def adapter_failure():
-        yield b"partial"
-        raise StorageTransientError("backend down")
-
+    # A real ADAPTER failure (the S3 client raises), not a source exception
+    # that happens to carry a storage type.
+    s3, _ = fake_s3_storage(errors={"create_multipart_upload": client_error("503", 503)})
     with pytest.raises(EvidenceStorageError):
         await svc.upload_attachment(
-            db_session, storage, site_log_session_factory, user=seeded_admin,
+            db_session, s3, site_log_session_factory, user=seeded_admin,
             event_id=eid, attachment_client_id=cid, mime_type="audio/m4a",
-            chunks=adapter_failure(), max_bytes=MAX_BYTES,
+            chunks=_chunks(b"adapter down"), max_bytes=MAX_BYTES,
         )
+    await db_session.rollback()
     row = await _row(db_session, eid, cid)
     assert row.state is AttachmentState.failed and row.upload_attempt_no == 2
 
@@ -527,6 +601,7 @@ async def test_legacy_evidence_source_failure_records_failed(
 ):
     """The legacy upload path records the failure too (before the fix the
     row stayed pending with only the 'uploaded' audit)."""
+    uploader_id = seeded_admin.user_id  # read before any rollback expires it
     with pytest.raises(OSError) as info:
         await evidence_service.create_evidence(
             db_session, storage,
@@ -541,15 +616,18 @@ async def test_legacy_evidence_source_failure_records_failed(
     assert not isinstance(info.value, EvidenceStorageError)
     assert info.value.errno == 5
 
-    rows = (
+    await db_session.rollback()  # only committed state survives (see TV-1)
+    ids = (
         await db_session.execute(
-            select(Evidence).where(Evidence.uploaded_by_user_id == seeded_admin.user_id)
+            select(Evidence.evidence_id).where(
+                Evidence.uploaded_by_user_id == uploader_id
+            )
         )
     ).scalars().all()
-    assert len(rows) == 1
-    assert rows[0].status is EvidenceStatus.failed
-    assert rows[0].storage_key is None
-    assert await _ev_audit_actions(db_session, rows[0].evidence_id) == ["uploaded", "failed"]
+    assert len(ids) == 1
+    assert await _ev_status(db_session, ids[0]) is EvidenceStatus.failed
+    assert await _ev_storage_key(db_session, ids[0]) is None
+    assert await _ev_audit_actions(db_session, ids[0]) == ["uploaded", "failed"]
 
 
 async def test_legacy_evidence_source_failure_audit_is_content_free(
@@ -606,12 +684,16 @@ async def test_legacy_evidence_cap_and_storage_paths_unchanged(  # regression
 async def test_legacy_evidence_bookkeeping_failure_never_claims_persisted(
     db_session, seeded_admin, storage, monkeypatch, caplog
 ):
+    uploader_id = seeded_admin.user_id
     real_commit = type(db_session).commit
     calls = {"n": 0}
 
     async def flaky_commit(self):
         calls["n"] += 1
-        if calls["n"] == 2:  # Txn 1 commits; the failure commit does not
+        if calls["n"] == 2:  # Txn 1 commits; the failure commit does not.
+            # The handler has already mutated evidence.status and added the
+            # audit row, so this is a commit failure after the writes exist
+            # in the session — the rollback below must discard them.
             raise RuntimeError("failure commit lost the connection")
         return await real_commit(self)
 
@@ -625,3 +707,118 @@ async def test_legacy_evidence_bookkeeping_failure_never_claims_persisted(
     notes = getattr(info.value, "__notes__", [])
     assert any("NOT persisted" in note for note in notes)
     assert any("NOT persisted" in r.getMessage() for r in caplog.records)
+    monkeypatch.undo()
+    await db_session.rollback()
+    ids = (
+        await db_session.execute(
+            select(Evidence.evidence_id).where(
+                Evidence.uploaded_by_user_id == uploader_id
+            )
+        )
+    ).scalars().all()
+    assert len(ids) == 1
+    assert await _ev_status(db_session, ids[0]) is EvidenceStatus.pending
+    assert await _ev_audit_actions(db_session, ids[0]) == ["uploaded"]
+
+
+async def test_legacy_evidence_source_failure_records_failed_on_s3_backend(
+    db_session, seeded_admin
+):
+    """The legacy path over the staging/production backend: same durable
+    record, and this attempt's staging upload is aborted."""
+    uploader_id = seeded_admin.user_id
+    s3, state = fake_s3_storage()
+    with pytest.raises(OSError):
+        await evidence_service.create_evidence(
+            db_session, s3,
+            uploader=seeded_admin, chunks=_source_os_error(), mime_type="audio/m4a",
+            occurred_at=None, original_filename=None, job_id=None, max_bytes=MAX_BYTES,
+        )
+    await db_session.rollback()
+    ids = (
+        await db_session.execute(
+            select(Evidence.evidence_id).where(
+                Evidence.uploaded_by_user_id == uploader_id
+            )
+        )
+    ).scalars().all()
+    assert len(ids) == 1
+    assert await _ev_status(db_session, ids[0]) is EvidenceStatus.failed
+    assert await _ev_audit_actions(db_session, ids[0]) == ["uploaded", "failed"]
+    assert len(state.aborts) == 1
+
+
+async def test_legacy_evidence_cancellation_leaves_the_row_pending(  # regression
+    db_session, seeded_admin, storage
+):
+    uploader_id = seeded_admin.user_id
+    started = asyncio.Event()
+
+    async def stalled():
+        yield b"first"
+        started.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(
+        evidence_service.create_evidence(
+            db_session, storage,
+            uploader=seeded_admin, chunks=stalled(), mime_type="audio/m4a",
+            occurred_at=None, original_filename=None, job_id=None, max_bytes=MAX_BYTES,
+        )
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await db_session.rollback()
+    ids = (
+        await db_session.execute(
+            select(Evidence.evidence_id).where(
+                Evidence.uploaded_by_user_id == uploader_id
+            )
+        )
+    ).scalars().all()
+    assert len(ids) == 1
+    assert await _ev_status(db_session, ids[0]) is EvidenceStatus.pending
+    assert await _ev_audit_actions(db_session, ids[0]) == ["uploaded"]
+
+
+async def test_api_source_failure_is_still_an_unhandled_500(  # regression
+    db_session, admin_token
+):
+    """The approved contract: an ordinary source failure keeps its status —
+    500, not the 502 an adapter failure gets or the 409 a stuck row gave."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.api.evidence import get_evidence_storage
+    from app.database import get_db
+    from app.main import app
+
+    class _SourceKillingStorage:
+        backend_name = "local"
+
+        async def put(self, evidence_id, chunks, *, attempt_no=None):
+            async for _ in chunks:
+                break
+            raise OSError(5, "Input/output error")
+
+    async def _override_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_evidence_storage] = _SourceKillingStorage
+    # raise_app_exceptions=False so the unhandled exception is observed as
+    # the 500 a real server returns, instead of being re-raised in the test.
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as api:
+            resp = await api.post(
+                "/evidence",
+                files={"file": ("capture.m4a", b"bytes", "audio/m4a")},
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+    finally:
+        app.dependency_overrides.pop(get_evidence_storage, None)
+        app.dependency_overrides.pop(get_db, None)
+    assert resp.status_code == 500
