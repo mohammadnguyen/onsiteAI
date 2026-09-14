@@ -250,6 +250,44 @@ async def create_evidence(
             exc,
         )
         raise
+    except Exception as exc:
+        # Anything else raised by the upload phase — in practice an exception
+        # from the chunk SOURCE (reading the spooled request body), which the
+        # storage adapter re-raises unchanged (WP-S(4)). The pending row is
+        # recorded failed here and the ORIGINAL exception still propagates:
+        # an ordinary source failure stays an unhandled 500 at the API.
+        # ``asyncio.CancelledError`` is a BaseException and is NOT caught —
+        # a cancelled upload keeps the existing recovery rule (row stays
+        # pending). Only the class name is recorded: a raw message can carry
+        # a filesystem path or other caller-supplied content.
+        logger.error(
+            "evidence upload failed (source) evidence_id=%s error=%s",
+            evidence.evidence_id,
+            type(exc).__name__,
+        )
+        try:
+            evidence.status = EvidenceStatus.failed
+            db.add(
+                _audit(
+                    evidence.evidence_id,
+                    uploader,
+                    "failed",
+                    {"reason": "internal_error", "error_class": type(exc).__name__},
+                )
+            )
+            await db.commit()
+        except Exception as bookkeeping_error:
+            # The failed transition did not persist: the row stays pending.
+            # Say so, and attach it to the original exception — never report
+            # a durable failure that was not written.
+            note = (
+                "evidence failed transition NOT persisted "
+                f"(evidence_id={evidence.evidence_id}): "
+                f"{type(bookkeeping_error).__name__}"
+            )
+            logger.error("%s upload_error=%s", note, type(exc).__name__)
+            exc.add_note(note)
+        raise
 
     evidence.status = EvidenceStatus.stored
     evidence.size_bytes = stored.size_bytes
