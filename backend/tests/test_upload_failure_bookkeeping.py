@@ -822,3 +822,47 @@ async def test_api_source_failure_is_still_an_unhandled_500(  # regression
         app.dependency_overrides.pop(get_evidence_storage, None)
         app.dependency_overrides.pop(get_db, None)
     assert resp.status_code == 500
+
+
+async def test_legacy_bookkeeping_flush_failure_does_not_mask_the_source_error(
+    db_session, seeded_admin, storage, monkeypatch, caplog
+):
+    """A bookkeeping commit that fails INSIDE its flush rolls back and
+    expires the Evidence instance. The handler must still report the
+    original upload exception, so it may not read an ORM attribute of that
+    expired instance while building its diagnosis."""
+    uploader_id = seeded_admin.user_id
+    real_commit = type(db_session).commit
+    calls = {"n": 0}
+
+    async def expiring_commit(self):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            # What a failed flush leaves behind: the instance is expired, so
+            # any later attribute read would need IO and would raise.
+            self.expire_all()
+            raise RuntimeError("flush failed inside commit")
+        return await real_commit(self)
+
+    monkeypatch.setattr(type(db_session), "commit", expiring_commit)
+    with caplog.at_level("ERROR"), pytest.raises(OSError) as info:
+        await evidence_service.create_evidence(
+            db_session, storage,
+            uploader=seeded_admin, chunks=_source_os_error(), mime_type="audio/m4a",
+            occurred_at=None, original_filename=None, job_id=None, max_bytes=MAX_BYTES,
+        )
+    assert info.value.errno == 5  # the original exception, not a masking one
+    assert any("NOT persisted" in n for n in getattr(info.value, "__notes__", []))
+    assert any("NOT persisted" in r.getMessage() for r in caplog.records)
+
+    monkeypatch.undo()
+    await db_session.rollback()
+    ids = (
+        await db_session.execute(
+            select(Evidence.evidence_id).where(
+                Evidence.uploaded_by_user_id == uploader_id
+            )
+        )
+    ).scalars().all()
+    assert len(ids) == 1
+    assert await _ev_status(db_session, ids[0]) is EvidenceStatus.pending

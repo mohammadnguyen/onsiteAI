@@ -260,16 +260,22 @@ async def create_evidence(
         # a cancelled upload keeps the existing recovery rule (row stays
         # pending). Only the class name is recorded: a raw message can carry
         # a filesystem path or other caller-supplied content.
+        #
+        # The id is read ONCE, before the bookkeeping write: a commit that
+        # fails inside its flush rolls back and expires this instance, so
+        # reading ``evidence.evidence_id`` afterwards would raise and mask
+        # the original exception this handler exists to preserve.
+        evidence_id = evidence.evidence_id
         logger.error(
             "evidence upload failed (source) evidence_id=%s error=%s",
-            evidence.evidence_id,
+            evidence_id,
             type(exc).__name__,
         )
         try:
             evidence.status = EvidenceStatus.failed
             db.add(
                 _audit(
-                    evidence.evidence_id,
+                    evidence_id,
                     uploader,
                     "failed",
                     {"reason": "internal_error", "error_class": type(exc).__name__},
@@ -285,7 +291,7 @@ async def create_evidence(
             # was not written.
             note = (
                 "evidence failed transition NOT persisted "
-                f"(evidence_id={evidence.evidence_id}): "
+                f"(evidence_id={evidence_id}): "
                 f"{type(bookkeeping_error).__name__}"
             )
             logger.error("%s upload_error=%s", note, type(exc).__name__)
