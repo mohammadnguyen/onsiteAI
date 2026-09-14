@@ -250,6 +250,56 @@ async def create_evidence(
             exc,
         )
         raise
+    except Exception as exc:
+        # Anything else raised by the upload phase — in practice an exception
+        # from the chunk SOURCE (reading the spooled request body), which the
+        # storage adapter re-raises unchanged (WP-S(4)). The pending row is
+        # recorded failed here and the ORIGINAL exception still propagates:
+        # an ordinary source failure stays an unhandled 500 at the API.
+        # ``asyncio.CancelledError`` is a BaseException and is NOT caught —
+        # a cancelled upload keeps the existing recovery rule (row stays
+        # pending). Only the class name is recorded: a raw message can carry
+        # a filesystem path or other caller-supplied content.
+        #
+        # The id is read ONCE, before the bookkeeping write: a commit that
+        # fails inside its flush rolls back and expires this instance, so
+        # reading ``evidence.evidence_id`` afterwards would raise and mask
+        # the original exception this handler exists to preserve.
+        evidence_id = evidence.evidence_id
+        logger.error(
+            "evidence upload failed (source) evidence_id=%s error=%s",
+            evidence_id,
+            type(exc).__name__,
+        )
+        try:
+            evidence.status = EvidenceStatus.failed
+            db.add(
+                _audit(
+                    evidence_id,
+                    uploader,
+                    "failed",
+                    {"reason": "internal_error", "error_class": type(exc).__name__},
+                )
+            )
+            await db.commit()
+        except Exception as bookkeeping_error:
+            # The persistence outcome is UNKNOWN here: this exception can be
+            # raised before the write was committed (nothing persisted — the
+            # row is still pending) or after the database committed it and
+            # only the acknowledgement was lost (the row is already failed).
+            # Nothing available here distinguishes the two, so the log line
+            # and the note state the uncertainty instead of asserting either
+            # outcome; the row itself is the evidence. No retry and no
+            # further state transition is attempted.
+            note = (
+                "evidence failed transition persistence UNCONFIRMED "
+                f"(evidence_id={evidence_id}): "
+                f"{type(bookkeeping_error).__name__}; the row is either "
+                "failed or still pending — read it to determine which"
+            )
+            logger.error("%s upload_error=%s", note, type(exc).__name__)
+            exc.add_note(note)
+        raise
 
     evidence.status = EvidenceStatus.stored
     evidence.size_bytes = stored.size_bytes

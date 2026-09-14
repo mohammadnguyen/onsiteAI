@@ -74,6 +74,20 @@ alone.
 | `REFRESH_TOKEN_EXPIRE_DAYS` | no (default `30`) | `app.core.security` | |
 | `CORS_ALLOWED_ORIGINS` | yes (non-dev) | `app.config.Settings`, `app.main` | Comma-separated. See format spec below. |
 | `ENVIRONMENT` | no (deprecated) | `app.config.Settings` | Only for legacy / migration; do not set in new files. |
+| `EVIDENCE_STORAGE_BACKEND` | yes (`s3` forced in staging/production) | `app.config.Settings`, `app.services.evidence_storage` | `local` is development/test only. |
+| `EVIDENCE_LOCAL_ROOT` | when `local` | `app.services.evidence_storage` | Filesystem root for the local adapter. |
+| `EVIDENCE_S3_ENDPOINT_URL`, `EVIDENCE_S3_BUCKET` | when `s3` | `app.services.evidence_storage` | Tigris endpoint + bucket; credentials come from the standard `AWS_*` secrets. |
+| `EVIDENCE_MAX_UPLOAD_BYTES` | no (default 25 MiB) | `app.config.Settings` | Per-upload byte cap. |
+
+Evidence storage precondition (WP-S-core, 2026-09-14): the S3 adapter now
+classifies storage errors instead of swallowing them. Before a `put` copies
+to the final key it issues a HEAD on that key and proceeds only on a
+confirmed `404`; a `403` (credentials without bucket-list rights on AWS-style
+policies) or any 5xx/unrecognised answer fails the upload with a classified
+error instead of silently proceeding as before. Deployment check for every
+environment that switches to this code: with the configured credentials, a
+one-off `head_object` on a guaranteed-missing key in the bucket must return
+`404`. Not yet recorded for Tigris (UNVERIFIED until the staging check runs).
 
 ### Admin
 

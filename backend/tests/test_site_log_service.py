@@ -325,9 +325,12 @@ async def test_upload_binds_evidence_before_bytes(
     assert not up.replay
     assert up.attachment.state is AttachmentState.stored
     assert up.evidence.status is EvidenceStatus.stored
+    # WP-S-core (FD1): attempt-numbered uploads bind an attempt-scoped key.
+    assert up.attachment.upload_attempt_no == 1
     assert up.evidence.storage_key == make_object_key(
-        str(up.evidence.evidence_id), up.evidence.sha256
+        str(up.evidence.evidence_id), up.evidence.sha256, 1
     )
+    assert up.evidence.storage_key.endswith(".a1")
 
 
 async def test_retry_reuses_bound_evidence_and_increments_attempt(

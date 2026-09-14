@@ -824,10 +824,15 @@ async def _fail_attachment(
     attachment_id: uuid.UUID,
     attempt_no: int,
     reason: str,
+    detail: dict | None = None,
 ) -> None:
     """Rows 4/5: manifest pending→failed and Evidence pending→failed,
     atomically, under the global lock order. Commits on write; a
-    superseded or vanished row is a no-write return."""
+    superseded or vanished row is a no-write return.
+
+    ``detail`` merges extra content-free keys (e.g. the exception class of
+    an unexpected failure) into both audit payloads; omitted, the payloads
+    are byte-identical to every earlier caller's."""
     async with _lock_scope(db) as sp:
         event = await _lock_event(db, event_id)
         if event is None:
@@ -850,7 +855,7 @@ async def _fail_attachment(
             db.add(
                 _evidence_audit(
                     ev.evidence_id, actor.user_id, "failed",
-                    {"reason": reason, "attempt_no": attempt_no},
+                    {"reason": reason, "attempt_no": attempt_no, **(detail or {})},
                 )
             )
         db.add(
@@ -859,7 +864,8 @@ async def _fail_attachment(
                 SiteLogAuditAction.attachment_state_changed,
                 {"attachment_client_id": str(att.attachment_client_id),
                  "from": "pending", "to": "failed",
-                 "attempt_no": attempt_no, "reason": reason},
+                 "attempt_no": attempt_no, "reason": reason,
+                 **(detail or {})},
             )
         )
     await db.commit()
@@ -981,21 +987,24 @@ async def upload_attachment(
 
     attachment_id = att.attachment_id
     evidence_id = evidence.evidence_id
+    # UPLOAD PHASE ONLY. Everything after this block (Txn B, the refreshes)
+    # is outside it on purpose: a completion or commit failure, and a row
+    # whose bytes are already stored, must never be recorded as an upload
+    # failure. ``asyncio.CancelledError`` is a BaseException and is not
+    # caught anywhere here — a cancelled or killed attempt keeps the
+    # existing recovery rule (row stays pending, admin reset ≥ 15 min).
     try:
-        stored = await storage.put(
-            str(evidence_id), _capped(chunks, max_bytes), attempt_no=attempt_no
+        stored = await _stream_to_storage(
+            storage,
+            evidence_id=evidence_id,
+            chunks=chunks,
+            max_bytes=max_bytes,
+            attempt_no=attempt_no,
         )
-    except ObjectAlreadyExists as exc:
-        # Identical bytes to an earlier attempt: adopt the existing object.
-        key = str(exc)
-        if not await storage.exists(key):
-            await _fail_attachment(
-                db, actor=user, event_id=event_id, attachment_id=attachment_id,
-                attempt_no=attempt_no, reason="storage_error",
-            )
-            raise EvidenceStorageError("collision without object") from exc
-        stored = await _adopt(storage, key)
     except SiteLogTooLarge:
+        # Established handling, unchanged: a failure of the bookkeeping
+        # write itself propagates here rather than being swallowed, so the
+        # client is never told 413 over a row that stayed pending.
         await _fail_attachment(
             db, actor=user, event_id=event_id, attachment_id=attachment_id,
             attempt_no=attempt_no, reason="size_cap",
@@ -1005,6 +1014,24 @@ async def upload_attachment(
         await _fail_attachment(
             db, actor=user, event_id=event_id, attachment_id=attachment_id,
             attempt_no=attempt_no, reason="storage_error",
+        )
+        raise
+    except Exception as exc:
+        # Anything else the upload phase raised — in practice an exception
+        # from the chunk SOURCE (reading the spooled request body), which
+        # the storage adapter re-raises unchanged (WP-S(4)). Record the
+        # attempt as failed, then let the ORIGINAL exception propagate: it
+        # stays unhandled at the API (500), exactly as before this change.
+        # ``internal_error`` is the A2a.2 code for unexpected non-adapter
+        # failures (design B6/B11), so no new reason string is introduced.
+        logger.error(
+            "site_log upload source failure event_id=%s attachment_id=%s "
+            "attempt_no=%d error=%s",
+            event_id, attachment_id, attempt_no, type(exc).__name__,
+        )
+        await _fail_upload_attempt(
+            db, actor=user, event_id=event_id, attachment_id=attachment_id,
+            attempt_no=attempt_no, error=exc,
         )
         raise
 
@@ -1023,6 +1050,95 @@ async def upload_attachment(
     await db.refresh(att)
     await db.refresh(evidence)
     return UploadResult(attachment=att, evidence=evidence, replay=False)
+
+
+async def _stream_to_storage(
+    storage: EvidenceStorage,
+    *,
+    evidence_id: uuid.UUID,
+    chunks: AsyncIterator[bytes],
+    max_bytes: int,
+    attempt_no: int,
+) -> StoredObject:
+    """The upload phase of one attempt, as ONE failure boundary.
+
+    Streams this attempt's bytes and, on a collision at this attempt's own
+    key, adopts the existing object. The adoption reads (``exists`` /
+    ``open``) are inside the boundary on purpose: since WP-S(1) they raise
+    classified errors instead of answering ``False`` / ``ObjectNotFound``,
+    and every one of those failures must reach the caller's failed-attempt
+    bookkeeping rather than escape from inside an exception handler.
+
+    Under attempt-scoped final keys (WP-S-core, FD1) an
+    ``ObjectAlreadyExists`` here is no longer the identical-bytes retry
+    this branch was written for — it can only be a re-put of the same
+    ``(evidence_id, attempt_no)``, i.e. an anomaly after a database restore
+    rewound the attempt counter. A2a.2 replaces the branch with an explicit
+    held failure (design A5 / B6); it is kept as-is in this slice.
+    """
+    try:
+        return await storage.put(
+            str(evidence_id), _capped(chunks, max_bytes), attempt_no=attempt_no
+        )
+    except ObjectAlreadyExists as exc:
+        key = str(exc)
+        if not await storage.exists(key):
+            raise EvidenceStorageError("collision without object") from exc
+        return await _adopt(storage, key)
+
+
+async def _fail_upload_attempt(
+    db: AsyncSession,
+    *,
+    actor: User,
+    event_id: uuid.UUID,
+    attachment_id: uuid.UUID,
+    attempt_no: int,
+    error: BaseException,
+) -> None:
+    """Record the ``internal_error`` failed transition for the attempt whose
+    upload phase raised ``error``; the caller then re-raises the SAME
+    exception object (type and identity preserved — a diagnostic note may be
+    attached to it on the bookkeeping-failure path below).
+
+    The write itself is :func:`_fail_attachment` — reused, not reimplemented,
+    so the attempt check, the global lock order and the one-commit atomicity
+    of manifest + Evidence + both audit rows are exactly the ones already
+    pinned by tests. A late failure from a superseded attempt is therefore a
+    no-write return and cannot touch a newer attempt.
+
+    If the bookkeeping itself fails, its persistence outcome is UNKNOWN to
+    this function. The exception can arrive before the write was committed
+    (nothing persisted — the attempt is still ``pending`` and recovers
+    through the admin reset) or after the database committed it and only the
+    acknowledgement was lost (the attempt is already ``failed``). Nothing
+    available here distinguishes the two, so the log line and the note
+    attached to ``error`` state the uncertainty instead of asserting either
+    outcome; the row itself is the evidence. No retry, no reset and no
+    further state transition is attempted. Only the ``size_cap`` and
+    ``storage_error`` classes keep their established handling, where such a
+    bookkeeping failure propagates instead of being attached here.
+
+    Content-free by rule: identifiers, the reason and exception class names.
+    """
+    try:
+        await _fail_attachment(
+            db, actor=actor, event_id=event_id, attachment_id=attachment_id,
+            attempt_no=attempt_no, reason="internal_error",
+            detail={"error_class": type(error).__name__},
+        )
+    except Exception as bookkeeping_error:
+        # Raised before the commit, or after it succeeded and only the
+        # acknowledgement was lost — indistinguishable from here.
+        note = (
+            "site_log failed transition persistence UNCONFIRMED "
+            f"(event_id={event_id} attachment_id={attachment_id} "
+            f"attempt_no={attempt_no} reason=internal_error): "
+            f"{type(bookkeeping_error).__name__}; the attempt is either "
+            "failed or still pending — read the row to determine which"
+        )
+        logger.error("%s upload_error=%s", note, type(error).__name__)
+        error.add_note(note)
 
 
 async def _adopt(storage: EvidenceStorage, key: str) -> StoredObject:
