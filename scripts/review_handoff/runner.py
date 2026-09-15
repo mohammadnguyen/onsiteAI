@@ -24,15 +24,16 @@ Two low-level properties matter throughout:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .process_tree import ProcessTree, TreeKill
+from .process_tree import ContainmentError, ProcessTree, TreeKill
 
 # A brief that says "python" means the interpreter running this workflow, not
 # whatever happens to be first on PATH. Without this a run inside a virtual
@@ -91,6 +92,11 @@ class CommandResult:
     log_path: Path | None = None
     killed_tree: bool = False
     kill_detail: str = ""
+    # sha256 of the archived log, recorded when it is written. The run's own
+    # directory is excluded from the tree fingerprint, so without this a
+    # deleted or rewritten piece of evidence is invisible to every later
+    # check.
+    log_digest: str = ""
 
     @property
     def ok(self) -> bool:
@@ -156,10 +162,33 @@ def run_command(
             timed_out=False,
             log_path=log_path,
         )
-        _archive(result, cwd, b"", result.stderr.encode("utf-8"))
-        return result
+        digest = _archive(result, cwd, b"", result.stderr.encode("utf-8"))
+        return replace(result, log_digest=digest)
 
-    tree.adopt(proc)
+    try:
+        tree.adopt(proc)
+    except ContainmentError as exc:
+        # Fail closed. A child that could not be contained must not be
+        # allowed to run: its workers would be unreachable at timeout and
+        # could outlive the gate's hold on the shared database.
+        try:
+            proc.kill()
+            proc.communicate(timeout=30)
+        except (OSError, subprocess.TimeoutExpired):  # pragma: no cover
+            pass
+        tree.close()
+        result = CommandResult(
+            argv=list(argv),
+            exit_code=None,
+            stdout="",
+            stderr=f"refusing to run {argv[0]!r}: its process tree could not be "
+            f"contained ({exc}), so a timeout could not reliably stop it",
+            duration_seconds=time.monotonic() - started,
+            timed_out=False,
+            log_path=log_path,
+        )
+        digest = _archive(result, cwd, b"", result.stderr.encode("utf-8"))
+        return replace(result, log_digest=digest)
     lost_output = False
     try:
         try:
@@ -210,14 +239,18 @@ def run_command(
         killed_tree=kill.delivered,
         kill_detail=kill.detail or kill.method,
     )
-    _archive(result, cwd, out or b"", err or b"")
-    return result
+    digest = _archive(result, cwd, out or b"", err or b"")
+    return replace(result, log_digest=digest)
 
 
-def _archive(result: CommandResult, cwd: Path, out: bytes, err: bytes) -> None:
-    """Write the child's bytes to the log unchanged, under a UTF-8 header."""
+def _archive(result: CommandResult, cwd: Path, out: bytes, err: bytes) -> str:
+    """Write the child's bytes to the log unchanged, under a UTF-8 header.
+
+    Returns the sha256 of what was written, so a later check can tell that
+    the evidence is still the evidence.
+    """
     if result.log_path is None:
-        return
+        return ""
     result.log_path.parent.mkdir(parents=True, exist_ok=True)
     header = (
         f"$ {' '.join(result.argv)}\n"
@@ -229,7 +262,9 @@ def _archive(result: CommandResult, cwd: Path, out: bytes, err: bytes) -> None:
     body = out
     if err.strip():
         body = body + b"\n--- stderr ---\n" + err
-    result.log_path.write_bytes(header + body)
+    payload = header + body
+    result.log_path.write_bytes(payload)
+    return hashlib.sha256(payload).hexdigest()
 
 
 def run_gate_commands(

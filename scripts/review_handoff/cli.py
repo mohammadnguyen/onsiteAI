@@ -55,6 +55,7 @@ from .state import (
     RunState,
     StateError,
     dirty_paths,
+    file_digest,
     git_output,
     head_sha,
     is_ancestor,
@@ -218,6 +219,45 @@ def _budget_block(state: RunState) -> str | None:
 
 def _records(state: RunState) -> list[Finding]:
     return [Finding(**f) for f in state.findings]
+
+
+def _evidence_block(state: RunState) -> str:
+    """Whether every archived artefact is still there, and still itself.
+
+    The run directory is excluded from the tree fingerprint — it has to be,
+    or writing a gate log would invalidate the approval that log supports —
+    which means deleting or rewriting the evidence moved nothing any other
+    check looks at. A delivery could then cite raw output that is not there.
+    Each file's digest is recorded when it is written, and checked here.
+    """
+    problems: list[str] = []
+    for record in state.rounds:
+        for channel, path in record.raw_paths.items():
+            expected = (record.raw_digests or {}).get(channel)
+            if not expected:
+                continue  # nothing was archived for that channel
+            actual = file_digest(Path(path))
+            if not actual:
+                problems.append(f"review {record.number} [{channel}] is missing: {path}")
+            elif actual != expected:
+                problems.append(f"review {record.number} [{channel}] was modified: {path}")
+    for index, gate in enumerate(state.gates, start=1):
+        for command in gate.get("commands", []):
+            path, expected = command.get("log"), command.get("log_sha256")
+            if not path or not expected:
+                continue
+            actual = file_digest(Path(path))
+            if not actual:
+                problems.append(f"gate {index} log is missing: {path}")
+            elif actual != expected:
+                problems.append(f"gate {index} log was modified: {path}")
+    if not problems:
+        return ""
+    return (
+        "the archived evidence no longer matches what was recorded, so the "
+        "run cannot show what it was judged on: " + "; ".join(problems[:6])
+        + (f" (+{len(problems) - 6} more)" if len(problems) > 6 else "")
+    )
 
 
 def _release_block(state: RunState) -> str | None:
@@ -533,6 +573,7 @@ def _gate_locked(
                 "exit_code": r.exit_code,
                 "timed_out": r.timed_out,
                 "killed_tree": r.killed_tree,
+                "log_sha256": r.log_digest,
                 "duration_seconds": round(r.duration_seconds, 1),
                 "log": str(r.log_path) if r.log_path else None,
             }
@@ -653,6 +694,11 @@ def _review(args: argparse.Namespace, run_dir: Path, state: RunState, brief: Bri
     # the tree digest would happily bind the resulting approval to that
     # uncommitted work. Reviewing a dirty tree therefore produces an approval
     # describing code nobody read.
+    missing_evidence = _evidence_block(state)
+    if missing_evidence:
+        _emit(f"BLOCKED: {missing_evidence}")
+        return EXIT_BLOCKED
+
     dirty = dirty_paths(repo_root, exclude)
     if dirty:
         shown = ", ".join(dirty[:8]) + (f" (+{len(dirty) - 8} more)" if len(dirty) > 8 else "")
@@ -777,6 +823,7 @@ def _review(args: argparse.Namespace, run_dir: Path, state: RunState, brief: Bri
         usable=verdict.usable,
         reason=verdict.reason,
         raw_paths={c: str(p) for c, p in raw_paths.items()},
+        raw_digests={c: r.log_digest for c, r in results.items()},
         exit_codes={c: r.exit_code for c, r in results.items()},
         duration_seconds=round(sum(r.duration_seconds for r in results.values()), 1),
     )
@@ -864,6 +911,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "findings_recorded": len(state.findings),
         "findings_blocking_unresolved": len(blockers),
         "release_block": _release_block(state) or "",
+        "evidence_block": _evidence_block(state) or "",
         "gates_run": len(state.gates),
         "last_gate_passed": bool(state.gates and state.gates[-1]["passed"]),
     }
@@ -920,7 +968,7 @@ def _finish(args: argparse.Namespace, run_dir: Path, state: RunState) -> int:
         # must still be the newest one and must still have passed, the
         # approval itself must have landed inside the run's time budget, and
         # no blocking finding from EITHER channel may still be open.
-        release = _release_block(state)
+        release = _release_block(state) or _evidence_block(state)
         if not state.gate_supports(passing):
             blocking_reason = (
                 "the newest verification run did not pass on the reviewed inputs; "

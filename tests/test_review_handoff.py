@@ -2990,3 +2990,210 @@ def test_two_starts_cannot_race_on_one_run_directory(
     finally:
         held.release()
     assert _start(repo, monkeypatch, brief, run_dir) == cli.EXIT_OK
+
+
+# =======================================================================
+# Third pass: what the REAL reviewer found in the second one, over both
+# channels (run .claude/handoff/self-v3, review 02).
+# =======================================================================
+
+
+def test_deleting_the_archived_evidence_blocks_the_delivery(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The run directory is excluded from the tree fingerprint - it has to
+    be, or writing a gate log would invalidate the approval that log
+    supports - so deleting the evidence moved nothing any other check looks
+    at, and a delivery could cite raw output that is not there."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    _triage_all(repo, monkeypatch, run_dir)
+    assert state.load_state(run_dir).passing_round(repo, (run_dir,)) is not None
+
+    archived = Path(state.load_state(run_dir).rounds[0].raw_paths[runner.CHANNEL_FINDINGS])
+    archived.unlink()
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+def test_replacing_the_archived_evidence_blocks_the_delivery(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Rewriting it is worse than deleting it: the file is still there, so
+    only its content can give it away."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    _triage_all(repo, monkeypatch, run_dir)
+
+    archived = Path(state.load_state(run_dir).rounds[0].raw_paths[runner.CHANNEL_VERDICT])
+    archived.write_text("a much more flattering review\n", encoding="utf-8")
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+def test_a_missing_gate_log_blocks_the_next_review(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The reviewer is pointed at the gate logs; handing it a path to a file
+    that no longer exists is what this workflow was built to stop doing."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    log = Path(state.load_state(run_dir).gates[-1]["commands"][0]["log"])
+    log.unlink()
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    assert state.load_state(run_dir).review_count == 0
+
+
+def _worker_pair(tmp_path: Path, beat: Path, immediate: bool):
+    """A launcher that spawns a worker, and the worker.
+
+    ``immediate`` makes the launcher spawn before doing anything else, which
+    is the ordering that escapes a job assigned after the child is already
+    running.
+    """
+    worker = tmp_path / "worker.py"
+    worker.write_text(
+        "import time\n"
+        "from pathlib import Path\n"
+        f"target = Path(r\'\'\'{beat}\'\'\')\n"
+        "for i in range(3000):\n"
+        "    target.write_text(str(i))\n"
+        "    time.sleep(0.1)\n",
+        encoding="utf-8",
+    )
+    launcher = tmp_path / "launcher.py"
+    launcher.write_text(
+        "import subprocess, sys, time\n"
+        f"subprocess.Popen([sys.executable, r\'\'\'{worker}\'\'\'],\n"
+        "                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        + ("" if immediate else "time.sleep(0.2)\n")
+        + "sys.exit(0)\n",
+        encoding="utf-8",
+    )
+    return launcher
+
+
+def _wait_until_started(beat: Path, seconds: float = 10.0) -> None:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if beat.exists():
+            return
+        time.sleep(0.05)
+    raise AssertionError("the worker never started; the test proves nothing")
+
+
+def test_a_worker_left_behind_by_a_successful_command_is_still_cleaned_up(
+    repo: Path, tmp_path
+):
+    """A command can exit 0 with its worker redirected away from the pipes,
+    so nothing times out and communicate() returns at once. That worker would
+    keep using the shared database after the gate released its lock - the
+    failure the lock exists to prevent, arriving by another route."""
+    beat = tmp_path / "beat.txt"
+    launcher = _worker_pair(tmp_path, beat, immediate=False)
+    result = runner.run_command(
+        [sys.executable, str(launcher)],
+        cwd=repo,
+        timeout_seconds=30,
+        log_path=tmp_path / "cmd.log",
+    )
+    assert result.ok  # the command itself succeeded
+    _wait_until_started(beat)
+    settled = beat.read_text()
+    time.sleep(1.0)
+    assert beat.read_text() == settled, "the leftover worker outlived the command"
+
+
+def test_a_worker_spawned_before_adoption_is_still_contained(repo: Path, tmp_path, monkeypatch):
+    """Containment must happen before the child can execute. Adoption is
+    delayed here deliberately, which is the scheduling the reviewer inferred:
+    a child already running can spawn a worker that no later assignment
+    enrols."""
+    beat = tmp_path / "beat.txt"
+    launcher = _worker_pair(tmp_path, beat, immediate=True)
+
+    original = runner.ProcessTree.adopt
+
+    def slow_adopt(self, proc):
+        time.sleep(1.0)  # the window a running child would use
+        return original(self, proc)
+
+    monkeypatch.setattr(runner.ProcessTree, "adopt", slow_adopt)
+    result = runner.run_command(
+        [sys.executable, str(launcher)],
+        cwd=repo,
+        timeout_seconds=30,
+        log_path=tmp_path / "cmd.log",
+    )
+    assert result.ok
+    if not beat.exists():
+        return  # the worker never ran at all; nothing escaped either way
+    settled = beat.read_text()
+    time.sleep(1.0)
+    assert beat.read_text() == settled, "a worker spawned before adoption escaped"
+
+
+def test_a_child_that_cannot_be_contained_is_not_allowed_to_run(repo: Path, tmp_path, monkeypatch):
+    """Fail closed: releasing an uncontained child would silently give back
+    the guarantee the containment exists to provide."""
+    marker = tmp_path / "ran.txt"
+    script = tmp_path / "script.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        f"Path(r\'\'\'{marker}\'\'\').write_text('it ran')\n",
+        encoding="utf-8",
+    )
+
+    def refuse(self, proc):
+        raise runner.ContainmentError("simulated containment failure")
+
+    monkeypatch.setattr(runner.ProcessTree, "adopt", refuse)
+    result = runner.run_command(
+        [sys.executable, str(script)],
+        cwd=repo,
+        timeout_seconds=30,
+        log_path=tmp_path / "cmd.log",
+    )
+    assert not result.ok
+    assert "could not be contained" in result.stderr
+    time.sleep(0.5)
+    assert not marker.exists(), "the uncontained child was allowed to run"
+
+
+def test_a_run_recorded_before_evidence_digests_existed_still_loads(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Adding a defaulted field must not orphan a run in flight.
+
+    Bumping the schema for it did exactly that here - the live run became
+    unreadable mid-flight, turning a safety rule into the outage it exists to
+    prevent. An older round carries no digest and is reported as
+    unverifiable, never as verified.
+    """
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    _triage_all(repo, monkeypatch, run_dir)
+
+    # Rewrite the state exactly as an older version would have written it.
+    raw = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    for round_record in raw["rounds"]:
+        round_record.pop("raw_digests")
+    for gate in raw["gates"]:
+        for command in gate["commands"]:
+            command.pop("log_sha256", None)
+    (run_dir / "run.json").write_text(json.dumps(raw, indent=2), encoding="utf-8")
+
+    reloaded = state.load_state(run_dir)
+    assert reloaded.rounds[0].raw_digests == {}
+    # It still delivers - the evidence is simply not verifiable for that
+    # round, which is different from failing verification.
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_OK

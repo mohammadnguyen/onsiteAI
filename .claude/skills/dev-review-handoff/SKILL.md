@@ -123,7 +123,8 @@ the run.
 
 ## What never counts as a pass
 
-A plugin call that failed. A missing or empty result. No structured result
+Archived evidence that has been deleted or rewritten. A plugin call that
+failed. A missing or empty result. No structured result
 and no verdict line, or two verdicts that disagree. A structured finding
 that cannot be read. A round where one channel did not complete. A verdict
 that describes an older tree. A failing verification command. An untriaged

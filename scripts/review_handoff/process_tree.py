@@ -7,19 +7,25 @@ the run believes them dead.
 
 Two platform mechanisms, both scoped to processes this run created:
 
-* **Windows: a job object.** The child is put in a job at spawn time with
-  ``KILL_ON_JOB_CLOSE``, so terminating the job takes every descendant with
-  it, and closing the job at the end catches anything left behind. This is
-  used instead of ``taskkill /T`` because ``taskkill`` walks the live parent
-  chain: once the direct child has exited, its orphaned grandchildren are no
-  longer reachable from its PID and the kill silently does nothing. That is
-  the common case, not a corner case — a launcher usually exits first.
+* **Windows: a job object, joined before the child runs.** The child is
+  created SUSPENDED, assigned to a job with ``KILL_ON_JOB_CLOSE``, and only
+  then resumed. Assigning after the child is already running is a race: a
+  fast launcher can spawn a worker in that window, and an existing descendant
+  is not retroactively enrolled — so the job would report a clean kill while
+  the escaped worker kept using the database. Containment failure is fatal:
+  the suspended child is killed rather than released uncontained.
 * **POSIX: a process group.** The child is spawned with
-  ``start_new_session``, and the whole group is signalled. The group outlives
-  its leader, so this works after the direct child has exited too.
+  ``start_new_session``, so it leads its own group from its first
+  instruction, and the whole group is signalled. The group outlives its
+  leader, so this reaches workers after the direct child has exited.
 
-``taskkill`` remains the fallback for a Windows build where the job API is
-unavailable, with its limitation recorded rather than hidden.
+Cleanup is symmetric on both platforms: closing the tree kills whatever is
+still in it, so a command that exited normally but left a worker behind
+cannot outlive the gate's hold on the shared database.
+
+``taskkill`` is not used. It walks the live parent chain, so once the direct
+child has exited its orphans are unreachable from that PID — which is the
+common case, not a corner case.
 """
 
 from __future__ import annotations
@@ -36,8 +42,12 @@ if _IS_WINDOWS:  # pragma: no cover - exercised on Windows only
     import ctypes
     from ctypes import wintypes
 
+    _CREATE_SUSPENDED = 0x00000004
     _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
     _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+    _TH32CS_SNAPTHREAD = 0x00000004
+    _THREAD_SUSPEND_RESUME = 0x0002
+    _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
     class _IO_COUNTERS(ctypes.Structure):
         _fields_ = [
@@ -72,6 +82,21 @@ if _IS_WINDOWS:  # pragma: no cover - exercised on Windows only
             ("PeakJobMemoryUsed", ctypes.c_size_t),
         ]
 
+    class _THREADENTRY32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ThreadID", wintypes.DWORD),
+            ("th32OwnerProcessID", wintypes.DWORD),
+            ("tpBasePri", ctypes.c_long),
+            ("tpDeltaPri", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+        ]
+
+
+class ContainmentError(RuntimeError):
+    """A child could not be contained, so it was not allowed to run."""
+
 
 @dataclass
 class TreeKill:
@@ -83,115 +108,173 @@ class TreeKill:
     detail: str = ""
 
 
+def _resume_process(pid: int) -> int:  # pragma: no cover - Windows only
+    """Resume every thread of a freshly created suspended process.
+
+    ``Popen`` closes the primary thread handle before returning, so the
+    thread is reached through a snapshot instead. A process created suspended
+    has exactly one thread, but every thread is resumed regardless rather
+    than assuming that.
+    """
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.OpenThread.restype = wintypes.HANDLE
+    snapshot = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
+    if not snapshot or snapshot == _INVALID_HANDLE_VALUE:
+        raise ContainmentError(
+            f"could not enumerate threads to resume pid {pid} "
+            f"({ctypes.get_last_error()})"
+        )
+    resumed = 0
+    try:
+        entry = _THREADENTRY32()
+        entry.dwSize = ctypes.sizeof(_THREADENTRY32)
+        if not kernel32.Thread32First(snapshot, ctypes.byref(entry)):
+            raise ContainmentError(f"no threads found for pid {pid}")
+        while True:
+            if entry.th32OwnerProcessID == pid:
+                handle = kernel32.OpenThread(
+                    _THREAD_SUSPEND_RESUME, False, entry.th32ThreadID
+                )
+                if handle:
+                    kernel32.ResumeThread(handle)
+                    kernel32.CloseHandle(handle)
+                    resumed += 1
+            if not kernel32.Thread32Next(snapshot, ctypes.byref(entry)):
+                break
+    finally:
+        kernel32.CloseHandle(snapshot)
+    if resumed == 0:
+        raise ContainmentError(f"no thread of pid {pid} could be resumed")
+    return resumed
+
+
 class ProcessTree:
-    """Owns the kill mechanism for ONE subprocess and its descendants."""
+    """Owns the containment and kill mechanism for ONE subprocess."""
 
     def __init__(self) -> None:
         self._job = None
+        self._pgid: int | None = None
 
     # ---------------------------------------------------------------- spawn
     def popen_kwargs(self) -> dict:
         if _IS_WINDOWS:
-            return {}
-        # Its own session and process group, so the whole tree can be
-        # signalled at once — and so the group survives its leader.
+            # Created suspended so that nothing it spawns can escape the job.
+            return {"creationflags": _CREATE_SUSPENDED}
+        # Its own session and process group from the first instruction, so
+        # the whole tree can be signalled at once and the group survives its
+        # leader.
         return {"start_new_session": True}
 
     def adopt(self, proc: subprocess.Popen) -> None:
-        """Put a just-spawned child under this object's control."""
+        """Contain a just-spawned child, then let it run.
+
+        Raises :class:`ContainmentError` if it cannot be contained. The
+        caller must kill the child in that case: releasing an uncontained
+        process would silently give back the guarantee this class exists to
+        provide.
+        """
         if not _IS_WINDOWS:
+            self._pgid = proc.pid  # start_new_session makes the child the leader
             return
-        try:  # pragma: no cover - Windows only
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-            job = kernel32.CreateJobObjectW(None, None)
-            if not job:
-                return
-            info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-            info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            if not kernel32.SetInformationJobObject(
-                job,
-                _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
-                ctypes.byref(info),
-                ctypes.sizeof(info),
-            ):
-                kernel32.CloseHandle(job)
-                return
-            if not kernel32.AssignProcessToJobObject(job, int(proc._handle)):
-                kernel32.CloseHandle(job)
-                return
-            self._job = job
-        except (OSError, AttributeError, ValueError):
-            self._job = None
+        self._assign_job(proc)  # pragma: no cover - Windows only
+        _resume_process(proc.pid)  # pragma: no cover - Windows only
+
+    def _assign_job(self, proc: subprocess.Popen) -> None:  # pragma: no cover
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            raise ContainmentError(
+                f"CreateJobObject failed ({ctypes.get_last_error()})"
+            )
+        info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+            job,
+            _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ):
+            error = ctypes.get_last_error()
+            kernel32.CloseHandle(job)
+            raise ContainmentError(f"SetInformationJobObject failed ({error})")
+        if not kernel32.AssignProcessToJobObject(job, int(proc._handle)):
+            error = ctypes.get_last_error()
+            kernel32.CloseHandle(job)
+            raise ContainmentError(f"AssignProcessToJobObject failed ({error})")
+        self._job = job
 
     # ----------------------------------------------------------------- kill
     def kill(self, proc: subprocess.Popen) -> TreeKill:
         """Terminate the tree. Safe to call after the direct child exited."""
         if _IS_WINDOWS:
-            return self._kill_windows(proc)
-        return self._kill_posix(proc)
+            return self._kill_windows()  # pragma: no cover - Windows only
+        return self._kill_posix()
 
-    def _kill_windows(self, proc: subprocess.Popen) -> TreeKill:  # pragma: no cover
-        if self._job is not None:
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            ok = kernel32.TerminateJobObject(self._job, 1)
-            return TreeKill(
-                attempted=True,
-                delivered=bool(ok),
-                method="job-object",
-                detail="" if ok else f"TerminateJobObject failed ({ctypes.get_last_error()})",
-            )
-        if proc.poll() is not None:
-            # taskkill walks the LIVE parent chain, so with the direct child
-            # already gone its orphans cannot be reached from this PID. Say
-            # so rather than reporting a kill that did not happen.
+    def _kill_windows(self) -> TreeKill:  # pragma: no cover - Windows only
+        if self._job is None:
             return TreeKill(
                 attempted=False,
                 delivered=False,
-                method="taskkill",
-                detail="the direct child had already exited and no job object was "
-                "available, so any surviving descendants could not be reached",
+                method="job-object",
+                detail="the child was never contained",
             )
-        result = subprocess.run(
-            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-            capture_output=True,
-            timeout=60,
-            check=False,
-        )
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        ok = kernel32.TerminateJobObject(self._job, 1)
         return TreeKill(
             attempted=True,
-            delivered=result.returncode == 0,
-            method="taskkill",
-            detail=(result.stderr or b"").decode("utf-8", "replace").strip(),
+            delivered=bool(ok),
+            method="job-object",
+            detail="" if ok else f"TerminateJobObject failed ({ctypes.get_last_error()})",
         )
 
-    def _kill_posix(self, proc: subprocess.Popen) -> TreeKill:
+    def _kill_posix(self) -> TreeKill:
+        if self._pgid is None:
+            return TreeKill(
+                attempted=False,
+                delivered=False,
+                method="killpg",
+                detail="the child was never contained",
+            )
         # Deliberately NOT guarded by proc.poll(): the process group outlives
         # its leader, and the surviving members are exactly what has to die.
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
+            os.killpg(self._pgid, signal.SIGKILL)
             return TreeKill(attempted=True, delivered=True, method="killpg")
         except ProcessLookupError:
             return TreeKill(
                 attempted=True, delivered=False, method="killpg", detail="no such group"
             )
         except (PermissionError, OSError) as exc:
-            try:
-                proc.kill()
-            except OSError:
-                pass
             return TreeKill(
                 attempted=True, delivered=False, method="killpg", detail=str(exc)
             )
 
     # ---------------------------------------------------------------- close
     def close(self) -> None:
-        """Release the job handle.
+        """Release the tree, killing anything still in it.
 
-        With KILL_ON_JOB_CLOSE this also kills anything still in the job, so
-        a command that exited normally but left a daemon behind does not
-        leave it running against the shared database.
+        Symmetric on both platforms, and it has to be: a command that exited
+        normally while leaving a worker behind would otherwise keep using the
+        shared database after the gate released its lock — which is the
+        failure the lock exists to prevent, arriving by another route.
         """
-        if _IS_WINDOWS and self._job is not None:  # pragma: no cover - Windows only
-            ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(self._job)
-        self._job = None
+        if _IS_WINDOWS:  # pragma: no cover - Windows only
+            if self._job is not None:
+                # KILL_ON_JOB_CLOSE: closing the last handle kills the rest.
+                ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(self._job)
+            self._job = None
+            return
+        if self._pgid is None:
+            return
+        pgid, self._pgid = self._pgid, None
+        try:
+            if pgid == os.getpgid(0):
+                return  # start_new_session did not take; never signal our own group
+        except OSError:  # pragma: no cover - getpgid on a platform without it
+            return
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass

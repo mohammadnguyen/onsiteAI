@@ -25,9 +25,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 STATE_FILENAME = "run.json"
-# Bump whenever a stored field is added, removed or changes meaning. An
-# unbumped change makes an older run die with a TypeError deep in the loader
-# instead of the clear "start a new run" that load_state raises.
+# Bump when a change is INCOMPATIBLE: a field removed, a field whose meaning
+# changes, or one added without a default. An unbumped incompatible change
+# makes an older run die with a TypeError deep in the loader instead of the
+# clear "start a new run" that load_state raises.
+#
+# A purely additive field WITH a default is compatible and must not be
+# bumped for. Bumping orphans every run in flight, including the one doing
+# the upgrade - which happened here: adding raw_digests as version 4 made
+# the live run unreadable mid-flight, turning a safety rule into the outage
+# it exists to prevent. An older record simply has no digests, and anything
+# reading them treats "not recorded" as "not verifiable", never as "verified".
 SCHEMA_VERSION = 3
 
 
@@ -246,6 +254,16 @@ class RoundRecord:
     raw_paths: dict[str, str]
     exit_codes: dict[str, int | None]
     duration_seconds: float
+    # sha256 of each archived channel log, taken when it was written. The
+    # run directory is excluded from the tree fingerprint - it has to be, or
+    # writing a log would invalidate the approval that log supports - so
+    # deleting or rewriting the evidence is otherwise invisible to every
+    # later check, and a delivery could claim raw output that is not there.
+    #
+    # Defaulted, so a run recorded before this existed still loads. Rounds
+    # from such a run carry no digest and are reported as unverifiable
+    # rather than as verified.
+    raw_digests: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -401,6 +419,14 @@ def _read_state_text(path: Path, attempts: int = 5) -> str:
             last = exc
             time.sleep(0.05 * (attempt + 1))
     raise last  # pragma: no cover - only reached when every attempt failed
+
+
+def file_digest(path: Path) -> str:
+    """sha256 of a file, or "" when it cannot be read."""
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return ""
 
 
 def text_digest(text: str) -> str:

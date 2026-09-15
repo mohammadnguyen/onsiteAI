@@ -83,7 +83,11 @@ silently the moment anything is committed.
 
 The run's own artefacts are excluded from that digest. A run directory
 inside the repository would otherwise become part of the fingerprint of the
-code it measures.
+code it measures. That exclusion has a cost, so it is paid for separately:
+every archived log is hashed when it is written and checked before the next
+review and before delivery. Without that, deleting or rewriting the evidence
+moved nothing any check looked at, and a delivery could cite raw output that
+was not there.
 
 ### 5. Everything ambiguous fails closed
 
@@ -154,13 +158,21 @@ failures in this repository. A held lock is never forced and no holder
 process is ever signalled; breaking a lock left by a crashed session is an
 explicit flag and is recorded in the run.
 
-A command's own subprocess tree is terminated on timeout, so a killed gate
-leaves no worker still writing to that shared database. Only processes the
-run itself started are touched. The mechanism is a job object on Windows and
-the process group on POSIX, both of which reach a worker whose launcher has
-already exited — `taskkill /T` walks the live parent chain and cannot, which
-is the common case rather than a corner case, since a launcher usually exits
-first.
+A command's own subprocess tree is contained BEFORE it runs and terminated
+with it, so a gate leaves no worker still writing to that shared database.
+Only processes the run itself started are touched.
+
+The mechanism is a job object on Windows and the process group on POSIX.
+Both reach a worker whose launcher has already exited — `taskkill /T` walks
+the live parent chain and cannot, which is the common case rather than a
+corner case, since a launcher usually exits first. On Windows the child is
+created suspended and resumed only once it is in the job: assigning a child
+that is already running is a race, and a descendant it spawned first is
+never retroactively enrolled. A child that cannot be contained is killed
+rather than released. Cleanup is symmetric on both platforms — a command
+that exits normally while leaving a worker behind would otherwise keep using
+the database after the gate released its lock, which is the failure the lock
+exists to prevent arriving by another route.
 
 ## Rejected alternatives
 

@@ -107,9 +107,16 @@ PostgreSQL instance at once; a second run queues. Every command that changes
 an existing run holds that run's own lock — `start` does not, since there is
 no run yet. A held lock is reported with its holder and never forced.
 
-A timed-out command takes its whole subprocess tree with it: a job object on
-Windows, the process group on POSIX. Both reach a worker whose launcher has
-already exited, which `taskkill /T` cannot.
+A command's subprocess tree is contained before it runs — a job object on
+Windows (the child is created suspended and resumed once it is enrolled),
+the process group on POSIX — and is torn down with it, on timeout **and** on
+normal exit. Both mechanisms reach a worker whose launcher has already
+exited, which `taskkill /T` cannot. A command whose tree cannot be contained
+is refused rather than run.
+
+Every archived log is hashed when written and checked before the next review
+and before delivery, because the run directory is excluded from the tree
+fingerprint and its contents would otherwise be free to change.
 
 ## Limits of this workflow
 
