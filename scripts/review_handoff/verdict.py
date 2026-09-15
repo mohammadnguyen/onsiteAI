@@ -224,14 +224,17 @@ def read_channel(
             expects_verdict,
         )
 
+    # The schema has already confined this to its own enum. This map is the
+    # separate question of what THIS workflow does with each value, and it
+    # fails closed if a future protocol version adds one: a verdict nobody
+    # has decided how to act on is not an approval.
     word = structured["verdict"].strip().lower()
     mapped = _STRUCTURED_VERDICTS.get(word)
-    if mapped is None:
+    if mapped is None:  # pragma: no cover - unreachable until the enum widens
         return _not_ok(
-            "unrecognised structured verdict",
-            "the reviewer's structured result carries an unrecognised verdict "
-            f"{structured['verdict']!r}; the protocol allows only "
-            + " or ".join(sorted(_STRUCTURED_VERDICTS)),
+            "a protocol verdict this workflow cannot act on",
+            f"the protocol permits the verdict {structured['verdict']!r}, but this "
+            "workflow has no rule for it; decide what it means before acting on it",
             expects_verdict,
         )
     verdict = Verdict(mapped, True, f"reviewer reported {mapped} (structured result)")

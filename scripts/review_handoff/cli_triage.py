@@ -31,7 +31,7 @@ from .findings import (
 )
 from .locking import LockBusy
 from .runner import REVIEW_CHANNELS
-from .state import StateError, load_state, utc_now
+from .state import StateError, linked_chain, load_state, utc_now
 
 
 def _load(args: argparse.Namespace):
@@ -102,6 +102,28 @@ def cmd_findings_record(args: argparse.Namespace) -> int:
             )
             return EXIT_MISUSE
 
+        duplicate_of = (args.duplicate_of or "").strip()
+        if duplicate_of:
+            target = next((f for f in state.findings if f["id"] == duplicate_of), None)
+            if target is None:
+                emit(
+                    f"MISUSE: no finding {duplicate_of!r} in this run to link to; a "
+                    "duplicate must point at a record that exists here"
+                )
+                return EXIT_MISUSE
+            if target.get("duplicate_of"):
+                emit(
+                    f"MISUSE: {duplicate_of} is itself a duplicate of "
+                    f"{target['duplicate_of']}; link to the primary record instead"
+                )
+                return EXIT_MISUSE
+            if target["channel"] == args.channel:
+                emit(
+                    f"MISUSE: {duplicate_of} is on the same channel; a duplicate "
+                    "links the SAME defect seen by a DIFFERENT channel"
+                )
+                return EXIT_MISUSE
+
         new = Finding(
             id=finding_id(args.round, args.channel, args.title, args.file or "", args.line),
             round=args.round,
@@ -113,6 +135,7 @@ def cmd_findings_record(args: argparse.Namespace) -> int:
             body=(args.body or "").strip(),
             recommendation=(args.recommendation or "").strip(),
             source=SOURCE_AGENT,
+            duplicate_of=duplicate_of,
             out_of_scope=bool(args.out_of_scope),
             disposition=AWAITING if args.out_of_scope else "pending",
             note="reported as necessary but outside the approved scope"
@@ -126,7 +149,12 @@ def cmd_findings_record(args: argparse.Namespace) -> int:
         state.findings.append(new.to_dict())
         state.save(run_dir)
         emit(f"recorded {new.one_line()}")
-        if new.blocking:
+        if duplicate_of:
+            emit(
+                f"linked to {duplicate_of}: the same defect seen by two channels, "
+                "kept as two pieces of evidence and counted as one item"
+            )
+        elif new.blocking:
             emit("this finding BLOCKS delivery until it is fixed or refuted")
         if new.out_of_scope:
             emit(
@@ -211,8 +239,43 @@ def cmd_findings_resolve(args: argparse.Namespace) -> int:
     try:
         target = next((f for f in state.findings if f["id"] == args.id), None)
         if target is None:
-            emit(f"MISUSE: no finding {args.id!r} in this run")
-            return EXIT_MISUSE
+            # It may belong to a run earlier in the chain. That record is left
+            # exactly as it is - rewriting it would destroy the history it
+            # exists to hold - and the disposition is recorded HERE instead,
+            # as the separate evidence that the item was dealt with later.
+            origin = None
+            for _, older in linked_chain(state).runs:
+                if any(f["id"] == args.id for f in older.findings):
+                    origin = older
+                    break
+            if origin is None:
+                emit(f"MISUSE: no finding {args.id!r} in this run or anywhere behind it")
+                return EXIT_MISUSE
+            if any(
+                entry["origin_run"] == origin.run_id and entry["finding_id"] == args.id
+                for entry in state.carried_resolutions
+            ):
+                emit(f"MISUSE: {args.id} already has a disposition recorded in this run")
+                return EXIT_MISUSE
+            state.carried_resolutions.append(
+                {
+                    "origin_run": origin.run_id,
+                    "finding_id": args.id,
+                    "disposition": args.disposition,
+                    "note": args.note.strip(),
+                    "at": utc_now().isoformat(timespec="seconds"),
+                }
+            )
+            state.save(run_dir)
+            emit(
+                f"{args.id} (raised in {origin.run_id}): {args.disposition} — "
+                f"{args.note.strip()}"
+            )
+            emit(
+                f"recorded here; {origin.run_id}'s own record is unchanged and still "
+                "says what it said"
+            )
+            return EXIT_OK
         if target.get("out_of_scope") and args.disposition in RESOLVED_DISPOSITIONS:
             emit(
                 f"BLOCKED: {args.id} is marked out of the approved scope. This run "
@@ -270,6 +333,12 @@ def add_findings_parser(sub, lock_arguments) -> None:
     record.add_argument("--line", type=int)
     record.add_argument("--body", default="")
     record.add_argument("--recommendation", default="")
+    record.add_argument(
+        "--duplicate-of",
+        default="",
+        help="the id of the SAME defect already recorded from the other "
+        "channel; both records are kept and the pair counts as one item",
+    )
     record.add_argument(
         "--out-of-scope",
         action="store_true",

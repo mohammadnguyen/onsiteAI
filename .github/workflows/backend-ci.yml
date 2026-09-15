@@ -37,7 +37,10 @@ jobs:
           python-version: "3.12"
 
       - name: Install pinned tooling
-        run: pip install "pytest>=9,<10" "ruff==0.15.11"
+        # jsonschema validates the reviewer protocol. CI has no plugin, so it
+        # validates against the copy vendored in scripts/review_handoff/protocol,
+        # pinned there by plugin version and digest - the whole check runs offline.
+        run: pip install "pytest>=9,<10" "ruff==0.15.11" "jsonschema==4.26.0"
 
       - name: Ruff (calibration tooling + scripts + root tests)
         run: ruff check evals/extraction/tools scripts tests

@@ -17,6 +17,7 @@ Run: python -m pytest tests/test_review_handoff.py -q
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -2174,7 +2175,8 @@ def test_a_finding_that_is_not_an_object_makes_the_round_unusable(
     assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
     saved = state.load_state(run_dir)
     assert not saved.rounds[0].usable
-    assert "could not be read" in saved.rounds[0].reason
+    assert "does not satisfy" in saved.rounds[0].reason
+    assert "findings[0]" in saved.rounds[0].reason  # the failing path is named
     assert saved.findings == []
 
 
@@ -2746,7 +2748,8 @@ def test_an_unrecognised_structured_verdict_is_unusable(
     )
     _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
     assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
-    assert "unrecognised" in state.load_state(run_dir).rounds[0].reason
+    reason = state.load_state(run_dir).rounds[0].reason
+    assert "result.verdict" in reason and "is not one of" in reason
 
 
 def test_a_plugin_that_never_started_still_records_why(
@@ -3724,7 +3727,8 @@ def test_a_verdict_outside_the_protocols_enum_is_refused(
     )
     _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
     assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
-    assert "unrecognised verdict" in state.load_state(run_dir).rounds[0].reason
+    reason = state.load_state(run_dir).rounds[0].reason
+    assert "result.verdict" in reason and "is not one of" in reason
 
 
 def test_the_native_channel_reads_its_review_from_inside_the_envelope(
@@ -3776,3 +3780,372 @@ def test_no_first_character_test_survives_in_the_reader():
     runner_source = (REPO_ROOT / "scripts/review_handoff/runner.py").read_text(encoding="utf-8")
     assert "startswith" not in source
     assert "startswith" not in runner_source.split("def envelope")[1].split("def ")[0]
+
+
+# =======================================================================
+# 1. Full protocol validation, by a standard JSON Schema validator against
+#    the pinned plugin schema.
+# =======================================================================
+
+
+def test_the_vendored_protocol_is_pinned_and_recorded():
+    """CI has no plugin, so it validates against the vendored copy. The pin
+    is the version and the digest together."""
+    record = findings.protocol()
+    assert record["plugin"] == "codex@openai-codex"
+    assert record["plugin_version"] == "1.0.6"
+    assert record["json_schema_draft"] == "https://json-schema.org/draft/2020-12/schema"
+    raw = (findings.PROTOCOL_DIR / record["schema"]).read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == record["sha256"]
+
+
+@pytest.mark.skipif(
+    not runner.DEFAULT_PLUGIN_SCRIPT.exists(),
+    reason="the installed plugin is needed to compare the vendored protocol against it",
+)
+def test_the_vendored_protocol_still_matches_the_installed_plugin():
+    """A plugin upgrade must surface as a failure here, not as silent drift
+    between what the reviewer answers against and what this validates."""
+    record = findings.protocol()
+    installed = runner.DEFAULT_PLUGIN_SCRIPT.parent.parent / "schemas" / record["schema"]
+    assert installed.exists(), installed
+    assert hashlib.sha256(installed.read_bytes()).hexdigest() == record["sha256"], (
+        "the installed plugin's schema differs from the vendored copy; re-vendor it "
+        "and re-read what changed before trusting either"
+    )
+
+
+def test_the_workflow_knows_what_to_do_with_every_verdict_the_protocol_allows():
+    """The schema confines the verdict; this is the separate question of
+    whether this workflow has a rule for each permitted value. A protocol
+    that gains one must not be acted on until someone decides what it means."""
+    allowed = set(findings.protocol_schema()["properties"]["verdict"]["enum"])
+    assert allowed == set(verdict._STRUCTURED_VERDICTS)
+
+
+@pytest.mark.parametrize(
+    "mutate, where",
+    [
+        (lambda r: r["next_steps"].append(None), "next_steps[0]"),
+        (lambda r: r["next_steps"].append(""), "next_steps[0]"),
+        (lambda r: r["findings"].append({"severity": "medium", "title": "x"}), "findings[0]"),
+        (
+            lambda r: r["findings"].append(dict(_structured_finding(), confidence=2.0)),
+            "findings[0].confidence",
+        ),
+        (
+            lambda r: r["findings"].append(dict(_structured_finding(), line_start=0)),
+            "findings[0].line_start",
+        ),
+        (
+            lambda r: r["findings"].append(dict(_structured_finding(), severity="moderate")),
+            "findings[0].severity",
+        ),
+        (
+            lambda r: r["findings"].append(dict(_structured_finding(), extra="surprise")),
+            "findings[0]",
+        ),
+        (lambda r: r.update(summary=""), "result.summary"),
+        (lambda r: r.update(surprise="extra"), "result"),
+    ],
+)
+def test_the_whole_schema_is_validated_not_just_the_top_level(mutate, where):
+    """Nested objects, array items, required fields, types, enums and bounds.
+    One validator over the whole document, rather than a special case per
+    example."""
+    result = {
+        "verdict": "approve",
+        "summary": "clean",
+        "findings": [],
+        "next_steps": [],
+    }
+    mutate(result)
+    with pytest.raises(findings.FindingsError) as info:
+        findings.validate_structured_result(result)
+    assert where in str(info.value), str(info.value)
+
+
+def test_a_result_that_satisfies_the_schema_is_read_exactly_as_given():
+    """The legitimate path: nothing is defaulted, coerced or dropped."""
+    entry = _structured_finding(severity="critical", title="real defect", line=42)
+    result = {
+        "verdict": "needs-attention",
+        "summary": "one blocking defect",
+        "findings": [entry],
+        "next_steps": ["fix it"],
+    }
+    got = findings.findings_from_structured(
+        result, round_number=1, channel="adversarial-review", recorded_at="now"
+    )
+    assert len(got) == 1
+    only = got[0]
+    assert only.severity == "critical" and only.title == "real defect"
+    assert only.file == entry["file"] and only.line_start == 42 and only.line_end == 42
+    assert only.body == entry["body"] and only.recommendation == entry["recommendation"]
+    assert only.confidence == entry["confidence"]
+
+
+def test_a_malformed_result_yields_no_verdict_and_no_findings(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """End to end: the two samples the reviewer reproduced."""
+    brief = brief_file()
+    for index, result in enumerate(
+        (
+            {"verdict": "approve", "summary": "ok", "findings": [], "next_steps": [None]},
+            {
+                "verdict": "approve",
+                "summary": "ok",
+                "findings": [{"severity": "medium", "title": "something"}],
+                "next_steps": [],
+            },
+        )
+    ):
+        run_dir = tmp_path / f"run-{index}"
+        _run(
+            repo, monkeypatch,
+            ["start", "--brief", str(brief), "--run-dir", str(run_dir),
+             "--integration-ref", "main"],
+        )
+        payload = json.loads(_payload("approve"))
+        payload["result"] = result
+        _install_fake_plugin(
+            monkeypatch, _write_fake_plugin(tmp_path, outputs=[json.dumps(payload)])
+        )
+        _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+        assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+        saved = state.load_state(run_dir)
+        assert not saved.rounds[0].usable
+        assert saved.findings == [] and saved.triage == []
+        assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+# =======================================================================
+# 2. The whole linked chain, with history and later evidence kept apart.
+# =======================================================================
+
+
+def _run_with_open_finding(repo, monkeypatch, brief, tmp_path, run_dir, linked=None):
+    args = ["start", "--brief", str(brief), "--run-dir", str(run_dir),
+            "--integration-ref", "main"]
+    if linked is not None:
+        args += ["--linked-run", str(linked)]
+    assert _run(repo, monkeypatch, args) == cli.EXIT_OK
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[_payload("needs-attention", findings_list=[_structured_finding()])],
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["stop", "--run-dir", str(run_dir), "--reason", "stopped open"])
+    return run_dir
+
+
+def test_the_chain_is_followed_through_three_generations(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """C continues B continues A. A's open item must reach C's delivery -
+    reading only the immediate predecessor lost it."""
+    brief = brief_file()
+    a = _run_with_open_finding(repo, monkeypatch, brief, tmp_path, tmp_path / "a")
+    b = _run_with_open_finding(repo, monkeypatch, brief, tmp_path, tmp_path / "b", linked=a)
+    c = tmp_path / "c"
+    _run(
+        repo, monkeypatch,
+        ["start", "--brief", str(brief), "--run-dir", str(c),
+         "--linked-run", str(b), "--integration-ref", "main"],
+    )
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(c)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(c)])
+    _triage_all(repo, monkeypatch, c)
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(c)]) == cli.EXIT_OK
+
+    summary = json.loads((c / "delivery.json").read_text(encoding="utf-8"))
+    origins = {item["origin_run"] for item in summary["carried_history"]}
+    assert origins == {"a", "b"}, summary["carried_history"]
+    for item in summary["carried_history"]:
+        assert item["id"].startswith("r01-")  # original finding ids preserved
+        assert item["still_open"] is True
+
+
+@pytest.mark.parametrize(
+    "break_it, expected",
+    [
+        (lambda a, b: shutil.rmtree(a), "no longer there"),
+        (lambda a, b: (a / "run.json").write_text("{ truncated", encoding="utf-8"), "cannot be read"),
+    ],
+)
+def test_a_chain_that_cannot_be_read_never_looks_like_an_empty_one(
+    repo: Path, monkeypatch, brief_file, tmp_path, break_it, expected
+):
+    """The distinction the whole mechanism turns on: 'nothing is open' and
+    'nobody can tell what is open' are different answers."""
+    brief = brief_file()
+    a = _run_with_open_finding(repo, monkeypatch, brief, tmp_path, tmp_path / "a")
+    b = tmp_path / "b"
+    _run(
+        repo, monkeypatch,
+        ["start", "--brief", str(brief), "--run-dir", str(b),
+         "--linked-run", str(a), "--integration-ref", "main"],
+    )
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(b)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(b)])
+    _triage_all(repo, monkeypatch, b)
+
+    break_it(a, b)
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(b)]) == cli.EXIT_BLOCKED
+    walk = state.linked_chain(state.load_state(b))
+    assert walk.problems and expected in walk.problems[0]
+
+
+def test_a_chain_that_loops_is_reported_rather_than_followed(tmp_path: Path):
+    """A cycle would otherwise walk for ever or silently truncate."""
+    one, two = tmp_path / "one", tmp_path / "two"
+    for path, other, run_id in ((one, two, "one"), (two, one, "two")):
+        st = state.new_state(
+            run_id=run_id, brief_name="b", brief_path=tmp_path / "brief.toml",
+            brief_digest="d", repo_root=tmp_path, base="0" * 40,
+            max_review_rounds=1, max_total_seconds=60, linked_run=str(other),
+        )
+        st.save(path)
+    walk = state.linked_chain(state.load_state(one))
+    assert walk.problems and "loops back" in walk.problems[0]
+
+
+def test_an_item_closed_later_is_not_reported_as_a_current_defect(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The older record is never rewritten, so its own status stays what it
+    was. The later evidence is recorded separately, and the two are reported
+    as two things rather than merged into one misleading one."""
+    brief = brief_file()
+    a = _run_with_open_finding(repo, monkeypatch, brief, tmp_path, tmp_path / "a")
+    ancestral = state.load_state(a).findings[0]["id"]
+    before = (a / "run.json").read_bytes()
+
+    b = tmp_path / "b"
+    _run(
+        repo, monkeypatch,
+        ["start", "--brief", str(brief), "--run-dir", str(b),
+         "--linked-run", str(a), "--integration-ref", "main"],
+    )
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(b)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(b)])
+    _triage_all(repo, monkeypatch, b)
+
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "resolve", "--run-dir", str(b), "--id", ancestral,
+         "--disposition", "fixed", "--note", "closed by commit abc1234 with its test"],
+    ) == cli.EXIT_OK
+    assert (a / "run.json").read_bytes() == before, "the older record was rewritten"
+
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(b)]) == cli.EXIT_OK
+    summary = json.loads((b / "delivery.json").read_text(encoding="utf-8"))
+    assert summary["linked_unresolved"] == []  # not a current defect any more
+    carried = summary["carried_history"]
+    assert len(carried) == 1
+    assert carried[0]["disposition"] == "pending"  # what a's own record still says
+    assert carried[0]["resolved_later"]["disposition"] == "fixed"
+    assert "abc1234" in carried[0]["resolved_later"]["note"]
+    assert carried[0]["still_open"] is False
+
+
+# =======================================================================
+# 3. One defect, two channels, one item.
+# =======================================================================
+
+
+def test_one_defect_seen_by_both_channels_counts_once_and_keeps_both_records(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[_payload("needs-attention", findings_list=[_structured_finding()])],
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    primary = state.load_state(run_dir).findings[0]["id"]
+
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "record", "--run-dir", str(run_dir), "--round", "1",
+         "--channel", runner.CHANNEL_FINDINGS, "--severity", "medium",
+         "--title", "the same unchecked index", "--file", "file.txt", "--line", "1",
+         "--duplicate-of", primary],
+    ) == cli.EXIT_OK
+
+    records = [findings.Finding(**f) for f in state.load_state(run_dir).findings]
+    assert len(records) == 2  # both pieces of evidence kept
+    blocking = findings.unresolved_blocking(records)
+    assert [f.id for f in blocking] == [primary]  # counted once, under the primary
+    assert [f.channel for f in findings.duplicates_of(records, primary)] == [
+        runner.CHANNEL_FINDINGS
+    ]
+
+    # Resolving the primary closes the pair.
+    _run(
+        repo, monkeypatch,
+        ["findings", "resolve", "--run-dir", str(run_dir), "--id", primary,
+         "--disposition", "fixed", "--note", "fixed with a regression"],
+    )
+    records = [findings.Finding(**f) for f in state.load_state(run_dir).findings]
+    assert findings.unresolved_blocking(records) == []
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+def test_a_duplicate_does_not_soften_a_more_severe_sighting(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """If the second channel rates it lower, the group still blocks."""
+    low = findings.Finding(id="p", round=1, channel="review", severity="low", title="x")
+    high = findings.Finding(
+        id="d", round=1, channel="adversarial-review", severity="high", title="x",
+        duplicate_of="p",
+    )
+    blocking = findings.unresolved_blocking([low, high])
+    assert [f.id for f in blocking] == ["p"]
+
+
+def test_a_duplicate_must_point_at_another_channels_record(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[_payload("needs-attention", findings_list=[_structured_finding()])],
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    primary = state.load_state(run_dir).findings[0]["id"]
+
+    # Unknown target.
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "record", "--run-dir", str(run_dir), "--round", "1",
+         "--channel", runner.CHANNEL_FINDINGS, "--severity", "low", "--title", "y",
+         "--duplicate-of", "r99-nope-deadbeef"],
+    ) == cli.EXIT_MISUSE
+
+    # Same channel as the target.
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "record", "--run-dir", str(run_dir), "--round", "1",
+         "--channel", runner.CHANNEL_VERDICT, "--severity", "low", "--title", "z",
+         "--duplicate-of", primary],
+    ) == cli.EXIT_MISUSE

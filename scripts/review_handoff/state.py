@@ -300,6 +300,11 @@ class RunState:
     # Anything done to the run that a later reader must know about, such as
     # an operator breaking a lock left by a crashed session.
     events: list[dict] = field(default_factory=list)
+    # Dispositions this run records for findings raised by a run EARLIER in
+    # the chain. The older record is never rewritten, so its own status stays
+    # what it was; this is the separate half - the evidence that the item was
+    # dealt with afterwards, and where.
+    carried_resolutions: list[dict] = field(default_factory=list)
 
     # -------------------------------------------------- derived properties
     @property
@@ -380,6 +385,69 @@ class RunState:
             tmp.unlink(missing_ok=True)
             raise
         return path
+
+
+@dataclass
+class ChainWalk:
+    """Every run behind this one, and anything wrong with the trail.
+
+    ``problems`` is the point. A chain that cannot be followed - a link to a
+    directory that is gone, a record that will not load, a cycle - must never
+    look the same as a chain with nothing open in it. One means "there is no
+    history to carry"; the other means "there is history and it cannot be
+    read", and a delivery may not treat the second as the first.
+    """
+
+    runs: list[tuple[str, "RunState"]] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)
+
+
+def linked_chain(state: RunState, limit: int = 64) -> ChainWalk:
+    """Follow ``linked_run`` back as far as it goes.
+
+    Returns the ancestors nearest-first, excluding the run it started from.
+    Stops at the first problem and reports it rather than returning a partial
+    history that reads as a complete one.
+    """
+    walk = ChainWalk()
+    visited: set[str] = set()
+    current = state
+    while current.linked_run:
+        if len(walk.runs) >= limit:
+            walk.problems.append(
+                f"the linked-run chain is longer than {limit} entries; refusing to "
+                "follow it further"
+            )
+            return walk
+        try:
+            resolved = str(Path(current.linked_run).resolve())
+        except (OSError, ValueError) as exc:  # pragma: no cover - exotic paths
+            walk.problems.append(f"link {current.linked_run!r} is not a usable path: {exc}")
+            return walk
+        if resolved in visited:
+            walk.problems.append(
+                f"the linked-run chain loops back to {current.linked_run!r}; the "
+                "history cannot be read as a sequence"
+            )
+            return walk
+        visited.add(resolved)
+        if not (Path(resolved) / STATE_FILENAME).exists():
+            walk.problems.append(
+                f"the run this chain continues ({current.linked_run}) is no longer "
+                "there, so its open items cannot be read"
+            )
+            return walk
+        try:
+            older = load_state(Path(resolved))
+        except StateError as exc:
+            walk.problems.append(
+                f"the run this chain continues ({current.linked_run}) cannot be "
+                f"read ({exc}), so its open items cannot be read"
+            )
+            return walk
+        walk.runs.append((resolved, older))
+        current = older
+    return walk
 
 
 def load_state(run_dir: Path) -> RunState:

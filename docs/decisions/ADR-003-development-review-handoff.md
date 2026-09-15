@@ -141,6 +141,22 @@ list of findings with severities. That object is **read** — mechanically,
 with no interpretation — and its verdict comes from the protocol's own enum,
 never from prose beside it.
 
+It is validated in full, by a standard JSON Schema validator, against that
+schema: nested objects, array items, required fields, types, enums and
+bounds, refusing additional properties where the schema refuses them.
+Checking only the top level was not a smaller version of this — it let a
+result whose `next_steps` held a null, or whose finding carried nothing but
+a severity and a title, through to an approval with the missing fields
+quietly defaulted on the way in. Nothing downstream repairs a value now: a
+result either satisfies the protocol, or no verdict and no finding are taken
+from it.
+
+The schema is **vendored and pinned**, in `scripts/review_handoff/protocol/`,
+by plugin version and digest. CI has no plugin, so this is what makes the
+check reproducible offline; a test compares the vendored copy against the
+installed plugin wherever one exists, so an upgrade surfaces as a failure
+rather than as silent drift.
+
 The structured result is checked against the protocol the plugin promises —
 verdict, summary, findings, next_steps — and each way it can fail is a
 different fact. Absent, null, the wrong type and the wrong contents are not
@@ -159,6 +175,27 @@ never pattern-matched into a score. The agent reads it and records what it found
 that record is an explicit act, not an inference. No model judges another
 model here.
 
+### 6b. History is followed to the end, and kept apart from its sequel
+
+A correction task is a new run linked to the one it continues, and those
+links form a chain. It is followed to the end: reading only the immediate
+predecessor lost everything older, so a third-generation run reported an
+ancestor's open items as though there were none.
+
+A chain that cannot be followed — a link to a directory that is gone, a
+record that will not load, a cycle — is reported as exactly that. It must
+never present as a chain with nothing open in it: one means there is no
+history to carry, the other means there is history nobody can read, and a
+delivery may not treat the second as the first.
+
+Each carried item keeps its originating run id and finding id, and its story
+is told in two parts that are never merged. What the **originating record**
+says is left exactly as it was — rewriting an older run to reflect a later
+fix would destroy the history it exists to hold. What happened **afterwards**
+is recorded in the later run, against that origin and id. An item still
+pending in its own record but closed since is therefore reported as closed,
+not as a current defect; an item with neither is genuinely open.
+
 ### 7. A verdict is not a release condition
 
 Every finding is recorded individually with a disposition: `pending`,
@@ -172,6 +209,12 @@ systematically lose exactly the findings only one of them ever sees.
 A channel that produced a review must also end up triaged: findings
 recorded, or an explicit attestation that it reported none. Silence is not
 evidence that nobody looked.
+
+When both channels report the same defect, the two records are linked rather
+than counted twice. Both are kept — two channels seeing one thing is
+evidence, not noise — and both are shown, but the pair is one item: one
+disposition closes it, and the group blocks if either sighting is blocking,
+so a second, milder sighting cannot soften the first.
 
 ### 8. The reviewer is told the project's standard, and told not to conceal
 

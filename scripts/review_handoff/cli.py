@@ -31,7 +31,9 @@ from .findings import (
     AWAITING,
     Finding,
     FindingsError,
+    duplicates_of,
     findings_from_structured,
+    protocol,
     unresolved_blocking,
     untriaged_channels,
 )
@@ -56,6 +58,7 @@ from .state import (
     StateError,
     artefact_path,
     dirty_paths,
+    linked_chain,
     file_digest,
     git_output,
     head_sha,
@@ -1024,6 +1027,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         "findings_blocking_unresolved": len(blockers),
         "release_block": _release_block(state) or "",
         "evidence_block": _evidence_block(state, run_dir) or "",
+        "history_block": _linked_block(state) or "",
+        "carried_still_open": len(_linked_unresolved(state)),
         "gates_run": len(state.gates),
         "last_gate_passed": bool(state.gates and state.gates[-1]["passed"]),
     }
@@ -1036,6 +1041,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         _emit("NOTE: the approval describes an older tree and no longer applies")
     for finding in blockers:
         _emit(f"BLOCKING: {finding.one_line()}")
+        for twin in duplicates_of(_records(state), finding.id):
+            _emit(f"     also reported by [{twin.channel}] as {twin.id}: {twin.title}")
     return EXIT_OK
 
 
@@ -1163,8 +1170,13 @@ def _finish(args: argparse.Namespace, run_dir: Path, state: RunState) -> int:
         "unresolved_blocking": [f.id for f in unresolved_blocking(_records(state))],
         # Read-only, and never merged into this run's own counts: a run that
         # continues another one has to carry that one's open items forward or
-        # they vanish between records.
+        # they vanish between records. The full history keeps each item's
+        # originating run and id, what that run's own record still says, and
+        # any closure a later run recorded against it - separately.
+        "carried_history": _carried_history(state),
         "linked_unresolved": _linked_unresolved(state),
+        "carried_resolutions": state.carried_resolutions,
+        "protocol": protocol(),
         "events": state.events,
         "gates": state.gates,
     }
@@ -1176,50 +1188,74 @@ def _finish(args: argparse.Namespace, run_dir: Path, state: RunState) -> int:
 
 
 def _linked_block(state: RunState) -> str:
-    """Why a linked run stops this delivery.
+    """Why the history behind this run stops its delivery.
 
-    An unreadable link and a link with nothing open used to produce the same
-    empty list, so losing the carried items looked exactly like having none.
-    A link that cannot be read is now a refusal, not a silent zero.
+    A chain that cannot be followed must never look the same as a chain with
+    nothing open in it. One means there is no history to carry; the other
+    means there is history and nobody can read it, and an empty list would
+    report the second as the first.
     """
-    if not state.linked_run:
+    problems = linked_chain(state).problems
+    if not problems:
         return ""
-    try:
-        load_state(Path(state.linked_run))
-    except StateError as exc:
-        return (
-            f"the run this one continues ({state.linked_run}) cannot be read "
-            f"({exc}), so its open items cannot be carried forward and their "
-            "absence here would mean nothing"
-        )
-    return ""
+    return (
+        "the history behind this run cannot be read, so the absence of carried "
+        "items here would mean nothing: " + "; ".join(problems)
+    )
+
+
+def _carried_history(state: RunState) -> list[dict]:
+    """Every finding raised earlier in the chain, with both halves of its story.
+
+    Two things are reported separately and never merged. ``disposition`` is
+    what the ORIGINATING run's own record says, which is left exactly as it
+    was - rewriting an older record to reflect a later fix would destroy the
+    history it exists to hold. ``resolved_later`` is the other half: a
+    disposition a subsequent run recorded against that finding, with the note
+    and the run that recorded it.
+
+    An item still pending in its own record but closed afterwards is
+    therefore visible as closed, and is NOT reported as a current unresolved
+    defect. An item with neither is genuinely still open.
+    """
+    walk = linked_chain(state)
+    if not walk.runs:
+        return []
+
+    # Resolutions recorded anywhere from here back along the chain.
+    later: dict[tuple[str, str], dict] = {}
+    for holder in [state] + [older for _, older in walk.runs]:
+        for entry in holder.carried_resolutions:
+            key = (entry["origin_run"], entry["finding_id"])
+            later.setdefault(key, {**entry, "recorded_in": holder.run_id})
+
+    out: list[dict] = []
+    for _, older in walk.runs:
+        for finding in _records(older):
+            closure = later.get((older.run_id, finding.id))
+            if finding.resolved and closure is None:
+                continue  # closed in its own record; nothing carried
+            out.append(
+                {
+                    "origin_run": older.run_id,
+                    "id": finding.id,
+                    "severity": finding.severity,
+                    "title": finding.title,
+                    "file": finding.file,
+                    "channel": finding.channel,
+                    # what the older record itself says, unmodified
+                    "disposition": finding.disposition,
+                    # what happened afterwards, recorded elsewhere
+                    "resolved_later": closure,
+                    "still_open": not finding.resolved and closure is None,
+                }
+            )
+    return out
 
 
 def _linked_unresolved(state: RunState) -> list[dict]:
-    """The open findings of the run this one continues.
-
-    Read without modifying it: the older run keeps its status, its counts and
-    its history exactly as they were. Callers check ``_linked_block`` first;
-    an unreadable link is a refusal, never an empty list.
-    """
-    if not state.linked_run:
-        return []
-    try:
-        older = load_state(Path(state.linked_run))
-    except StateError:
-        return []
-    return [
-        {
-            "run_id": older.run_id,
-            "id": f.id,
-            "severity": f.severity,
-            "title": f.title,
-            "file": f.file,
-            "disposition": f.disposition,
-        }
-        for f in _records(older)
-        if not f.resolved
-    ]
+    """Carried items that nobody has closed, in their own record or since."""
+    return [item for item in _carried_history(state) if item["still_open"]]
 
 
 def cmd_stop(args: argparse.Namespace) -> int:

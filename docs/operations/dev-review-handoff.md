@@ -100,7 +100,8 @@ evidence index into the PR body.
 | `finish` exits 1, "unaccounted for" | a channel produced a review nobody read, or its outcome was never recorded | read the archive, then `findings record` or `findings none`; say in the note which of the two it was |
 | `finish` exits 1, "not verifiable" | the evidence a delivery would rest on has no recorded digest (an older run) | re-run `gate` and `review` on this head; nothing back-fills a digest |
 | `review` exits 1, "not a JSON envelope" | the call requested `--json` and the reviewer answered in some other shape | read the raw file; this is a plugin or auth failure, not a verdict — retry once; twice in a row is a stop |
-| `review` exits 1, "does not match the plugin's protocol" | an envelope arrived but its `result` is not the schema's shape | read the raw file; retry once; twice in a row is a stop |
+| `review` exits 1, "does not satisfy ... review-output.schema.json" | an envelope arrived but its `result` fails the plugin's own schema; the message names the failing path | read the raw file; retry once; twice in a row is a stop |
+| `finish` exits 1, "the history behind this run cannot be read" | a linked run is missing, unreadable, or the chain loops | fix or re-point the link; an unreadable chain is never reported as an empty one |
 
 ## Concurrency
 
@@ -116,6 +117,15 @@ the process group on POSIX — and is torn down with it, on timeout **and** on
 normal exit. Both mechanisms reach a worker whose launcher has already
 exited, which `taskkill /T` cannot. A command whose tree cannot be contained
 is refused rather than run.
+
+The reviewer's structured result is validated in full against the plugin's
+own JSON Schema, vendored and pinned under `scripts/review_handoff/protocol/`
+by plugin version and digest so CI validates offline against the same
+protocol. `findings resolve` accepts a finding raised by a run earlier in the
+chain: the older record is left untouched and the disposition is recorded in
+the current run instead, so history and its sequel stay separable.
+`findings record --duplicate-of <id>` links the other channel's record of one
+defect, keeping both pieces of evidence while counting the pair once.
 
 Every archived log is hashed when written and checked before the next review
 and before delivery, because the run directory is excluded from the tree

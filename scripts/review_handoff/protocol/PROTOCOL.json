@@ -1,0 +1,9 @@
+{
+  "plugin": "codex@openai-codex",
+  "plugin_version": "1.0.6",
+  "schema": "review-output.schema.json",
+  "source_path": "C:/Users/User/.claude/plugins/cache/openai-codex/codex/1.0.6/schemas/review-output.schema.json",
+  "sha256": "e98a18d6cdf87d65bcf58a3aaa44804626f9ced72f307f485f3e0e16444838ab",
+  "json_schema_draft": "https://json-schema.org/draft/2020-12/schema",
+  "note": "Vendored verbatim from the installed plugin so CI, which has no plugin, validates against the same protocol offline. The pin is the version and the digest together: tests/test_review_handoff.py compares this copy against the installed plugin whenever one is present, so a plugin upgrade surfaces as a failure rather than as silent drift."
+}

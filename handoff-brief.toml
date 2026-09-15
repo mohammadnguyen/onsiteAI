@@ -2,21 +2,22 @@
 # Kept in the tree as a worked example of the template; a real package's
 # brief may live anywhere the founder approves it.
 #
-# Revised for the PROTOCOL-BOUNDARY correction authorised after run self-v4
-# stopped with an unusable review. Earlier requirements are kept - the
-# package still has to satisfy them - and the boundary requirement is added,
-# not substituted.
+# Revised for the correction task authorised after run self-v5 stopped at
+# needs-attention. Earlier requirements are kept - the package still has to
+# satisfy them - and the two acceptance criteria below are added.
 #
 # NEWLY AUTHORISED BUDGET, recorded here so it is not inferred from the
-# earlier runs: ONE real review covering the final commit and the two fixes
-# in b2705d9 that no review has yet seen, both channels once each. The single
-# extra round permitted by limits.max_review_rounds is reserved for ONE
-# TECHNICAL RETRY per channel when the plugin returns no response and neither
-# the code nor the review inputs have changed. It is NOT a fix-and-review
-# round: no new fix loop is authorised after this review. If the quota is
-# exhausted, stop. Runs self-v3 and self-v4 keep their counts and history
-# untouched; this is a new run linked to self-v4, and the open items of the
-# runs it continues travel with the delivery.
+# earlier runs: a first two-channel review plus AT MOST TWO fix-and-review
+# rounds, four hours in total. Clear defects inside the authorised scope are
+# fixed and verified without returning each one for approval. A technical
+# retry for plugin no-response keeps the previous boundary - one per channel,
+# counted inside the same total time limit, with the failed record preserved
+# and the program's counters untouched. Going over budget, needing a change
+# outside the scope, or hitting a requirements conflict means stopping and
+# reporting; no separate task is created to carry on. Runs self-v2 through
+# self-v5 keep their counts and history untouched; this is a new run linked
+# to self-v5, and the open items of every run behind it travel with the
+# delivery.
 
 name = "dev-review-handoff v1 (close-out)"
 
@@ -31,6 +32,9 @@ requirements = [
   "CLOSE-OUT 3. The run directory and every evidence path are fixed to an unambiguous location, so resuming from a different directory reads the same evidence.",
   "CLOSE-OUT 4. An empty findings list, an absent field, a null field and a wrong type are strictly distinguished. Only an explicitly empty list, in a result matching the plugin's actual protocol, means no findings; an incomplete structure never passes, and a text fallback must not turn one into an approval.",
   "PROTOCOL BOUNDARY. The problem is solved at the call contract, not by inspecting the output: a call that requests JSON must obtain a valid JSON envelope, and no textual approval may be extracted from non-conforming output or from stderr. Adversarial results are validated against the installed plugin's structured protocol; the native channel still reads its review body from a valid envelope. No further first-character special cases, and no unapproved compatibility modes.",
+  "COMPLETE PROTOCOL VALIDATION. A standard JSON Schema mechanism validates the result against the installed plugin version's whole schema - nested objects, array elements, required fields, types, enums and bounds. The protocol version is pinned and recorded so CI can reproduce the check offline. Verdict and findings are extracted only after validation succeeds, and no default value or type conversion may paper over an invalid field. Both the legitimate pass and the invalid refusal are covered, by one rule rather than a special case per example.",
+  "COMPLETE HISTORY TRACKING. The linked_run chain is followed to its end, preserving each item's originating run id and finding id. Coverage includes at least three generations, a broken link, an unreadable record and a cycle; an anomalous chain must never present as having no historical items. Older records stay unchanged, historical status and later fix evidence are presented separately, and an item already fixed but not rewritten in its own record is not reported as a current unresolved defect.",
+  "EVIDENCE AND REPORTING. When both channels find the same defect, the two pieces of evidence are linked so the item is not counted twice. CI's commit and raw test results are checked, CI and local status are reported separately, and the gate is completed under the existing rules.",
 ]
 
 acceptance_criteria = [
@@ -40,6 +44,8 @@ acceptance_criteria = [
   "The repository's existing gates still pass and none of them is weakened.",
   "Each close-out item has a regression that failed before its fix and passes after it, and the legitimate completion path is shown to still pass.",
   "The protocol-boundary defect is reproduced before it is fixed, and both paths are covered afterwards: a legitimate pass through a valid envelope, and a refusal for non-conforming output.",
+  "Schema validation is exercised on both paths and the pinned protocol version is checked against the installed plugin wherever one is present.",
+  "The history chain is exercised across three generations and on each anomaly, with the originating run and finding ids preserved.",
   "The earlier runs keep their stopped status, their counts and their history; this run is linked to self-v3 and carries its open items forward in the delivery.",
 ]
 
@@ -73,10 +79,9 @@ verification_commands = [
 ]
 
 [limits]
-# One review, plus one round held in reserve for a TECHNICAL RETRY only -
-# used when a channel returns no response and nothing about the code or the
-# review inputs has changed. It is not a fix round: if this review reports a
-# substantive blocker, the run stops and the founder decides.
-max_review_rounds = 1
+# A first two-channel review plus at most two fix-and-review rounds, inside
+# a four-hour total. A technical retry for plugin no-response shares this
+# budget rather than extending it.
+max_review_rounds = 2
 max_total_seconds = 14400
 shared_lock = "sitetracker-test-database"
