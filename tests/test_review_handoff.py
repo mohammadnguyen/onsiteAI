@@ -703,7 +703,9 @@ def test_review_is_bound_to_the_recorded_base_and_told_the_evidence_path(
     ).read_text(encoding="utf-8").split("\n")
     base = state.load_state(run_dir).base
     assert passed[passed.index("--base") + 1] == base
-    assert "--wait" in passed  # never review in the background
+    # Inert in this plugin version (reviews always run in the foreground),
+    # but it is the requirement this workflow depends on, so it is sent.
+    assert "--wait" in passed
     focus = passed[-1]
     assert "do the approved thing" in focus  # requirements
     assert "no merging" in focus  # prohibitions

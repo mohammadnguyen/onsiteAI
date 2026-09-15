@@ -340,16 +340,24 @@ def build_review_argv(
     and the ``--`` terminator puts everything after it into positionals, so
     focus text that begins with a dash cannot be mistaken for a flag.
 
-    ``--wait`` is mandatory: without it the plugin queues the review as a
-    background job and returns immediately, and the run would read a result
-    that does not exist yet. ``--json`` asks for the plugin's structured
-    payload, which carries the schema-constrained result.
+    Two of these flags are currently INERT, and are sent anyway. Say so
+    plainly rather than justify them with behaviour the plugin does not have:
 
-    ``--scope`` is sent for completeness but does NOT decide what is
-    reviewed here: the plugin resolves an explicit ``--base`` to branch mode
-    before it looks at the scope, so the review is the commit range
-    base..HEAD. Uncommitted work is therefore invisible to the reviewer,
-    which is why the run refuses to review a dirty tree.
+    * ``--wait`` — the review subcommands accept it and never read it;
+      ``handleReviewCommand`` calls ``runForegroundCommand`` unconditionally,
+      so a review already blocks until it finishes. It is sent because it
+      states the requirement this workflow actually depends on: a
+      backgrounded review would let the run read a result that does not
+      exist yet. If a later plugin version starts honouring the flag, this
+      call is already correct.
+    * ``--scope`` — the plugin resolves an explicit ``--base`` to branch mode
+      *before* it looks at the scope, so with a pinned base the scope cannot
+      change anything. The review is therefore the commit range base..HEAD,
+      which is why the run refuses to review a dirty tree: uncommitted work
+      is invisible to the reviewer.
+
+    ``--json`` is load-bearing: it asks for the plugin's structured payload,
+    which carries the schema-constrained result.
 
     The native channel rejects focus text outright, so it receives only the
     flags — it is run for its findings, not for anything it is told.
