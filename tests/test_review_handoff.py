@@ -3490,3 +3490,175 @@ def test_a_legacy_relative_artefact_path_is_rebased_onto_the_run_directory(tmp_p
 
     # An absolute record is left exactly as it is.
     assert state.artefact_path(tmp_path / "somewhere-else", str(log)) == log
+
+
+# =======================================================================
+# Direct regressions of the close-out items, reported by the real reviewer
+# on the close-out itself (run self-v4, review 01).
+# =======================================================================
+
+
+MALFORMED_WITH_APPROVAL = (
+    '{"review": "Adversarial Review", "result": {"verdict": "approve", "summary": "ok"\n'
+    "\nI read the change and it looks fine.\n\nVerdict: approve\n"
+)
+
+
+def test_malformed_plugin_json_cannot_be_talked_into_an_approval(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """CLOSE-OUT 4, the hole left in it: output that begins as JSON and does
+    not parse was indistinguishable from a plugin that never emitted JSON at
+    all, so it fell through to the prose reader - and a 'Verdict: approve'
+    line after the broken object became an approval."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch, _write_fake_plugin(tmp_path, outputs=[MALFORMED_WITH_APPROVAL])
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+    saved = state.load_state(run_dir)
+    assert not saved.rounds[0].usable
+    assert "could not be parsed" in saved.rounds[0].reason
+    assert "not a substitute" in saved.rounds[0].reason
+    assert saved.triage == [] and saved.findings == []
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+def test_a_reviewer_build_that_emits_no_json_still_uses_its_verdict_line(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The legitimate path that must survive the rule above. Plain text is a
+    different MODE, not a broken structure: a plugin build that ignores
+    --json prints its rendered review, and its explicit verdict line is the
+    documented fallback."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[APPROVE_OUTPUT]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    assert state.load_state(run_dir).rounds[0].verdict == "approve"
+
+
+def test_payload_reading_separates_json_malformed_and_text():
+    """Three modes, told apart at the point the bytes are read."""
+    ok = runner.CommandResult(
+        argv=["x"], exit_code=0, stdout='{"a": 1}', stderr="",
+        duration_seconds=0.0, timed_out=False,
+    )
+    broken = runner.CommandResult(
+        argv=["x"], exit_code=0, stdout='{"a": ', stderr="",
+        duration_seconds=0.0, timed_out=False,
+    )
+    text = runner.CommandResult(
+        argv=["x"], exit_code=0, stdout="# Codex Review\n\nVerdict: approve\n", stderr="",
+        duration_seconds=0.0, timed_out=False,
+    )
+    assert ok.payload() == {"a": 1} and ok.payload_mode() == "json"
+    assert broken.payload() is None and broken.payload_mode() == "malformed"
+    assert text.payload() is None and text.payload_mode() == "text"
+
+
+def _finished_run_with_an_open_finding(
+    repo: Path, monkeypatch, brief_file, tmp_path, run_dir: Path
+) -> Path:
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path, outputs=[_payload("needs-attention", findings_list=[_structured_finding()])]
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    _run(
+        repo,
+        monkeypatch,
+        ["stop", "--run-dir", str(run_dir), "--reason", "stopped with the finding open"],
+    )
+    return run_dir
+
+
+def test_a_linked_runs_open_items_survive_finishing_from_another_directory(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """CLOSE-OUT 3, the half about carrying the older run forward: the link
+    was stored exactly as typed, so a relative one resolved against whatever
+    directory the finish ran in, the load failed, and the delivery silently
+    reported no carried items at all."""
+    # Run directories live where a real one does: inside the repository and
+    # ignored, so another run's artefacts are not uncommitted work in this one.
+    (repo / ".gitignore").write_text("runs/\n", encoding="utf-8")
+    _commit(repo, "ignore run directories")
+    older = _finished_run_with_an_open_finding(
+        repo, monkeypatch, brief_file, tmp_path, repo / "runs" / "older"
+    )
+    assert state.load_state(older).findings  # it really has an open item
+
+    monkeypatch.chdir(repo)
+    newer = repo / "runs" / "newer"
+    assert cli.main(
+        ["start", "--brief", "brief.toml", "--run-dir", "runs/newer",
+         "--linked-run", "runs/older", "--integration-ref", "main"]
+    ) == cli.EXIT_OK
+    assert Path(state.load_state(newer).linked_run).is_absolute()
+
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    assert cli.main(["gate", "--run-dir", "runs/newer"]) == cli.EXIT_OK
+    assert cli.main(["review", "--run-dir", "runs/newer"]) == cli.EXIT_OK
+    assert cli.main(
+        ["findings", "none", "--run-dir", str(newer), "--round", "1",
+         "--channel", runner.CHANNEL_FINDINGS, "--note", "read it"]
+    ) == cli.EXIT_OK
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert cli.main(["finish", "--run-dir", str(newer)]) == cli.EXIT_OK
+
+    summary = json.loads((newer / "delivery.json").read_text(encoding="utf-8"))
+    carried = summary["linked_unresolved"]
+    assert carried, "the older run's open item vanished between records"
+    assert carried[0]["severity"] == "high"
+
+
+def test_a_linked_run_that_cannot_be_read_blocks_instead_of_reporting_none(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """An unreadable link and a link with nothing open produced the same
+    empty list, so losing the carried items looked exactly like having none."""
+    older = _finished_run_with_an_open_finding(
+        repo, monkeypatch, brief_file, tmp_path, tmp_path / "older"
+    )
+    brief = repo / "brief.toml"  # already committed by the fixture above
+    newer = tmp_path / "newer"
+    assert _run(
+        repo,
+        monkeypatch,
+        ["start", "--brief", str(brief), "--run-dir", str(newer),
+         "--linked-run", str(older), "--integration-ref", "main"],
+    ) == cli.EXIT_OK
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(newer)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(newer)])
+    _triage_all(repo, monkeypatch, newer)
+
+    (older / "run.json").unlink()
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(newer)]) == cli.EXIT_BLOCKED
+
+
+def test_a_linked_run_that_does_not_load_is_refused_at_start(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Caught where it can still be corrected cheaply, rather than at the end."""
+    empty = tmp_path / "not-a-run"
+    empty.mkdir()
+    assert _run(
+        repo,
+        monkeypatch,
+        ["start", "--brief", str(brief_file()), "--run-dir", str(tmp_path / "newer"),
+         "--linked-run", str(empty), "--integration-ref", "main"],
+    ) == cli.EXIT_MISUSE
+    assert not (tmp_path / "newer" / "run.json").exists()

@@ -123,6 +123,21 @@ class CommandResult:
             return None
         return parsed if isinstance(parsed, dict) else None
 
+    def payload_mode(self) -> str:
+        """Which of three things the output is: json, malformed, or text.
+
+        Collapsing the last two was a hole: output that BEGINS as JSON and
+        does not parse is a broken structure, but it looked identical to a
+        plugin build that never emits JSON at all, so it fell through to the
+        prose reader — and a "Verdict: approve" line after the broken object
+        became an approval. A different mode and a broken structure are not
+        the same thing and are no longer treated as one.
+        """
+        text = self.stdout.strip()
+        if not text.startswith("{"):
+            return "text"
+        return "json" if self.payload() is not None else "malformed"
+
 
 def _decode(raw: bytes | None) -> str:
     if not raw:

@@ -476,9 +476,23 @@ def _start_locked(
         _emit(f"MISUSE: base {base} is not an ancestor of HEAD")
         return EXIT_MISUSE
 
-    if args.linked_run and not Path(args.linked_run).exists():
-        _emit(f"MISUSE: --linked-run {args.linked_run} does not exist")
-        return EXIT_MISUSE
+    linked_run = ""
+    if args.linked_run:
+        # Resolved and READ here. Stored as typed, a relative link resolved
+        # against whatever directory a later command ran in, the load failed,
+        # and the delivery reported no carried items at all - which is
+        # indistinguishable from the older run having none.
+        linked = Path(args.linked_run).resolve()
+        try:
+            load_state(linked)
+        except StateError as exc:
+            _emit(
+                f"MISUSE: --linked-run {args.linked_run} cannot be read as a run "
+                f"({exc}); a link whose state cannot be loaded would silently "
+                "carry nothing forward"
+            )
+            return EXIT_MISUSE
+        linked_run = str(linked)
 
     state = new_state(
         run_id=run_dir.name,
@@ -489,7 +503,7 @@ def _start_locked(
         base=base,
         max_review_rounds=rounds,
         max_total_seconds=seconds,
-        linked_run=str(args.linked_run or ""),
+        linked_run=linked_run,
         now=now,
     )
     if unchecked_base:
@@ -847,6 +861,7 @@ def _review(args: argparse.Namespace, run_dir: Path, state: RunState, brief: Bri
     gating, prose = results[CHANNEL_VERDICT], results[CHANNEL_FINDINGS]
     gating_read = read_channel(
         payload=gating.payload(),
+        payload_mode=gating.payload_mode(),
         raw_text=gating.combined,
         exit_code=gating.exit_code,
         timed_out=gating.timed_out,
@@ -854,6 +869,7 @@ def _review(args: argparse.Namespace, run_dir: Path, state: RunState, brief: Bri
     )
     prose_read = read_channel(
         payload=prose.payload(),
+        payload_mode=prose.payload_mode(),
         raw_text=prose.combined,
         exit_code=prose.exit_code,
         timed_out=prose.timed_out,
@@ -1070,6 +1086,7 @@ def _finish(args: argparse.Namespace, run_dir: Path, state: RunState) -> int:
             _release_block(state)
             or _evidence_block(state, run_dir)
             or _support_block(state, passing, run_dir)
+            or _linked_block(state)
         )
         if not state.gate_supports(passing):
             blocking_reason = (
@@ -1160,11 +1177,32 @@ def _finish(args: argparse.Namespace, run_dir: Path, state: RunState) -> int:
     return EXIT_OK
 
 
+def _linked_block(state: RunState) -> str:
+    """Why a linked run stops this delivery.
+
+    An unreadable link and a link with nothing open used to produce the same
+    empty list, so losing the carried items looked exactly like having none.
+    A link that cannot be read is now a refusal, not a silent zero.
+    """
+    if not state.linked_run:
+        return ""
+    try:
+        load_state(Path(state.linked_run))
+    except StateError as exc:
+        return (
+            f"the run this one continues ({state.linked_run}) cannot be read "
+            f"({exc}), so its open items cannot be carried forward and their "
+            "absence here would mean nothing"
+        )
+    return ""
+
+
 def _linked_unresolved(state: RunState) -> list[dict]:
     """The open findings of the run this one continues.
 
     Read without modifying it: the older run keeps its status, its counts and
-    its history exactly as they were.
+    its history exactly as they were. Callers check ``_linked_block`` first;
+    an unreadable link is a refusal, never an empty list.
     """
     if not state.linked_run:
         return []

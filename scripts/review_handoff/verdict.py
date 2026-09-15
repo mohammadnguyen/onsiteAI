@@ -236,8 +236,16 @@ def read_channel(
     exit_code: int | None,
     timed_out: bool,
     expects_verdict: bool,
+    payload_mode: str = "text",
 ) -> ChannelRead:
-    """Interpret one review channel. Every failure mode lands on not-ok."""
+    """Interpret one review channel. Every failure mode lands on not-ok.
+
+    ``payload_mode`` separates a plugin that emitted no JSON (a legacy text
+    build, whose explicit verdict line is the documented fallback) from one
+    whose JSON is broken. The second is an incomplete structure and must
+    never reach the text reader: an approval line printed after a truncated
+    object would otherwise be read as the reviewer's verdict.
+    """
     if timed_out:
         return _not_ok(
             "timed out before producing a result",
@@ -257,6 +265,14 @@ def read_channel(
             f"review exited {exit_code}",
             expects_verdict,
             _failure_detail(payload, raw_text),
+        )
+
+    if payload_mode == "malformed":
+        return _not_ok(
+            "the reviewer's output is malformed",
+            "the reviewer's output began as a structured result and could not be "
+            "parsed; a verdict line printed alongside it is not a substitute",
+            expects_verdict,
         )
 
     structured = None
