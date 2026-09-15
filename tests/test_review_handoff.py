@@ -2232,7 +2232,9 @@ def test_a_payload_with_no_structured_result_and_no_verdict_line_is_unusable(
     assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
     saved = state.load_state(run_dir)
     assert not saved.rounds[0].usable
-    assert "no structured result" in saved.rounds[0].reason
+    assert "structured result" in saved.rounds[0].reason
+    # And the prose it did print must not be read as a second opinion.
+    assert "does not substitute" in saved.rounds[0].reason
 
 
 # ------------------------------------------------- the reviewer instructions
@@ -3166,34 +3168,325 @@ def test_a_child_that_cannot_be_contained_is_not_allowed_to_run(repo: Path, tmp_
     assert not marker.exists(), "the uncontained child was allowed to run"
 
 
-def test_a_run_recorded_before_evidence_digests_existed_still_loads(
-    repo: Path, monkeypatch, brief_file, tmp_path
-):
-    """Adding a defaulted field must not orphan a run in flight.
 
-    Bumping the schema for it did exactly that here - the live run became
-    unreadable mid-flight, turning a safety rule into the outage it exists to
-    prevent. An older round carries no digest and is reported as
-    unverifiable, never as verified.
+
+# =======================================================================
+# Close-out: the four items left open when run self-v3 stopped at its
+# round limit, and the regressions that pin them.
+# =======================================================================
+
+
+def _strip_digests(run_dir: Path, *, rounds: bool = True, gates: bool = True) -> None:
+    """Rewrite the state exactly as a version without digests would have.
+
+    Nothing on disk is touched: the archived logs stay byte for byte as they
+    were, which is the point - the question is whether a record that cannot
+    be verified may support a pass.
     """
-    run_dir = tmp_path / "run"
+    raw = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    if rounds:
+        for record in raw["rounds"]:
+            record["raw_digests"] = {}
+    if gates:
+        for gate in raw["gates"]:
+            for command in gate["commands"]:
+                command.pop("log_sha256", None)
+    (run_dir / "run.json").write_text(json.dumps(raw, indent=2), encoding="utf-8")
+
+
+def _approved_run(repo: Path, monkeypatch, brief_file, tmp_path, run_dir: Path) -> Path:
     _start(repo, monkeypatch, brief_file(), run_dir)
     _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
     _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
     _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
     _triage_all(repo, monkeypatch, run_dir)
+    return run_dir
 
-    # Rewrite the state exactly as an older version would have written it.
-    raw = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    for round_record in raw["rounds"]:
-        round_record.pop("raw_digests")
-    for gate in raw["gates"]:
-        for command in gate["commands"]:
-            command.pop("log_sha256", None)
-    (run_dir / "run.json").write_text(json.dumps(raw, indent=2), encoding="utf-8")
+
+# ---- 1. evidence with no recorded digest must not support a pass --------
+
+
+def test_a_review_without_a_recorded_digest_cannot_support_delivery(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Unverifiable is not the same as verified. A record whose digest was
+    never taken cannot show that its archive is the archive the reviewer
+    produced, so it may not be what a delivery rests on."""
+    run_dir = _approved_run(repo, monkeypatch, brief_file, tmp_path, tmp_path / "run")
+    _strip_digests(run_dir, gates=False)
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+def test_a_gate_without_a_recorded_digest_cannot_support_delivery(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    run_dir = _approved_run(repo, monkeypatch, brief_file, tmp_path, tmp_path / "run")
+    _strip_digests(run_dir, rounds=False)
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+def test_history_without_digests_stays_readable_and_is_never_rewritten(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Old runs keep loading and keep their records; what they cannot do is
+    deliver. And nothing back-fills a digest for a log whose integrity was
+    never recorded - computing one now would only prove the file has not
+    changed since this moment, which is not what it would be claiming."""
+    run_dir = _approved_run(repo, monkeypatch, brief_file, tmp_path, tmp_path / "run")
+    before = {p.name: p.read_bytes() for p in run_dir.rglob("*.log")}
+    _strip_digests(run_dir)
 
     reloaded = state.load_state(run_dir)
+    assert reloaded.review_count == 1  # history intact
     assert reloaded.rounds[0].raw_digests == {}
-    # It still delivers - the evidence is simply not verifiable for that
-    # round, which is different from failing verification.
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+    # The archives are untouched, and stay untouched.
+    assert {p.name: p.read_bytes() for p in run_dir.rglob("*.log")} == before
+    assert state.load_state(run_dir).rounds[0].raw_digests == {}
+
+
+def test_fresh_verifiable_evidence_restores_the_legitimate_path(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The way out is a fresh gate and review under the current version, not
+    a back-filled hash."""
+    run_dir = _approved_run(repo, monkeypatch, brief_file, tmp_path, tmp_path / "run")
+    _strip_digests(run_dir)
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    _triage_all(repo, monkeypatch, run_dir)
     assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+
+
+# ---- 2. persist each channel before the next one starts -----------------
+
+
+def _interrupt_after_first_channel(monkeypatch):
+    """Let the first channel finish, then die the way a killed session does."""
+    real = runner.run_command
+    seen: list[str] = []
+
+    def wrapper(argv, **kwargs):
+        channel = argv[2] if len(argv) > 2 else ""
+        if seen:
+            raise KeyboardInterrupt
+        seen.append(channel)
+        return real(argv, **kwargs)
+
+    monkeypatch.setattr(runner, "run_command", wrapper)
+    return seen
+
+
+def test_a_completed_channel_is_persisted_before_the_next_one_starts(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """An interruption between channels used to lose the first channel's exit
+    code and digest entirely, so what it reported became unknowable."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _interrupt_after_first_channel(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+
+    saved = state.load_state(run_dir)
+    first = saved.rounds[-1]
+    assert first.exit_codes.get(runner.CHANNEL_VERDICT) == 0
+    assert first.raw_digests.get(runner.CHANNEL_VERDICT)
+    assert Path(first.raw_paths[runner.CHANNEL_VERDICT]).exists()
+    # And the channel that never ran is recorded as unknown, not as clean.
+    assert first.channel_status[runner.CHANNEL_VERDICT] == "completed"
+    assert first.channel_status[runner.CHANNEL_FINDINGS] == "pending"
+
+
+def test_an_unknown_channel_result_is_not_treated_as_no_findings(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """A later approving round must not deliver over a channel whose result
+    nobody ever saw."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    undo = _interrupt_after_first_channel(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    monkeypatch.undo()
+    assert undo  # the first channel really did run
+
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    _run(
+        repo,
+        monkeypatch,
+        ["findings", "none", "--run-dir", str(run_dir), "--round", "2",
+         "--channel", runner.CHANNEL_FINDINGS, "--note", "read round 2's prose"],
+    )
+    # Round 1: its verdict channel COMPLETED and was archived but never
+    # parsed, and its findings channel is unknown. Both have to be accounted
+    # for before anything delivers.
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    _run(
+        repo,
+        monkeypatch,
+        ["findings", "none", "--run-dir", str(run_dir), "--round", "1",
+         "--channel", runner.CHANNEL_VERDICT,
+         "--note", "read its archive by hand; the structured result carried no findings"],
+    )
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    _run(
+        repo,
+        monkeypatch,
+        ["findings", "none", "--run-dir", str(run_dir), "--round", "1",
+         "--channel", runner.CHANNEL_FINDINGS,
+         "--note", "the channel never ran; its archive is absent and nothing is inferred from it"],
+    )
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+
+    # The record distinguishes the two attestations rather than blurring them.
+    attestations = {
+        (int(a["round"]), a["channel"]): a for a in state.load_state(run_dir).triage
+    }
+    assert attestations[(1, runner.CHANNEL_VERDICT)]["incomplete"] is False
+    assert attestations[(1, runner.CHANNEL_FINDINGS)]["incomplete"] is True
+    assert attestations[(1, runner.CHANNEL_FINDINGS)]["channel_status"] == "pending"
+
+
+# ---- 3. evidence paths are absolute -------------------------------------
+
+
+def test_a_run_started_with_a_relative_directory_resumes_from_anywhere(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """A relative --run-dir used to record relative evidence paths, so
+    resuming from another directory resolved them against the wrong root and
+    reported existing logs as missing."""
+    monkeypatch.chdir(repo)
+    brief = brief_file()
+    assert cli.main(
+        ["start", "--brief", str(brief), "--run-dir", "runs/here",
+         "--integration-ref", "main"]
+    ) == cli.EXIT_OK
+    run_dir = (repo / "runs" / "here").resolve()
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    assert cli.main(["gate", "--run-dir", "runs/here"]) == cli.EXIT_OK
+    assert cli.main(["review", "--run-dir", "runs/here"]) == cli.EXIT_OK
+
+    saved = state.load_state(run_dir)
+    for path in saved.rounds[0].raw_paths.values():
+        assert Path(path).is_absolute(), path
+    for command in saved.gates[-1]["commands"]:
+        assert Path(command["log"]).is_absolute(), command["log"]
+
+    # Resume from somewhere else entirely, addressing the run absolutely.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert cli.main(
+        ["findings", "none", "--run-dir", str(run_dir), "--round", "1",
+         "--channel", runner.CHANNEL_FINDINGS, "--note", "read from elsewhere"]
+    ) == cli.EXIT_OK
+    assert cli.main(["status", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    assert cli.main(["finish", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+
+
+# ---- 4. findings shapes -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mutate, why",
+    [
+        (lambda r: r.pop("findings"), "the field is absent"),
+        (lambda r: r.update(findings=None), "the field is null"),
+        (lambda r: r.update(findings={}), "the field is an object"),
+        (lambda r: r.update(findings="none"), "the field is a string"),
+        (lambda r: r.pop("verdict"), "the verdict is absent"),
+        (lambda r: r.update(summary=None), "the summary is null"),
+        (lambda r: r.pop("next_steps"), "next_steps is absent"),
+    ],
+)
+def test_an_incomplete_structured_result_never_passes(
+    repo: Path, monkeypatch, brief_file, tmp_path, mutate, why
+):
+    """Only an explicitly empty list, in a result that matches the plugin's
+    actual protocol, means "no findings". Absent, null and the wrong type are
+    each a different thing and none of them is evidence of a clean review."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    payload = json.loads(_payload("approve"))
+    mutate(payload["result"])
+    _install_fake_plugin(
+        monkeypatch, _write_fake_plugin(tmp_path, outputs=[json.dumps(payload)])
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED, why
+
+    saved = state.load_state(run_dir)
+    assert not saved.rounds[0].usable, why
+    assert saved.triage == [], why  # never attested as read
+    assert saved.findings == [], why
+
+
+def test_an_explicitly_empty_findings_list_is_a_clean_review(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The legitimate path, stated as its own case so the rule above cannot
+    be tightened into refusing everything."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+
+    saved = state.load_state(run_dir)
+    assert saved.rounds[0].verdict == "approve" and saved.rounds[0].usable
+    assert saved.findings == []
+    assert [t["channel"] for t in saved.triage] == [runner.CHANNEL_VERDICT]
+
+
+def test_a_prose_verdict_cannot_rescue_an_incomplete_structured_result(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The payload says the reviewer was asked for a structured result. If
+    what came back does not match the protocol, a verdict line in the
+    surrounding text is not a second opinion - it is the failure the schema
+    exists to catch, wearing a different hat."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    payload = json.loads(_payload("approve"))
+    payload["result"] = None
+    payload["parseError"] = "Codex did not return a final structured message."
+    payload["codex"]["stdout"] = (
+        "I read the whole change and it looks good to me.\n\nVerdict: approve\n"
+    )
+    _install_fake_plugin(
+        monkeypatch, _write_fake_plugin(tmp_path, outputs=[json.dumps(payload)])
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    assert not state.load_state(run_dir).rounds[0].usable
+
+
+def test_a_legacy_relative_artefact_path_is_rebased_onto_the_run_directory(tmp_path: Path):
+    """Runs written before paths were absolute recorded them relative to the
+    invocation directory. Everything a run archives lives under its own
+    directory, so such a path is rebased onto the directory actually given -
+    otherwise a real run recorded as ".claude/handoff/self-v3/review-01.log"
+    becomes unreadable the moment anything resumes it from elsewhere."""
+    run_dir = tmp_path / "handoff" / "self-v9"
+    (run_dir / "gate-01").mkdir(parents=True)
+    log = run_dir / "gate-01" / "gate-01-ruff.log"
+    log.write_bytes(b"ok\n")
+
+    legacy = ".claude/handoff/self-v9/gate-01/gate-01-ruff.log"
+    assert state.artefact_path(run_dir, legacy) == log
+    assert state.file_digest(state.artefact_path(run_dir, legacy))
+
+    # An absolute record is left exactly as it is.
+    assert state.artefact_path(tmp_path / "somewhere-else", str(log)) == log

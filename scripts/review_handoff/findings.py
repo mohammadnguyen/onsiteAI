@@ -151,6 +151,53 @@ def _clean_int(value: object) -> int | None:
     return number if number > 0 else None
 
 
+# The shape the plugin's own output schema promises
+# (schemas/review-output.schema.json). Each of these is required, and the
+# four possible failures - absent, null, wrong type, wrong contents - are
+# different facts about what came back. Only an explicitly empty findings
+# list, inside a result that matches this shape, means "no findings".
+_REQUIRED_RESULT_FIELDS = {
+    "verdict": str,
+    "summary": str,
+    "findings": list,
+    "next_steps": list,
+}
+
+
+def validate_structured_result(result: object) -> dict:
+    """Check a structured result against the plugin's protocol, or raise.
+
+    Absent, null and the wrong type are not the same as empty, and none of
+    them is evidence that the reviewer found nothing. An earlier version
+    read a missing or null ``findings`` as an empty list, so a truncated
+    result was recorded as a clean review and the channel was attested as
+    read.
+    """
+    if not isinstance(result, dict):
+        raise FindingsError(
+            f"the reviewer's structured result is {type(result).__name__}, not an object"
+        )
+    for name, expected in _REQUIRED_RESULT_FIELDS.items():
+        if name not in result:
+            raise FindingsError(
+                f"the reviewer's structured result has no {name!r} field; an "
+                "incomplete result is not an empty one"
+            )
+        value = result[name]
+        if value is None:
+            raise FindingsError(
+                f"the reviewer's {name!r} field is null; null is not the same as empty"
+            )
+        if not isinstance(value, expected):
+            raise FindingsError(
+                f"the reviewer's {name!r} field is {type(value).__name__}, "
+                f"not {expected.__name__}"
+            )
+        if expected is str and not value.strip():
+            raise FindingsError(f"the reviewer's {name!r} field is empty")
+    return result
+
+
 def findings_from_structured(
     result: dict | None,
     *,
@@ -165,13 +212,7 @@ def findings_from_structured(
     silently dropped — dropping it is exactly how a blocking defect would
     disappear between the reviewer and the release condition.
     """
-    if not isinstance(result, dict):
-        return []
-    raw = result.get("findings")
-    if raw is None:
-        return []
-    if not isinstance(raw, list):
-        raise FindingsError("the reviewer's 'findings' field is not a list")
+    raw = validate_structured_result(result)["findings"]
     out: list[Finding] = []
     taken: set[str] = set(existing or ())
     for index, entry in enumerate(raw, start=1):
@@ -224,18 +265,46 @@ def untriaged_channels(
     that fails closed on any channel, so an earlier version skipped every
     channel of an unusable round - including one that exited 0 and archived a
     complete review. A later approving round could then deliver while that
-    review sat unread. A channel is therefore triageable exactly when it
-    exited 0, whatever the round's own verdict was.
+    review sat unread.
+
+    Three states, three different answers. A channel that COMPLETED has a
+    review someone must read. A channel that FAILED is a known nothing: the
+    round is unusable on its own account and there is no output to triage. A
+    channel whose outcome is UNKNOWN - the session died before it was
+    recorded - is neither, and must not be quietly treated as the second: an
+    unknown result is not evidence that nothing was found.
     """
     seen = {(f.round, f.channel) for f in findings}
     seen |= {(int(a["round"]), a["channel"]) for a in attestations}
     missing: list[str] = []
     for record in rounds:
-        exit_codes = getattr(record, "exit_codes", None) or {}
         for channel in channels:
-            if exit_codes.get(channel) != 0:
-                # The channel did not complete, so there is no review to read.
+            status = channel_state(record, channel)
+            if status == "failed":
                 continue
-            if (record.number, channel) not in seen:
+            if (record.number, channel) in seen:
+                continue
+            if status == "completed":
                 missing.append(f"round {record.number} channel {channel}")
+            else:
+                missing.append(
+                    f"round {record.number} channel {channel} (outcome unknown - "
+                    "the session ended before it was recorded)"
+                )
     return missing
+
+
+def channel_state(record, channel: str) -> str:
+    """What is known about one channel of one round.
+
+    Reads the recorded status when there is one, and otherwise infers it from
+    the exit codes, so a run written before the status existed is judged the
+    same way: a recorded exit code is a known outcome, and its absence is not.
+    """
+    status = (getattr(record, "channel_status", None) or {}).get(channel)
+    if status in ("completed", "failed", "pending"):
+        return status
+    exit_codes = getattr(record, "exit_codes", None) or {}
+    if channel not in exit_codes:
+        return "pending"
+    return "completed" if exit_codes[channel] == 0 else "failed"

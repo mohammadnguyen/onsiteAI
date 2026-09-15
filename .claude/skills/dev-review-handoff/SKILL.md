@@ -64,6 +64,11 @@ channel explicitly — there is no third state between "found something" and
     python -m scripts.review_handoff findings none --run-dir <dir> \
         --round N --channel review --note "what you read, and where"
 
+`findings none` also accounts for a channel whose outcome is UNKNOWN —
+one whose session died before it was recorded. Say so in the note; the
+record keeps that distinct from "it reported nothing", because it is not
+the same statement.
+
 **5 — Decide, per finding.** Every finding needs a disposition, recorded
 with the evidence behind it:
 
@@ -123,8 +128,12 @@ the run.
 
 ## What never counts as a pass
 
-Archived evidence that has been deleted or rewritten. A plugin call that
-failed. A missing or empty result. No structured result
+Archived evidence that has been deleted or rewritten, or that carries no
+recorded digest and so cannot be checked at all. A structured result that
+does not match the plugin's protocol — absent, null or wrong-typed fields
+are not empty ones, and a verdict line in the prose does not rescue them. A
+channel whose outcome is unknown. A plugin call that failed. A missing or
+empty result. No structured result
 and no verdict line, or two verdicts that disagree. A structured finding
 that cannot be read. A round where one channel did not complete. A verdict
 that describes an older tree. A failing verification command. An untriaged

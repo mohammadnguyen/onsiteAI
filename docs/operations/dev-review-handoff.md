@@ -97,7 +97,9 @@ evidence index into the PR body.
 | `review` exits 1, "round limit reached" or "time budget exhausted" | the run is now **closed**, with the limit as its stop reason | report what is outstanding; do not start a fresh run to buy back rounds |
 | any command exits 1, "is held by pid N" | another command owns this run, or another run owns the shared database | wait, or stop. **Never kill the holder** — stopping another session or shared runtime is outside this workflow's authorisation. If the holder really crashed, `--break-lock` (run lock) or `--break-shared-lock` (database lock); the break is recorded |
 | `review` exits 1, "no structured result" | the reviewer did not answer against the plugin's own schema | read the raw file; retry once; twice in a row is a stop |
-| `finish` exits 1, "never triaged" | a channel produced a review nobody accounted for | read it, then `findings record` or `findings none` |
+| `finish` exits 1, "unaccounted for" | a channel produced a review nobody read, or its outcome was never recorded | read the archive, then `findings record` or `findings none`; say in the note which of the two it was |
+| `finish` exits 1, "not verifiable" | the evidence a delivery would rest on has no recorded digest (an older run) | re-run `gate` and `review` on this head; nothing back-fills a digest |
+| `review` exits 1, "no usable structured result" | the reviewer's result does not match the plugin's protocol | read the raw file; retry once; twice in a row is a stop |
 
 ## Concurrency
 
@@ -116,7 +118,15 @@ is refused rather than run.
 
 Every archived log is hashed when written and checked before the next review
 and before delivery, because the run directory is excluded from the tree
-fingerprint and its contents would otherwise be free to change.
+fingerprint and its contents would otherwise be free to change. The evidence
+a delivery rests on must carry a digest, not merely match one: a record that
+cannot be checked cannot support a pass, and older runs reach a delivery by
+re-running `gate` and `review`, never by back-filling a hash.
+
+Evidence paths are absolute, so a run started with a relative `--run-dir`
+still resolves from any other directory. Each review channel's outcome is
+persisted before the next channel starts, so an interruption leaves what
+already happened on the record rather than losing it.
 
 ## Limits of this workflow
 

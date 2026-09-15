@@ -300,21 +300,19 @@ def read_channel(
         return ChannelRead(verdict.usable, verdict.reason, verdict, structured, text)
 
     if payload is not None:
-        # The plugin ran but returned nothing that fits its own schema.
-        # Falling straight back to prose would reward exactly the failure the
-        # schema exists to prevent, so only an explicit verdict line in the
-        # surviving text is accepted, and its absence is unusable.
-        fallback = parse_verdict(text, exit_code=exit_code, timed_out=False)
-        if not fallback.usable:
-            verdict = Verdict(
-                UNUSABLE,
-                False,
-                "the reviewer returned no structured result"
-                + (f" ({parse_error})" if parse_error else "")
-                + " and no verdict line",
-            )
-            return ChannelRead(False, verdict.reason, verdict, None, text)
-        return ChannelRead(True, fallback.reason, fallback, None, text)
+        # The plugin ran, was asked for a structured result, and returned
+        # nothing that fits its own schema. There is no prose fallback here:
+        # accepting a verdict line from the surrounding text would let an
+        # incomplete structure be talked into an approval, which is the exact
+        # failure the schema exists to catch.
+        verdict = Verdict(
+            UNUSABLE,
+            False,
+            "the reviewer returned no usable structured result"
+            + (f" ({parse_error})" if parse_error else "")
+            + "; a verdict line in the surrounding text does not substitute for it",
+        )
+        return ChannelRead(False, verdict.reason, verdict, None, text)
 
     fallback = parse_verdict(text, exit_code=exit_code, timed_out=timed_out)
     return ChannelRead(fallback.usable, fallback.reason, fallback, structured, text)

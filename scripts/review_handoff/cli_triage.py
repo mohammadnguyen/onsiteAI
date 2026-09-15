@@ -26,6 +26,7 @@ from .findings import (
     SEVERITIES,
     SOURCE_AGENT,
     Finding,
+    channel_state,
     finding_id,
 )
 from .locking import LockBusy
@@ -43,7 +44,7 @@ def _load(args: argparse.Namespace):
     """
     from .cli import acquire_run_lock  # local import: one-way dependency
 
-    run_dir = Path(args.run_dir)
+    run_dir = Path(args.run_dir).resolve()
     lock = acquire_run_lock(run_dir, purpose="findings", args=args)
     try:
         state = load_state(run_dir)
@@ -171,16 +172,28 @@ def cmd_findings_none(args: argparse.Namespace) -> int:
         ):
             emit(f"MISUSE: round {args.round} channel {args.channel} is already attested")
             return EXIT_MISUSE
+        # What is being attested depends on what actually happened to that
+        # channel. "It reported nothing" and "its outcome was never recorded"
+        # are different statements, and the record must not blur them.
+        status = channel_state(record, args.channel)
         state.triage.append(
             {
                 "round": args.round,
                 "channel": args.channel,
                 "at": utc_now().isoformat(timespec="seconds"),
                 "note": args.note.strip(),
+                "channel_status": status,
+                "incomplete": status != "completed",
             }
         )
         state.save(run_dir)
-        emit(f"attested: round {args.round} channel {args.channel} reported no findings")
+        if status == "completed":
+            emit(f"attested: round {args.round} channel {args.channel} reported no findings")
+        else:
+            emit(
+                f"attested: round {args.round} channel {args.channel} is {status} — "
+                "recorded as accounted for, NOT as having reported nothing"
+            )
         return EXIT_OK
     finally:
         lock.release()
@@ -218,7 +231,7 @@ def cmd_findings_resolve(args: argparse.Namespace) -> int:
 
 
 def cmd_findings_list(args: argparse.Namespace) -> int:
-    run_dir = Path(args.run_dir)
+    run_dir = Path(args.run_dir).resolve()
     try:
         state = load_state(run_dir)
     except StateError as exc:

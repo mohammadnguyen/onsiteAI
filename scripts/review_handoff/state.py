@@ -264,6 +264,12 @@ class RoundRecord:
     # from such a run carry no digest and are reported as unverifiable
     # rather than as verified.
     raw_digests: dict[str, str] = field(default_factory=dict)
+    # What is known about each channel: "pending" (started, outcome never
+    # recorded), "completed" (exited 0) or "failed" (exited non-zero).
+    # Written when the round is created and updated as each channel
+    # finishes, so an interruption leaves the truth on disk instead of an
+    # empty record that later reads as "nothing to account for".
+    channel_status: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -419,6 +425,27 @@ def _read_state_text(path: Path, attempts: int = 5) -> str:
             last = exc
             time.sleep(0.05 * (attempt + 1))
     raise last  # pragma: no cover - only reached when every attempt failed
+
+
+def artefact_path(run_dir: Path, recorded: str) -> Path:
+    """Where an archived artefact actually is, given where the run is now.
+
+    Paths are absolute from the moment they are recorded. Runs written before
+    that stored them relative to whatever directory the CLI happened to run
+    in, so resuming from anywhere else resolved them against the wrong root
+    and reported present files as missing. Everything a run archives lives
+    under its own directory, so such a path is rebased onto the directory we
+    were actually given.
+    """
+    path = Path(recorded)
+    if path.is_absolute():
+        return path
+    parts = path.parts
+    name = Path(run_dir).name
+    if name in parts:
+        index = len(parts) - 1 - parts[::-1].index(name)
+        return Path(run_dir).joinpath(*parts[index + 1:])
+    return Path(run_dir) / path
 
 
 def file_digest(path: Path) -> str:

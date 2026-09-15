@@ -84,10 +84,22 @@ silently the moment anything is committed.
 The run's own artefacts are excluded from that digest. A run directory
 inside the repository would otherwise become part of the fingerprint of the
 code it measures. That exclusion has a cost, so it is paid for separately:
-every archived log is hashed when it is written and checked before the next
-review and before delivery. Without that, deleting or rewriting the evidence
-moved nothing any check looked at, and a delivery could cite raw output that
-was not there.
+every archived log is hashed when it is written, checked before the next
+review and before delivery, and **required** of the evidence a delivery
+rests on. Without that, deleting or rewriting the evidence moved nothing any
+check looked at, and a delivery could cite raw output that was not there.
+
+Unverifiable is not the same as verified. A record whose digest was never
+taken — a run written before the digests existed — keeps its history and
+stays readable, but it cannot carry a delivery, and nothing back-fills a
+digest for it: hashing an old log now would only show it has not changed
+since this moment, which is not the claim being made. The way forward is a
+fresh gate and review on the current head, whose evidence is verifiable by
+construction.
+
+Evidence paths are absolute from the moment they are recorded. Relative ones
+resolved against whatever directory the command ran in, so resuming a run
+from anywhere else reported present files as missing.
 
 ### 5. Everything ambiguous fails closed
 
@@ -96,12 +108,36 @@ channel that did not complete, a structured finding that cannot be read, or
 a failing gate: all are "unusable", and unusable is never a pass (ADR-001 §7
 — uncertainty is surfaced, never folded into pass).
 
+### 6a. A review is not complete until each channel's outcome is recorded
+
+Each channel's raw result, exit status, digest and remaining state are
+persisted before the next channel starts. An interruption between them used
+to leave the first channel's archive on disk with nothing saying it had run,
+so what it reported became unknowable — and the round then read as having
+nothing to account for.
+
+Three states, three answers: a channel that COMPLETED has a review someone
+must read; a channel that FAILED is a known nothing; a channel whose outcome
+is UNKNOWN is neither, and must never be treated as the second. An unknown
+result is not evidence that nothing was found, and it is accounted for
+explicitly, recorded as unknown rather than as clean.
+
 ### 6. Structured results are read; prose is never classified
 
 The plugin runs its adversarial channel against its own JSON output schema,
 so that channel returns an object: a verdict and a list of findings with
 severities. That object is **read** — mechanically, with no interpretation —
 and it is preferred over any verdict line in the surrounding prose.
+
+The structured result is checked against the protocol the plugin promises —
+verdict, summary, findings, next_steps — and each way it can fail is a
+different fact. Absent, null, the wrong type and the wrong contents are not
+the same as empty: only an explicitly empty findings list, inside a result
+that matches the shape, means the reviewer found nothing. An incomplete
+result makes the round unusable, the channel is NOT attested as read, and a
+verdict line in the surrounding prose does not rescue it — accepting one
+would let an incomplete structure be talked into an approval, which is the
+failure the schema exists to catch.
 
 The other channel returns prose, and it is told nothing: the plugin rejects
 focus text on the native channel outright, so the brief, the scope and the

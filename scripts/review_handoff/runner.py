@@ -424,10 +424,19 @@ def invoke_review_round(
     timeout_seconds: float,
     scope: str = "branch",
     plugin: Path | None = None,
+    on_channel_complete=None,
 ) -> dict[str, CommandResult]:
     """Run every review channel and archive each raw output before anyone
     reads it. The per-channel budget is split so one hanging channel cannot
-    consume the whole round."""
+    consume the whole round.
+
+    ``on_channel_complete(channel, result)`` is called after each channel and
+    BEFORE the next one starts. It is how the run records that channel's
+    outcome and the digest of its archive: without it, a session killed
+    during the second channel left the first one's archive on disk with
+    nothing saying it had run, so what it reported became unknowable and the
+    round read as having nothing to account for.
+    """
     per_channel = max(1.0, timeout_seconds / len(REVIEW_CHANNELS))
     results: dict[str, CommandResult] = {}
     for channel in REVIEW_CHANNELS:
@@ -440,4 +449,6 @@ def invoke_review_round(
             timeout_seconds=per_channel,
             log_path=raw_paths[channel],
         )
+        if on_channel_complete is not None:
+            on_channel_complete(channel, results[channel])
     return results

@@ -54,6 +54,7 @@ from .state import (
     RoundRecord,
     RunState,
     StateError,
+    artefact_path,
     dirty_paths,
     file_digest,
     git_output,
@@ -125,7 +126,9 @@ def _lock_arguments(parser: argparse.ArgumentParser) -> None:
 def _open(
     args: argparse.Namespace, purpose: str, *, need_brief: bool = True
 ) -> tuple[Path, FileLock, RunState, Brief | None]:
-    run_dir = Path(args.run_dir)
+    # Resolved: every artefact path is built from this, and a relative one
+    # would be recorded relative to whatever directory the command ran in.
+    run_dir = Path(args.run_dir).resolve()
     lock = acquire_run_lock(run_dir, purpose=purpose, args=args)
     try:
         state = load_state(run_dir)
@@ -221,22 +224,34 @@ def _records(state: RunState) -> list[Finding]:
     return [Finding(**f) for f in state.findings]
 
 
-def _evidence_block(state: RunState) -> str:
-    """Whether every archived artefact is still there, and still itself.
+def _joined(problems: list[str], preamble: str) -> str:
+    return (
+        preamble
+        + "; ".join(problems[:6])
+        + (f" (+{len(problems) - 6} more)" if len(problems) > 6 else "")
+    )
+
+
+def _evidence_block(state: RunState, run_dir: Path) -> str:
+    """Whether every artefact whose digest was recorded is still itself.
 
     The run directory is excluded from the tree fingerprint — it has to be,
     or writing a gate log would invalidate the approval that log supports —
     which means deleting or rewriting the evidence moved nothing any other
-    check looks at. A delivery could then cite raw output that is not there.
-    Each file's digest is recorded when it is written, and checked here.
+    check looks at. Each file's digest is recorded when it is written, and a
+    file that no longer matches is reported wherever it appears.
+
+    A record with NO recorded digest is not an error here: it is simply
+    unverifiable, and ``_support_block`` is what refuses to let anything
+    unverifiable carry a delivery.
     """
     problems: list[str] = []
     for record in state.rounds:
         for channel, path in record.raw_paths.items():
             expected = (record.raw_digests or {}).get(channel)
             if not expected:
-                continue  # nothing was archived for that channel
-            actual = file_digest(Path(path))
+                continue
+            actual = file_digest(artefact_path(run_dir, path))
             if not actual:
                 problems.append(f"review {record.number} [{channel}] is missing: {path}")
             elif actual != expected:
@@ -246,17 +261,78 @@ def _evidence_block(state: RunState) -> str:
             path, expected = command.get("log"), command.get("log_sha256")
             if not path or not expected:
                 continue
-            actual = file_digest(Path(path))
+            actual = file_digest(artefact_path(run_dir, path))
             if not actual:
                 problems.append(f"gate {index} log is missing: {path}")
             elif actual != expected:
                 problems.append(f"gate {index} log was modified: {path}")
     if not problems:
         return ""
-    return (
+    return _joined(
+        problems,
         "the archived evidence no longer matches what was recorded, so the "
-        "run cannot show what it was judged on: " + "; ".join(problems[:6])
-        + (f" (+{len(problems) - 6} more)" if len(problems) > 6 else "")
+        "run cannot show what it was judged on: ",
+    )
+
+
+def _verifiable(problems: list[str], label: str, path: str, expected: str, run_dir: Path) -> None:
+    if not path:
+        problems.append(f"{label} archived nothing")
+        return
+    if not expected:
+        problems.append(
+            f"{label} has no recorded digest, so its archive cannot be shown to be "
+            f"what was produced at the time: {path}"
+        )
+        return
+    actual = file_digest(artefact_path(run_dir, path))
+    if not actual:
+        problems.append(f"{label} is missing: {path}")
+    elif actual != expected:
+        problems.append(f"{label} was modified: {path}")
+
+
+def _support_block(state: RunState, record: RoundRecord, run_dir: Path) -> str:
+    """Whether the evidence a DELIVERY would rest on is complete and checkable.
+
+    Unverifiable is not the same as verified. A record whose digest was never
+    taken cannot show that its archive is the output that was produced then,
+    so it may not be what a delivery rests on — and back-filling a digest now
+    would only prove the file has not changed since this moment, which is not
+    the claim being made. The way forward is a fresh gate and review under
+    the current version, whose evidence is verifiable by construction.
+
+    Older runs stay readable and keep their history; what they lose is the
+    ability to deliver on evidence nobody can check.
+    """
+    problems: list[str] = []
+    for channel in REVIEW_CHANNELS:
+        _verifiable(
+            problems,
+            f"the approving review {record.number} [{channel}]",
+            record.raw_paths.get(channel, ""),
+            (record.raw_digests or {}).get(channel, ""),
+            run_dir,
+        )
+    gate = state.gates[-1] if state.gates else None
+    if gate is None:
+        problems.append("no verification run was recorded")
+    else:
+        for command in gate.get("commands", []):
+            _verifiable(
+                problems,
+                "the supporting verification log",
+                command.get("log") or "",
+                command.get("log_sha256") or "",
+                run_dir,
+            )
+    if not problems:
+        return ""
+    return _joined(
+        problems,
+        "the evidence this delivery would rest on is not verifiable, so it "
+        "cannot show what it was judged on — re-run 'gate' and 'review' on "
+        "this head rather than back-filling anything: ",
     )
 
 
@@ -283,10 +359,11 @@ def _release_block(state: RunState) -> str | None:
     )
     if missing:
         return (
-            "these review channels were never triaged: "
+            "these review channels are unaccounted for: "
             + ", ".join(missing)
-            + " — record their findings, or attest that they reported none "
-            "('findings none'); an unread channel is not a clean one"
+            + " — record their findings, or attest what you read ('findings "
+            "none'); an unread channel is not a clean one, and a channel whose "
+            "outcome is unknown is not an empty one"
         )
     return None
 
@@ -303,9 +380,11 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     repo_root = _repo_root()
     now = utc_now()
-    run_dir = Path(args.run_dir) if args.run_dir else _run_dir_for(
-        brief, Path(args.runs_root), now
-    )
+    run_dir = (
+        Path(args.run_dir)
+        if args.run_dir
+        else _run_dir_for(brief, Path(args.runs_root), now)
+    ).resolve()
     # The lock is taken before the "already exists" check, so two starts
     # racing on one directory cannot both pass it and then overwrite each
     # other's state.
@@ -694,7 +773,7 @@ def _review(args: argparse.Namespace, run_dir: Path, state: RunState, brief: Bri
     # the tree digest would happily bind the resulting approval to that
     # uncommitted work. Reviewing a dirty tree therefore produces an approval
     # describing code nobody read.
-    missing_evidence = _evidence_block(state)
+    missing_evidence = _evidence_block(state, run_dir)
     if missing_evidence:
         _emit(f"BLOCKED: {missing_evidence}")
         return EXIT_BLOCKED
@@ -735,9 +814,24 @@ def _review(args: argparse.Namespace, run_dir: Path, state: RunState, brief: Bri
             raw_paths={c: str(p) for c, p in raw_paths.items()},
             exit_codes={},
             duration_seconds=0.0,
+            channel_status={c: "pending" for c in REVIEW_CHANNELS},
         )
     )
     state.save(run_dir)
+
+    def persist_channel(channel: str, result) -> None:
+        """Record one channel's outcome BEFORE the next one starts.
+
+        An interruption between channels used to leave the first channel's
+        archive on disk with nothing saying it had run: its exit code, its
+        digest and therefore its findings were lost, and the round read as
+        having nothing to account for.
+        """
+        record = state.rounds[-1]
+        record.exit_codes[channel] = result.exit_code
+        record.raw_digests[channel] = result.log_digest
+        record.channel_status[channel] = "completed" if result.exit_code == 0 else "failed"
+        state.save(run_dir)
 
     # Never let a review outlive the run's own deadline.
     timeout = min(args.timeout, max(1.0, state.seconds_left()))
@@ -748,6 +842,7 @@ def _review(args: argparse.Namespace, run_dir: Path, state: RunState, brief: Bri
         raw_paths=raw_paths,
         timeout_seconds=timeout,
         scope=args.scope,
+        on_channel_complete=persist_channel,
     )
     gating, prose = results[CHANNEL_VERDICT], results[CHANNEL_FINDINGS]
     gating_read = read_channel(
@@ -825,6 +920,9 @@ def _review(args: argparse.Namespace, run_dir: Path, state: RunState, brief: Bri
         raw_paths={c: str(p) for c, p in raw_paths.items()},
         raw_digests={c: r.log_digest for c, r in results.items()},
         exit_codes={c: r.exit_code for c, r in results.items()},
+        channel_status={
+            c: ("completed" if r.exit_code == 0 else "failed") for c, r in results.items()
+        },
         duration_seconds=round(sum(r.duration_seconds for r in results.values()), 1),
     )
     state.save(run_dir)
@@ -879,7 +977,7 @@ def _review(args: argparse.Namespace, run_dir: Path, state: RunState, brief: Bri
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    run_dir = Path(args.run_dir)
+    run_dir = Path(args.run_dir).resolve()
     try:
         state = load_state(run_dir)
     except StateError as exc:
@@ -911,7 +1009,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "findings_recorded": len(state.findings),
         "findings_blocking_unresolved": len(blockers),
         "release_block": _release_block(state) or "",
-        "evidence_block": _evidence_block(state) or "",
+        "evidence_block": _evidence_block(state, run_dir) or "",
         "gates_run": len(state.gates),
         "last_gate_passed": bool(state.gates and state.gates[-1]["passed"]),
     }
@@ -968,7 +1066,11 @@ def _finish(args: argparse.Namespace, run_dir: Path, state: RunState) -> int:
         # must still be the newest one and must still have passed, the
         # approval itself must have landed inside the run's time budget, and
         # no blocking finding from EITHER channel may still be open.
-        release = _release_block(state) or _evidence_block(state)
+        release = (
+            _release_block(state)
+            or _evidence_block(state, run_dir)
+            or _support_block(state, passing, run_dir)
+        )
         if not state.gate_supports(passing):
             blocking_reason = (
                 "the newest verification run did not pass on the reviewed inputs; "
@@ -1044,6 +1146,10 @@ def _finish(args: argparse.Namespace, run_dir: Path, state: RunState) -> int:
         "findings": state.findings,
         "triage": state.triage,
         "unresolved_blocking": [f.id for f in unresolved_blocking(_records(state))],
+        # Read-only, and never merged into this run's own counts: a run that
+        # continues another one has to carry that one's open items forward or
+        # they vanish between records.
+        "linked_unresolved": _linked_unresolved(state),
         "events": state.events,
         "gates": state.gates,
     }
@@ -1052,6 +1158,32 @@ def _finish(args: argparse.Namespace, run_dir: Path, state: RunState) -> int:
     _emit(f"{state.status}: evidence index written to {path}")
     _emit("this workflow never merges and never deploys; open a Draft PR for the founder")
     return EXIT_OK
+
+
+def _linked_unresolved(state: RunState) -> list[dict]:
+    """The open findings of the run this one continues.
+
+    Read without modifying it: the older run keeps its status, its counts and
+    its history exactly as they were.
+    """
+    if not state.linked_run:
+        return []
+    try:
+        older = load_state(Path(state.linked_run))
+    except StateError:
+        return []
+    return [
+        {
+            "run_id": older.run_id,
+            "id": f.id,
+            "severity": f.severity,
+            "title": f.title,
+            "file": f.file,
+            "disposition": f.disposition,
+        }
+        for f in _records(older)
+        if not f.resolved
+    ]
 
 
 def cmd_stop(args: argparse.Namespace) -> int:
