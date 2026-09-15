@@ -18,8 +18,10 @@ Run: python -m pytest tests/test_review_handoff.py -q
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -28,7 +30,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.review_handoff import brief as brief_mod  # noqa: E402
-from scripts.review_handoff import cli, runner, state, verdict  # noqa: E402
+from scripts.review_handoff import cli, findings, locking, prompt, runner  # noqa: E402
+from scripts.review_handoff import state, verdict  # noqa: E402
 
 FIXTURES = REPO_ROOT / ".claude/skills/dev-review-handoff/fixtures"
 
@@ -120,7 +123,9 @@ def _brief_text(
     commands: str = '[["python", "-c", "print(\'gate ok\')"]]',
     rounds: int = 3,
     seconds: int = 3600,
+    lock_name: str | None = None,
 ) -> str:
+    lock_line = f'shared_lock = "{lock_name}"\n' if lock_name else ""
     return f"""
 name = "sample package"
 requirements = ["do the approved thing"]
@@ -132,7 +137,7 @@ verification_commands = {commands}
 [limits]
 max_review_rounds = {rounds}
 max_total_seconds = {seconds}
-"""
+{lock_line}"""
 
 
 @pytest.fixture
@@ -160,9 +165,89 @@ def external_brief_file(tmp_path: Path):
     return _make
 
 
+def _payload(
+    verdict_word: str,
+    *,
+    findings_list: list[dict] | None = None,
+    summary: str = "the change was read in full against the brief",
+    text: str | None = None,
+) -> str:
+    """The shape the real plugin prints under --json.
+
+    The adversarial channel runs against the plugin's own JSON output schema
+    (schemas/review-output.schema.json), and --json wraps that object in the
+    companion payload. Tests that exercise the structured path must use the
+    real shape, or they would be pinning an interface nobody implements.
+    """
+    result = {
+        "verdict": verdict_word,
+        "summary": summary,
+        "findings": findings_list or [],
+        "next_steps": [],
+    }
+    return json.dumps(
+        {
+            "review": "Adversarial Review",
+            "target": {"label": "branch"},
+            "codex": {"status": 0, "stdout": text or json.dumps(result), "stderr": ""},
+            "result": result,
+            "rawOutput": json.dumps(result),
+            "parseError": None,
+        }
+    )
+
+
+def _structured_finding(
+    *,
+    severity: str = "high",
+    title: str = "unchecked index",
+    file: str = "file.txt",
+    line: int = 1,
+) -> dict:
+    return {
+        "severity": severity,
+        "title": title,
+        "body": "the loop reads one past the end when the list is empty",
+        "file": file,
+        "line_start": line,
+        "line_end": line,
+        "confidence": 0.9,
+        "recommendation": "guard the empty case",
+    }
+
+
 def _run(repo: Path, monkeypatch, argv: list[str]) -> int:
     monkeypatch.chdir(repo)
     return cli.main(argv)
+
+
+def _triage_all(repo: Path, monkeypatch, run_dir: Path) -> None:
+    """Attest that every prose channel of every usable round was read.
+
+    The release condition requires this explicitly; tests that are about
+    something else say so here in one line rather than repeating it. The
+    requirement itself has its own tests.
+    """
+    saved = state.load_state(run_dir)
+    done = {(int(a["round"]), a["channel"]) for a in saved.triage}
+    done |= {(f["round"], f["channel"]) for f in saved.findings}
+    for record in saved.rounds:
+        if not record.usable:
+            continue
+        for channel in runner.REVIEW_CHANNELS:
+            if (record.number, channel) in done:
+                continue
+            _run(
+                repo,
+                monkeypatch,
+                [
+                    "findings", "none",
+                    "--run-dir", str(run_dir),
+                    "--round", str(record.number),
+                    "--channel", channel,
+                    "--note", "read the archived output; nothing to report",
+                ],
+            )
 
 
 def _start(repo: Path, monkeypatch, brief: Path, run_dir: Path) -> int:
@@ -240,6 +325,7 @@ def test_pass_path_gate_then_approve_then_finish(
 
     assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_OK
     assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    _triage_all(repo, monkeypatch, run_dir)
     assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_OK
 
     saved = state.load_state(run_dir)
@@ -273,6 +359,7 @@ def test_defect_then_fix_then_approve(repo: Path, monkeypatch, brief_file, tmp_p
     (repo / "file.txt").write_text("fixed\n", encoding="utf-8")
     _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
     assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    _triage_all(repo, monkeypatch, run_dir)
     assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_OK
 
     saved = state.load_state(run_dir)
@@ -582,13 +669,14 @@ def test_review_is_bound_to_the_recorded_base_and_told_the_evidence_path(
 
     passed = recorder.with_suffix(
         "." + runner.CHANNEL_VERDICT + ".args"
-    ).read_text(encoding="utf-8")
+    ).read_text(encoding="utf-8").split("\n")
     base = state.load_state(run_dir).base
-    assert f"--base {base}" in passed
+    assert passed[passed.index("--base") + 1] == base
     assert "--wait" in passed  # never review in the background
-    assert "do the approved thing" in passed  # requirements
-    assert "no merging" in passed  # prohibitions
-    assert "gate-01" in passed  # path to the raw verification log
+    focus = passed[-1]
+    assert "do the approved thing" in focus  # requirements
+    assert "no merging" in focus  # prohibitions
+    assert "gate-01" in focus  # path to the raw verification log
 
 
 def test_build_review_argv_is_explicit_about_base_and_waiting():
@@ -599,7 +687,11 @@ def test_build_review_argv_is_explicit_about_base_and_waiting():
         plugin=Path("/p/x.mjs"),
     )
     assert argv[2] == "adversarial-review"
-    assert "--base abc123" in argv[3] and "--wait" in argv[3]
+    # Separate elements, never one packed string: the plugin re-splits a
+    # single raw argument with a shell-like tokeniser.
+    assert argv[argv.index("--base") + 1] == "abc123"
+    assert "--wait" in argv and "--json" in argv
+    assert argv[-2:] == ["--", "F"]
 
 
 # ------------------------------------------------- the verdict parse itself
@@ -683,8 +775,10 @@ def test_native_channel_receives_no_focus_text():
         channel=runner.CHANNEL_FINDINGS, base="abc", focus="LONG FOCUS TEXT",
         plugin=Path("/p/x.mjs"),
     )
-    assert "LONG FOCUS TEXT" not in argv[3]
-    assert "--base abc" in argv[3] and "--wait" in argv[3]
+    assert "LONG FOCUS TEXT" not in argv
+    assert "--" not in argv
+    assert argv[argv.index("--base") + 1] == "abc"
+    assert "--wait" in argv
 
 
 def test_base_is_pinned_to_the_merge_base_not_to_head(
@@ -764,6 +858,7 @@ def test_delivery_records_measurable_cost(repo: Path, monkeypatch, brief_file, t
     _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[APPROVE_OUTPUT]))
     _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
     _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    _triage_all(repo, monkeypatch, run_dir)
     _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)])
 
     summary = json.loads((run_dir / "delivery.json").read_text(encoding="utf-8"))
@@ -1064,6 +1159,7 @@ def test_a_delivered_run_is_terminal_too(repo: Path, monkeypatch, brief_file, tm
     _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[APPROVE_OUTPUT]))
     _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
     _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    _triage_all(repo, monkeypatch, run_dir)
     assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_OK
     assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
 
@@ -1387,3 +1483,789 @@ def test_a_retry_after_an_interrupted_gate_keeps_both_directories(
     assert saved.gates[0]["passed"] is False and saved.gates[1]["passed"] is True
     # The retry claimed its own directory rather than the interrupted one.
     assert Path(saved.gates[1]["commands"][0]["log"]).parent.name == "gate-02"
+
+
+# =======================================================================
+# Supplementary correction round: the six reported defects, the release
+# condition, and the reviewer instructions.
+#
+# Every test here plants the real failure and asserts the workflow's
+# ACTION, same as the rest of the file.
+# =======================================================================
+
+
+def _argv_recorder(tmp_path: Path) -> Path:
+    """A fake plugin that records its argv exactly as the OS delivered it."""
+    script = tmp_path / "argv_recorder.py"
+    script.write_text(
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "channel = sys.argv[1]\n"
+        "Path(sys.argv[0]).with_suffix('.' + channel + '.json').write_text(\n"
+        "    json.dumps(sys.argv[1:]), encoding='utf-8')\n"
+        "sys.stdout.write('Verdict: approve\\n\\nnothing to report at all here\\n')\n",
+        encoding="utf-8",
+    )
+    return script
+
+
+HOSTILE_FOCUS = (
+    "evidence at D:\\runs\\gate-01\\caf\u00e9 log.txt; the reviewer's own words; "
+    "--base pretend-flag; \u4e2d\u6587\u6e2c\u8a66"
+)
+
+
+def test_focus_text_reaches_the_reviewer_byte_for_byte(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The defect this replaces: all flags and the prose were packed into ONE
+    argument, and the plugin re-splits a single raw argument with a shell-like
+    tokeniser (normalizeArgv -> splitRawArgumentString). That ate the
+    backslashes out of Windows paths, removed apostrophes, and could read
+    flag-like text inside the brief as an option."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    recorder = _argv_recorder(tmp_path)
+    _install_fake_plugin(monkeypatch, recorder)
+    focus_file = tmp_path / "focus.txt"
+    focus_file.write_text(HOSTILE_FOCUS, encoding="utf-8")
+
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(
+        repo,
+        monkeypatch,
+        ["review", "--run-dir", str(run_dir), "--focus-file", str(focus_file)],
+    )
+
+    argv = json.loads(
+        recorder.with_suffix("." + runner.CHANNEL_VERDICT + ".json").read_text(
+            encoding="utf-8"
+        )
+    )
+    # One element per flag, one element for the whole prose, after "--".
+    assert argv[argv.index("--base") + 1] == state.load_state(run_dir).base
+    assert argv[-2] == "--"
+    delivered = argv[-1]
+    assert HOSTILE_FOCUS in delivered
+    assert "D:\\runs\\gate-01\\caf\u00e9 log.txt" in delivered
+    assert "reviewer's own words" in delivered
+    assert "\u4e2d\u6587\u6e2c\u8a66" in delivered
+
+
+REAL_PLUGIN_ARGS = runner.DEFAULT_PLUGIN_SCRIPT.parent / "lib" / "args.mjs"
+
+
+@pytest.mark.skipif(
+    shutil.which("node") is None or not REAL_PLUGIN_ARGS.exists(),
+    reason="the installed review plugin and node are needed to check its real parser",
+)
+def test_the_installed_plugins_own_parser_returns_the_focus_text_unchanged(tmp_path: Path):
+    """Not a fake: this runs the INSTALLED plugin's argument parser over the
+    argv we build, with the same option table its review command uses, and
+    checks what the reviewer would actually receive."""
+    probe = tmp_path / "probe.mjs"
+    probe.write_text(
+        "const mod = await import(process.argv[2]);\n"
+        "const argv = JSON.parse(process.argv[3]);\n"
+        "const normalized = argv.length === 1\n"
+        "  ? mod.splitRawArgumentString(argv[0])\n"
+        "  : argv;\n"
+        "const parsed = mod.parseArgs(normalized, {\n"
+        "  valueOptions: ['base', 'scope', 'model', 'cwd'],\n"
+        "  booleanOptions: ['json', 'background', 'wait'],\n"
+        "  aliasMap: { m: 'model', C: 'cwd' }\n"
+        "});\n"
+        "console.log(JSON.stringify({ options: parsed.options,"
+        " focus: parsed.positionals.join(' ') }));\n",
+        encoding="utf-8",
+    )
+    argv = runner.build_review_argv(
+        channel=runner.CHANNEL_VERDICT,
+        base="0123456789abcdef0123456789abcdef01234567",
+        focus=HOSTILE_FOCUS,
+        plugin=Path("plugin.mjs"),
+    )
+    proc = subprocess.run(
+        [
+            "node",
+            str(probe),
+            REAL_PLUGIN_ARGS.resolve().as_uri(),
+            json.dumps(argv[3:]),  # what the plugin sees after the subcommand
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    parsed = json.loads(proc.stdout)
+    assert parsed["focus"] == HOSTILE_FOCUS
+    assert parsed["options"]["base"] == "0123456789abcdef0123456789abcdef01234567"
+    assert parsed["options"]["wait"] is True
+    assert parsed["options"]["scope"] == "branch"
+
+
+def test_the_old_single_string_form_is_what_corrupted_the_text(tmp_path: Path):
+    """The counter-example, kept so the fix cannot be quietly undone: fed as
+    ONE string, the same parser destroys the path and the apostrophe."""
+    if shutil.which("node") is None or not REAL_PLUGIN_ARGS.exists():
+        pytest.skip("the installed review plugin and node are needed")
+    probe = tmp_path / "probe.mjs"
+    probe.write_text(
+        "const mod = await import(process.argv[2]);\n"
+        "console.log(JSON.stringify(mod.splitRawArgumentString(process.argv[3])));\n",
+        encoding="utf-8",
+    )
+    packed = f"--wait --base abc --scope branch {HOSTILE_FOCUS}"
+    proc = subprocess.run(
+        ["node", str(probe), REAL_PLUGIN_ARGS.resolve().as_uri(), packed],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    rebuilt = " ".join(json.loads(proc.stdout))
+    assert "D:\\runs\\gate-01\\caf\u00e9 log.txt" not in rebuilt  # backslashes eaten
+    assert HOSTILE_FOCUS not in rebuilt
+
+
+# ------------------------------------------------------- concurrency
+
+
+def test_a_second_command_cannot_write_a_run_another_one_holds(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    held = locking.FileLock(locking.run_lock_path(run_dir), purpose="test")
+    held.acquire()
+    try:
+        assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+        assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+        assert (
+            _run(repo, monkeypatch, ["stop", "--run-dir", str(run_dir), "--reason", "x"])
+            == cli.EXIT_BLOCKED
+        )
+        assert state.load_state(run_dir).status == "open"
+    finally:
+        held.release()
+    assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+
+
+def test_a_stop_during_a_review_is_refused_rather_than_silently_overwritten(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The defect: a stop landing mid-review was undone when the review saved
+    the state it had loaded minutes earlier. The stop must be visibly refused,
+    not lost."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    seen = {}
+
+    def fake_round(**kwargs):
+        seen["stop"] = _run(
+            repo,
+            monkeypatch,
+            ["stop", "--run-dir", str(run_dir), "--reason", "concurrent stop"],
+        )
+        results = {}
+        for channel, path in kwargs["raw_paths"].items():
+            text = _payload("approve") if channel == runner.CHANNEL_VERDICT else NATIVE_OUTPUT
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            results[channel] = runner.CommandResult(
+                argv=["fake"],
+                exit_code=0,
+                stdout=text,
+                stderr="",
+                duration_seconds=0.1,
+                timed_out=False,
+                log_path=path,
+            )
+        return results
+
+    monkeypatch.setattr(cli, "invoke_review_round", fake_round)
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    assert seen["stop"] == cli.EXIT_BLOCKED
+    saved = state.load_state(run_dir)
+    assert saved.status == "open"  # the stop never half-applied
+    assert saved.review_count == 1
+
+
+def test_breaking_a_lock_is_explicit_and_recorded(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """A crashed session leaves a lock. Breaking it never touches the holder
+    process, and the break is written into the run so it is not invisible."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    locking.FileLock(locking.run_lock_path(run_dir), purpose="crashed").acquire()
+    assert _run(repo, monkeypatch, ["status", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    assert (
+        _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir), "--break-lock"])
+        == cli.EXIT_OK
+    )
+    events = state.load_state(run_dir).events
+    assert any(e["event"] == "run lock broken" for e in events)
+
+
+def test_two_runs_sharing_one_database_do_not_verify_at_the_same_time(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Different runs have different run directories, so the per-run lock does
+    not keep them off the one PostgreSQL instance these suites share.
+    Concurrency there has already produced phantom failures here."""
+    monkeypatch.setenv(locking.LOCK_DIR_ENV, str(tmp_path / "locks"))
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    other = locking.FileLock(
+        locking.shared_lock_path(locking.DEFAULT_SHARED_LOCK_NAME),
+        purpose="gate",
+        run_id="some-other-run",
+    )
+    other.acquire()
+    try:
+        assert (
+            _run(
+                repo,
+                monkeypatch,
+                ["gate", "--run-dir", str(run_dir), "--shared-lock-wait", "0"],
+            )
+            == cli.EXIT_BLOCKED
+        )
+        # Nothing was recorded: the suite never started.
+        assert state.load_state(run_dir).gates == []
+    finally:
+        other.release()
+    assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+
+
+def test_a_run_with_its_own_database_does_not_queue_behind_the_shared_one(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    monkeypatch.setenv(locking.LOCK_DIR_ENV, str(tmp_path / "locks"))
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(lock_name="private-db"), run_dir)
+    other = locking.FileLock(
+        locking.shared_lock_path(locking.DEFAULT_SHARED_LOCK_NAME), purpose="gate"
+    )
+    other.acquire()
+    try:
+        assert (
+            _run(
+                repo,
+                monkeypatch,
+                ["gate", "--run-dir", str(run_dir), "--shared-lock-wait", "0"],
+            )
+            == cli.EXIT_OK
+        )
+    finally:
+        other.release()
+
+
+# ------------------------------------------------------------- timeouts
+
+
+def test_a_timed_out_command_takes_its_whole_process_tree_with_it(
+    repo: Path, monkeypatch, tmp_path
+):
+    """subprocess's own timeout kills the direct child only. A pytest worker
+    or node helper left running keeps writing to the shared database after
+    the run believes it dead."""
+    beat = tmp_path / "beat.txt"
+    grandchild = tmp_path / "grandchild.py"
+    grandchild.write_text(
+        "import time\n"
+        "from pathlib import Path\n"
+        f"target = Path(r'''{beat}''')\n"
+        "for i in range(600):\n"
+        "    target.write_text(str(i))\n"
+        "    time.sleep(0.1)\n",
+        encoding="utf-8",
+    )
+    parent = tmp_path / "parent.py"
+    parent.write_text(
+        "import subprocess, sys, time\n"
+        f"subprocess.Popen([sys.executable, r'''{grandchild}'''])\n"
+        "time.sleep(120)\n",
+        encoding="utf-8",
+    )
+    brief = repo / "brief.toml"
+    brief.write_text(
+        _brief_text(commands=json.dumps([[sys.executable, str(parent)]])),
+        encoding="utf-8",
+    )
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief, run_dir)
+
+    assert (
+        _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir), "--timeout", "4"])
+        == cli.EXIT_BLOCKED
+    )
+    record = state.load_state(run_dir).gates[-1]["commands"][0]
+    assert record["timed_out"] is True
+    assert record["killed_tree"] is True
+    assert beat.exists(), "the grandchild never started; the test proves nothing"
+    settled = beat.read_text()
+    time.sleep(1.5)
+    assert beat.read_text() == settled, "the grandchild outlived the timeout"
+
+
+# --------------------------------------------------------- output encoding
+
+
+def test_non_ascii_command_output_is_archived_as_utf8(
+    repo: Path, monkeypatch, tmp_path
+):
+    """Decoding child output with the locale encoding mangles reviewer prose
+    on Windows (cp1252) and can fail the capture outright.
+
+    The ambient variables are cleared first: this suite runs under UTF-8, and
+    a child inheriting that would pass whatever the runner does or does not
+    set.
+    """
+    monkeypatch.delenv("PYTHONUTF8", raising=False)
+    monkeypatch.delenv("PYTHONIOENCODING", raising=False)
+    printer = tmp_path / "printer.py"
+    printer.write_text(
+        "import sys\n"
+        "sys.stdout.write('\\u4e2d\\u6587 caf\\u00e9 \\u2014 ok\\n')\n",
+        encoding="utf-8",
+    )
+    brief = repo / "brief.toml"
+    brief.write_text(
+        _brief_text(commands=json.dumps([[sys.executable, str(printer)]])),
+        encoding="utf-8",
+    )
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief, run_dir)
+    assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+
+    log = Path(state.load_state(run_dir).gates[-1]["commands"][0]["log"])
+    assert "\u4e2d\u6587 caf\u00e9 \u2014 ok" in log.read_bytes().decode("utf-8")
+
+
+# ------------------------------------------------------------ pinned base
+
+
+def test_an_explicit_base_is_stored_as_a_full_commit_not_a_name(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """A base stored as "HEAD" or a branch re-points the moment anything is
+    committed, so the review silently shrinks while the record still looks
+    right."""
+    merge_point = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "branch", "integration")
+    (repo / "file.txt").write_text("package work\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "package commit")
+
+    run_dir = tmp_path / "run"
+    assert (
+        _run(
+            repo,
+            monkeypatch,
+            [
+                "start",
+                "--brief", str(brief_file()),
+                "--run-dir", str(run_dir),
+                "--base", merge_point[:8],
+                "--integration-ref", "integration",
+            ],
+        )
+        == cli.EXIT_OK
+    )
+    saved = state.load_state(run_dir)
+    assert saved.base == merge_point
+    assert len(saved.base) == 40
+
+
+def test_a_moving_reference_cannot_be_stored_as_the_base(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    run_dir = tmp_path / "run"
+    assert (
+        _run(
+            repo,
+            monkeypatch,
+            [
+                "start",
+                "--brief", str(brief_file()),
+                "--run-dir", str(run_dir),
+                "--base", "HEAD",
+                "--integration-ref", "main",
+            ],
+        )
+        == cli.EXIT_OK
+    )
+    stored = state.load_state(run_dir).base
+    assert stored == _git(repo, "rev-parse", "HEAD")
+    (repo / "file.txt").write_text("later\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "later")
+    # The base still names the commit it was pinned to, not the new HEAD.
+    assert state.load_state(run_dir).base == stored != _git(repo, "rev-parse", "HEAD")
+
+
+# -------------------------------------------------- run artefacts and digest
+
+
+def test_run_artefacts_inside_the_repository_are_not_part_of_the_code_digest(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """A run directory inside the repository and not ignored becomes part of
+    the fingerprint of the code it is measuring: every log the gate writes
+    changes the digest, so the approval that gate supports is stale before it
+    is recorded and the run can never deliver."""
+    run_dir = repo / "runs" / "r1"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+
+    assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    assert list(run_dir.glob("gate-01/*.log")), "the gate wrote logs inside the repository"
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    _triage_all(repo, monkeypatch, run_dir)
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+
+
+def test_a_real_source_change_still_invalidates_the_approval(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Excluding the run directory must not excuse the rest of the tree."""
+    run_dir = repo / "runs" / "r1"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    _triage_all(repo, monkeypatch, run_dir)
+    (repo / "file.txt").write_text("changed after approval\n", encoding="utf-8")
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+# ------------------------------------------- the release condition itself
+
+
+def _approve_with(findings_list: list[dict]) -> str:
+    return _payload("needs-attention" if findings_list else "approve", findings_list=findings_list)
+
+
+def test_structured_findings_are_read_from_the_plugins_own_result(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(tmp_path, outputs=[_approve_with([_structured_finding()])]),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+
+    saved = state.load_state(run_dir)
+    assert len(saved.findings) == 1
+    recorded = findings.Finding(**saved.findings[0])
+    assert recorded.severity == "high" and recorded.file == "file.txt"
+    assert recorded.source == findings.SOURCE_STRUCTURED
+    assert recorded.disposition == findings.PENDING and recorded.blocking
+    assert saved.rounds[0].verdict == "needs-attention"
+
+
+def test_an_approve_cannot_deliver_over_the_other_channels_blocking_finding(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The two channels disagree in practice. If either one's approval could
+    release the other's findings, the workflow would systematically lose the
+    findings only one channel ever sees."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    assert state.load_state(run_dir).rounds[0].verdict == "approve"
+
+    assert (
+        _run(
+            repo,
+            monkeypatch,
+            [
+                "findings", "record",
+                "--run-dir", str(run_dir),
+                "--round", "1",
+                "--channel", runner.CHANNEL_FINDINGS,
+                "--severity", "high",
+                "--title", "unbounded retry loop",
+                "--file", "file.txt",
+                "--line", "3",
+            ],
+        )
+        == cli.EXIT_OK
+    )
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+    identifier = state.load_state(run_dir).findings[0]["id"]
+    assert (
+        _run(
+            repo,
+            monkeypatch,
+            [
+                "findings", "resolve",
+                "--run-dir", str(run_dir),
+                "--id", identifier,
+                "--disposition", "refuted",
+                "--note", "the loop is bounded by the caller's deadline; see line 40",
+            ],
+        )
+        == cli.EXIT_OK
+    )
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+
+
+def test_awaiting_adjudication_is_not_a_resolution(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    _run(
+        repo,
+        monkeypatch,
+        [
+            "findings", "record",
+            "--run-dir", str(run_dir),
+            "--round", "1",
+            "--channel", runner.CHANNEL_FINDINGS,
+            "--severity", "critical",
+            "--title", "writes truth without confirmation",
+        ],
+    )
+    identifier = state.load_state(run_dir).findings[0]["id"]
+    _run(
+        repo,
+        monkeypatch,
+        [
+            "findings", "resolve",
+            "--run-dir", str(run_dir),
+            "--id", identifier,
+            "--disposition", "awaiting-adjudication",
+            "--note", "needs the founder",
+        ],
+    )
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+def test_a_channel_nobody_triaged_blocks_delivery(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Silence is not evidence that nobody found anything."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    # The structured channel triaged itself; the prose channel did not.
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    _run(
+        repo,
+        monkeypatch,
+        [
+            "findings", "none",
+            "--run-dir", str(run_dir),
+            "--round", "1",
+            "--channel", runner.CHANNEL_FINDINGS,
+            "--note", "read the archived prose; it reports nothing actionable",
+        ],
+    )
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+
+
+def test_a_channel_cannot_be_both_clean_and_have_findings(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    args = [
+        "findings", "none",
+        "--run-dir", str(run_dir),
+        "--round", "1",
+        "--channel", runner.CHANNEL_FINDINGS,
+        "--note", "nothing",
+    ]
+    assert _run(repo, monkeypatch, args) == cli.EXIT_OK
+    assert (
+        _run(
+            repo,
+            monkeypatch,
+            [
+                "findings", "record",
+                "--run-dir", str(run_dir),
+                "--round", "1",
+                "--channel", runner.CHANNEL_FINDINGS,
+                "--severity", "low",
+                "--title", "a late thought",
+            ],
+        )
+        == cli.EXIT_MISUSE
+    )
+
+
+def test_out_of_scope_work_is_escalated_and_never_recorded_as_fixed(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The reviewer is now told to report necessary work outside the approved
+    scope rather than conceal it. This run may not do that work."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    marked = _structured_finding(
+        severity="medium", title=f"{prompt.OUT_OF_SCOPE_MARKER}: the caller also leaks the handle"
+    )
+    _install_fake_plugin(
+        monkeypatch, _write_fake_plugin(tmp_path, outputs=[_approve_with([marked])])
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+
+    recorded = findings.Finding(**state.load_state(run_dir).findings[0])
+    assert recorded.out_of_scope and recorded.blocking
+    assert recorded.disposition == findings.AWAITING
+    assert (
+        _run(
+            repo,
+            monkeypatch,
+            [
+                "findings", "resolve",
+                "--run-dir", str(run_dir),
+                "--id", recorded.id,
+                "--disposition", "fixed",
+                "--note", "changed it anyway",
+            ],
+        )
+        == cli.EXIT_BLOCKED
+    )
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+def test_structured_findings_that_cannot_be_read_make_the_round_unusable(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """A finding the schema promised but that cannot be read must not be
+    silently dropped — that is how a blocking defect would disappear between
+    the reviewer and the release condition."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    broken = _structured_finding()
+    broken.pop("severity")
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(tmp_path, outputs=[_payload("approve", findings_list=[broken])]),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    assert not state.load_state(run_dir).rounds[0].usable
+
+
+def test_a_finding_that_is_not_an_object_makes_the_round_unusable(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The other shape of the same failure: an entry that is not a finding at
+    all. Skipping it would quietly shorten the list the release condition
+    checks."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    payload = json.loads(_payload("approve"))
+    payload["result"]["findings"] = ["a bare string, not a finding"]
+    _install_fake_plugin(
+        monkeypatch, _write_fake_plugin(tmp_path, outputs=[json.dumps(payload)])
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    saved = state.load_state(run_dir)
+    assert not saved.rounds[0].usable
+    assert "could not be read" in saved.rounds[0].reason
+    assert saved.findings == []
+
+
+# --------------------------------------------- structured verdict preferred
+
+
+def test_the_structured_verdict_wins_over_prose_in_the_same_payload(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The structured result is what the plugin constrains with its own
+    schema; a verdict line in the surrounding prose is not a second opinion."""
+    payload = json.loads(_payload("needs-attention"))
+    payload["codex"]["stdout"] = "everything is wonderful\n\nVerdict: approve\n"
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch, _write_fake_plugin(tmp_path, outputs=[json.dumps(payload)])
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    assert state.load_state(run_dir).rounds[0].verdict == "needs-attention"
+
+
+def test_a_payload_with_no_structured_result_and_no_verdict_line_is_unusable(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    payload = {
+        "review": "Adversarial Review",
+        "codex": {"status": 0, "stdout": "I had a look and it seems fine to me overall", "stderr": ""},
+        "result": None,
+        "rawOutput": "",
+        "parseError": "Codex did not return a final structured message.",
+    }
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch, _write_fake_plugin(tmp_path, outputs=[json.dumps(payload)])
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    saved = state.load_state(run_dir)
+    assert not saved.rounds[0].usable
+    assert "no structured result" in saved.rounds[0].reason
+
+
+# ------------------------------------------------- the reviewer instructions
+
+
+def test_the_reviewer_is_given_the_projects_judging_standard():
+    text = prompt.review_instructions(
+        package="p",
+        base="abc",
+        requirements=["r"],
+        acceptance_criteria=["a"],
+        allowed_paths=["p1"],
+        prohibitions=["no merging"],
+        gate_logs=["gate-01/x.log"],
+        run_dir="run",
+    )
+    lowered = text.lower()
+    assert "correctness" in lowered
+    assert "maintainability" in lowered
+    assert "project fit" in lowered
+    # The two instructions that were removed, and must stay removed.
+    assert "minimal in-scope fix" not in lowered
+    assert "do not propose work outside" not in lowered
+    assert "smaller change" in lowered  # it now says the opposite, explicitly
+
+
+def test_the_reviewer_is_told_to_report_out_of_scope_work_not_hide_it():
+    text = prompt.review_instructions(
+        package="p",
+        base="abc",
+        requirements=["r"],
+        acceptance_criteria=["a"],
+        allowed_paths=["p1"],
+        prohibitions=["no merging"],
+        gate_logs=[],
+        run_dir="run",
+    )
+    assert prompt.OUT_OF_SCOPE_MARKER in text
+    assert "ask the founder for authorisation" in text
+    assert "do not suppress it" in text.lower()

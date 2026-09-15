@@ -16,7 +16,7 @@ This workflow never merges and never deploys. It ends at a Draft PR.
 - An approved brief (template:
   `.claude/skills/dev-review-handoff/task-brief-template.md`).
 
-## The five commands
+## The commands
 
 Run from the repository root of the worktree.
 
@@ -28,7 +28,21 @@ python -m scripts.review_handoff status --run-dir .claude/handoff/<run-id>
 python -m scripts.review_handoff finish --run-dir .claude/handoff/<run-id>
 ```
 
+Between `review` and `finish`, account for every finding:
+
+```bash
+python -m scripts.review_handoff findings list    --run-dir <dir>
+python -m scripts.review_handoff findings record  --run-dir <dir> --round 1 \
+    --channel review --severity high --title "..." --file path --line 42
+python -m scripts.review_handoff findings none    --run-dir <dir> --round 1 \
+    --channel review --note "read the archived prose; nothing actionable"
+python -m scripts.review_handoff findings resolve --run-dir <dir> --id r01-adve-1a2b3c4d \
+    --disposition fixed --note "commit abc1234 plus its regression test"
+```
+
 `stop --run-dir <dir> --reason "…"` closes a run without a pass.
+`--linked-run <dir>` on `start` records that this run continues an older
+one; the older run is not modified.
 
 Exit codes: `0` proceed, `1` blocked (a limit, a stale verdict, a failing
 gate, an unusable review), `2` misuse (bad arguments, invalid brief,
@@ -41,9 +55,10 @@ printed and recorded.
 |---|---|
 | `start` | The base is the merge base with the integration branch, not HEAD. The brief is archived verbatim. Limits are fixed and can only be lowered from here. |
 | `gate` | The brief's commands run in order, stop at the first failure, and are archived verbatim. Sequential is a correctness requirement: these suites share one database. |
-| `review` | Both review channels run against the pinned base with `--wait`; both raw outputs are archived; one verdict is recorded for the round. |
-| `status` | Whether a current pass exists, and whether an earlier approval has gone stale. |
-| `finish` | Refuses unless a usable `approve` describes the current tree. Writes the evidence index. |
+| `review` | Both review channels run against the pinned base with `--wait --json`; both raw outputs are archived; the adversarial channel's structured findings are recorded with their severities; one verdict is recorded for the round. |
+| `findings` | Every finding carries a disposition. Blocking ones stop delivery until fixed or refuted, whichever channel raised them. |
+| `status` | Whether a current pass exists, whether an earlier approval has gone stale, and what is still blocking release. |
+| `finish` | Refuses unless a usable `approve` describes the current tree, every channel was triaged, and no blocking finding is open. Writes the evidence index. |
 
 ## Limits
 
@@ -78,6 +93,17 @@ evidence index into the PR body.
 | `review` exits 1, "review exited N" | plugin or authentication failure | check `codex-companion.mjs status`; fix outside the run |
 | `finish` exits 1, "describes an older tree" | the tree changed after the approval | re-run `gate` and `review` |
 | `start` exits 2, "not the merge base" | the base would hide part of the package | drop `--base` and let it pin the merge base |
+| any command exits 1, "is held by pid N" | another command owns this run, or another run owns the shared database | wait, or stop. **Never kill the holder** — stopping another session or shared runtime is outside this workflow's authorisation. If the holder really crashed, `--break-lock` (run lock) or `--break-shared-lock` (database lock); the break is recorded |
+| `review` exits 1, "no structured result" | the reviewer did not answer against the plugin's own schema | read the raw file; retry once; twice in a row is a stop |
+| `finish` exits 1, "never triaged" | a channel produced a review nobody accounted for | read it, then `findings record` or `findings none` |
+
+## Concurrency
+
+`gate` holds a machine-wide lock named by the brief (`limits.shared_lock`,
+default `shared-test-database`), so two runs never verify against the same
+PostgreSQL instance at once; a second run queues. Everything that writes
+state holds the run's own lock. A held lock is reported with its holder and
+never forced.
 
 ## Limits of this workflow
 
@@ -85,9 +111,10 @@ evidence index into the PR body.
   The repository's own gates are the deterministic part; the review is a
   second opinion that has caught real defects and has also reported things
   that were not defects.
-- **Only one channel carries a machine-readable verdict.** The other is run
-  and archived because it has caught defects the first missed, but nothing
-  classifies its prose.
+- **Only one channel returns a structured result.** Its verdict and its
+  findings are read mechanically. The other is run and archived because it
+  has caught defects the first missed, but nothing classifies its prose —
+  you read it and record what you found.
 - **The agent judges its own fixes** between rounds. That is the autonomy
   being trialled, and ADR-003's kill criterion is how it gets withdrawn.
 - **CI cannot run a real review** — the plugin needs credentials CI does not

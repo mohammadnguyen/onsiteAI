@@ -141,3 +141,130 @@ def parse_verdict(
         )
     value = found.pop()
     return Verdict(value, True, f"reviewer reported {value}")
+
+
+# ----------------------------------------------------------------------
+# Reading the plugin's STRUCTURED result.
+#
+# The adversarial channel is run against the plugin's own JSON output schema
+# (schemas/review-output.schema.json: verdict, summary, findings[], next_steps),
+# and ``--json`` returns that object inside the companion payload. Preferring
+# it over the prose "Verdict:" line is not a nicety: the structured object
+# also carries a severity per finding, which is what the release condition
+# needs, and it takes a regex over model wording off the gating path.
+#
+# The prose parser above stays as the fallback for a plugin build that does
+# not return a payload. Neither path guesses: with no structured verdict and
+# no verdict line, the round is unusable.
+# ----------------------------------------------------------------------
+
+_STRUCTURED_VERDICTS = {"approve": APPROVE, "needs-attention": NEEDS_ATTENTION}
+
+
+@dataclass(frozen=True)
+class ChannelRead:
+    """One channel's outcome, however the plugin chose to express it."""
+
+    ok: bool
+    reason: str
+    verdict: Verdict | None
+    structured: dict | None
+    review_text: str
+
+
+def _payload_text(payload: dict) -> str:
+    """The prose a reader would see, whatever shape the payload has."""
+    codex = payload.get("codex")
+    if isinstance(codex, dict) and isinstance(codex.get("stdout"), str):
+        text = codex["stdout"].strip()
+        if text:
+            return text
+    raw = payload.get("rawOutput")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    result = payload.get("result")
+    if isinstance(result, dict) and isinstance(result.get("summary"), str):
+        return result["summary"].strip()
+    return ""
+
+
+def _not_ok(reason: str, verdict_reason: str, expects_verdict: bool) -> ChannelRead:
+    return ChannelRead(
+        False,
+        reason,
+        Verdict(UNUSABLE, False, verdict_reason) if expects_verdict else None,
+        None,
+        "",
+    )
+
+
+def read_channel(
+    *,
+    payload: dict | None,
+    raw_text: str,
+    exit_code: int | None,
+    timed_out: bool,
+    expects_verdict: bool,
+) -> ChannelRead:
+    """Interpret one review channel. Every failure mode lands on not-ok."""
+    if timed_out:
+        return _not_ok(
+            "timed out before producing a result",
+            "review timed out before producing a verdict",
+            expects_verdict,
+        )
+    if exit_code is None:
+        return _not_ok("did not run", "review did not run", expects_verdict)
+    if exit_code != 0:
+        return _not_ok(f"exit {exit_code}", f"review exited {exit_code}", expects_verdict)
+
+    structured = None
+    text = raw_text
+    parse_error = ""
+    if payload is not None:
+        candidate = payload.get("result")
+        structured = candidate if isinstance(candidate, dict) else None
+        text = _payload_text(payload) or raw_text
+        if isinstance(payload.get("parseError"), str):
+            parse_error = payload["parseError"]
+
+    if not expects_verdict:
+        # A channel that printed nothing has told us nothing, and treating
+        # that as a completed review would let an incomplete round deliver.
+        if len(text.strip()) < MIN_USEFUL_CHARS:
+            return ChannelRead(False, "produced no usable output", None, structured, text)
+        return ChannelRead(True, "completed", None, structured, text)
+
+    if structured is not None and isinstance(structured.get("verdict"), str):
+        word = structured["verdict"].strip().lower()
+        mapped = _STRUCTURED_VERDICTS.get(word) or _classify(word)
+        if mapped is None:
+            verdict = Verdict(
+                UNUSABLE,
+                False,
+                "the reviewer's structured result carries an unrecognised verdict "
+                f"{structured['verdict']!r}",
+            )
+        else:
+            verdict = Verdict(mapped, True, f"reviewer reported {mapped} (structured result)")
+        return ChannelRead(verdict.usable, verdict.reason, verdict, structured, text)
+
+    if payload is not None:
+        # The plugin ran but returned nothing that fits its own schema.
+        # Falling straight back to prose would reward exactly the failure the
+        # schema exists to prevent, so only an explicit verdict line in the
+        # surviving text is accepted, and its absence is unusable.
+        fallback = parse_verdict(text, exit_code=exit_code, timed_out=False)
+        if not fallback.usable:
+            verdict = Verdict(
+                UNUSABLE,
+                False,
+                "the reviewer returned no structured result"
+                + (f" ({parse_error})" if parse_error else "")
+                + " and no verdict line",
+            )
+            return ChannelRead(False, verdict.reason, verdict, None, text)
+        return ChannelRead(True, fallback.reason, fallback, None, text)
+
+    fallback = parse_verdict(text, exit_code=exit_code, timed_out=timed_out)
+    return ChannelRead(fallback.usable, fallback.reason, fallback, structured, text)

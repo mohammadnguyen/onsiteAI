@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import subprocess
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,7 +27,7 @@ STATE_FILENAME = "run.json"
 # Bump whenever a stored field is added, removed or changes meaning. An
 # unbumped change makes an older run die with a TypeError deep in the loader
 # instead of the clear "start a new run" that load_state raises.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class StateError(RuntimeError):
@@ -85,6 +86,18 @@ def head_sha(repo_root: Path) -> str:
     return git_output(repo_root, "rev-parse", "HEAD")
 
 
+def resolve_commit(repo_root: Path, ref: str) -> str:
+    """The full 40-character SHA a reference names, right now.
+
+    A run stores the commit, never the name. "HEAD", a branch or a tag moves
+    the moment anything is committed, so a base stored as a name silently
+    re-points mid-run: the review would then cover a shrinking slice of the
+    package while the recorded base still looked correct. Resolving once, at
+    start, is what makes the base pinned in fact and not just in prose.
+    """
+    return git_output(repo_root, "rev-parse", "--verify", f"{ref}^{{commit}}")
+
+
 def merge_base(repo_root: Path, ref: str) -> str | None:
     """The merge base of HEAD and ``ref``, or ``None`` when ``ref`` is
     unknown (an offline clone, a missing remote)."""
@@ -105,7 +118,17 @@ def is_ancestor(repo_root: Path, candidate: str, descendant: str = "HEAD") -> bo
     return proc.returncode == 0
 
 
-def tree_digest(repo_root: Path) -> str:
+def _under(path: Path, parents: tuple[Path, ...]) -> bool:
+    for parent in parents:
+        try:
+            path.relative_to(parent)
+        except ValueError:
+            continue
+        return True
+    return False
+
+
+def tree_digest(repo_root: Path, exclude: tuple[Path, ...] = ()) -> str:
     """A digest of everything a reviewer would see beyond the commit.
 
     Covers staged and unstaged changes to tracked files plus the list of
@@ -113,7 +136,15 @@ def tree_digest(repo_root: Path) -> str:
     head and the same digest are looking at the same tree; anything else is
     a different input, which is exactly when a previous verdict stops
     applying.
+
+    ``exclude`` drops the run's OWN directory. A run directory inside the
+    repository and not ignored otherwise becomes part of the fingerprint of
+    the code it is measuring: every log the gate writes changes the digest,
+    so the approval that gate supports is stale before it is recorded, and
+    the run can never deliver. The run's artefacts are evidence about the
+    tree, not part of it.
     """
+    excluded = tuple(Path(p).resolve() for p in exclude)
     digest = hashlib.sha256()
     # A plain diff is enough, including for binaries. A review raised the
     # concern that "Binary files ... differ" is the same string however the
@@ -130,9 +161,11 @@ def tree_digest(repo_root: Path) -> str:
     raw = git_bytes(repo_root, "ls-files", "-z", "--others", "--exclude-standard")
     untracked = [chunk for chunk in raw.split(b"\0") if chunk]
     for rel_bytes in sorted(untracked):
+        rel = os.fsdecode(rel_bytes)
+        if excluded and _under((repo_root / rel).resolve(), excluded):
+            continue
         digest.update(b"\0untracked\0")
         digest.update(rel_bytes)
-        rel = os.fsdecode(rel_bytes)
         try:
             digest.update((repo_root / rel).read_bytes())
         except OSError as exc:
@@ -186,8 +219,19 @@ class RunState:
     max_total_seconds: int
     status: str = "open"  # open | delivered | stopped
     stop_reason: str = ""
+    # The run this one continues. A correction task is a NEW run - the old
+    # one keeps its counts, its history and its stopped status untouched -
+    # but the link is recorded so the pair reads as one story.
+    linked_run: str = ""
     rounds: list[RoundRecord] = field(default_factory=list)
     gates: list[dict] = field(default_factory=list)
+    # Per-finding dispositions and the agent's explicit triage of each prose
+    # channel. See ``findings``; these are the release condition.
+    findings: list[dict] = field(default_factory=list)
+    triage: list[dict] = field(default_factory=list)
+    # Anything done to the run that a later reader must know about, such as
+    # an operator breaking a lock left by a crashed session.
+    events: list[dict] = field(default_factory=list)
 
     # -------------------------------------------------- derived properties
     @property
@@ -224,7 +268,9 @@ class RunState:
             and latest.get("tree_digest") == record.tree_digest
         )
 
-    def passing_round(self, repo_root: Path) -> RoundRecord | None:
+    def passing_round(
+        self, repo_root: Path, exclude: tuple[Path, ...] = ()
+    ) -> RoundRecord | None:
         """The most recent usable ``approve`` that still describes THIS tree.
 
         Returns ``None`` when there is no approval, when it was not usable,
@@ -233,7 +279,9 @@ class RunState:
         last = self.last_round()
         if last is None or not last.usable or last.verdict != "approve":
             return None
-        if last.head != head_sha(repo_root) or last.tree_digest != tree_digest(repo_root):
+        if last.head != head_sha(repo_root) or last.tree_digest != tree_digest(
+            repo_root, exclude
+        ):
             return None
         return last
 
@@ -243,9 +291,26 @@ class RunState:
         return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
     def save(self, run_dir: Path) -> Path:
+        """Write the state atomically.
+
+        A partially written run.json is worse than a missing one: the loader
+        reports corruption and the round counter, the stop reason and every
+        finding disposition are gone. Writing a sibling file and renaming it
+        into place makes the previous state survive a crash mid-write.
+        """
         run_dir.mkdir(parents=True, exist_ok=True)
         path = run_dir / STATE_FILENAME
-        path.write_text(self.to_json(), encoding="utf-8")
+        fd, tmp_name = tempfile.mkstemp(dir=run_dir, prefix=".run-", suffix=".json")
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(self.to_json())
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         return path
 
 
@@ -287,6 +352,7 @@ def new_state(
     base: str,
     max_review_rounds: int,
     max_total_seconds: int,
+    linked_run: str = "",
     now: datetime | None = None,
 ) -> RunState:
     started = now or utc_now()
@@ -303,4 +369,5 @@ def new_state(
         deadline_at=_iso(datetime.fromtimestamp(deadline, tz=UTC)),
         max_review_rounds=max_review_rounds,
         max_total_seconds=max_total_seconds,
+        linked_run=linked_run,
     )

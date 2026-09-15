@@ -46,20 +46,39 @@ the log and must be distinguished by reading it.
 
 **4 — Review.** `python -m scripts.review_handoff review --run-dir <dir>`
 Calls both review channels against the pinned base, archives both raw
-outputs, and records one verdict for the round. Then **read the raw files
-yourself** — the script only extracts the verdict line, and the findings
-channel carries findings with no verdict at all.
+outputs, and records one verdict for the round.
 
-**5 — Decide, per finding.** For each thing the reviewer reports:
+The adversarial channel returns a structured result (the plugin constrains
+it with its own JSON schema), so its findings are recorded automatically
+with their severities. The other channel returns prose and nothing reads it
+for you. **Read both raw files yourself**, then account for the prose
+channel explicitly — there is no third state between "found something" and
+"found nothing":
 
-- **Real and in scope** → fix it. Then return to step 3.
+    python -m scripts.review_handoff findings record --run-dir <dir> \
+        --round N --channel review --severity high --title "..." \
+        --file path --line 42 [--out-of-scope]
+    python -m scripts.review_handoff findings none --run-dir <dir> \
+        --round N --channel review --note "what you read, and where"
+
+**5 — Decide, per finding.** Every finding needs a disposition, recorded
+with the evidence behind it:
+
+- **Real and in scope** → fix it, then
+  `findings resolve --id <id> --disposition fixed --note "<commit or test>"`,
+  and return to step 3.
 - **Not real** → refute it with evidence: a test that passes, a line of code
-  that already handles it, a scenario that cannot occur. Write the refutation
-  down. Changing code you believe is correct, to make a reviewer stop
-  complaining, is the failure this step exists to prevent.
-- **Real but out of scope** → do not fix it. Record it and go to *Stopping*
-  if it blocks the package, otherwise carry it to the delivery as an open
-  item.
+  that already handles it, a scenario that cannot occur. Record it as
+  `--disposition refuted --note "<the evidence>"`. Changing code you believe
+  is correct, to make a reviewer stop complaining, is the failure this step
+  exists to prevent.
+- **Real but out of scope** → do **not** fix it. It is recorded as
+  `awaiting-adjudication` and cannot be marked fixed. Go to *Stopping* and
+  ask the founder for authorisation.
+
+A blocking finding (critical or high, or anything marked out-of-scope) stops
+delivery until it is fixed or refuted, **no matter which channel raised it**.
+An `approve` on one channel does not release the other channel's findings.
 
 **6 — Repeat** from step 3 until the round verdict is `approve`, or a limit
 stops you. The script enforces one initial review plus at most N automatic
@@ -67,7 +86,9 @@ rounds (default 3) and a total time budget; both survive a session restart,
 so resuming does not hand back spent rounds.
 
 **7 — Deliver.** `python -m scripts.review_handoff finish --run-dir <dir>`
-Refuses unless a usable `approve` describes the **current** tree. Then open a
+Refuses unless a usable `approve` describes the **current** tree, every
+channel of every usable round has been triaged, and no blocking finding is
+still open. Then open a
 **Draft** PR containing: what changed and why, the verification evidence,
 every review round with its verdict, each refuted finding with its
 refutation, and the open items. Paste the run's evidence index into the PR
@@ -85,13 +106,24 @@ and report. Stopping is a first-class outcome, not a failure:
 - the round or time budget is exhausted;
 - the reviewer cannot be reached, or returns nothing usable twice in a row.
 
+## Concurrency
+
+Every state-changing command takes the run's lock, and `gate` also takes a
+machine-wide lock because the verification suites of different runs share
+one database. If a command reports that a lock is held, **wait or stop**.
+Never kill the holder: stopping another session or a shared runtime is
+outside what this workflow is authorised to do. A lock genuinely left by a
+crashed session is cleared with `--break-lock`, which records the break in
+the run.
+
 ## What never counts as a pass
 
-A plugin call that failed. A missing or empty result. Output with no verdict
-line, or two verdicts that disagree. A round where one channel did not
-complete. A verdict that describes an older tree. A failing verification
-command. In every case the script exits 1 and says why — treat that as the
-answer, not as an obstacle.
+A plugin call that failed. A missing or empty result. No structured result
+and no verdict line, or two verdicts that disagree. A structured finding
+that cannot be read. A round where one channel did not complete. A verdict
+that describes an older tree. A failing verification command. An untriaged
+channel. An unresolved blocking finding on either channel. In every case the
+script exits 1 and says why — treat that as the answer, not as an obstacle.
 
 ## Fixtures
 

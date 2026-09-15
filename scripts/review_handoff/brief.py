@@ -17,6 +17,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .locking import DEFAULT_SHARED_LOCK_NAME
+
 # Defaults for the run limits. Both are configurable per brief; the CLI can
 # lower them further but never raise them above what the brief approved.
 DEFAULT_MAX_REVIEW_ROUNDS = 3  # automatic fix+re-review rounds AFTER the first review
@@ -31,6 +33,11 @@ class BriefError(ValueError):
 class Limits:
     max_review_rounds: int = DEFAULT_MAX_REVIEW_ROUNDS
     max_total_seconds: int = DEFAULT_MAX_TOTAL_SECONDS
+    # Runs that touch the same external resource must not verify at the same
+    # time. Two runs sharing this NAME queue behind one machine-wide lock;
+    # a package whose suites use a private database can give it its own name
+    # and stop queueing behind everyone else.
+    shared_lock: str = DEFAULT_SHARED_LOCK_NAME
 
 
 @dataclass(frozen=True)
@@ -59,6 +66,7 @@ class Brief:
             "limits": {
                 "max_review_rounds": self.limits.max_review_rounds,
                 "max_total_seconds": self.limits.max_total_seconds,
+                "shared_lock": self.limits.shared_lock,
             },
         }
 
@@ -117,7 +125,14 @@ def _limits(data: dict) -> Limits:
         raise BriefError("limits.max_review_rounds must be an integer >= 0")
     if not isinstance(seconds, int) or isinstance(seconds, bool) or seconds <= 0:
         raise BriefError("limits.max_total_seconds must be a positive integer")
-    return Limits(max_review_rounds=rounds, max_total_seconds=seconds)
+    lock = raw.get("shared_lock", DEFAULT_SHARED_LOCK_NAME)
+    if not isinstance(lock, str) or not lock.strip():
+        raise BriefError("limits.shared_lock must be a non-empty string")
+    return Limits(
+        max_review_rounds=rounds,
+        max_total_seconds=seconds,
+        shared_lock=lock.strip(),
+    )
 
 
 def load_brief(path: str | Path) -> Brief:

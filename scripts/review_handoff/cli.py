@@ -1,19 +1,19 @@
 """Command line for one handoff run.
 
-    python -m scripts.review_handoff start   --brief <file> [--run-dir <dir>]
-    python -m scripts.review_handoff gate    --run-dir <dir>
-    python -m scripts.review_handoff review  --run-dir <dir> [--focus-file <file>]
-    python -m scripts.review_handoff status  --run-dir <dir> [--json]
-    python -m scripts.review_handoff finish  --run-dir <dir> [--force]
+    python -m scripts.review_handoff start    --brief <file> [--run-dir <dir>]
+    python -m scripts.review_handoff gate     --run-dir <dir>
+    python -m scripts.review_handoff review   --run-dir <dir> [--focus-file <file>]
+    python -m scripts.review_handoff findings <record|none|resolve|list> --run-dir <dir>
+    python -m scripts.review_handoff status   --run-dir <dir> [--json]
+    python -m scripts.review_handoff finish   --run-dir <dir> [--force]
+    python -m scripts.review_handoff stop     --run-dir <dir> --reason <text>
 
-Exit codes are the contract the skill branches on:
+Exit codes (see ``console``): 0 proceed, 1 blocked, 2 misuse.
 
-    0  proceed — the step did what it says
-    1  blocked — a limit, a stale verdict, a failing gate, an unusable review
-    2  misuse  — bad arguments, missing or invalid brief, unreadable state
-
-"blocked" is never an error to route around. It is the workflow stopping on
-purpose, and the reason is printed and recorded.
+Every command that writes state takes the run's lock first, and ``gate``
+additionally takes a machine-wide lock named by the brief, because the
+verification suites of different runs share one database. A held lock is
+reported, never forced: no other session or runtime is ever stopped.
 """
 
 from __future__ import annotations
@@ -25,7 +25,27 @@ from datetime import datetime
 from pathlib import Path
 
 from .brief import Brief, BriefError, load_brief
+from .cli_triage import add_findings_parser
+from .console import EXIT_BLOCKED, EXIT_MISUSE, EXIT_OK, emit
+from .findings import (
+    AWAITING,
+    Finding,
+    FindingsError,
+    findings_from_structured,
+    unresolved_blocking,
+    untriaged_channels,
+)
+from .locking import (
+    DEFAULT_GATE_LOCK_WAIT_SECONDS,
+    FileLock,
+    LockBusy,
+    run_lock_path,
+    shared_lock_path,
+)
+from .prompt import OUT_OF_SCOPE_MARKER, review_instructions
 from .runner import (
+    CHANNEL_FINDINGS,
+    CHANNEL_VERDICT,
     REVIEW_CHANNELS,
     invoke_review_round,
     run_gate_commands,
@@ -39,15 +59,17 @@ from .state import (
     load_state,
     merge_base,
     new_state,
+    resolve_commit,
     text_digest,
     tree_digest,
     utc_now,
 )
-from .verdict import combine_round, parse_verdict
+from .verdict import combine_round, read_channel
 
-EXIT_OK = 0
-EXIT_BLOCKED = 1
-EXIT_MISUSE = 2
+# Re-exported: the skill and the tests branch on these names.
+__all__ = ["EXIT_OK", "EXIT_BLOCKED", "EXIT_MISUSE", "main", "build_parser"]
+
+_emit = emit
 
 DEFAULT_RUNS_ROOT = Path(".claude/handoff")
 GATE_TIMEOUT_SECONDS = 60 * 60
@@ -56,6 +78,62 @@ REVIEW_TIMEOUT_SECONDS = 45 * 60
 
 def _repo_root() -> Path:
     return Path.cwd()
+
+
+# ------------------------------------------------------------------- locks
+
+
+def acquire_run_lock(run_dir: Path, *, purpose: str, args: argparse.Namespace | None = None):
+    """Take the lock for one run. Raises :class:`LockBusy` when held."""
+    lock = FileLock(
+        run_lock_path(run_dir), purpose=purpose, run_id=Path(run_dir).name
+    )
+    lock.acquire(
+        wait_seconds=float(getattr(args, "lock_wait", 0.0) or 0.0),
+        break_stale=bool(getattr(args, "break_lock", False)),
+    )
+    return lock
+
+
+def _lock_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--lock-wait",
+        type=float,
+        default=0.0,
+        help="seconds to wait for the run lock before reporting who holds it",
+    )
+    parser.add_argument(
+        "--break-lock",
+        action="store_true",
+        help="delete a lock left behind by a crashed session. The break is "
+        "recorded in the run. It does not touch the holder process.",
+    )
+
+
+def _open(
+    args: argparse.Namespace, purpose: str, *, need_brief: bool = True
+) -> tuple[Path, FileLock, RunState, Brief | None]:
+    run_dir = Path(args.run_dir)
+    lock = acquire_run_lock(run_dir, purpose=purpose, args=args)
+    try:
+        state = load_state(run_dir)
+        brief = _approved_brief(run_dir, state) if need_brief else None
+        if getattr(args, "break_lock", False):
+            state.events.append(
+                {
+                    "at": utc_now().isoformat(timespec="seconds"),
+                    "event": "run lock broken",
+                    "purpose": purpose,
+                }
+            )
+            state.save(run_dir)
+    except BaseException:
+        lock.release()
+        raise
+    return run_dir, lock, state, brief
+
+
+# ------------------------------------------------------------------ inputs
 
 
 def _approved_brief(run_dir: Path, state: RunState) -> Brief:
@@ -94,10 +172,6 @@ def _run_dir_for(brief: Brief, root: Path, now: datetime) -> Path:
     return root / f"{now:%Y%m%d-%H%M%S}-{slug[:48] or 'run'}"
 
 
-def _emit(message: str) -> None:
-    print(message, flush=True)
-
-
 def _terminal_block(state: RunState) -> str | None:
     """A closed run stays closed.
 
@@ -131,6 +205,41 @@ def _budget_block(state: RunState) -> str | None:
     return None
 
 
+def _records(state: RunState) -> list[Finding]:
+    return [Finding(**f) for f in state.findings]
+
+
+def _release_block(state: RunState) -> str | None:
+    """Why this run may not be delivered, beyond its verdict.
+
+    An approve on one channel does not release a blocking finding raised on
+    the other: the channels disagree in practice, and a workflow that let
+    either one clear the other's findings would systematically lose the
+    findings only one channel ever sees.
+    """
+    blockers = unresolved_blocking(_records(state))
+    if blockers:
+        lines = "; ".join(f.one_line() for f in blockers)
+        return (
+            f"{len(blockers)} blocking finding(s) are unresolved, so no channel's "
+            f"approval releases this run: {lines}"
+        )
+    missing = untriaged_channels(
+        rounds=state.rounds,
+        findings=_records(state),
+        attestations=state.triage,
+        channels=REVIEW_CHANNELS,
+    )
+    if missing:
+        return (
+            "these review channels were never triaged: "
+            + ", ".join(missing)
+            + " — record their findings, or attest that they reported none "
+            "('findings none'); an unread channel is not a clean one"
+        )
+    return None
+
+
 # --------------------------------------------------------------- commands
 
 
@@ -143,7 +252,10 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     repo_root = _repo_root()
     try:
-        base = args.base or head_sha(repo_root)
+        # A base is stored as a COMMIT, never as a name: "HEAD" or a branch
+        # moves under the run, and the recorded base would still look right
+        # while the review silently shrank to the newest commits.
+        base = resolve_commit(repo_root, args.base) if args.base else head_sha(repo_root)
     except StateError as exc:
         _emit(f"MISUSE: {exc}")
         return EXIT_MISUSE
@@ -191,6 +303,10 @@ def cmd_start(args: argparse.Namespace) -> int:
         _emit(f"MISUSE: base {base} is not an ancestor of HEAD")
         return EXIT_MISUSE
 
+    if args.linked_run and not Path(args.linked_run).exists():
+        _emit(f"MISUSE: --linked-run {args.linked_run} does not exist")
+        return EXIT_MISUSE
+
     state = new_state(
         run_id=run_dir.name,
         brief_name=brief.name,
@@ -200,6 +316,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         base=base,
         max_review_rounds=rounds,
         max_total_seconds=seconds,
+        linked_run=str(args.linked_run or ""),
         now=now,
     )
     state.save(run_dir)
@@ -211,36 +328,90 @@ def cmd_start(args: argparse.Namespace) -> int:
     )
     _emit(f"run started: {run_dir}")
     _emit(f"base: {base}")
+    if state.linked_run:
+        _emit(f"continues: {state.linked_run} (that run keeps its own counts and history)")
     _emit(
         f"limits: {rounds} automatic round(s) after the initial review, "
         f"{seconds}s total, deadline {state.deadline_at}"
     )
     _emit(f"allowed paths: {', '.join(brief.allowed_paths)}")
+    if _run_dir_inside_repo(repo_root, run_dir):
+        _emit(
+            "NOTE: the run directory is inside the repository; its artefacts are "
+            "excluded from the tree fingerprint so that writing a log does not "
+            "invalidate the approval it supports"
+        )
     return EXIT_OK
 
 
-def cmd_gate(args: argparse.Namespace) -> int:
-    run_dir = Path(args.run_dir)
+def _run_dir_inside_repo(repo_root: Path, run_dir: Path) -> bool:
     try:
-        state = load_state(run_dir)
-        brief = _approved_brief(run_dir, state)
+        Path(run_dir).resolve().relative_to(Path(repo_root).resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def cmd_gate(args: argparse.Namespace) -> int:
+    try:
+        run_dir, lock, state, brief = _open(args, "gate")
     except StateError as exc:
         _emit(f"MISUSE: {exc}")
         return EXIT_MISUSE
     except BriefError as exc:
         _emit(f"BLOCKED: {exc}")
         return EXIT_BLOCKED
+    except LockBusy as exc:
+        _emit(f"BLOCKED: another command is operating this run — {exc}")
+        return EXIT_BLOCKED
+    try:
+        return _gate(args, run_dir, state, brief)
+    finally:
+        lock.release()
 
+
+def _gate(
+    args: argparse.Namespace, run_dir: Path, state: RunState, brief: Brief
+) -> int:
     blocked = _terminal_block(state) or _budget_block(state)
     if blocked:
         _emit(f"BLOCKED: {blocked}")
         return EXIT_BLOCKED
 
+    # Runs in different worktrees have different run directories, so the run
+    # lock does not keep them off the one PostgreSQL instance these suites
+    # share. Concurrency there corrupts the schema for both. This lock is
+    # machine-wide and named by the brief; a second run QUEUES behind it.
+    shared_name = args.shared_lock or brief.limits.shared_lock
+    shared = FileLock(
+        shared_lock_path(shared_name), purpose="gate", run_id=state.run_id
+    )
+    wait = min(args.shared_lock_wait, max(0.0, state.seconds_left()))
+    try:
+        shared.acquire(wait_seconds=wait, break_stale=bool(args.break_shared_lock))
+    except LockBusy as exc:
+        _emit(
+            f"BLOCKED: the verification suites of this repository share one "
+            f"database, and that resource is in use — {exc}. Waiting is the "
+            "correct response; nothing else is stopped."
+        )
+        return EXIT_BLOCKED
+    try:
+        return _gate_locked(args, run_dir, state, brief)
+    finally:
+        shared.release()
+
+
+def _gate_locked(
+    args: argparse.Namespace, run_dir: Path, state: RunState, brief: Brief
+) -> int:
+    repo_root = Path(state.repo_root)
+    exclude = (run_dir,)
     # Captured BEFORE the suite runs: a file edited after its own tests
     # passed but before the suite finished would otherwise have those passes
     # recorded against the edited tree.
-    head_before = head_sha(Path(state.repo_root))
-    digest_before = tree_digest(Path(state.repo_root))
+    head_before = head_sha(repo_root)
+    digest_before = tree_digest(repo_root, exclude)
 
     # One directory per ATTEMPT, not per review: numbering by review_count
     # made a re-run before the next review overwrite the previous attempt's
@@ -269,13 +440,13 @@ def cmd_gate(args: argparse.Namespace) -> int:
 
     results = run_gate_commands(
         brief.verification_commands,
-        cwd=Path(state.repo_root),
+        cwd=repo_root,
         log_dir=log_dir,
         timeout_seconds=args.timeout,
         budget_seconds=state.seconds_left(),
     )
-    head_after = head_sha(Path(state.repo_root))
-    digest_after = tree_digest(Path(state.repo_root))
+    head_after = head_sha(repo_root)
+    digest_after = tree_digest(repo_root, exclude)
     unchanged = head_before == head_after and digest_before == digest_after
     record = {
         "at": utc_now().isoformat(timespec="seconds"),
@@ -287,6 +458,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
                 "argv": r.argv,
                 "exit_code": r.exit_code,
                 "timed_out": r.timed_out,
+                "killed_tree": r.killed_tree,
                 "duration_seconds": round(r.duration_seconds, 1),
                 "log": str(r.log_path) if r.log_path else None,
             }
@@ -302,6 +474,8 @@ def cmd_gate(args: argparse.Namespace) -> int:
     for result in results:
         status = "ok" if result.ok else ("TIMEOUT" if result.timed_out else "FAILED")
         _emit(f"{status:8} {' '.join(result.argv)}  -> {result.log_path}")
+        if result.timed_out and result.killed_tree:
+            _emit("         (its process tree was terminated; no workers left behind)")
     if not unchanged:
         _emit(
             "BLOCKED: the working tree changed while the verification commands "
@@ -320,43 +494,39 @@ def cmd_gate(args: argparse.Namespace) -> int:
 
 
 def _focus_text(state: RunState, brief: Brief, run_dir: Path, extra: str) -> str:
-    """What the reviewer is told: the requirements it must judge against, the
-    approved scope, and the path to the RAW verification output for this very
-    head — so the review reads the evidence itself rather than a claim about
-    it."""
-    gate_logs = sorted(str(p) for p in run_dir.glob("gate-*/*.log"))
-    lines = [
-        f"Work package: {brief.name}.",
-        f"Review the diff {state.base}..HEAD plus any uncommitted changes in the "
-        "working tree; that is the whole change under review.",
-        "Approved requirements: " + " | ".join(brief.requirements),
-        "Acceptance criteria: " + " | ".join(brief.acceptance_criteria),
-        "Allowed change scope: " + " | ".join(brief.allowed_paths),
-        "Prohibited: " + " | ".join(brief.prohibitions),
-        "The verification commands in the brief were run against this exact head; "
-        "their raw output is archived at: " + (", ".join(gate_logs) or str(run_dir))
-        + ". Read it rather than trusting any summary of it.",
-        "Report only grounded defects with file:line, a concrete scenario and a "
-        "minimal in-scope fix. Do not propose work outside the allowed scope. "
-        "End with a single line 'Verdict: approve' or 'Verdict: needs-attention'.",
-    ]
-    if extra:
-        lines.append(extra)
-    return " ".join(lines)
+    """What the reviewer is told — see ``prompt`` for why it says that."""
+    return review_instructions(
+        package=brief.name,
+        base=state.base,
+        requirements=brief.requirements,
+        acceptance_criteria=brief.acceptance_criteria,
+        allowed_paths=brief.allowed_paths,
+        prohibitions=brief.prohibitions,
+        gate_logs=sorted(str(p) for p in run_dir.glob("gate-*/*.log")),
+        run_dir=str(run_dir),
+        extra=extra,
+    )
 
 
 def cmd_review(args: argparse.Namespace) -> int:
-    run_dir = Path(args.run_dir)
     try:
-        state = load_state(run_dir)
-        brief = _approved_brief(run_dir, state)
+        run_dir, lock, state, brief = _open(args, "review")
     except StateError as exc:
         _emit(f"MISUSE: {exc}")
         return EXIT_MISUSE
     except BriefError as exc:
         _emit(f"BLOCKED: {exc}")
         return EXIT_BLOCKED
+    except LockBusy as exc:
+        _emit(f"BLOCKED: another command is operating this run — {exc}")
+        return EXIT_BLOCKED
+    try:
+        return _review(args, run_dir, state, brief)
+    finally:
+        lock.release()
 
+
+def _review(args: argparse.Namespace, run_dir: Path, state: RunState, brief: Brief) -> int:
     blocked = _terminal_block(state) or _budget_block(state)
     if blocked:
         state.status = "stopped"
@@ -366,9 +536,10 @@ def cmd_review(args: argparse.Namespace) -> int:
         return EXIT_BLOCKED
 
     repo_root = Path(state.repo_root)
+    exclude = (run_dir,)
     last_gate = state.gates[-1] if state.gates else None
     current_head = head_sha(repo_root)
-    current_digest = tree_digest(repo_root)
+    current_digest = tree_digest(repo_root, exclude)
     if last_gate is None:
         _emit("BLOCKED: no verification run recorded; run 'gate' before 'review'")
         return EXIT_BLOCKED
@@ -438,17 +609,60 @@ def cmd_review(args: argparse.Namespace) -> int:
         timeout_seconds=timeout,
         scope=args.scope,
     )
-    gating, findings = results["adversarial-review"], results["review"]
-    verdict = combine_round(
-        parse_verdict(
-            gating.combined,
-            exit_code=gating.exit_code,
-            timed_out=gating.timed_out,
-        ),
-        findings.ok,
-        "timed out" if findings.timed_out else f"exit {findings.exit_code}",
-        findings.combined,
+    gating, prose = results[CHANNEL_VERDICT], results[CHANNEL_FINDINGS]
+    gating_read = read_channel(
+        payload=gating.payload(),
+        raw_text=gating.combined,
+        exit_code=gating.exit_code,
+        timed_out=gating.timed_out,
+        expects_verdict=True,
     )
+    prose_read = read_channel(
+        payload=prose.payload(),
+        raw_text=prose.combined,
+        exit_code=prose.exit_code,
+        timed_out=prose.timed_out,
+        expects_verdict=False,
+    )
+    verdict = combine_round(
+        gating_read.verdict, prose_read.ok, prose_read.reason, prose_read.review_text
+    )
+
+    recorded: list[Finding] = []
+    if gating_read.structured is not None:
+        try:
+            recorded = findings_from_structured(
+                gating_read.structured,
+                round_number=number,
+                channel=CHANNEL_VERDICT,
+                recorded_at=utc_now().isoformat(timespec="seconds"),
+            )
+        except FindingsError as exc:
+            # The reviewer promised structured findings and returned something
+            # that cannot be read. Dropping them silently is exactly how a
+            # blocking defect would disappear between reviewer and release.
+            verdict = type(verdict)(
+                "unusable", False, f"the reviewer's findings could not be read: {exc}"
+            )
+        for finding in recorded:
+            if OUT_OF_SCOPE_MARKER in finding.title.upper():
+                finding.out_of_scope = True
+                finding.disposition = AWAITING
+                finding.note = "reported as necessary but outside the approved scope"
+        known = {f["id"] for f in state.findings}
+        state.findings.extend(f.to_dict() for f in recorded if f.id not in known)
+        # A structured result IS the triage of that channel: its findings were
+        # read mechanically, including when there are none of them.
+        state.triage.append(
+            {
+                "round": number,
+                "channel": CHANNEL_VERDICT,
+                "at": utc_now().isoformat(timespec="seconds"),
+                "note": f"read from the plugin's structured result "
+                f"({len(recorded)} finding(s))",
+            }
+        )
+
     state.rounds[-1] = RoundRecord(
         number=number,
         kind=kind,
@@ -469,14 +683,29 @@ def cmd_review(args: argparse.Namespace) -> int:
     _emit(f"review {number} ({kind}): {verdict.value} — {verdict.reason}")
     for channel, path in raw_paths.items():
         _emit(f"raw output [{channel}]: {path}")
+    for finding in recorded:
+        _emit(f"  {finding.one_line()}")
+    if gating_read.structured is None:
+        _emit(
+            "NOTE: the reviewer returned no structured result, so no findings "
+            "were read mechanically; record what you read yourself"
+        )
     _emit(
-        "read BOTH channels: only the adversarial one carries a machine-readable "
-        "verdict, the other reports findings in prose and is never classified here"
+        f"read BOTH channels. {CHANNEL_VERDICT} returns a structured result and its "
+        f"findings are recorded above; {CHANNEL_FINDINGS} returns prose — read it and "
+        f"record its findings with 'findings record', or attest 'findings none'"
     )
     _emit(
         f"automatic rounds left after this: {state.auto_rounds_left}; "
         f"time left: {int(state.seconds_left())}s"
     )
+    out_of_scope = [f for f in recorded if f.out_of_scope]
+    if out_of_scope:
+        _emit(
+            "STOP AND ASK: the reviewer reported necessary work outside the "
+            "approved scope. It is recorded as awaiting adjudication and must "
+            "not be implemented by this run."
+        )
     if not verdict.usable:
         _emit(
             "BLOCKED: no usable review result. This does not count as a pass. "
@@ -485,6 +714,10 @@ def cmd_review(args: argparse.Namespace) -> int:
         return EXIT_BLOCKED
     if verdict.value != "approve":
         _emit("read the raw output, then fix real in-scope defects or refute them with evidence")
+        return EXIT_OK
+    release = _release_block(state)
+    if release:
+        _emit(f"NOTE: the reviewer approved this head, but delivery is blocked — {release}")
         return EXIT_OK
     _emit("reviewer approved this head")
     return EXIT_OK
@@ -498,15 +731,18 @@ def cmd_status(args: argparse.Namespace) -> int:
         _emit(f"MISUSE: {exc}")
         return EXIT_MISUSE
     repo_root = Path(state.repo_root)
-    passing = state.passing_round(repo_root)
+    exclude = (run_dir,)
+    passing = state.passing_round(repo_root, exclude)
     stale = (
         state.last_round() is not None
         and state.last_round().verdict == "approve"
         and state.last_round().usable
         and passing is None
     )
+    blockers = unresolved_blocking(_records(state))
     payload = {
         "run_id": state.run_id,
+        "linked_run": state.linked_run,
         "status": state.status,
         "stop_reason": state.stop_reason,
         "base": state.base,
@@ -517,6 +753,9 @@ def cmd_status(args: argparse.Namespace) -> int:
         "last_verdict": state.last_round().verdict if state.last_round() else None,
         "has_current_pass": passing is not None,
         "pass_is_stale": stale,
+        "findings_recorded": len(state.findings),
+        "findings_blocking_unresolved": len(blockers),
+        "release_block": _release_block(state) or "",
         "gates_run": len(state.gates),
         "last_gate_passed": bool(state.gates and state.gates[-1]["passed"]),
     }
@@ -527,17 +766,27 @@ def cmd_status(args: argparse.Namespace) -> int:
             _emit(f"{key}: {value}")
     if stale:
         _emit("NOTE: the approval describes an older tree and no longer applies")
+    for finding in blockers:
+        _emit(f"BLOCKING: {finding.one_line()}")
     return EXIT_OK
 
 
 def cmd_finish(args: argparse.Namespace) -> int:
-    run_dir = Path(args.run_dir)
     try:
-        state = load_state(run_dir)
+        run_dir, lock, state, _ = _open(args, "finish", need_brief=False)
     except StateError as exc:
         _emit(f"MISUSE: {exc}")
         return EXIT_MISUSE
+    except LockBusy as exc:
+        _emit(f"BLOCKED: another command is operating this run — {exc}")
+        return EXIT_BLOCKED
+    try:
+        return _finish(args, run_dir, state)
+    finally:
+        lock.release()
 
+
+def _finish(args: argparse.Namespace, run_dir: Path, state: RunState) -> int:
     stopping = getattr(args, "stopping", False)
     terminal = _terminal_block(state)
     if terminal and not stopping:
@@ -545,7 +794,8 @@ def cmd_finish(args: argparse.Namespace) -> int:
         return EXIT_BLOCKED
 
     repo_root = Path(state.repo_root)
-    passing = state.passing_round(repo_root)
+    exclude = (run_dir,)
+    passing = state.passing_round(repo_root, exclude)
     blocking_reason = ""
     if passing is not None and not stopping:
         # The same input check gate and review make: an approval means
@@ -559,8 +809,10 @@ def cmd_finish(args: argparse.Namespace) -> int:
             passing = None
     if passing is not None:
         # An approval is not enough on its own: the verification run behind it
-        # must still be the newest one and must still have passed, and the
-        # approval itself must have landed inside the run's time budget.
+        # must still be the newest one and must still have passed, the
+        # approval itself must have landed inside the run's time budget, and
+        # no blocking finding from EITHER channel may still be open.
+        release = _release_block(state)
         if not state.gate_supports(passing):
             blocking_reason = (
                 "the newest verification run did not pass on the reviewed inputs; "
@@ -573,6 +825,8 @@ def cmd_finish(args: argparse.Namespace) -> int:
                 "the approval was produced after the run's total time budget "
                 "expired; stop and report instead of delivering"
             )
+        elif release:
+            blocking_reason = release
         if blocking_reason:
             passing = None
 
@@ -606,6 +860,7 @@ def cmd_finish(args: argparse.Namespace) -> int:
     )
     summary = {
         "run_id": state.run_id,
+        "linked_run": state.linked_run,
         "brief": state.brief_name,
         "base": state.base,
         "wall_clock_seconds": int(
@@ -630,6 +885,10 @@ def cmd_finish(args: argparse.Namespace) -> int:
             }
             for r in state.rounds
         ],
+        "findings": state.findings,
+        "triage": state.triage,
+        "unresolved_blocking": [f.id for f in unresolved_blocking(_records(state))],
+        "events": state.events,
         "gates": state.gates,
     }
     path = run_dir / "delivery.json"
@@ -673,6 +932,12 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--max-review-rounds", type=int, default=10**6)
     start.add_argument("--max-total-seconds", type=int, default=10**9)
     start.add_argument(
+        "--linked-run",
+        default="",
+        help="the run directory this one continues; the older run is not "
+        "modified, its counts and history stay as they are",
+    )
+    start.add_argument(
         "--integration-ref",
         default="origin/main",
         help="the branch this package will merge into; the review base must be "
@@ -683,6 +948,17 @@ def build_parser() -> argparse.ArgumentParser:
     gate = sub.add_parser("gate", help="run the brief's verification commands in order")
     gate.add_argument("--run-dir", required=True)
     gate.add_argument("--timeout", type=float, default=GATE_TIMEOUT_SECONDS)
+    gate.add_argument(
+        "--shared-lock",
+        default="",
+        help="name of the machine-wide lock these suites contend for "
+        "(default: the brief's limits.shared_lock)",
+    )
+    gate.add_argument(
+        "--shared-lock-wait", type=float, default=DEFAULT_GATE_LOCK_WAIT_SECONDS
+    )
+    gate.add_argument("--break-shared-lock", action="store_true")
+    _lock_arguments(gate)
     gate.set_defaults(func=cmd_gate)
 
     review = sub.add_parser("review", help="hand the current head to the reviewer")
@@ -690,7 +966,10 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--focus-file")
     review.add_argument("--scope", default="branch")
     review.add_argument("--timeout", type=float, default=REVIEW_TIMEOUT_SECONDS)
+    _lock_arguments(review)
     review.set_defaults(func=cmd_review)
+
+    add_findings_parser(sub, _lock_arguments)
 
     status = sub.add_parser("status", help="where the run stands")
     status.add_argument("--run-dir", required=True)
@@ -701,6 +980,7 @@ def build_parser() -> argparse.ArgumentParser:
     finish.add_argument("--run-dir", required=True)
     finish.add_argument("--force", action="store_true")
     finish.add_argument("--reason", default="")
+    _lock_arguments(finish)
     finish.set_defaults(func=cmd_finish, stopping=False)
 
     stop = sub.add_parser(
@@ -709,6 +989,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     stop.add_argument("--run-dir", required=True)
     stop.add_argument("--reason", required=True)
+    _lock_arguments(stop)
     stop.set_defaults(func=cmd_stop)
     return parser
 
