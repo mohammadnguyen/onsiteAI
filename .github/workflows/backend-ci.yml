@@ -39,8 +39,8 @@ jobs:
       - name: Install pinned tooling
         run: pip install "pytest>=9,<10" "ruff==0.15.11"
 
-      - name: Ruff (calibration tooling + root tests)
-        run: ruff check evals/extraction/tools tests
+      - name: Ruff (calibration tooling + scripts + root tests)
+        run: ruff check evals/extraction/tools scripts tests
 
       - name: Root test suite (drift fixtures + calibration path policy)
         run: python -m pytest tests/ -q

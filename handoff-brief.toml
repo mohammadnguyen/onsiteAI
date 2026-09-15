@@ -1,0 +1,50 @@
+# The brief for THIS work package, used to exercise the workflow on itself.
+# Kept in the tree as a worked example of the template; a real package's
+# brief may live anywhere the founder approves it.
+
+name = "dev-review-handoff v1"
+
+requirements = [
+  "A versioned skill is the entry point and reuses existing tools; the deterministic parts (state, result validation, rounds, timeout, evidence archiving) are plain scripts, and the scripts, tests and process documentation are versioned with it.",
+  "The approved requirements, acceptance criteria, allowed change scope, prohibitions and verification commands are recorded as the run's input; solution choice is judged on correctness, maintainability and fit with this repository, never on smallest diff.",
+  "The reviewer reads the actual change, the requirements and the raw verification output; every review is bound to an explicit base and head, and a verdict stops applying when the worktree or its inputs change. Raw plugin results are kept; a summary written by the agent is not evidence.",
+  "Clear in-scope defects are fixed automatically; a defect may be refuted with code or tests rather than appeased. After one initial review there are at most three automatic fix-and-review rounds, a count a resumed session cannot reset, plus a configurable total time limit. Tests sharing a database run serially.",
+  "The run stops and explains itself on a requirements conflict, on needing scope it was not granted, on insufficient permission, and on reaching the round or time limit. A failed call, a missing or invalid result, stale evidence, a failing required test or an incomplete review is never treated as a pass.",
+]
+
+acceptance_criteria = [
+  "The key paths are covered by tests that assert the action taken: verification passes, a defect is found then fixed, a review result is invalid or missing, the version changes, a limit is reached, and the run stops out of bounds.",
+  "Failure scenarios are driven by isolated samples rather than a live service, and the real handoff is demonstrated by at least one genuine plugin invocation whose raw output is archived.",
+  "Tests assert what the workflow does, not how the reviewer phrased itself; no scoring system is built over model wording.",
+  "The repository's existing gates still pass and none of them is weakened.",
+]
+
+allowed_paths = [
+  "scripts/__init__.py",
+  "scripts/review_handoff/",
+  "tests/test_review_handoff.py",
+  ".claude/skills/dev-review-handoff/",
+  "docs/decisions/ADR-003-development-review-handoff.md",
+  "docs/decisions/ADR-001-automation-and-agent-architecture.md",
+  "docs/operations/dev-review-handoff.md",
+  ".github/workflows/backend-ci.yml",
+  "handoff-brief.toml",
+]
+
+prohibitions = [
+  "do not weaken or remove any existing gate",
+  "do not change business functionality or any product behaviour",
+  "do not start A2a.2 or any other work package",
+  "do not change account credentials, repository permissions or branch protection",
+  "do not merge and do not deploy",
+]
+
+verification_commands = [
+  ["python", "-m", "ruff", "check", "evals/extraction/tools", "scripts", "tests"],
+  ["python", "-m", "pytest", "tests/", "-q"],
+  ["python", "scripts/check_decision_drift.py", "--require-full-coverage"],
+]
+
+[limits]
+max_review_rounds = 3
+max_total_seconds = 14400

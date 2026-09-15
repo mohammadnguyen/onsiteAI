@@ -1,0 +1,10 @@
+# Codex Adversarial Review
+
+Target: branch diff against BASE
+Verdict: approve
+
+No grounded material defect found in the reviewed range. Exception
+propagation and the approved scope hold under inspection. Tests were not
+rerun in this read-only environment.
+
+No material findings.

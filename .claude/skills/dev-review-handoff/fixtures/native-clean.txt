@@ -1,0 +1,6 @@
+# Codex Review
+
+Target: branch diff against BASE
+
+The changes preserve the documented behaviour and add coverage for the new
+paths. No actionable regressions were identified; tests were not executed.

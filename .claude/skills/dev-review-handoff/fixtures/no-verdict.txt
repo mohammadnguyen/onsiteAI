@@ -1,0 +1,7 @@
+# Codex Review
+
+Target: branch diff against BASE
+
+No actionable regressions were identified. The change matches the documented
+contract and the accompanying tests; tests were not executed during this
+review.

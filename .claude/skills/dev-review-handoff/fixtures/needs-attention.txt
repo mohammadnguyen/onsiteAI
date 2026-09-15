@@ -1,0 +1,14 @@
+# Codex Adversarial Review
+
+Target: branch diff against BASE
+Verdict: needs-attention
+
+Findings:
+- [medium] The round counter is read before the budget check
+  (scripts/review_handoff/cli.py:76)
+  A run resumed after the deadline would consume one more reviewer call
+  before noticing it is out of time.
+  Recommendation: check the deadline first, then the round count.
+
+Next steps:
+- Fix the ordering and rerun the focused tests.
