@@ -2,15 +2,21 @@
 # Kept in the tree as a worked example of the template; a real package's
 # brief may live anywhere the founder approves it.
 #
-# Revised for the focused CLOSE-OUT authorised after run self-v3 stopped at
-# its round limit. The earlier requirements are kept - the package still has
-# to satisfy them - and the four close-out items are added, not substituted.
+# Revised for the PROTOCOL-BOUNDARY correction authorised after run self-v4
+# stopped with an unusable review. Earlier requirements are kept - the
+# package still has to satisfy them - and the boundary requirement is added,
+# not substituted.
 #
 # NEWLY AUTHORISED BUDGET, recorded here so it is not inferred from the
-# earlier runs: ONE real review, both channels once each. No automatic
-# fix-and-review rounds follow it (limits.max_review_rounds = 0). Run
-# self-v3's counts and history are untouched; this is a new run linked to it,
-# and its open items travel with the delivery.
+# earlier runs: ONE real review covering the final commit and the two fixes
+# in b2705d9 that no review has yet seen, both channels once each. The single
+# extra round permitted by limits.max_review_rounds is reserved for ONE
+# TECHNICAL RETRY per channel when the plugin returns no response and neither
+# the code nor the review inputs have changed. It is NOT a fix-and-review
+# round: no new fix loop is authorised after this review. If the quota is
+# exhausted, stop. Runs self-v3 and self-v4 keep their counts and history
+# untouched; this is a new run linked to self-v4, and the open items of the
+# runs it continues travel with the delivery.
 
 name = "dev-review-handoff v1 (close-out)"
 
@@ -24,6 +30,7 @@ requirements = [
   "CLOSE-OUT 2. Each review channel's raw result, exit status, digest and remaining state are persisted before the next channel starts. An interrupted run must not lose findings that were already produced, and a state that is unknown must never be counted as no findings.",
   "CLOSE-OUT 3. The run directory and every evidence path are fixed to an unambiguous location, so resuming from a different directory reads the same evidence.",
   "CLOSE-OUT 4. An empty findings list, an absent field, a null field and a wrong type are strictly distinguished. Only an explicitly empty list, in a result matching the plugin's actual protocol, means no findings; an incomplete structure never passes, and a text fallback must not turn one into an approval.",
+  "PROTOCOL BOUNDARY. The problem is solved at the call contract, not by inspecting the output: a call that requests JSON must obtain a valid JSON envelope, and no textual approval may be extracted from non-conforming output or from stderr. Adversarial results are validated against the installed plugin's structured protocol; the native channel still reads its review body from a valid envelope. No further first-character special cases, and no unapproved compatibility modes.",
 ]
 
 acceptance_criteria = [
@@ -32,6 +39,7 @@ acceptance_criteria = [
   "Tests assert what the workflow does, not how the reviewer phrased itself; no scoring system is built over model wording.",
   "The repository's existing gates still pass and none of them is weakened.",
   "Each close-out item has a regression that failed before its fix and passes after it, and the legitimate completion path is shown to still pass.",
+  "The protocol-boundary defect is reproduced before it is fixed, and both paths are covered afterwards: a legitimate pass through a valid envelope, and a refusal for non-conforming output.",
   "The earlier runs keep their stopped status, their counts and their history; this run is linked to self-v3 and carries its open items forward in the delivery.",
 ]
 
@@ -65,8 +73,10 @@ verification_commands = [
 ]
 
 [limits]
-# One review. No automatic fix-and-review rounds follow it: if this review
-# still reports a blocker, the run stops and the founder decides.
-max_review_rounds = 0
+# One review, plus one round held in reserve for a TECHNICAL RETRY only -
+# used when a channel returns no response and nothing about the code or the
+# review inputs has changed. It is not a fix round: if this review reports a
+# substantive blocker, the run stops and the founder decides.
+max_review_rounds = 1
 max_total_seconds = 14400
 shared_lock = "sitetracker-test-database"
