@@ -98,6 +98,24 @@ def _emit(message: str) -> None:
     print(message, flush=True)
 
 
+def _terminal_block(state: RunState) -> str | None:
+    """A closed run stays closed.
+
+    Stopping is how the workflow records "this needs the founder". If a later
+    command could reopen it — or, worse, convert it into a delivery using an
+    approval that predates the stop — the stop would be advisory rather than
+    an outcome.
+    """
+    if state.status == "stopped":
+        return (
+            f"this run was stopped ({state.stop_reason or 'no reason recorded'}); "
+            "start a new run rather than continuing a closed one"
+        )
+    if state.status == "delivered":
+        return "this run was already delivered; start a new run for further work"
+    return None
+
+
 def _budget_block(state: RunState) -> str | None:
     """The two hard limits, checked before anything expensive starts."""
     if state.seconds_left() <= 0:
@@ -198,10 +216,16 @@ def cmd_gate(args: argparse.Namespace) -> int:
         _emit(f"BLOCKED: {exc}")
         return EXIT_BLOCKED
 
-    blocked = _budget_block(state)
+    blocked = _terminal_block(state) or _budget_block(state)
     if blocked:
         _emit(f"BLOCKED: {blocked}")
         return EXIT_BLOCKED
+
+    # Captured BEFORE the suite runs: a file edited after its own tests
+    # passed but before the suite finished would otherwise have those passes
+    # recorded against the edited tree.
+    head_before = head_sha(Path(state.repo_root))
+    digest_before = tree_digest(Path(state.repo_root))
 
     log_dir = run_dir / f"gate-{state.review_count + 1:02d}"
     results = run_gate_commands(
@@ -211,10 +235,14 @@ def cmd_gate(args: argparse.Namespace) -> int:
         timeout_seconds=args.timeout,
         budget_seconds=state.seconds_left(),
     )
+    head_after = head_sha(Path(state.repo_root))
+    digest_after = tree_digest(Path(state.repo_root))
+    unchanged = head_before == head_after and digest_before == digest_after
     record = {
         "at": utc_now().isoformat(timespec="seconds"),
-        "head": head_sha(Path(state.repo_root)),
-        "tree_digest": tree_digest(Path(state.repo_root)),
+        "head": head_before,
+        "tree_digest": digest_before,
+        "inputs_stable": unchanged,
         "commands": [
             {
                 "argv": r.argv,
@@ -225,7 +253,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
             }
             for r in results
         ],
-        "passed": bool(results) and all(r.ok for r in results),
+        "passed": bool(results) and all(r.ok for r in results) and unchanged,
         "ran": len(results),
         "of": len(brief.verification_commands),
     }
@@ -235,6 +263,13 @@ def cmd_gate(args: argparse.Namespace) -> int:
     for result in results:
         status = "ok" if result.ok else ("TIMEOUT" if result.timed_out else "FAILED")
         _emit(f"{status:8} {' '.join(result.argv)}  -> {result.log_path}")
+    if not unchanged:
+        _emit(
+            "BLOCKED: the working tree changed while the verification commands "
+            "were running, so their results describe a tree that no longer "
+            "exists; re-run the gate on a settled tree"
+        )
+        return EXIT_BLOCKED
     if not record["passed"]:
         _emit(
             "BLOCKED: a required verification command did not pass; fix it before "
@@ -283,7 +318,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         _emit(f"BLOCKED: {exc}")
         return EXIT_BLOCKED
 
-    blocked = _budget_block(state)
+    blocked = _terminal_block(state) or _budget_block(state)
     if blocked:
         state.status = "stopped"
         state.stop_reason = blocked
@@ -331,6 +366,29 @@ def cmd_review(args: argparse.Namespace) -> int:
         for channel in REVIEW_CHANNELS
     }
     started = utc_now()
+    # The attempt is counted and its evidence filenames claimed BEFORE the
+    # reviewer is called. A session that dies between the two channels would
+    # otherwise resume with the old counter — buying back a spent round and
+    # overwriting the interrupted attempt's raw output.
+    state.rounds.append(
+        RoundRecord(
+            number=number,
+            kind=kind,
+            started_at=started.isoformat(timespec="seconds"),
+            finished_at="",
+            base=state.base,
+            head=current_head,
+            tree_digest=current_digest,
+            verdict="unusable",
+            usable=False,
+            reason="the review was started but never completed",
+            raw_paths={c: str(p) for c, p in raw_paths.items()},
+            exit_codes={},
+            duration_seconds=0.0,
+        )
+    )
+    state.save(run_dir)
+
     # Never let a review outlive the run's own deadline.
     timeout = min(args.timeout, max(1.0, state.seconds_left()))
     results = invoke_review_round(
@@ -352,24 +410,20 @@ def cmd_review(args: argparse.Namespace) -> int:
         "timed out" if findings.timed_out else f"exit {findings.exit_code}",
         findings.combined,
     )
-    state.rounds.append(
-        RoundRecord(
-            number=number,
-            kind=kind,
-            started_at=started.isoformat(timespec="seconds"),
-            finished_at=utc_now().isoformat(timespec="seconds"),
-            base=state.base,
-            head=current_head,
-            tree_digest=current_digest,
-            verdict=verdict.value,
-            usable=verdict.usable,
-            reason=verdict.reason,
-            raw_paths={c: str(p) for c, p in raw_paths.items()},
-            exit_codes={c: r.exit_code for c, r in results.items()},
-            duration_seconds=round(
-                sum(r.duration_seconds for r in results.values()), 1
-            ),
-        )
+    state.rounds[-1] = RoundRecord(
+        number=number,
+        kind=kind,
+        started_at=started.isoformat(timespec="seconds"),
+        finished_at=utc_now().isoformat(timespec="seconds"),
+        base=state.base,
+        head=current_head,
+        tree_digest=current_digest,
+        verdict=verdict.value,
+        usable=verdict.usable,
+        reason=verdict.reason,
+        raw_paths={c: str(p) for c, p in raw_paths.items()},
+        exit_codes={c: r.exit_code for c, r in results.items()},
+        duration_seconds=round(sum(r.duration_seconds for r in results.values()), 1),
     )
     state.save(run_dir)
 
@@ -444,9 +498,26 @@ def cmd_finish(args: argparse.Namespace) -> int:
     except StateError as exc:
         _emit(f"MISUSE: {exc}")
         return EXIT_MISUSE
+
+    stopping = getattr(args, "stopping", False)
+    terminal = _terminal_block(state)
+    if terminal and not stopping:
+        _emit(f"BLOCKED: {terminal}")
+        return EXIT_BLOCKED
+
     repo_root = Path(state.repo_root)
     passing = state.passing_round(repo_root)
     blocking_reason = ""
+    if passing is not None and not stopping:
+        # The same input check gate and review make: an approval means
+        # nothing if the requirements it was judged against have since
+        # changed, and a brief living outside the repository can change
+        # without moving the tree digest at all.
+        try:
+            _approved_brief(run_dir, state)
+        except BriefError as exc:
+            blocking_reason = str(exc)
+            passing = None
     if passing is not None:
         # An approval is not enough on its own: the verification run behind it
         # must still be the newest one and must still have passed, and the
@@ -482,7 +553,6 @@ def cmd_finish(args: argparse.Namespace) -> int:
         _emit("use --force only to close a run that is stopping WITHOUT a pass, and say so")
         return EXIT_BLOCKED
 
-    stopping = getattr(args, "stopping", False)
     state.status = "delivered" if passing is not None and not stopping else "stopped"
     if state.status == "stopped":
         state.stop_reason = args.reason or "closed without a passing review"

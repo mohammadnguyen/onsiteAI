@@ -145,6 +145,21 @@ def brief_file(repo: Path):
     return _make
 
 
+@pytest.fixture
+def external_brief_file(tmp_path: Path):
+    """A brief that lives outside the work tree, so editing it leaves the
+    tree digest untouched."""
+    outside = tmp_path / "outside"
+    outside.mkdir(exist_ok=True)
+
+    def _make(**kwargs) -> Path:
+        path = outside / "brief.toml"
+        path.write_text(_brief_text(**kwargs), encoding="utf-8")
+        return path
+
+    return _make
+
+
 def _run(repo: Path, monkeypatch, argv: list[str]) -> int:
     monkeypatch.chdir(repo)
     return cli.main(argv)
@@ -849,13 +864,13 @@ def test_stop_stays_a_stop_even_after_an_approval(
 
 
 def test_editing_the_brief_after_approval_blocks_the_run(
-    repo: Path, monkeypatch, brief_file, tmp_path
+    repo: Path, monkeypatch, external_brief_file, tmp_path
 ):
     """The run executes the archived brief, and refuses to continue once the
     source no longer matches it — otherwise the approved verification
     commands or scope could be swapped underneath an approved run."""
     run_dir = tmp_path / "run"
-    source = brief_file()
+    source = external_brief_file()
     _start(repo, monkeypatch, source, run_dir)
     _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[APPROVE_OUTPUT]))
     assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_OK
@@ -990,3 +1005,164 @@ def test_a_corrupt_state_file_is_refused_clearly(
 
     with pytest.raises(state.StateError):
         state.load_state(run_dir)
+
+
+# ------------------------------------------------------------------------
+# Regressions for the four defects the real reviewer found on the second
+# round (run .claude/handoff/self-v2, review 01).
+# ------------------------------------------------------------------------
+
+
+def test_a_stopped_run_cannot_later_deliver(repo: Path, monkeypatch, brief_file, tmp_path):
+    """Stopping records "this needs the founder". A later finish must not
+    convert it into a delivery using the approval that predates the stop."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[APPROVE_OUTPUT]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    _run(
+        repo,
+        monkeypatch,
+        ["stop", "--run-dir", str(run_dir), "--reason", "requirements conflict"],
+    )
+
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    saved = state.load_state(run_dir)
+    assert saved.status == "stopped"
+    assert saved.stop_reason == "requirements conflict"
+
+
+def test_a_stopped_run_cannot_be_gated_or_reviewed_again(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    plugin = _write_fake_plugin(tmp_path, outputs=[APPROVE_OUTPUT])
+    _install_fake_plugin(monkeypatch, plugin)
+    _run(repo, monkeypatch, ["stop", "--run-dir", str(run_dir), "--reason", "out of scope"])
+
+    assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    assert _plugin_calls(plugin) == 0
+
+
+def test_a_delivered_run_is_terminal_too(repo: Path, monkeypatch, brief_file, tmp_path):
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[APPROVE_OUTPUT]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+def test_delivery_revalidates_the_approved_inputs(
+    repo: Path, monkeypatch, external_brief_file, tmp_path
+):
+    """gate and review check the brief; finish must too, or a brief edited
+    after the last review delivers under requirements nobody approved.
+
+    The brief is deliberately outside the work tree: editing it then leaves
+    the tree digest unchanged, so the staleness check cannot notice and only
+    the explicit input check can."""
+    run_dir = tmp_path / "run"
+    source = external_brief_file()
+    _start(repo, monkeypatch, source, run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[APPROVE_OUTPUT]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+
+    source.write_text(
+        _brief_text(commands='[["python", "-c", "print(\'weakened\')"]]'),
+        encoding="utf-8",
+    )
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    assert state.load_state(run_dir).status == "open"
+
+
+def test_a_tree_edited_during_verification_does_not_count_as_verified(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """A file edited after its own tests passed but before the suite finished
+    would otherwise have those passes recorded against the edited tree."""
+    target = repo / "file.txt"
+    brief = brief_file(
+        commands=(
+            '[["python", "-c", "open(r\'' + str(target).replace("\\", "/")
+            + "', 'w').write('edited mid-suite')\"]]"
+        )
+    )
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief, run_dir)
+    plugin = _write_fake_plugin(tmp_path, outputs=[APPROVE_OUTPUT])
+    _install_fake_plugin(monkeypatch, plugin)
+
+    assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    gate = state.load_state(run_dir).gates[-1]
+    assert gate["inputs_stable"] is False
+    assert gate["passed"] is False
+    # Every command exited 0 — it is the moving tree that fails the gate.
+    assert all(c["exit_code"] == 0 for c in gate["commands"])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    assert _plugin_calls(plugin) == 0
+
+
+def test_an_interrupted_review_keeps_its_round_and_its_evidence(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """A session that dies between the two channels must not resume with the
+    round unspent, nor overwrite the interrupted attempt's raw output."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(rounds=1), run_dir)
+
+    # A reviewer that answers the first channel and then kills the process
+    # outright, which is what an interrupted session looks like from here.
+    crasher = tmp_path / "crasher.py"
+    crasher.write_text(
+        "import os, sys\n"
+        "if sys.argv[1] == 'adversarial-review':\n"
+        "    sys.stdout.write('Verdict: approve\\n\\n' + 'x' * 80 + '\\n')\n"
+        "    sys.exit(0)\n"
+        "os._exit(9)\n",
+        encoding="utf-8",
+    )
+    _install_fake_plugin(monkeypatch, crasher)
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+    saved = state.load_state(run_dir)
+    assert saved.review_count == 1  # the attempt was counted
+    assert not saved.rounds[-1].usable
+    first_evidence = Path(saved.rounds[-1].raw_paths[runner.CHANNEL_VERDICT])
+    assert first_evidence.exists()
+
+    # A second attempt claims new filenames rather than trampling the first.
+    (repo / "file.txt").write_text("after the interruption\n", encoding="utf-8")
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    saved = state.load_state(run_dir)
+    assert saved.review_count == 2
+    assert saved.rounds[1].raw_paths[runner.CHANNEL_VERDICT] != str(first_evidence)
+    assert first_evidence.exists()
+
+
+def test_a_round_is_counted_before_the_reviewer_is_called(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The counter is persisted first, so a process that dies mid-round
+    cannot buy the round back on resume."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    seen = {}
+
+    def spy(**kwargs):
+        seen["count_during_call"] = state.load_state(run_dir).review_count
+        raise RuntimeError("stop here")
+
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[APPROVE_OUTPUT]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    monkeypatch.setattr(cli, "invoke_review_round", spy)
+    with pytest.raises(RuntimeError):
+        _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    assert seen["count_during_call"] == 1
