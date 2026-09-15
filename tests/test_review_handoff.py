@@ -2970,3 +2970,21 @@ def test_the_documented_fixtures_all_exist():
     }
     on_disk = {p.name for p in FIXTURES.iterdir() if p.name != "README.md"}
     assert documented == on_disk, f"documented-only: {documented - on_disk}, undocumented: {on_disk - documented}"
+
+
+def test_two_starts_cannot_race_on_one_run_directory(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The "already exists" check was a read followed by a write. Two starts
+    could both pass it and then overwrite each other's state."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    brief = brief_file()
+    held = locking.FileLock(locking.run_lock_path(run_dir), purpose="another start")
+    held.acquire()
+    try:
+        assert _start(repo, monkeypatch, brief, run_dir) == cli.EXIT_BLOCKED
+        assert not (run_dir / "run.json").exists()
+    finally:
+        held.release()
+    assert _start(repo, monkeypatch, brief, run_dir) == cli.EXIT_OK

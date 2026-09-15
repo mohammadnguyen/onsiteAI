@@ -262,6 +262,32 @@ def cmd_start(args: argparse.Namespace) -> int:
         return EXIT_MISUSE
 
     repo_root = _repo_root()
+    now = utc_now()
+    run_dir = Path(args.run_dir) if args.run_dir else _run_dir_for(
+        brief, Path(args.runs_root), now
+    )
+    # The lock is taken before the "already exists" check, so two starts
+    # racing on one directory cannot both pass it and then overwrite each
+    # other's state.
+    run_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        lock = acquire_run_lock(run_dir, purpose="start", args=args)
+    except LockBusy as exc:
+        _emit(f"BLOCKED: another command is operating this run — {exc}")
+        return EXIT_BLOCKED
+    try:
+        return _start_locked(args, brief, repo_root, run_dir, now)
+    finally:
+        lock.release()
+
+
+def _start_locked(
+    args: argparse.Namespace,
+    brief: Brief,
+    repo_root: Path,
+    run_dir: Path,
+    now: datetime,
+) -> int:
     try:
         # A base is stored as a COMMIT, never as a name: "HEAD" or a branch
         # moves under the run, and the recorded base would still look right
@@ -273,10 +299,6 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     rounds = min(args.max_review_rounds, brief.limits.max_review_rounds)
     seconds = min(args.max_total_seconds, brief.limits.max_total_seconds)
-    now = utc_now()
-    run_dir = Path(args.run_dir) if args.run_dir else _run_dir_for(
-        brief, Path(args.runs_root), now
-    )
     if (run_dir / "run.json").exists():
         _emit(f"MISUSE: a run already exists at {run_dir}; resume it instead of restarting")
         return EXIT_MISUSE
@@ -384,7 +406,6 @@ def cmd_start(args: argparse.Namespace) -> int:
             "invalidate the approval it supports"
         )
     return EXIT_OK
-
 
 def _run_dir_inside_repo(repo_root: Path, run_dir: Path) -> bool:
     try:
@@ -1030,6 +1051,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="the branch this package will merge into; the review base must be "
         "its merge base with HEAD so the review never shrinks to a slice",
     )
+    _lock_arguments(start)
     start.set_defaults(func=cmd_start)
 
     gate = sub.add_parser("gate", help="run the brief's verification commands in order")

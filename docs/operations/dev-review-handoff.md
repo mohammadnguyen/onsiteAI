@@ -94,6 +94,7 @@ evidence index into the PR body.
 | `finish` exits 1, "describes an older tree" | the tree changed after the approval | re-run `gate` and `review` |
 | `start` exits 2, "not the merge base" | the base would hide part of the package | drop `--base` and let it pin the merge base |
 | `review` exits 1, "uncommitted changes" | the reviewer reads commits only, so that work would be invisible to it | commit it, then re-run `gate` and `review` |
+| `review` exits 1, "round limit reached" or "time budget exhausted" | the run is now **closed**, with the limit as its stop reason | report what is outstanding; do not start a fresh run to buy back rounds |
 | any command exits 1, "is held by pid N" | another command owns this run, or another run owns the shared database | wait, or stop. **Never kill the holder** — stopping another session or shared runtime is outside this workflow's authorisation. If the holder really crashed, `--break-lock` (run lock) or `--break-shared-lock` (database lock); the break is recorded |
 | `review` exits 1, "no structured result" | the reviewer did not answer against the plugin's own schema | read the raw file; retry once; twice in a row is a stop |
 | `finish` exits 1, "never triaged" | a channel produced a review nobody accounted for | read it, then `findings record` or `findings none` |

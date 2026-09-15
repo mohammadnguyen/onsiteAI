@@ -84,7 +84,9 @@ delivery until it is fixed or refuted, **no matter which channel raised it**.
 An `approve` on one channel does not release the other channel's findings.
 
 **6 — Repeat** from step 3 until the round verdict is `approve`, or a limit
-stops you. The script enforces one initial review plus at most N automatic
+stops you. Reaching a limit **closes the run**: `review` records it as
+stopped, with the limit as the reason, and a closed run stays closed. Report
+what is outstanding rather than starting a fresh run to buy back rounds. The script enforces one initial review plus at most N automatic
 rounds (default 3) and a total time budget; both survive a session restart,
 so resuming does not hand back spent rounds.
 

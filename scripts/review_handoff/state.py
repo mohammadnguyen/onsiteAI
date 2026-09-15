@@ -19,6 +19,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -360,7 +361,7 @@ class RunState:
 def load_state(run_dir: Path) -> RunState:
     path = Path(run_dir) / STATE_FILENAME
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_state_text(path))
     except OSError as exc:
         raise StateError(f"no run state at {path}: {exc}") from exc
     except json.JSONDecodeError as exc:
@@ -379,6 +380,27 @@ def load_state(run_dir: Path) -> RunState:
         raise StateError(
             f"run state at {path} does not match this schema: {exc}"
         ) from exc
+
+
+def _read_state_text(path: Path, attempts: int = 5) -> str:
+    """Read the state file, retrying a momentary sharing failure.
+
+    Saving replaces the file atomically, but on Windows a reader that opens
+    it during the rename gets a sharing violation rather than either version.
+    ``status`` deliberately takes no lock — it is a read-only view anyone may
+    ask for — so without this a concurrent save turns an informational
+    command into "no run state", which reads as a missing run.
+    """
+    last: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            return path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            raise
+        except OSError as exc:  # pragma: no cover - timing dependent
+            last = exc
+            time.sleep(0.05 * (attempt + 1))
+    raise last  # pragma: no cover - only reached when every attempt failed
 
 
 def text_digest(text: str) -> str:

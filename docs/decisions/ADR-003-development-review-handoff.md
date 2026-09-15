@@ -99,9 +99,11 @@ so that channel returns an object: a verdict and a list of findings with
 severities. That object is **read** — mechanically, with no interpretation —
 and it is preferred over any verdict line in the surrounding prose.
 
-The other channel returns prose. It is run and archived because it has
-caught defects the first channel missed, but its content is never
-pattern-matched into a score. The agent reads it and records what it found;
+The other channel returns prose, and it is told nothing: the plugin rejects
+focus text on the native channel outright, so the brief, the scope and the
+evidence path reach the adversarial channel alone. The native channel is run for what it finds unprompted, which is
+precisely why it has caught defects the first channel missed. Its content is
+never pattern-matched into a score. The agent reads it and records what it found;
 that record is an explicit act, not an inference. No model judges another
 model here.
 
