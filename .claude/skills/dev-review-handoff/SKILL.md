@@ -28,7 +28,10 @@ Pins the review base to the merge base with the integration branch, archives
 the brief verbatim, and fixes the round and time budgets. Read back the
 printed base and limits; they are the contract for everything below.
 
-**2 — Implement.** Stay inside the brief's `allowed_paths`. Choose the
+**2 — Implement, and COMMIT.** Stay inside the brief's `allowed_paths`.
+The reviewer is handed the commit range `base..HEAD`; uncommitted work is
+invisible to it, so `review` refuses a dirty tree rather than produce an
+approval describing code nobody read. Choose the
 solution that is most correct, most maintainable, and most consistent with
 how this repository already does things. Smallest diff is **not** the
 criterion — a smaller change that leaves the design worse is the wrong
@@ -108,9 +111,9 @@ and report. Stopping is a first-class outcome, not a failure:
 
 ## Concurrency
 
-Every state-changing command takes the run's lock, and `gate` also takes a
-machine-wide lock because the verification suites of different runs share
-one database. If a command reports that a lock is held, **wait or stop**.
+Every command that changes an EXISTING run takes that run's lock, and `gate`
+also takes a machine-wide lock because the verification suites of different
+runs share one database. (`start` takes no run lock — there is no run yet.) If a command reports that a lock is held, **wait or stop**.
 Never kill the holder: stopping another session or a shared runtime is
 outside what this workflow is authorised to do. A lock genuinely left by a
 crashed session is cleared with `--break-lock`, which records the break in

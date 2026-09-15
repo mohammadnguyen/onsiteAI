@@ -26,12 +26,13 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from .process_tree import ProcessTree, TreeKill
 
 # A brief that says "python" means the interpreter running this workflow, not
 # whatever happens to be first on PATH. Without this a run inside a virtual
@@ -56,10 +57,16 @@ def child_env(base: dict | None = None) -> dict:
     curly quote arrives here already corrupted — decoding correctly at this
     end cannot undo that. These two variables make the child emit UTF-8 in
     the first place.
+
+    They are SET, not defaulted. An inherited PYTHONIOENCODING (cp1252 from a
+    shell profile, ascii from a CI image) would otherwise survive and break
+    the capture, which is the failure this exists to prevent; what this
+    process inherited says nothing about how the children it spawns should
+    encode output it is about to read.
     """
     env = dict(os.environ if base is None else base)
-    env.setdefault("PYTHONUTF8", "1")
-    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     return env
 
 
@@ -73,34 +80,6 @@ PLUGIN_SCRIPT_ENV = "REVIEW_HANDOFF_PLUGIN"
 PLUGIN_NODE_ENV = "REVIEW_HANDOFF_NODE"
 
 
-def terminate_process_tree(proc: subprocess.Popen) -> bool:
-    """Kill a subprocess THIS run started, together with its descendants.
-
-    Scope note: the only process tree touched is the one whose ``Popen`` we
-    are holding. No other session, agent or shared runtime is signalled.
-    """
-    if proc.poll() is not None:
-        return False
-    if os.name == "nt":
-        # Same mechanism the review plugin uses for its own children.
-        subprocess.run(
-            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-            capture_output=True,
-            timeout=60,
-            check=False,
-        )
-    else:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            proc.kill()
-    try:
-        proc.wait(timeout=30)
-    except subprocess.TimeoutExpired:  # pragma: no cover - last resort
-        proc.kill()
-    return True
-
-
 @dataclass(frozen=True)
 class CommandResult:
     argv: list[str]
@@ -111,6 +90,7 @@ class CommandResult:
     timed_out: bool
     log_path: Path | None = None
     killed_tree: bool = False
+    kill_detail: str = ""
 
     @property
     def ok(self) -> bool:
@@ -155,11 +135,8 @@ def run_command(
     """Run one command, archive it verbatim, never raise for a bad exit."""
     started = time.monotonic()
     timed_out = False
-    killed_tree = False
-    popen_kwargs: dict = {}
-    if os.name != "nt":
-        # Its own process group, so the whole tree can be signalled at once.
-        popen_kwargs["start_new_session"] = True
+    kill = TreeKill()
+    tree = ProcessTree()
     try:
         proc = subprocess.Popen(  # noqa: S603 - argv list, never a shell string
             argv,
@@ -167,7 +144,7 @@ def run_command(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=child_env(env),
-            **popen_kwargs,
+            **tree.popen_kwargs(),
         )
     except OSError as exc:  # command not found, not executable, ...
         result = CommandResult(
@@ -182,26 +159,43 @@ def run_command(
         _archive(result, cwd, b"", result.stderr.encode("utf-8"))
         return result
 
+    tree.adopt(proc)
+    lost_output = False
     try:
-        out, err = proc.communicate(timeout=max(1.0, timeout_seconds))
-        exit_code = proc.returncode
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        exit_code = None
-        killed_tree = terminate_process_tree(proc)
         try:
-            out, err = proc.communicate(timeout=60)
-        except subprocess.TimeoutExpired:  # pragma: no cover - pipes wedged
-            out, err = b"", b""
+            out, err = proc.communicate(timeout=max(1.0, timeout_seconds))
+            exit_code = proc.returncode
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            exit_code = None
+            # The tree is killed FIRST, then the pipes are drained. Draining
+            # first would wait on writers this call is about to terminate.
+            kill = tree.kill(proc)
+            try:
+                out, err = proc.communicate(timeout=60)
+            except subprocess.TimeoutExpired:  # pragma: no cover - pipes wedged
+                out, err = b"", b""
+                lost_output = True
+    finally:
+        # Closing the job also kills anything still inside it, so a command
+        # that exited normally cannot leave a worker running against the
+        # shared database.
+        tree.close()
     duration = time.monotonic() - started
 
     stderr_text = _decode(err)
     if timed_out:
-        note = (
-            f"\n--- killed after {timeout_seconds:.0f}s; "
-            + ("the process tree was terminated" if killed_tree else "the process had already exited")
-            + " ---\n"
-        )
+        outcome = "the process tree was terminated"
+        if not kill.delivered:
+            outcome = "the process tree could NOT be confirmed terminated"
+            if kill.detail:
+                outcome = f"{outcome} ({kill.detail})"
+        note = f"\n--- killed after {timeout_seconds:.0f}s; {outcome} [{kill.method}] ---\n"
+        if lost_output:
+            note += (
+                "--- the pipes did not close after the kill, so any output "
+                "already produced was lost ---\n"
+            )
         stderr_text += note
         err = (err or b"") + note.encode("utf-8")
 
@@ -213,7 +207,8 @@ def run_command(
         duration_seconds=duration,
         timed_out=timed_out,
         log_path=log_path,
-        killed_tree=killed_tree,
+        killed_tree=kill.delivered,
+        kill_detail=kill.detail or kill.method,
     )
     _archive(result, cwd, out or b"", err or b"")
     return result
@@ -264,16 +259,26 @@ def run_gate_commands(
         if deadline is not None:
             allowed = min(allowed, deadline - time.monotonic())
             if allowed <= 0:
+                # Archived like any other command: a step that produced no log
+                # reads as a step that was never attempted.
+                reason = (
+                    "the run's total time budget was exhausted before this "
+                    "command started; it was NOT run"
+                )
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_path.write_bytes(
+                    f"$ {' '.join(argv)}\ncwd: {cwd}\nexit: none (NOT RUN)\n"
+                    f"{'-' * 60}\n{reason}\n".encode("utf-8")
+                )
                 results.append(
                     CommandResult(
                         argv=list(argv),
                         exit_code=None,
                         stdout="",
-                        stderr="the run's total time budget was exhausted before "
-                        "this command started",
+                        stderr=reason,
                         duration_seconds=0.0,
                         timed_out=True,
-                        log_path=None,
+                        log_path=log_path,
                     )
                 )
                 break
@@ -335,10 +340,19 @@ def build_review_argv(
     and the ``--`` terminator puts everything after it into positionals, so
     focus text that begins with a dash cannot be mistaken for a flag.
 
-    ``--wait`` is mandatory: a backgrounded review would let the run continue
-    against a result that does not exist yet. ``--json`` asks for the
-    plugin's structured payload, which carries the schema-constrained result.
-    The native channel rejects focus text, so it receives only the flags.
+    ``--wait`` is mandatory: without it the plugin queues the review as a
+    background job and returns immediately, and the run would read a result
+    that does not exist yet. ``--json`` asks for the plugin's structured
+    payload, which carries the schema-constrained result.
+
+    ``--scope`` is sent for completeness but does NOT decide what is
+    reviewed here: the plugin resolves an explicit ``--base`` to branch mode
+    before it looks at the scope, so the review is the commit range
+    base..HEAD. Uncommitted work is therefore invisible to the reviewer,
+    which is why the run refuses to review a dirty tree.
+
+    The native channel rejects focus text outright, so it receives only the
+    flags — it is run for its findings, not for anything it is told.
     """
     plugin = plugin or plugin_script_path()
     node = os.environ.get(PLUGIN_NODE_ENV, "node")

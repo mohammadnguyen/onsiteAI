@@ -55,7 +55,7 @@ printed and recorded.
 |---|---|
 | `start` | The base is the merge base with the integration branch, not HEAD. The brief is archived verbatim. Limits are fixed and can only be lowered from here. |
 | `gate` | The brief's commands run in order, stop at the first failure, and are archived verbatim. Sequential is a correctness requirement: these suites share one database. |
-| `review` | Both review channels run against the pinned base with `--wait --json`; both raw outputs are archived; the adversarial channel's structured findings are recorded with their severities; one verdict is recorded for the round. |
+| `review` | Refuses a dirty work tree: the reviewer reads the commits `base..HEAD` and would never see uncommitted work. Both review channels then run against the pinned base with `--wait --json`; both raw outputs are archived; the adversarial channel's structured findings are recorded with their severities; one verdict is recorded for the round. |
 | `findings` | Every finding carries a disposition. Blocking ones stop delivery until fixed or refuted, whichever channel raised them. |
 | `status` | Whether a current pass exists, whether an earlier approval has gone stale, and what is still blocking release. |
 | `finish` | Refuses unless a usable `approve` describes the current tree, every channel was triaged, and no blocking finding is open. Writes the evidence index. |
@@ -93,6 +93,7 @@ evidence index into the PR body.
 | `review` exits 1, "review exited N" | plugin or authentication failure | check `codex-companion.mjs status`; fix outside the run |
 | `finish` exits 1, "describes an older tree" | the tree changed after the approval | re-run `gate` and `review` |
 | `start` exits 2, "not the merge base" | the base would hide part of the package | drop `--base` and let it pin the merge base |
+| `review` exits 1, "uncommitted changes" | the reviewer reads commits only, so that work would be invisible to it | commit it, then re-run `gate` and `review` |
 | any command exits 1, "is held by pid N" | another command owns this run, or another run owns the shared database | wait, or stop. **Never kill the holder** — stopping another session or shared runtime is outside this workflow's authorisation. If the holder really crashed, `--break-lock` (run lock) or `--break-shared-lock` (database lock); the break is recorded |
 | `review` exits 1, "no structured result" | the reviewer did not answer against the plugin's own schema | read the raw file; retry once; twice in a row is a stop |
 | `finish` exits 1, "never triaged" | a channel produced a review nobody accounted for | read it, then `findings record` or `findings none` |
@@ -101,9 +102,13 @@ evidence index into the PR body.
 
 `gate` holds a machine-wide lock named by the brief (`limits.shared_lock`,
 default `shared-test-database`), so two runs never verify against the same
-PostgreSQL instance at once; a second run queues. Everything that writes
-state holds the run's own lock. A held lock is reported with its holder and
-never forced.
+PostgreSQL instance at once; a second run queues. Every command that changes
+an existing run holds that run's own lock — `start` does not, since there is
+no run yet. A held lock is reported with its holder and never forced.
+
+A timed-out command takes its whole subprocess tree with it: a job object on
+Windows, the process group on POSIX. Both reach a worker whose launcher has
+already exited, which `taskkill /T` cannot.
 
 ## Limits of this workflow
 

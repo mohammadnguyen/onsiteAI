@@ -102,11 +102,33 @@ class Finding:
         return asdict(self)
 
 
-def finding_id(round_number: int, channel: str, title: str, file: str, line: int | None) -> str:
-    """A stable id, so the same finding keeps its disposition across commands."""
+def finding_id(
+    round_number: int,
+    channel: str,
+    title: str,
+    file: str,
+    line: int | None,
+    taken: set[str] | None = None,
+) -> str:
+    """A stable id, so the same finding keeps its disposition across commands.
+
+    ``taken`` disambiguates a genuine collision. Two findings that share a
+    round, a channel, a title, a file and a line hash identically, and a
+    shared id is not a cosmetic problem: only the first is ever addressable,
+    so the second can never be resolved and the run can never deliver. A
+    reviewer reporting the same title at the same line twice - the same rule
+    broken in two places it did not distinguish - is not exotic.
+    """
     key = f"{round_number}|{channel}|{title.strip().lower()}|{file.strip()}|{line or 0}"
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
-    return f"r{round_number:02d}-{channel.split('-')[0][:4]}-{digest}"
+    base = f"r{round_number:02d}-{channel.split('-')[0][:4]}-{digest}"
+    if taken is None or base not in taken:
+        return base
+    for suffix in range(2, 100):
+        candidate = f"{base}-{suffix}"
+        if candidate not in taken:
+            return candidate
+    raise FindingsError(f"cannot allocate a unique id for finding {base!r}")
 
 
 def _clean_severity(value: object) -> str:
@@ -130,7 +152,12 @@ def _clean_int(value: object) -> int | None:
 
 
 def findings_from_structured(
-    result: dict | None, *, round_number: int, channel: str, recorded_at: str
+    result: dict | None,
+    *,
+    round_number: int,
+    channel: str,
+    recorded_at: str,
+    existing: set[str] | None = None,
 ) -> list[Finding]:
     """Read the plugin's structured result. Malformed entries are an error.
 
@@ -146,6 +173,7 @@ def findings_from_structured(
     if not isinstance(raw, list):
         raise FindingsError("the reviewer's 'findings' field is not a list")
     out: list[Finding] = []
+    taken: set[str] = set(existing or ())
     for index, entry in enumerate(raw, start=1):
         if not isinstance(entry, dict):
             raise FindingsError(f"finding #{index} in the reviewer's result is not an object")
@@ -155,9 +183,11 @@ def findings_from_structured(
         file = str(entry.get("file") or "").strip()
         line_start = _clean_int(entry.get("line_start"))
         confidence = entry.get("confidence")
+        identifier = finding_id(round_number, channel, title, file, line_start, taken)
+        taken.add(identifier)
         out.append(
             Finding(
-                id=finding_id(round_number, channel, title, file, line_start),
+                id=identifier,
                 round=round_number,
                 channel=channel,
                 severity=_clean_severity(entry.get("severity")),
@@ -182,24 +212,30 @@ def unresolved_blocking(findings: list[Finding]) -> list[Finding]:
 def untriaged_channels(
     *, rounds: list, findings: list[Finding], attestations: list[dict], channels: tuple[str, ...]
 ) -> list[str]:
-    """Channels of completed rounds that nobody has accounted for.
+    """Channels that produced a review nobody has accounted for.
 
     A channel is accounted for when it produced structured findings that were
     read automatically, or when the agent recorded findings from it, or when
     the agent explicitly attested that it reported none. Absence of findings
     is otherwise indistinguishable from nobody having looked, and this
     workflow may not treat those as the same thing.
+
+    Judged PER CHANNEL, not per round. Usability is a whole-round verdict
+    that fails closed on any channel, so an earlier version skipped every
+    channel of an unusable round - including one that exited 0 and archived a
+    complete review. A later approving round could then deliver while that
+    review sat unread. A channel is therefore triageable exactly when it
+    exited 0, whatever the round's own verdict was.
     """
     seen = {(f.round, f.channel) for f in findings}
     seen |= {(int(a["round"]), a["channel"]) for a in attestations}
     missing: list[str] = []
     for record in rounds:
-        # An unusable round produced no review to triage; it already blocks on
-        # its own, and demanding a triage for output that does not exist would
-        # just be noise.
-        if not getattr(record, "usable", False):
-            continue
+        exit_codes = getattr(record, "exit_codes", None) or {}
         for channel in channels:
+            if exit_codes.get(channel) != 0:
+                # The channel did not complete, so there is no review to read.
+                continue
             if (record.number, channel) not in seen:
                 missing.append(f"round {record.number} channel {channel}")
     return missing

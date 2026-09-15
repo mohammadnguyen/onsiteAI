@@ -188,7 +188,7 @@ def _payload_text(payload: dict) -> str:
     return ""
 
 
-def _failure_detail(payload: dict | None) -> str:
+def _failure_detail(payload: dict | None, raw_text: str = "") -> str:
     """Why the plugin failed, in its own words.
 
     The plugin reports an authentication failure, an exhausted quota or a
@@ -196,17 +196,21 @@ def _failure_detail(payload: dict | None) -> str:
     this the run records only "review exited 1", which sends the reader to
     the archive to learn something the run already knew - and the three
     causes need completely different responses.
+
+    A failure early enough to produce no payload at all (node missing, the
+    script path wrong, a crash before any output) still leaves a message on
+    the stream, so that is read too rather than left as a bare exit code.
     """
-    if not isinstance(payload, dict):
-        return ""
-    for value in (
-        payload.get("parseError"),
-        (payload.get("codex") or {}).get("stderr") if isinstance(payload.get("codex"), dict) else None,
-        (payload.get("codex") or {}).get("stdout") if isinstance(payload.get("codex"), dict) else None,
-    ):
+    codex = payload.get("codex") if isinstance(payload, dict) else None
+    candidates = []
+    if isinstance(payload, dict):
+        candidates.append(payload.get("parseError"))
+    if isinstance(codex, dict):
+        candidates.extend([codex.get("stderr"), codex.get("stdout")])
+    candidates.append(raw_text)
+    for value in candidates:
         if isinstance(value, str) and value.strip():
-            detail = " ".join(value.split())
-            return detail[:300]
+            return " ".join(value.split())[:300]
     return ""
 
 
@@ -241,22 +245,36 @@ def read_channel(
             expects_verdict,
         )
     if exit_code is None:
-        return _not_ok("did not run", "review did not run", expects_verdict)
+        return _not_ok(
+            "did not run",
+            "review did not run",
+            expects_verdict,
+            _failure_detail(payload, raw_text),
+        )
     if exit_code != 0:
         return _not_ok(
             f"exit {exit_code}",
             f"review exited {exit_code}",
             expects_verdict,
-            _failure_detail(payload),
+            _failure_detail(payload, raw_text),
         )
 
     structured = None
-    text = raw_text
     parse_error = ""
-    if payload is not None:
+    if payload is None:
+        text = raw_text
+    else:
         candidate = payload.get("result")
         structured = candidate if isinstance(candidate, dict) else None
-        text = _payload_text(payload) or raw_text
+        # Only the payload's own review text counts. Falling back to raw_text
+        # here would measure the JSON ENVELOPE and call it a review: the
+        # native channel's payload carries the prose solely in codex.stdout,
+        # which the plugin leaves empty when a turn completes without ever
+        # producing review text (it renders that case as "Codex review
+        # completed without any stdout output" and still exits 0). The
+        # envelope alone is ~300 characters, so the length check below would
+        # pass on a channel that said nothing at all.
+        text = _payload_text(payload)
         if isinstance(payload.get("parseError"), str):
             parse_error = payload["parseError"]
 

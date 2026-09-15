@@ -56,6 +56,30 @@ def _git(repo: Path, *args: str) -> str:
     return proc.stdout.strip()
 
 
+def _commit(repo: Path, message: str = "work") -> str:
+    """Commit everything in the work tree.
+
+    `review` refuses a dirty tree, because the reviewer is handed the commit
+    range base..HEAD and would never see uncommitted work. Tests that change
+    the package therefore commit, exactly as a real run must.
+    """
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", message)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+@pytest.fixture(autouse=True)
+def isolated_locks(tmp_path: Path, monkeypatch):
+    """Keep the machine-wide gate lock out of the real shared location.
+
+    `gate` takes a lock named by the brief in the OS temp directory, which is
+    shared with every real handoff run on the machine. Without this fixture
+    the suite contends with real runs and with itself, and a gate that loses
+    the race waits 45 minutes rather than failing.
+    """
+    monkeypatch.setenv(locking.LOCK_DIR_ENV, str(tmp_path / "locks"))
+
+
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     """A throwaway git repository with one commit."""
@@ -145,6 +169,9 @@ def brief_file(repo: Path):
     def _make(**kwargs) -> Path:
         path = repo / "brief.toml"
         path.write_text(_brief_text(**kwargs), encoding="utf-8")
+        # Committed: an uncommitted brief is uncommitted work like any other,
+        # and `review` refuses a dirty tree.
+        _commit(repo, "brief")
         return path
 
     return _make
@@ -357,6 +384,7 @@ def test_defect_then_fix_then_approve(repo: Path, monkeypatch, brief_file, tmp_p
     assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
 
     (repo / "file.txt").write_text("fixed\n", encoding="utf-8")
+    _commit(repo, "fix the reported defect")
     _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
     assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
     _triage_all(repo, monkeypatch, run_dir)
@@ -535,10 +563,12 @@ def test_round_limit_stops_the_run(repo: Path, monkeypatch, brief_file, tmp_path
 
     for index in range(2):  # initial review + the single automatic round
         (repo / "file.txt").write_text(f"edit {index}\n", encoding="utf-8")
+        _commit(repo, f"edit {index}")
         _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
         assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
 
     (repo / "file.txt").write_text("one more edit\n", encoding="utf-8")
+    _commit(repo, "one more edit")
     _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
     assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
     saved = state.load_state(run_dir)
@@ -560,6 +590,7 @@ def test_round_counter_survives_a_restart(repo: Path, monkeypatch, brief_file, t
     reloaded = state.load_state(run_dir)
     assert reloaded.review_count == 1 and reloaded.auto_rounds_left == 1
     (repo / "file.txt").write_text("after restart\n", encoding="utf-8")
+    _commit(repo, "after restart")
     _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
     _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
     assert state.load_state(run_dir).auto_rounds_left == 0
@@ -1246,6 +1277,7 @@ def test_an_interrupted_review_keeps_its_round_and_its_evidence(
 
     # A second attempt claims new filenames rather than trampling the first.
     (repo / "file.txt").write_text("after the interruption\n", encoding="utf-8")
+    _commit(repo, "after the interruption")
     _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
     _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
     saved = state.load_state(run_dir)
@@ -1301,10 +1333,14 @@ def test_a_second_binary_edit_invalidates_the_approval(
     _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[APPROVE_OUTPUT]))
 
     binary.write_bytes(b"\x00first-change\xff")
+    _commit(repo, "first binary change")
     _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
     _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    _triage_all(repo, monkeypatch, run_dir)
     assert state.load_state(run_dir).passing_round(repo) is not None
 
+    # Uncommitted, deliberately: this is the window in which an approval
+    # could still be claimed for bytes nobody reviewed.
     binary.write_bytes(b"\x00second-change-entirely-different\xff")
     assert state.load_state(run_dir).passing_round(repo) is None
     assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
@@ -1401,20 +1437,31 @@ def test_editing_an_untracked_non_ascii_file_invalidates_the_approval(
     """git quotes and escapes non-ASCII paths unless asked not to, and the
     escaped name does not exist on disk. Reading it failed, a constant was
     hashed instead, and every later edit to that file left the digest
-    unchanged."""
+    unchanged.
+
+    Exercised after the approval, which is where it bites: an untracked file
+    cannot exist at review time any more (the run refuses a dirty tree), but
+    one appearing or changing afterwards must still invalidate the approval
+    that was bound to the earlier tree.
+    """
     run_dir = tmp_path / "run"
     _start(repo, monkeypatch, brief_file(), run_dir)
     _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[APPROVE_OUTPUT]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    _triage_all(repo, monkeypatch, run_dir)
+    assert state.load_state(run_dir).passing_round(repo) is not None
 
     exotic = repo / "caf\u00e9-\u6e2c\u8a66.txt"
     exotic.write_text("first contents\n", encoding="utf-8")
-    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
-    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
-    assert state.load_state(run_dir).passing_round(repo) is not None
-
-    exotic.write_text("entirely different contents\n", encoding="utf-8")
+    first = state.tree_digest(repo)
     assert state.load_state(run_dir).passing_round(repo) is None
     assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+    # The defect proper: the CONTENT of such a file must reach the digest.
+    # It used to hash a constant, so every later edit left it unchanged.
+    exotic.write_text("entirely different contents\n", encoding="utf-8")
+    assert state.tree_digest(repo) != first
 
 
 def test_an_unreadable_untracked_file_fails_closed(repo: Path, monkeypatch):
@@ -1764,51 +1811,6 @@ def test_a_run_with_its_own_database_does_not_queue_behind_the_shared_one(
 
 
 # ------------------------------------------------------------- timeouts
-
-
-def test_a_timed_out_command_takes_its_whole_process_tree_with_it(
-    repo: Path, monkeypatch, tmp_path
-):
-    """subprocess's own timeout kills the direct child only. A pytest worker
-    or node helper left running keeps writing to the shared database after
-    the run believes it dead."""
-    beat = tmp_path / "beat.txt"
-    grandchild = tmp_path / "grandchild.py"
-    grandchild.write_text(
-        "import time\n"
-        "from pathlib import Path\n"
-        f"target = Path(r'''{beat}''')\n"
-        "for i in range(600):\n"
-        "    target.write_text(str(i))\n"
-        "    time.sleep(0.1)\n",
-        encoding="utf-8",
-    )
-    parent = tmp_path / "parent.py"
-    parent.write_text(
-        "import subprocess, sys, time\n"
-        f"subprocess.Popen([sys.executable, r'''{grandchild}'''])\n"
-        "time.sleep(120)\n",
-        encoding="utf-8",
-    )
-    brief = repo / "brief.toml"
-    brief.write_text(
-        _brief_text(commands=json.dumps([[sys.executable, str(parent)]])),
-        encoding="utf-8",
-    )
-    run_dir = tmp_path / "run"
-    _start(repo, monkeypatch, brief, run_dir)
-
-    assert (
-        _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir), "--timeout", "4"])
-        == cli.EXIT_BLOCKED
-    )
-    record = state.load_state(run_dir).gates[-1]["commands"][0]
-    assert record["timed_out"] is True
-    assert record["killed_tree"] is True
-    assert beat.exists(), "the grandchild never started; the test proves nothing"
-    settled = beat.read_text()
-    time.sleep(1.5)
-    assert beat.read_text() == settled, "the grandchild outlived the timeout"
 
 
 # --------------------------------------------------------- output encoding
@@ -2303,3 +2305,668 @@ def test_a_failed_plugin_call_records_why_it_failed(
     assert "usage limit" in saved.rounds[0].reason
     # And it is still a failure, not something the detail can rescue.
     assert saved.rounds[0].verdict == "unusable"
+
+
+# =======================================================================
+# Second correction pass: defects found by an independent review of the
+# first one. Same rule as everything above - plant the failure, assert the
+# workflow's action.
+# =======================================================================
+
+
+def _native_payload(text: str) -> str:
+    """The shape the plugin really prints for the NATIVE channel under --json.
+
+    Note what is NOT in it: no `result`, no `rawOutput`. The review prose
+    lives only in codex.stdout, and the plugin leaves that empty when a turn
+    completes without ever producing review text.
+    """
+    return json.dumps(
+        {
+            "review": "Review",
+            "target": {"mode": "branch", "label": "branch diff against abc"},
+            "threadId": "t-1",
+            "sourceThreadId": "t-1",
+            "codex": {"status": 0, "stderr": "", "stdout": text, "reasoning": []},
+        }
+    )
+
+
+def test_an_empty_native_review_is_not_a_completed_channel(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The plugin exits 0 with an EMPTY review when a turn completes without
+    producing review text - it renders that case itself as "Codex review
+    completed without any stdout output". Under --json the envelope is still
+    ~300 characters, so measuring the raw stdout counted the JSON wrapper as
+    the review and let a channel that said nothing pass for a complete one."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[_payload("approve")],
+            findings_output=_native_payload(""),
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+    saved = state.load_state(run_dir)
+    assert not saved.rounds[0].usable
+    assert "findings channel" in saved.rounds[0].reason
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+def test_a_real_native_review_under_json_is_still_read(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The counterpart: a native channel that DID review must still count."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[_payload("approve")],
+            findings_output=_native_payload(
+                "I read the whole diff and have nothing material to report here."
+            ),
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    assert state.load_state(run_dir).rounds[0].usable
+
+
+def test_a_dirty_tree_cannot_be_reviewed(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """An explicit --base puts the plugin in branch mode, where the review
+    input is the commit range base..HEAD. Uncommitted work is invisible to
+    it, while the tree digest would bind the resulting approval to exactly
+    that uncommitted work - an approval describing code nobody read."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+
+    (repo / "file.txt").write_text("uncommitted work\n", encoding="utf-8")
+    # Re-gated deliberately. With fresh verification covering this very tree
+    # the staleness check is satisfied, so the dirty-tree rule is the only
+    # thing left that can refuse; without this the test would pass for the
+    # wrong reason and could not detect the rule being removed.
+    assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    assert state.load_state(run_dir).review_count == 0  # the reviewer was never called
+
+    _commit(repo, "commit the work")
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+
+
+def test_an_untracked_file_also_blocks_the_review(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    (repo / "new_module.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+def test_the_runs_own_directory_does_not_count_as_a_dirty_tree(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The run writes logs into its own directory while it works; those are
+    evidence about the tree, not uncommitted work in it."""
+    run_dir = repo / "runs" / "r1"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+
+
+def test_a_completed_channel_in_an_unusable_round_must_still_be_triaged(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Usability is a whole-ROUND verdict that fails closed on any channel.
+    Skipping every channel of an unusable round therefore skipped one that
+    exited 0 and archived a complete review - which a later approving round
+    could then deliver over, unread."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    # Round 1: the verdict channel dies, the prose channel reviews fine.
+    plugin = tmp_path / "half_dead.py"
+    plugin.write_text(
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "counter = Path(__file__).with_suffix('.n')\n"
+        "n = int(counter.read_text()) if counter.exists() else 0\n"
+        "channel = sys.argv[1]\n"
+        "if channel == 'adversarial-review':\n"
+        "    counter.write_text(str(n + 1))\n"
+        "    if n == 0:\n"
+        "        sys.stderr.write('reviewer unavailable\\n')\n"
+        "        sys.exit(1)\n"
+        f"    sys.stdout.write(json.loads(r'''{json.dumps(_payload('approve'))}'''))\n"
+        "    sys.exit(0)\n"
+        f"sys.stdout.write(json.loads(r'''{json.dumps(_native_payload('A long prose review that names a real problem in the code.'))}'''))\n"
+        "sys.exit(0)\n",
+        encoding="utf-8",
+    )
+    _install_fake_plugin(monkeypatch, plugin)
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    saved = state.load_state(run_dir)
+    assert not saved.rounds[0].usable
+    assert saved.rounds[0].exit_codes[runner.CHANNEL_FINDINGS] == 0
+
+    # Round 2 approves. The prose review from round 1 is still unread.
+    # The tree is already clean; round 2 reviews the same head.
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    _run(
+        repo,
+        monkeypatch,
+        ["findings", "none", "--run-dir", str(run_dir), "--round", "2",
+         "--channel", runner.CHANNEL_FINDINGS, "--note", "read it"],
+    )
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+    _run(
+        repo,
+        monkeypatch,
+        ["findings", "none", "--run-dir", str(run_dir), "--round", "1",
+         "--channel", runner.CHANNEL_FINDINGS, "--note", "read the round-1 prose too"],
+    )
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+
+
+def test_unreadable_findings_do_not_attest_the_channel_as_read(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Writing "read, 0 findings" after a parse failure both misreports what
+    was read and locks the agent out of recording the findings by hand: a
+    channel cannot be attested clean and carry findings at the same time."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    broken = _structured_finding()
+    broken["severity"] = "moderate"  # not one of the schema's four words
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(tmp_path, outputs=[_payload("approve", findings_list=[broken])]),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+    saved = state.load_state(run_dir)
+    assert saved.triage == []
+    assert saved.findings == []
+    # And the agent can now record what it read, by hand.
+    assert (
+        _run(
+            repo,
+            monkeypatch,
+            ["findings", "record", "--run-dir", str(run_dir), "--round", "1",
+             "--channel", runner.CHANNEL_VERDICT, "--severity", "high",
+             "--title", "unchecked index", "--file", "file.txt", "--line", "1"],
+        )
+        == cli.EXIT_OK
+    )
+
+
+def test_two_findings_with_the_same_title_and_line_stay_separately_resolvable(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """A shared id is not cosmetic: only the first is ever addressable, so
+    the second can never be resolved and the run can never deliver."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    twin = _structured_finding(severity="high", title="same rule broken", line=7)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path, outputs=[_payload("needs-attention", findings_list=[twin, dict(twin)])]
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+
+    saved = state.load_state(run_dir)
+    ids = [f["id"] for f in saved.findings]
+    assert len(ids) == 2 and len(set(ids)) == 2
+    for identifier in ids:
+        assert (
+            _run(
+                repo,
+                monkeypatch,
+                ["findings", "resolve", "--run-dir", str(run_dir), "--id", identifier,
+                 "--disposition", "refuted", "--note", "checked the caller; cannot occur"],
+            )
+            == cli.EXIT_OK
+        )
+    assert all(f["disposition"] == "refuted" for f in state.load_state(run_dir).findings)
+
+
+def test_a_closed_run_keeps_the_outcome_it_closed_with(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """A delivered run's own record must not end up saying it was stopped."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    _triage_all(repo, monkeypatch, run_dir)
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    assert state.load_state(run_dir).status == "delivered"
+
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    saved = state.load_state(run_dir)
+    assert saved.status == "delivered"
+    assert saved.stop_reason == ""
+
+
+def test_a_timed_out_command_kills_a_worker_its_parent_left_behind(
+    repo: Path, monkeypatch, tmp_path
+):
+    """The case that actually happens: a launcher (pytest, npm) exits and its
+    worker keeps running. taskkill walks the LIVE parent chain, so once the
+    direct child is gone its orphans cannot be reached from that PID - the
+    kill silently does nothing. A job object (Windows) or the process group
+    (POSIX) still reaches them.
+
+    The worker deliberately inherits the pipes, which is what makes the
+    command time out at all after its parent exited, and it outlives the
+    post-kill drain window - an earlier version of this test used a worker
+    that finished inside that window, so it passed either way.
+    """
+    beat = tmp_path / "beat.txt"
+    worker = tmp_path / "worker.py"
+    worker.write_text(
+        "import time\n"
+        "from pathlib import Path\n"
+        f"target = Path(r'''{beat}''')\n"
+        "for i in range(3000):\n"  # 300s: far longer than the drain window
+        "    target.write_text(str(i))\n"
+        "    time.sleep(0.1)\n",
+        encoding="utf-8",
+    )
+    launcher = tmp_path / "launcher.py"
+    launcher.write_text(
+        "import subprocess, sys\n"
+        f"subprocess.Popen([sys.executable, r'''{worker}'''])\n"
+        "sys.exit(0)\n",  # the launcher exits immediately; the worker does not
+        encoding="utf-8",
+    )
+    brief = repo / "brief.toml"
+    brief.write_text(
+        _brief_text(commands=json.dumps([[sys.executable, str(launcher)]])),
+        encoding="utf-8",
+    )
+    _commit(repo, "brief")
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief, run_dir)
+
+    assert (
+        _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir), "--timeout", "4"])
+        == cli.EXIT_BLOCKED
+    )
+    record = state.load_state(run_dir).gates[-1]["commands"][0]
+    assert record["timed_out"] is True
+    assert beat.exists(), "the worker never started; the test proves nothing"
+    settled = beat.read_text()
+    time.sleep(1.5)
+    assert beat.read_text() == settled, "the orphaned worker outlived the timeout"
+    assert record["killed_tree"] is True
+
+
+def test_a_command_never_run_because_the_budget_expired_still_leaves_a_log(
+    repo: Path, monkeypatch, tmp_path
+):
+    """A step with no log reads as a step that was never attempted; this one
+    was never attempted for a specific reason, and the reason is the point."""
+    brief = repo / "brief.toml"
+    brief.write_text(
+        _brief_text(
+            commands=json.dumps(
+                [
+                    [sys.executable, "-c", "print('first')"],
+                    [sys.executable, "-c", "print('second')"],
+                ]
+            )
+        ),
+        encoding="utf-8",
+    )
+    _commit(repo, "brief")
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief, run_dir)
+    results = runner.run_gate_commands(
+        [[sys.executable, "-c", "print('first')"], [sys.executable, "-c", "print('second')"]],
+        cwd=repo,
+        log_dir=run_dir / "gate-01",
+        timeout_seconds=30,
+        budget_seconds=0.0,
+    )
+    assert results[0].timed_out and results[0].log_path is not None
+    text = Path(results[0].log_path).read_text(encoding="utf-8")
+    assert "NOT RUN" in text and "budget was exhausted" in text
+
+
+def test_the_fingerprint_covers_the_whole_repository_not_the_current_directory(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """git ls-files lists relative to the CURRENT directory, so a CLI run
+    from a subdirectory used to fingerprint only that subtree - edits
+    anywhere else left the digest unchanged and an approval kept applying."""
+    sub = repo / "sub"
+    sub.mkdir()
+    (sub / "keep.txt").write_text("x\n", encoding="utf-8")
+    _commit(repo, "add a subdirectory")
+
+    run_dir = tmp_path / "run"
+    brief = brief_file()
+    monkeypatch.chdir(sub)
+    assert (
+        cli.main(
+            ["start", "--brief", str(brief), "--run-dir", str(run_dir),
+             "--integration-ref", "main"]
+        )
+        == cli.EXIT_OK
+    )
+    saved = state.load_state(run_dir)
+    assert Path(saved.repo_root).resolve() == repo.resolve()
+
+    before = state.tree_digest(Path(saved.repo_root))
+    (repo / "elsewhere.txt").write_text("outside the subdirectory\n", encoding="utf-8")
+    assert state.tree_digest(Path(saved.repo_root)) != before
+
+
+def test_a_run_directory_holding_tracked_source_is_refused(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The run directory is excluded from the fingerprint, so pointing it at
+    tracked source would hide that source from every staleness check."""
+    run_dir = repo / "src"
+    run_dir.mkdir()
+    (run_dir / "module.py").write_text("x = 1\n", encoding="utf-8")
+    _commit(repo, "tracked source")
+    assert _start(repo, monkeypatch, brief_file(), run_dir) == cli.EXIT_MISUSE
+
+
+def test_breaking_the_shared_gate_lock_is_recorded(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Machine-wide exclusion protects every OTHER run's database, so
+    breaking it must not be invisible."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    locking.FileLock(
+        locking.shared_lock_path(locking.DEFAULT_SHARED_LOCK_NAME), purpose="crashed"
+    ).acquire()
+    assert (
+        _run(
+            repo,
+            monkeypatch,
+            ["gate", "--run-dir", str(run_dir), "--break-shared-lock", "--shared-lock-wait", "0"],
+        )
+        == cli.EXIT_OK
+    )
+    events = state.load_state(run_dir).events
+    assert any(e["event"] == "shared gate lock broken" for e in events)
+
+
+def test_breaking_the_run_lock_from_a_findings_command_is_recorded(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    locking.FileLock(locking.run_lock_path(run_dir), purpose="crashed").acquire()
+    assert (
+        _run(
+            repo,
+            monkeypatch,
+            ["findings", "none", "--run-dir", str(run_dir), "--round", "1",
+             "--channel", runner.CHANNEL_FINDINGS, "--note", "read it", "--break-lock"],
+        )
+        == cli.EXIT_OK
+    )
+    assert any(e["event"] == "run lock broken" for e in state.load_state(run_dir).events)
+
+
+def test_releasing_a_lock_someone_else_now_holds_leaves_it_alone(tmp_path: Path):
+    """A broken-and-retaken lock must survive the original holder's release,
+    or a third process gets the same lock."""
+    path = tmp_path / "x.lock"
+    first = locking.FileLock(path, purpose="first")
+    first.acquire()
+    second = locking.FileLock(path, purpose="second")
+    second.acquire(break_stale=True)  # the operator decided the first was stale
+    first.release()
+    assert path.exists(), "the first holder deleted the second holder's lock"
+    assert json.loads(path.read_text(encoding="utf-8"))["purpose"] == "second"
+
+
+def test_an_unreadable_lock_file_is_not_deleted_by_a_stale_holder(tmp_path: Path):
+    path = tmp_path / "x.lock"
+    held = locking.FileLock(path, purpose="first")
+    held.acquire()
+    path.write_text("{ truncated", encoding="utf-8")  # mid-write by someone else
+    held.release()
+    assert path.exists()
+
+
+def test_an_unrecognised_structured_verdict_is_unusable(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    payload = json.loads(_payload("approve"))
+    payload["result"]["verdict"] = "looks fine to me"
+    _install_fake_plugin(
+        monkeypatch, _write_fake_plugin(tmp_path, outputs=[json.dumps(payload)])
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    assert "unrecognised" in state.load_state(run_dir).rounds[0].reason
+
+
+def test_a_plugin_that_never_started_still_records_why(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """A failure early enough to produce no payload still leaves a message on
+    the stream; a bare exit code sends the reader to the archive to learn
+    something the run already knew."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, tmp_path / "does_not_exist.py")
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    reason = state.load_state(run_dir).rounds[0].reason
+    assert "does_not_exist" in reason or "No such file" in reason or "cannot find" in reason
+
+
+def test_findings_list_shows_dispositions_and_flags_the_blocking_ones(
+    repo: Path, monkeypatch, brief_file, tmp_path, capsys
+):
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path, outputs=[_payload("needs-attention", findings_list=[_structured_finding()])]
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    capsys.readouterr()
+    assert _run(repo, monkeypatch, ["findings", "list", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    printed = capsys.readouterr().out
+    assert "unchecked index" in printed and "pending" in printed
+    assert "1 unresolved blocking finding" in printed
+
+    assert (
+        _run(repo, monkeypatch, ["findings", "list", "--run-dir", str(run_dir), "--json"])
+        == cli.EXIT_OK
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["severity"] == "high" and payload[0]["disposition"] == "pending"
+
+
+def test_out_of_scope_work_reported_on_the_prose_channel_stops_the_run(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The escalation path for the channel nothing reads mechanically."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    assert (
+        _run(
+            repo,
+            monkeypatch,
+            ["findings", "record", "--run-dir", str(run_dir), "--round", "1",
+             "--channel", runner.CHANNEL_FINDINGS, "--severity", "low",
+             "--title", "the caller leaks a handle", "--file", "other.py",
+             "--out-of-scope"],
+        )
+        == cli.EXIT_OK
+    )
+    recorded = findings.Finding(**state.load_state(run_dir).findings[0])
+    # Low severity, but out of scope: still blocking, and not resolvable here.
+    assert recorded.out_of_scope and recorded.blocking
+    assert recorded.disposition == findings.AWAITING
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    assert (
+        _run(
+            repo,
+            monkeypatch,
+            ["stop", "--run-dir", str(run_dir), "--reason",
+             "out-of-scope change reported; needs founder authorisation"],
+        )
+        == cli.EXIT_OK
+    )
+    assert state.load_state(run_dir).status == "stopped"
+
+
+def test_an_inherited_encoding_variable_does_not_survive_into_a_child(monkeypatch):
+    """What this process inherited says nothing about how the children it
+    spawns should encode output it is about to read."""
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
+    monkeypatch.delenv("PYTHONUTF8", raising=False)
+    env = runner.child_env()
+    assert env["PYTHONIOENCODING"] == "utf-8"
+    assert env["PYTHONUTF8"] == "1"
+
+
+# ------------------------------------------------- the structured fixtures
+# ADR-001 section 5: one reviewer response per handled condition, with the
+# action it must produce, asserted here. These are the --json payloads the
+# plugin really prints, which is how it is always called.
+
+
+@pytest.mark.parametrize(
+    "verdict_fixture, prose_fixture, expected_exit, expected_verdict",
+    [
+        ("structured-approve.json", "native-prose.json", cli.EXIT_OK, "approve"),
+        ("structured-blocking.json", "native-prose.json", cli.EXIT_OK, "needs-attention"),
+        ("structured-malformed.json", "native-prose.json", cli.EXIT_BLOCKED, "unusable"),
+        ("structured-missing.json", "native-prose.json", cli.EXIT_BLOCKED, "unusable"),
+        ("structured-approve.json", "native-empty.json", cli.EXIT_BLOCKED, "unusable"),
+    ],
+)
+def test_every_structured_fixture_maps_to_the_documented_action(
+    repo: Path,
+    monkeypatch,
+    brief_file,
+    tmp_path,
+    verdict_fixture,
+    prose_fixture,
+    expected_exit,
+    expected_verdict,
+):
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[fixture(verdict_fixture)],
+            findings_output=fixture(prose_fixture),
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == expected_exit
+    assert state.load_state(run_dir).rounds[0].verdict == expected_verdict
+
+
+def test_the_blocking_fixture_is_recorded_with_its_severity_and_stops_delivery(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[fixture("structured-blocking.json")],
+            findings_output=fixture("native-prose.json"),
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+
+    recorded = findings.Finding(**state.load_state(run_dir).findings[0])
+    assert recorded.severity == "high" and recorded.blocking
+    assert recorded.file == "app/services/example.py" and recorded.line_start == 142
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+def test_the_out_of_scope_fixture_is_escalated_rather_than_implemented(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[fixture("structured-out-of-scope.json")],
+            findings_output=fixture("native-prose.json"),
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+
+    recorded = findings.Finding(**state.load_state(run_dir).findings[0])
+    assert recorded.out_of_scope and recorded.disposition == findings.AWAITING
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    assert (
+        _run(
+            repo,
+            monkeypatch,
+            ["findings", "resolve", "--run-dir", str(run_dir), "--id", recorded.id,
+             "--disposition", "fixed", "--note", "did it anyway"],
+        )
+        == cli.EXIT_BLOCKED
+    )
+
+
+def test_the_documented_fixtures_all_exist():
+    """A fixture named in the README but missing from disk is a promise the
+    suite never keeps."""
+    documented = {
+        line.split("`")[1]
+        for line in (FIXTURES / "README.md").read_text(encoding="utf-8").splitlines()
+        if line.startswith("| `")
+    }
+    on_disk = {p.name for p in FIXTURES.iterdir() if p.name != "README.md"}
+    assert documented == on_disk, f"documented-only: {documented - on_disk}, undocumented: {on_disk - documented}"

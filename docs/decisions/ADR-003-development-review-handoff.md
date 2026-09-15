@@ -1,5 +1,8 @@
 # ADR-003 — Development/review handoff
 
+**Status:** Proposed — implemented, not accepted, not in use. See *Record of
+standing* below; the three things "Accepted" would otherwise conflate are
+tracked separately there.
 **Date:** September 2026
 **Scope:** How one founder-approved work package runs from approval to Draft
 PR, and what the primary agent may decide on its own while it does. Product
@@ -129,7 +132,17 @@ Necessary work outside the approved scope is now reported, marked, recorded
 as awaiting adjudication, and **not implemented**. The run stops and asks
 the founder.
 
-### 9. Concurrency is a correctness property, not a nicety
+### 9. The reviewer reads COMMITS, so a dirty tree is not reviewable
+
+An explicit base puts the plugin in branch mode before it considers any
+scope, and branch mode's input is the commit range base..HEAD. Uncommitted
+work is therefore invisible to the reviewer — while the tree fingerprint
+would happily bind the resulting approval to exactly that uncommitted work.
+The run refuses to review a dirty tree rather than produce an approval
+describing code nobody read. Its own run directory is excluded from that
+check, being evidence about the tree rather than work in it.
+
+### 10. Concurrency is a correctness property, not a nicety
 
 Two commands on one run take the run's lock; a second is refused and told
 who holds it. Runs in different worktrees still share one PostgreSQL
@@ -141,7 +154,11 @@ explicit flag and is recorded in the run.
 
 A command's own subprocess tree is terminated on timeout, so a killed gate
 leaves no worker still writing to that shared database. Only processes the
-run itself started are touched.
+run itself started are touched. The mechanism is a job object on Windows and
+the process group on POSIX, both of which reach a worker whose launcher has
+already exited — `taskkill /T` walks the live parent chain and cannot, which
+is the common case rather than a corner case, since a launcher usually exits
+first.
 
 ## Rejected alternatives
 
@@ -195,9 +212,23 @@ diff, which it fetches itself — but any claim that it read the brief and the
 evidence is unsupported for those rounds.
 
 The argument passing is now one argv element per flag with the prose after a
-`--` terminator, checked against the installed plugin's own parser, and a
-real handoff was run after the fix. `self-v2` keeps its counts, its history
-and its stopped status; the corrected work is a new run linked to it.
+`--` terminator. What that is verified by, precisely:
+
+* The live run's actual argv was fed through the **installed plugin's own
+  parser** (`lib/args.mjs`, with the option table its review command uses):
+  7043 characters sent, 7043 identical characters received, base identical,
+  Windows separators and apostrophes intact. The counter-example is pinned
+  too — the same parser still destroys the same text when handed one string.
+* A real invocation reached the plugin, which resolved the pinned base and
+  reported the correct branch target.
+
+What is **not** verified: that a reviewer read the corrected code. The only
+post-fix invocation returned no review — the account's usage limit made both
+channels exit non-zero — so the review conclusion for this round is
+**UNCONFIRMED**, and nothing here may be read as a reviewed change.
+
+`self-v2` keeps its counts, its history and its stopped status; the corrected
+work is a new run linked to it.
 
 ## Kill criterion (PROPOSED — only the founder signs)
 

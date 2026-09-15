@@ -82,8 +82,61 @@ def git_bytes(repo_root: Path, *args: str) -> bytes:
     return proc.stdout
 
 
+def _under(path: Path, parents: tuple[Path, ...]) -> bool:
+    for parent in parents:
+        try:
+            path.relative_to(parent)
+        except ValueError:
+            continue
+        return True
+    return False
+
+
 def head_sha(repo_root: Path) -> str:
     return git_output(repo_root, "rev-parse", "HEAD")
+
+
+def repo_toplevel(start: Path) -> Path:
+    """The repository root, not whatever directory the command was run from.
+
+    The untracked half of the tree fingerprint comes from ``git ls-files``,
+    which lists relative to the CURRENT directory. Running the CLI from a
+    subdirectory therefore fingerprinted only that subtree, and edits
+    anywhere else left the digest unchanged - an approval would keep
+    applying to a tree that had moved underneath it.
+    """
+    return Path(git_output(start, "rev-parse", "--show-toplevel"))
+
+
+def dirty_paths(repo_root: Path, exclude: tuple[Path, ...] = ()) -> list[str]:
+    """Paths with uncommitted work, ignoring the run's own directory.
+
+    The reviewer is handed a COMMIT RANGE: the plugin resolves an explicit
+    base to branch mode and collects ``git diff base..HEAD``, so anything not
+    committed is invisible to it. Reviewing a dirty tree would therefore
+    produce an approval describing code the reviewer never saw, while the
+    tree digest happily bound that approval to the uncommitted version.
+    """
+    excluded = tuple(Path(p).resolve() for p in exclude)
+    raw = git_bytes(repo_root, "status", "--porcelain", "-z", "--untracked-files=all")
+    chunks = [c for c in raw.split(b"\0") if c]
+    out: list[str] = []
+    index = 0
+    while index < len(chunks):
+        entry = chunks[index]
+        index += 1
+        # Porcelain v1: two status characters, a space, then the path. The
+        # status characters may themselves BE spaces (" M", "?? "), so this
+        # is positional, never a split on whitespace.
+        status, rel = entry[:2], os.fsdecode(entry[3:])
+        if status[:1] in b"RC" and index < len(chunks):
+            index += 1  # renames and copies carry their source in the next chunk
+        if not rel:
+            continue
+        if excluded and _under((repo_root / rel).resolve(), excluded):
+            continue
+        out.append(rel)
+    return sorted(out)
 
 
 def resolve_commit(repo_root: Path, ref: str) -> str:
@@ -116,16 +169,6 @@ def is_ancestor(repo_root: Path, candidate: str, descendant: str = "HEAD") -> bo
         timeout=120,
     )
     return proc.returncode == 0
-
-
-def _under(path: Path, parents: tuple[Path, ...]) -> bool:
-    for parent in parents:
-        try:
-            path.relative_to(parent)
-        except ValueError:
-            continue
-        return True
-    return False
 
 
 def tree_digest(repo_root: Path, exclude: tuple[Path, ...] = ()) -> str:

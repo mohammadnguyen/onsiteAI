@@ -34,16 +34,34 @@ from .state import StateError, load_state, utc_now
 
 
 def _load(args: argparse.Namespace):
-    """Load a run under its lock; the caller must release it."""
+    """Load a run under its lock; the caller must release it.
+
+    Every failure releases. Catching only StateError left the lock held on
+    anything else - a corrupt file, a permission error, a KeyboardInterrupt -
+    and a run whose lock is held by a process that has exited needs a manual
+    --break-lock to move again.
+    """
     from .cli import acquire_run_lock  # local import: one-way dependency
 
     run_dir = Path(args.run_dir)
     lock = acquire_run_lock(run_dir, purpose="findings", args=args)
     try:
-        return run_dir, lock, load_state(run_dir)
-    except StateError:
+        state = load_state(run_dir)
+    except BaseException:
         lock.release()
         raise
+    if getattr(args, "break_lock", False):
+        # Recorded here too: a break that leaves no trace is indistinguishable
+        # from no contention having happened.
+        state.events.append(
+            {
+                "at": utc_now().isoformat(timespec="seconds"),
+                "event": "run lock broken",
+                "purpose": "findings",
+            }
+        )
+        state.save(run_dir)
+    return run_dir, lock, state
 
 
 def _round(state, number: int):

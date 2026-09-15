@@ -151,7 +151,11 @@ class FileLock:
         if not self._token:
             return
         holder = self._holder()
-        if holder is not None and holder.get("token") != self._token:
+        # Unlink ONLY on a positive match. An unreadable holder record is not
+        # proof of ownership: a lock file mid-write by the process that just
+        # broke and retook this lock reads as unparseable, and deleting it
+        # would hand the same lock to a third process.
+        if holder is None or holder.get("token") != self._token:
             self._token = ""
             return
         try:

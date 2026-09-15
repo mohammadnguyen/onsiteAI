@@ -54,11 +54,14 @@ from .state import (
     RoundRecord,
     RunState,
     StateError,
+    dirty_paths,
+    git_output,
     head_sha,
     is_ancestor,
     load_state,
     merge_base,
     new_state,
+    repo_toplevel,
     resolve_commit,
     text_digest,
     tree_digest,
@@ -77,7 +80,15 @@ REVIEW_TIMEOUT_SECONDS = 45 * 60
 
 
 def _repo_root() -> Path:
-    return Path.cwd()
+    """The repository root, not the directory the command happened to run in.
+
+    ``git ls-files`` lists relative to the current directory, so a CLI run
+    from a subdirectory used to fingerprint only that subtree.
+    """
+    try:
+        return repo_toplevel(Path.cwd())
+    except StateError:
+        return Path.cwd()
 
 
 # ------------------------------------------------------------------- locks
@@ -269,11 +280,30 @@ def cmd_start(args: argparse.Namespace) -> int:
     if (run_dir / "run.json").exists():
         _emit(f"MISUSE: a run already exists at {run_dir}; resume it instead of restarting")
         return EXIT_MISUSE
+    # A run directory that already holds part of the repository would be
+    # excluded from the tree fingerprint, hiding that source from every
+    # staleness check for the life of the run.
+    if run_dir.exists() and _run_dir_inside_repo(repo_root, run_dir):
+        try:
+            tracked = git_output(
+                repo_root, "ls-files", "--error-unmatch", "--", str(run_dir)
+            )
+        except StateError:
+            tracked = ""
+        if tracked.strip():
+            _emit(
+                f"MISUSE: {run_dir} contains files tracked by this repository. The "
+                "run directory is excluded from the tree fingerprint, so using it "
+                "would hide that source from every staleness check; choose an "
+                "empty directory"
+            )
+            return EXIT_MISUSE
 
     # The review base is pinned once, here, and never rebound. Re-basing each
     # round onto the previous round's head silently shrinks the review to the
     # last few commits, which is how a package can reach the end without
     # anything having examined it as a whole.
+    unchecked_base = ""
     expected = merge_base(repo_root, args.integration_ref)
     if expected is None:
         # A missing or misspelled reference must not silently leave the base
@@ -285,10 +315,12 @@ def cmd_start(args: argparse.Namespace) -> int:
                 "--base that you have checked covers the whole package"
             )
             return EXIT_MISUSE
-        _emit(
-            f"NOTE: {args.integration_ref!r} could not be resolved; using the "
-            f"explicit --base {base} unchecked against it"
+        unchecked_base = (
+            f"{args.integration_ref!r} could not be resolved, so the explicit "
+            f"--base {base} was accepted WITHOUT being checked against the "
+            "merge base"
         )
+        _emit(f"NOTE: {unchecked_base}")
     else:
         if not args.base:
             base = expected
@@ -319,6 +351,16 @@ def cmd_start(args: argparse.Namespace) -> int:
         linked_run=str(args.linked_run or ""),
         now=now,
     )
+    if unchecked_base:
+        # Recorded, not just printed: a later reader of the run has no access
+        # to what scrolled past in a terminal.
+        state.events.append(
+            {
+                "at": utc_now().isoformat(timespec="seconds"),
+                "event": "base accepted without a merge-base check",
+                "detail": unchecked_base,
+            }
+        )
     state.save(run_dir)
     # The brief is archived verbatim: the run must be auditable even if the
     # source file is later edited.
@@ -387,6 +429,17 @@ def _gate(
         shared_lock_path(shared_name), purpose="gate", run_id=state.run_id
     )
     wait = min(args.shared_lock_wait, max(0.0, state.seconds_left()))
+    if args.break_shared_lock:
+        # Machine-wide exclusion is the thing protecting every OTHER run's
+        # database, so breaking it is recorded in this run before it happens.
+        state.events.append(
+            {
+                "at": utc_now().isoformat(timespec="seconds"),
+                "event": "shared gate lock broken",
+                "detail": f"lock {shared_name!r}; other runs were not stopped",
+            }
+        )
+        state.save(run_dir)
     try:
         shared.acquire(wait_seconds=wait, break_stale=bool(args.break_shared_lock))
     except LockBusy as exc:
@@ -529,9 +582,13 @@ def cmd_review(args: argparse.Namespace) -> int:
 def _review(args: argparse.Namespace, run_dir: Path, state: RunState, brief: Brief) -> int:
     blocked = _terminal_block(state) or _budget_block(state)
     if blocked:
-        state.status = "stopped"
-        state.stop_reason = blocked
-        state.save(run_dir)
+        # A run that is ALREADY closed keeps the outcome it closed with. An
+        # earlier version overwrote it, so a delivered run's own record could
+        # end up saying it was stopped.
+        if state.status == "open":
+            state.status = "stopped"
+            state.stop_reason = blocked
+            state.save(run_dir)
         _emit(f"BLOCKED: {blocked}")
         return EXIT_BLOCKED
 
@@ -566,6 +623,22 @@ def _review(args: argparse.Namespace, run_dir: Path, state: RunState, brief: Bri
             f"BLOCKED: the recorded base {state.base} is no longer an ancestor of "
             "HEAD (rebase or reset?); a review bound to it would not describe "
             "this branch"
+        )
+        return EXIT_BLOCKED
+
+    # The reviewer is handed a COMMIT RANGE. The plugin resolves an explicit
+    # base to branch mode before it considers the scope, and collects
+    # `git diff <base>..HEAD`, so uncommitted work is invisible to it — while
+    # the tree digest would happily bind the resulting approval to that
+    # uncommitted work. Reviewing a dirty tree therefore produces an approval
+    # describing code nobody read.
+    dirty = dirty_paths(repo_root, exclude)
+    if dirty:
+        shown = ", ".join(dirty[:8]) + (f" (+{len(dirty) - 8} more)" if len(dirty) > 8 else "")
+        _emit(
+            "BLOCKED: the working tree has uncommitted changes, and the reviewer "
+            f"only reads the commits {state.base}..HEAD — it would never see "
+            f"them: {shown}. Commit them, then re-run 'gate' and 'review'."
         )
         return EXIT_BLOCKED
 
@@ -629,39 +702,47 @@ def _review(args: argparse.Namespace, run_dir: Path, state: RunState, brief: Bri
     )
 
     recorded: list[Finding] = []
+    findings_unreadable = ""
     if gating_read.structured is not None:
+        known = {f["id"] for f in state.findings}
         try:
             recorded = findings_from_structured(
                 gating_read.structured,
                 round_number=number,
                 channel=CHANNEL_VERDICT,
                 recorded_at=utc_now().isoformat(timespec="seconds"),
+                existing=known,
             )
         except FindingsError as exc:
             # The reviewer promised structured findings and returned something
             # that cannot be read. Dropping them silently is exactly how a
             # blocking defect would disappear between reviewer and release.
+            findings_unreadable = str(exc)
             verdict = type(verdict)(
                 "unusable", False, f"the reviewer's findings could not be read: {exc}"
             )
-        for finding in recorded:
-            if OUT_OF_SCOPE_MARKER in finding.title.upper():
-                finding.out_of_scope = True
-                finding.disposition = AWAITING
-                finding.note = "reported as necessary but outside the approved scope"
-        known = {f["id"] for f in state.findings}
-        state.findings.extend(f.to_dict() for f in recorded if f.id not in known)
-        # A structured result IS the triage of that channel: its findings were
-        # read mechanically, including when there are none of them.
-        state.triage.append(
-            {
-                "round": number,
-                "channel": CHANNEL_VERDICT,
-                "at": utc_now().isoformat(timespec="seconds"),
-                "note": f"read from the plugin's structured result "
-                f"({len(recorded)} finding(s))",
-            }
-        )
+        if not findings_unreadable:
+            for finding in recorded:
+                if OUT_OF_SCOPE_MARKER in finding.title.upper():
+                    finding.out_of_scope = True
+                    finding.disposition = AWAITING
+                    finding.note = "reported as necessary but outside the approved scope"
+            state.findings.extend(f.to_dict() for f in recorded if f.id not in known)
+            # A structured result IS the triage of that channel: its findings
+            # were read mechanically, including when there are none of them.
+            # Only on SUCCESS: attesting "read, 0 findings" after a parse
+            # failure both lies about what was read and locks the agent out of
+            # recording the findings by hand, since a channel cannot be both
+            # attested clean and carry findings.
+            state.triage.append(
+                {
+                    "round": number,
+                    "channel": CHANNEL_VERDICT,
+                    "at": utc_now().isoformat(timespec="seconds"),
+                    "note": f"read from the plugin's structured result "
+                    f"({len(recorded)} finding(s))",
+                }
+            )
 
     state.rounds[-1] = RoundRecord(
         number=number,
@@ -685,7 +766,13 @@ def _review(args: argparse.Namespace, run_dir: Path, state: RunState, brief: Bri
         _emit(f"raw output [{channel}]: {path}")
     for finding in recorded:
         _emit(f"  {finding.one_line()}")
-    if gating_read.structured is None:
+    if findings_unreadable:
+        _emit(
+            f"NOTE: the reviewer's structured findings could not be read "
+            f"({findings_unreadable}); none were recorded automatically and this "
+            "channel is NOT attested — read the raw file and record them yourself"
+        )
+    elif gating_read.structured is None:
         _emit(
             "NOTE: the reviewer returned no structured result, so no findings "
             "were read mechanically; record what you read yourself"
