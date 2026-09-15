@@ -2269,3 +2269,37 @@ def test_the_reviewer_is_told_to_report_out_of_scope_work_not_hide_it():
     assert prompt.OUT_OF_SCOPE_MARKER in text
     assert "ask the founder for authorisation" in text
     assert "do not suppress it" in text.lower()
+
+
+def test_a_failed_plugin_call_records_why_it_failed(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Found by running it: the real plugin exits 1 with the cause inside its
+    payload ("You've hit your usage limit..."), and the run recorded only
+    "review exited 1". An exhausted quota, a broken login and a crashed
+    reviewer need different responses, so the run has to say which."""
+    payload = {
+        "review": "Adversarial Review",
+        "codex": {"status": 1, "stdout": "", "stderr": ""},
+        "result": None,
+        "rawOutput": "",
+        "parseError": "You've hit your usage limit. Try again at 5:29 PM.",
+    }
+    plugin = tmp_path / "failing_plugin.py"
+    plugin.write_text(
+        "import json, sys\n"
+        f"sys.stdout.write(json.dumps({payload!r}))\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, plugin)
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+    saved = state.load_state(run_dir)
+    assert not saved.rounds[0].usable
+    assert "usage limit" in saved.rounds[0].reason
+    # And it is still a failure, not something the detail can rescue.
+    assert saved.rounds[0].verdict == "unusable"

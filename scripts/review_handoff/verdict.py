@@ -188,7 +188,34 @@ def _payload_text(payload: dict) -> str:
     return ""
 
 
-def _not_ok(reason: str, verdict_reason: str, expects_verdict: bool) -> ChannelRead:
+def _failure_detail(payload: dict | None) -> str:
+    """Why the plugin failed, in its own words.
+
+    The plugin reports an authentication failure, an exhausted quota or a
+    crashed reviewer inside its payload while still exiting non-zero. Without
+    this the run records only "review exited 1", which sends the reader to
+    the archive to learn something the run already knew - and the three
+    causes need completely different responses.
+    """
+    if not isinstance(payload, dict):
+        return ""
+    for value in (
+        payload.get("parseError"),
+        (payload.get("codex") or {}).get("stderr") if isinstance(payload.get("codex"), dict) else None,
+        (payload.get("codex") or {}).get("stdout") if isinstance(payload.get("codex"), dict) else None,
+    ):
+        if isinstance(value, str) and value.strip():
+            detail = " ".join(value.split())
+            return detail[:300]
+    return ""
+
+
+def _not_ok(
+    reason: str, verdict_reason: str, expects_verdict: bool, detail: str = ""
+) -> ChannelRead:
+    if detail:
+        reason = f"{reason}: {detail}"
+        verdict_reason = f"{verdict_reason}: {detail}"
     return ChannelRead(
         False,
         reason,
@@ -216,7 +243,12 @@ def read_channel(
     if exit_code is None:
         return _not_ok("did not run", "review did not run", expects_verdict)
     if exit_code != 0:
-        return _not_ok(f"exit {exit_code}", f"review exited {exit_code}", expects_verdict)
+        return _not_ok(
+            f"exit {exit_code}",
+            f"review exited {exit_code}",
+            expects_verdict,
+            _failure_detail(payload),
+        )
 
     structured = None
     text = raw_text
