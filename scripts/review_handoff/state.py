@@ -94,6 +94,13 @@ def tree_digest(repo_root: Path) -> str:
     applying.
     """
     digest = hashlib.sha256()
+    # A plain diff is enough, including for binaries. A review raised the
+    # concern that "Binary files ... differ" is the same string however the
+    # bytes change; checked, and that line is not the whole output - the
+    # `index` line above it carries the post-image blob hash, so two
+    # different edits to the same tracked binary produce different diffs.
+    # `--binary` would also work but embeds the entire payload, which costs
+    # real time on a large asset for no extra safety.
     digest.update(git_output(repo_root, "diff", "HEAD").encode("utf-8", "replace"))
     untracked = git_output(
         repo_root, "ls-files", "--others", "--exclude-standard"

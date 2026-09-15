@@ -166,8 +166,18 @@ def _run(repo: Path, monkeypatch, argv: list[str]) -> int:
 
 
 def _start(repo: Path, monkeypatch, brief: Path, run_dir: Path) -> int:
+    # The throwaway repository has no remote, so the integration reference is
+    # its own branch. An unresolvable reference is a MISUSE by design and is
+    # covered by its own test.
     return _run(
-        repo, monkeypatch, ["start", "--brief", str(brief), "--run-dir", str(run_dir)]
+        repo,
+        monkeypatch,
+        [
+            "start",
+            "--brief", str(brief),
+            "--run-dir", str(run_dir),
+            "--integration-ref", "main",
+        ],
     )
 
 
@@ -495,6 +505,7 @@ def test_cli_cannot_raise_the_limits_the_brief_approved(
             "start",
             "--brief", str(brief_file(rounds=2, seconds=600)),
             "--run-dir", str(run_dir),
+            "--integration-ref", "main",
             "--max-review-rounds", "99",
             "--max-total-seconds", "999999",
         ],
@@ -1166,3 +1177,117 @@ def test_a_round_is_counted_before_the_reviewer_is_called(
     with pytest.raises(RuntimeError):
         _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
     assert seen["count_during_call"] == 1
+
+
+# ------------------------------------------------------------------------
+# Regressions for the three defects found on the third round
+# (.claude/handoff/self-v2, review 02).
+# ------------------------------------------------------------------------
+
+
+def test_a_second_binary_edit_invalidates_the_approval(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """A second edit to a tracked binary must invalidate the approval.
+
+    Raised as a defect on the ground that "Binary files ... differ" is the
+    same string however the bytes change. Checked and refuted: the `index`
+    line above it carries the post-image blob hash, so the diffs differ. The
+    test stays because the PROPERTY is what matters, not the mechanism that
+    happens to provide it."""
+    binary = repo / "asset.bin"
+    binary.write_bytes(b"\x00original\xff")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add a binary")
+
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[APPROVE_OUTPUT]))
+
+    binary.write_bytes(b"\x00first-change\xff")
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    assert state.load_state(run_dir).passing_round(repo) is not None
+
+    binary.write_bytes(b"\x00second-change-entirely-different\xff")
+    assert state.load_state(run_dir).passing_round(repo) is None
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+def test_an_unresolvable_integration_ref_does_not_fall_back_to_head(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Falling back to HEAD would bind the review to a base that covers none
+    of the package's own commits."""
+    (repo / "file.txt").write_text("package work\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "package commit")
+
+    exit_code = _run(
+        repo,
+        monkeypatch,
+        [
+            "start",
+            "--brief", str(brief_file()),
+            "--run-dir", str(tmp_path / "run"),
+            "--integration-ref", "origin/does-not-exist",
+        ],
+    )
+    assert exit_code == cli.EXIT_MISUSE
+    assert not (tmp_path / "run" / "run.json").exists()
+
+
+def test_an_unresolvable_integration_ref_accepts_a_checked_explicit_base(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    first = _git(repo, "rev-parse", "HEAD")
+    (repo / "file.txt").write_text("package work\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "package commit")
+
+    run_dir = tmp_path / "run"
+    exit_code = _run(
+        repo,
+        monkeypatch,
+        [
+            "start",
+            "--brief", str(brief_file()),
+            "--run-dir", str(run_dir),
+            "--integration-ref", "origin/does-not-exist",
+            "--base", first,
+        ],
+    )
+    assert exit_code == cli.EXIT_OK
+    assert state.load_state(run_dir).base == first
+
+
+def test_every_gate_attempt_keeps_its_own_logs(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """A re-run before the next review used to overwrite the previous
+    attempt's logs, so a failed attempt could vanish while its record still
+    pointed at the replacement output. Observed in this workflow's own run."""
+    failing = repo / "trip.txt"
+    brief = brief_file(
+        commands=(
+            '[["python", "-c", "import os,sys; sys.exit(1 if os.path.exists(r\''
+            + str(failing).replace("\\", "/")
+            + "') else 0)\"]]"
+        )
+    )
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief, run_dir)
+
+    failing.write_text("fail now\n", encoding="utf-8")
+    assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    failing.unlink()
+    assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+
+    saved = state.load_state(run_dir)
+    assert len(saved.gates) == 2
+    first_log = Path(saved.gates[0]["commands"][0]["log"])
+    second_log = Path(saved.gates[1]["commands"][0]["log"])
+    assert first_log != second_log
+    assert first_log.exists() and second_log.exists()
+    assert "exit: 1" in first_log.read_text(encoding="utf-8")
+    assert "exit: 0" in second_log.read_text(encoding="utf-8")

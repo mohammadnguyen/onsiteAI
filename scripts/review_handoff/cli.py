@@ -163,15 +163,30 @@ def cmd_start(args: argparse.Namespace) -> int:
     # last few commits, which is how a package can reach the end without
     # anything having examined it as a whole.
     expected = merge_base(repo_root, args.integration_ref)
-    if expected is not None and base != expected and not args.base:
-        base = expected
-    if expected is not None and base != expected:
+    if expected is None:
+        # A missing or misspelled reference must not silently leave the base
+        # at HEAD: the review would then cover nothing the package added.
+        if not args.base:
+            _emit(
+                f"MISUSE: cannot resolve --integration-ref {args.integration_ref!r}, "
+                "so the merge base is unknown; fetch it, or pass an explicit "
+                "--base that you have checked covers the whole package"
+            )
+            return EXIT_MISUSE
         _emit(
-            f"MISUSE: --base {base} is not the merge base of HEAD and "
-            f"{args.integration_ref} ({expected}); a review bound to a later "
-            "commit would not see the whole package"
+            f"NOTE: {args.integration_ref!r} could not be resolved; using the "
+            f"explicit --base {base} unchecked against it"
         )
-        return EXIT_MISUSE
+    else:
+        if not args.base:
+            base = expected
+        if base != expected:
+            _emit(
+                f"MISUSE: --base {base} is not the merge base of HEAD and "
+                f"{args.integration_ref} ({expected}); a review bound to a later "
+                "commit would not see the whole package"
+            )
+            return EXIT_MISUSE
     if not is_ancestor(repo_root, base):
         _emit(f"MISUSE: base {base} is not an ancestor of HEAD")
         return EXIT_MISUSE
@@ -227,7 +242,11 @@ def cmd_gate(args: argparse.Namespace) -> int:
     head_before = head_sha(Path(state.repo_root))
     digest_before = tree_digest(Path(state.repo_root))
 
-    log_dir = run_dir / f"gate-{state.review_count + 1:02d}"
+    # One directory per ATTEMPT, not per review: numbering by review_count
+    # made a re-run before the next review overwrite the previous attempt's
+    # logs, so a failed attempt could vanish while its record still pointed
+    # at the replacement output. Observed in this workflow's own run.
+    log_dir = run_dir / f"gate-{len(state.gates) + 1:02d}"
     results = run_gate_commands(
         brief.verification_commands,
         cwd=Path(state.repo_root),
