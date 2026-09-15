@@ -22,7 +22,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 STATE_FILENAME = "run.json"
-SCHEMA_VERSION = 1
+# Bump whenever a stored field is added, removed or changes meaning. An
+# unbumped change makes an older run die with a TypeError deep in the loader
+# instead of the clear "start a new run" that load_state raises.
+SCHEMA_VERSION = 2
 
 
 class StateError(RuntimeError):
@@ -222,7 +225,14 @@ def load_state(run_dir: Path) -> RunState:
             f"(expected {SCHEMA_VERSION}); start a new run rather than reusing it"
         )
     rounds = [RoundRecord(**r) for r in payload.pop("rounds", [])]
-    return RunState(**payload, rounds=rounds)
+    try:
+        return RunState(**payload, rounds=rounds)
+    except TypeError as exc:
+        # Belt and braces: a file that passed the version check but still does
+        # not fit the dataclass is corrupt, not a crash site.
+        raise StateError(
+            f"run state at {path} does not match this schema: {exc}"
+        ) from exc
 
 
 def text_digest(text: str) -> str:

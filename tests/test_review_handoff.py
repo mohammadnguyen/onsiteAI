@@ -959,3 +959,34 @@ def test_an_approval_produced_after_the_deadline_cannot_deliver(
     saved.deadline_at = "2020-01-01T00:00:00+00:00"
     saved.save(run_dir)
     assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+def test_an_older_state_schema_is_refused_clearly(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Adding a stored field without bumping the version made an older run
+    die with a TypeError deep in the loader; it must report cleanly instead.
+    Found by re-running this workflow on itself across that change."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    payload = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    payload["schema_version"] = state.SCHEMA_VERSION - 1
+    (run_dir / "run.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(state.StateError) as info:
+        state.load_state(run_dir)
+    assert "not supported" in str(info.value)
+    assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_MISUSE
+
+
+def test_a_corrupt_state_file_is_refused_clearly(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    payload = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    del payload["base"]
+    (run_dir / "run.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(state.StateError):
+        state.load_state(run_dir)
