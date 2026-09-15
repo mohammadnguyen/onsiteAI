@@ -300,7 +300,12 @@ def unresolved_blocking(findings: list[Finding]) -> list[Finding]:
     out: list[Finding] = []
     for primary_id, group in group_findings(findings).items():
         primary = by_id[primary_id]
-        if any(f.blocking for f in group) and not primary.resolved:
+        # An out-of-scope member keeps the whole group open whatever the
+        # primary says. Linking two sightings must not become a way to retire
+        # the one that needs the founder: closing the in-scope half would
+        # otherwise take the other half with it.
+        awaiting_founder = any(f.out_of_scope and not f.resolved for f in group)
+        if any(f.blocking for f in group) and (not primary.resolved or awaiting_founder):
             out.append(primary)
     return out
 

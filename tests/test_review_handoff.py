@@ -4150,3 +4150,175 @@ def test_a_duplicate_must_point_at_another_channels_record(
          "--channel", runner.CHANNEL_VERDICT, "--severity", "low", "--title", "z",
          "--duplicate-of", primary],
     ) == cli.EXIT_MISUSE
+
+
+# =======================================================================
+# Round 2: what the real reviewer found in the history tracking itself
+# (run self-v6, review 01).
+# =======================================================================
+
+
+def _ancestor_with_open_finding(repo, monkeypatch, brief, tmp_path, run_dir):
+    return _run_with_open_finding(repo, monkeypatch, brief, tmp_path, run_dir)
+
+
+def _successor(repo, monkeypatch, brief, tmp_path, run_dir, linked):
+    _run(
+        repo, monkeypatch,
+        ["start", "--brief", str(brief), "--run-dir", str(run_dir),
+         "--linked-run", str(linked), "--integration-ref", "main"],
+    )
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    _triage_all(repo, monkeypatch, run_dir)
+    return run_dir
+
+
+@pytest.mark.parametrize("disposition", ["pending", "awaiting-adjudication"])
+def test_a_nonterminal_carried_disposition_does_not_close_the_item(
+    repo: Path, monkeypatch, brief_file, tmp_path, disposition
+):
+    """Recording that an inherited defect is still pending, or is waiting on
+    the founder, is not a closure. Treating any carried entry as one made
+    saying "this still needs a decision" the way to make it disappear."""
+    brief = brief_file()
+    a = _ancestor_with_open_finding(repo, monkeypatch, brief, tmp_path, tmp_path / "a")
+    ancestral = state.load_state(a).findings[0]["id"]
+    b = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "b", a)
+
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "resolve", "--run-dir", str(b), "--id", ancestral,
+         "--disposition", disposition, "--note", "still needs a decision"],
+    ) == cli.EXIT_OK
+
+    summary_state = state.load_state(b)
+    carried = cli._carried_history(summary_state)
+    assert len(carried) == 1
+    assert carried[0]["still_open"] is True, carried[0]
+    assert cli._linked_unresolved(summary_state), "the item vanished from the open list"
+
+
+def test_a_carried_item_can_be_closed_after_a_nonterminal_entry(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """And the non-terminal entry must not lock the item: a later, real
+    closure has to be recordable."""
+    brief = brief_file()
+    a = _ancestor_with_open_finding(repo, monkeypatch, brief, tmp_path, tmp_path / "a")
+    ancestral = state.load_state(a).findings[0]["id"]
+    before = (a / "run.json").read_bytes()
+    b = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "b", a)
+
+    _run(
+        repo, monkeypatch,
+        ["findings", "resolve", "--run-dir", str(b), "--id", ancestral,
+         "--disposition", "awaiting-adjudication", "--note", "asked the founder"],
+    )
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "resolve", "--run-dir", str(b), "--id", ancestral,
+         "--disposition", "fixed", "--note", "authorised, then fixed in commit abc1234"],
+    ) == cli.EXIT_OK
+
+    saved = state.load_state(b)
+    carried = cli._carried_history(saved)
+    assert carried[0]["still_open"] is False
+    assert carried[0]["resolved_later"]["disposition"] == "fixed"
+    assert "abc1234" in carried[0]["resolved_later"]["note"]
+    # Both entries are kept: the trail of what was decided, and when.
+    assert len(saved.carried_resolutions) == 2
+    assert (a / "run.json").read_bytes() == before
+
+
+def test_an_ambiguous_finding_id_across_runs_must_be_qualified(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Ids carry the round and channel but not the run, so the same defect
+    reported again in a later run collides. Resolving picked the nearest and
+    the older one could never be addressed."""
+    brief = brief_file()
+    a = _ancestor_with_open_finding(repo, monkeypatch, brief, tmp_path, tmp_path / "a")
+    b = _run_with_open_finding(repo, monkeypatch, brief, tmp_path, tmp_path / "b", linked=a)
+    shared = state.load_state(a).findings[0]["id"]
+    assert state.load_state(b).findings[0]["id"] == shared, "the ids should collide here"
+
+    c = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "c", b)
+
+    # Unqualified: ambiguous, and refused rather than guessed at.
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "resolve", "--run-dir", str(c), "--id", shared,
+         "--disposition", "fixed", "--note", "which one?"],
+    ) == cli.EXIT_MISUSE
+
+    # Qualified: the older generation is reachable.
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "resolve", "--run-dir", str(c), "--id", shared,
+         "--origin-run", "a", "--disposition", "fixed", "--note", "closed for a"],
+    ) == cli.EXIT_OK
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "resolve", "--run-dir", str(c), "--id", shared,
+         "--origin-run", "b", "--disposition", "refuted", "--note", "closed for b"],
+    ) == cli.EXIT_OK
+
+    carried = {item["origin_run"]: item for item in cli._carried_history(state.load_state(c))}
+    assert carried["a"]["resolved_later"]["disposition"] == "fixed"
+    assert carried["b"]["resolved_later"]["disposition"] == "refuted"
+    assert all(item["still_open"] is False for item in carried.values())
+
+
+def test_an_unknown_origin_run_is_refused(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    brief = brief_file()
+    a = _ancestor_with_open_finding(repo, monkeypatch, brief, tmp_path, tmp_path / "a")
+    ancestral = state.load_state(a).findings[0]["id"]
+    b = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "b", a)
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "resolve", "--run-dir", str(b), "--id", ancestral,
+         "--origin-run", "nowhere", "--disposition", "fixed", "--note", "x"],
+    ) == cli.EXIT_MISUSE
+
+
+def test_linking_a_duplicate_cannot_bypass_the_out_of_scope_stop(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """An out-of-scope finding needs the founder. Recording it as a duplicate
+    of an in-scope primary and then closing the primary would have retired
+    the pair without anyone being asked."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[_payload("needs-attention", findings_list=[_structured_finding()])],
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    primary = state.load_state(run_dir).findings[0]["id"]
+
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "record", "--run-dir", str(run_dir), "--round", "1",
+         "--channel", runner.CHANNEL_FINDINGS, "--severity", "low",
+         "--title", "the caller must change too", "--file", "other.py",
+         "--out-of-scope", "--duplicate-of", primary],
+    ) == cli.EXIT_OK
+
+    # Closing the primary must not retire the out-of-scope sighting with it.
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "resolve", "--run-dir", str(run_dir), "--id", primary,
+         "--disposition", "fixed", "--note", "fixed the in-scope half"],
+    ) == cli.EXIT_BLOCKED
+
+    records = [findings.Finding(**f) for f in state.load_state(run_dir).findings]
+    assert findings.unresolved_blocking(records), "the group was retired without authorisation"
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED

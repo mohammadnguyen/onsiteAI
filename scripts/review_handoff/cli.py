@@ -29,6 +29,7 @@ from .cli_triage import add_findings_parser
 from .console import EXIT_BLOCKED, EXIT_MISUSE, EXIT_OK, emit
 from .findings import (
     AWAITING,
+    RESOLVED_DISPOSITIONS,
     Finding,
     FindingsError,
     duplicates_of,
@@ -1222,17 +1223,31 @@ def _carried_history(state: RunState) -> list[dict]:
     if not walk.runs:
         return []
 
-    # Resolutions recorded anywhere from here back along the chain.
+    # Resolutions recorded anywhere from here back along the chain. Within
+    # one run the LAST entry for an item wins - an item may be marked as
+    # awaiting the founder and then, once authorised, actually closed - and
+    # a nearer run's record wins over a more distant one.
     later: dict[tuple[str, str], dict] = {}
     for holder in [state] + [older for _, older in walk.runs]:
+        newest: dict[tuple[str, str], dict] = {}
         for entry in holder.carried_resolutions:
             key = (entry["origin_run"], entry["finding_id"])
-            later.setdefault(key, {**entry, "recorded_in": holder.run_id})
+            newest[key] = {**entry, "recorded_in": holder.run_id}
+        for key, value in newest.items():
+            later.setdefault(key, value)
 
     out: list[dict] = []
     for _, older in walk.runs:
         for finding in _records(older):
             closure = later.get((older.run_id, finding.id))
+            # Only fixed and refuted close anything. Recording that an
+            # inherited defect is still pending, or is waiting on the
+            # founder, is the opposite of closing it - treating any entry as
+            # closure made "this still needs a decision" the way to make it
+            # disappear from the open list.
+            closed_later = bool(
+                closure and closure["disposition"] in RESOLVED_DISPOSITIONS
+            )
             if finding.resolved and closure is None:
                 continue  # closed in its own record; nothing carried
             out.append(
@@ -1247,7 +1262,7 @@ def _carried_history(state: RunState) -> list[dict]:
                     "disposition": finding.disposition,
                     # what happened afterwards, recorded elsewhere
                     "resolved_later": closure,
-                    "still_open": not finding.resolved and closure is None,
+                    "still_open": not finding.resolved and not closed_later,
                 }
             )
     return out

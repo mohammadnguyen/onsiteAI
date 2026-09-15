@@ -237,26 +237,51 @@ def cmd_findings_resolve(args: argparse.Namespace) -> int:
         emit(f"BLOCKED: {exc}")
         return EXIT_BLOCKED
     try:
-        target = next((f for f in state.findings if f["id"] == args.id), None)
+        origin_run = (getattr(args, "origin_run", "") or "").strip()
+        target = None
+        if not origin_run:
+            target = next((f for f in state.findings if f["id"] == args.id), None)
         if target is None:
             # It may belong to a run earlier in the chain. That record is left
             # exactly as it is - rewriting it would destroy the history it
             # exists to hold - and the disposition is recorded HERE instead,
             # as the separate evidence that the item was dealt with later.
-            origin = None
-            for _, older in linked_chain(state).runs:
-                if any(f["id"] == args.id for f in older.findings):
-                    origin = older
-                    break
-            if origin is None:
+            # Ids carry the round and the channel but not the run, so the
+            # same defect reported again in a later run collides with the
+            # earlier record. Picking the nearest would make the older one
+            # permanently unreachable, so an ambiguous id is refused and the
+            # caller names the run it means.
+            matches = [
+                older
+                for _, older in linked_chain(state).runs
+                if any(f["id"] == args.id for f in older.findings)
+            ]
+            if origin_run:
+                if any(f["id"] == args.id for f in state.findings) and origin_run == state.run_id:
+                    matches = [state]
+                else:
+                    matches = [older for older in matches if older.run_id == origin_run]
+                if not matches:
+                    emit(
+                        f"MISUSE: no finding {args.id!r} in a run called {origin_run!r} "
+                        "anywhere in this chain"
+                    )
+                    return EXIT_MISUSE
+            elif len(matches) > 1:
+                emit(
+                    f"MISUSE: {args.id} names a finding in more than one run "
+                    f"({', '.join(sorted(m.run_id for m in matches))}); pass "
+                    "--origin-run to say which one you mean"
+                )
+                return EXIT_MISUSE
+            if not matches:
                 emit(f"MISUSE: no finding {args.id!r} in this run or anywhere behind it")
                 return EXIT_MISUSE
-            if any(
-                entry["origin_run"] == origin.run_id and entry["finding_id"] == args.id
-                for entry in state.carried_resolutions
-            ):
-                emit(f"MISUSE: {args.id} already has a disposition recorded in this run")
-                return EXIT_MISUSE
+            origin = matches[0]
+            # Appended, never replaced: an item may be marked as awaiting the
+            # founder and then, once authorised, actually closed, and both
+            # steps are part of the record. The latest entry is the one that
+            # counts.
             state.carried_resolutions.append(
                 {
                     "origin_run": origin.run_id,
@@ -276,13 +301,29 @@ def cmd_findings_resolve(args: argparse.Namespace) -> int:
                 "says what it said"
             )
             return EXIT_OK
-        if target.get("out_of_scope") and args.disposition in RESOLVED_DISPOSITIONS:
-            emit(
-                f"BLOCKED: {args.id} is marked out of the approved scope. This run "
-                "may not change it, so it cannot be recorded as fixed; leave it "
-                "awaiting adjudication and stop for authorisation."
+        if args.disposition in RESOLVED_DISPOSITIONS:
+            # The whole group, not just this record. An out-of-scope sighting
+            # linked as a duplicate still needs the founder, and closing the
+            # in-scope half must not retire it.
+            group = [target] + [
+                f for f in state.findings if f.get("duplicate_of") == args.id
+            ]
+            blocked = next(
+                (f for f in group if f.get("out_of_scope") and f["disposition"] not in RESOLVED_DISPOSITIONS),
+                None,
             )
-            return EXIT_BLOCKED
+            if blocked is not None:
+                which = (
+                    "is marked out of the approved scope"
+                    if blocked["id"] == args.id
+                    else f"is linked to {blocked['id']}, which is out of the approved scope"
+                )
+                emit(
+                    f"BLOCKED: {args.id} {which}. This run may not change it, so it "
+                    "cannot be recorded as fixed; leave it awaiting adjudication and "
+                    "stop for authorisation."
+                )
+                return EXIT_BLOCKED
         target["disposition"] = args.disposition
         target["note"] = args.note.strip()
         target["resolved_at"] = utc_now().isoformat(timespec="seconds")
@@ -361,6 +402,12 @@ def add_findings_parser(sub, lock_arguments) -> None:
     resolve = inner.add_parser("resolve", help="record a disposition for one finding")
     resolve.add_argument("--run-dir", required=True)
     resolve.add_argument("--id", required=True)
+    resolve.add_argument(
+        "--origin-run",
+        default="",
+        help="the run that RAISED the finding, when the same id exists in more "
+        "than one run in the chain",
+    )
     resolve.add_argument("--disposition", required=True, choices=list(DISPOSITIONS))
     resolve.add_argument(
         "--note", required=True, help="the commit, test or evidence behind this disposition"
