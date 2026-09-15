@@ -38,6 +38,20 @@ STATE_FILENAME = "run.json"
 # reading them treats "not recorded" as "not verifiable", never as "verified".
 SCHEMA_VERSION = 3
 
+# The oldest version this loader can read correctly. Version 3 added only
+# defaulted fields (linked_run, findings, triage, events), so a version 2
+# record loads with those empty and means exactly what it meant - which is
+# why it is readable rather than refused.
+#
+# That bump should not have happened by the rule stated above, and refusing
+# what it produced compounded the mistake: a run whose chain reached a
+# version 2 ancestor could not read its history at all, and an unreadable
+# ancestor is treated - correctly - as "there is history and nobody can read
+# it", which blocks delivery. Raise this only for a change that genuinely
+# alters what an older field MEANS; a newer version than this code knows is
+# still refused, because there is no way to know what changed.
+MIN_COMPATIBLE_SCHEMA = 2
+
 
 class StateError(RuntimeError):
     """The run state is missing, unreadable, or internally inconsistent."""
@@ -458,10 +472,14 @@ def load_state(run_dir: Path) -> RunState:
         raise StateError(f"no run state at {path}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise StateError(f"run state at {path} is not valid JSON: {exc}") from exc
-    if payload.get("schema_version") != SCHEMA_VERSION:
+    version = payload.get("schema_version")
+    if not isinstance(version, int) or not (
+        MIN_COMPATIBLE_SCHEMA <= version <= SCHEMA_VERSION
+    ):
         raise StateError(
-            f"run state schema {payload.get('schema_version')!r} is not supported "
-            f"(expected {SCHEMA_VERSION}); start a new run rather than reusing it"
+            f"run state schema {version!r} is not supported (this code reads "
+            f"{MIN_COMPATIBLE_SCHEMA} to {SCHEMA_VERSION}); start a new run rather "
+            "than reusing it"
         )
     rounds = [RoundRecord(**r) for r in payload.pop("rounds", [])]
     try:

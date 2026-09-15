@@ -1100,21 +1100,26 @@ def test_an_approval_produced_after_the_deadline_cannot_deliver(
     assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
 
 
-def test_an_older_state_schema_is_refused_clearly(
+def test_an_incompatible_state_schema_is_refused_clearly(
     repo: Path, monkeypatch, brief_file, tmp_path
 ):
     """Adding a stored field without bumping the version made an older run
     die with a TypeError deep in the loader; it must report cleanly instead.
-    Found by re-running this workflow on itself across that change."""
+    Found by re-running this workflow on itself across that change.
+
+    "Older" is not the same as "incompatible": versions back to
+    MIN_COMPATIBLE_SCHEMA added only defaulted fields and still mean what
+    they meant, and are covered by their own test. This is the version below
+    that line, where the meaning genuinely changed."""
     run_dir = tmp_path / "run"
     _start(repo, monkeypatch, brief_file(), run_dir)
     payload = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    payload["schema_version"] = state.SCHEMA_VERSION - 1
+    payload["schema_version"] = state.MIN_COMPATIBLE_SCHEMA - 1
     (run_dir / "run.json").write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(state.StateError) as info:
         state.load_state(run_dir)
-    assert "not supported" in str(info.value)
+    assert "is not supported" in str(info.value)
     assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_MISUSE
 
 
@@ -4536,3 +4541,57 @@ def test_the_validator_dependency_is_declared_for_local_installation():
     assert "requirements-tooling.txt" in workflow, "CI must install from the same manifest"
     runbook = (REPO_ROOT / "docs/operations/dev-review-handoff.md").read_text(encoding="utf-8")
     assert "requirements-tooling.txt" in runbook
+
+
+def test_a_record_from_an_older_compatible_schema_still_loads(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Version 3 added only defaulted fields, so a version 2 record means
+    exactly what it meant. Refusing it made a chain that reached such an
+    ancestor unreadable - and an unreadable ancestor blocks delivery, so a
+    schema bump that should never have happened became a wall."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    raw = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    raw["schema_version"] = 2
+    for added_in_three in ("linked_run", "findings", "triage", "events"):
+        raw.pop(added_in_three, None)
+    (run_dir / "run.json").write_text(json.dumps(raw, indent=2), encoding="utf-8")
+
+    reloaded = state.load_state(run_dir)
+    assert reloaded.schema_version == 2
+    assert reloaded.findings == [] and reloaded.triage == [] and reloaded.events == []
+    assert reloaded.linked_run == ""
+
+
+def test_an_older_ancestor_does_not_make_the_chain_unreadable(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The case that bit the live chain: a run whose ancestor predates the
+    current schema must still be able to read its history."""
+    brief = brief_file()
+    a = _run_with_open_finding(repo, monkeypatch, brief, tmp_path, tmp_path / "a")
+    raw = json.loads((a / "run.json").read_text(encoding="utf-8"))
+    raw["schema_version"] = 2
+    (a / "run.json").write_text(json.dumps(raw, indent=2), encoding="utf-8")
+
+    b = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "b", a)
+    walk = state.linked_chain(state.load_state(b))
+    assert walk.problems == [], walk.problems
+    assert [older.run_id for _, older in walk.runs] == ["a"]
+    assert cli._linked_block(state.load_state(b)) == ""
+
+
+def test_a_newer_schema_than_this_code_knows_is_still_refused(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Forward compatibility is not assumed: there is no way to know what a
+    later version changed."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    raw = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    raw["schema_version"] = state.SCHEMA_VERSION + 1
+    (run_dir / "run.json").write_text(json.dumps(raw, indent=2), encoding="utf-8")
+    with pytest.raises(state.StateError) as info:
+        state.load_state(run_dir)
+    assert "is not supported" in str(info.value)
