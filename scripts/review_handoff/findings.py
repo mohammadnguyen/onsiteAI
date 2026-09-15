@@ -46,6 +46,20 @@ PROTOCOL_DIR = Path(__file__).resolve().parent / "protocol"
 PROTOCOL_RECORD = PROTOCOL_DIR / "PROTOCOL.json"
 
 
+def canonical_digest(raw: bytes) -> str:
+    """A digest of the schema's MEANING, not of its bytes.
+
+    Git normalises line endings on checkout, so a raw-byte digest of a
+    vendored file breaks the moment CI clones it. Canonical JSON is stable
+    across that, across platforms and across reformatting, while still
+    changing the instant the protocol itself does.
+    """
+    parsed = json.loads(raw.decode("utf-8"))
+    return hashlib.sha256(
+        json.dumps(parsed, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 @functools.lru_cache(maxsize=1)
 def protocol() -> dict:
     """What protocol version this package validates against."""

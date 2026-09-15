@@ -17,7 +17,6 @@ Run: python -m pytest tests/test_review_handoff.py -q
 
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 import subprocess
@@ -3790,13 +3789,15 @@ def test_no_first_character_test_survives_in_the_reader():
 
 def test_the_vendored_protocol_is_pinned_and_recorded():
     """CI has no plugin, so it validates against the vendored copy. The pin
-    is the version and the digest together."""
+    is the plugin version and a canonical digest - canonical because git
+    normalises line endings on checkout, so a raw-byte digest of a vendored
+    file would break the moment CI cloned it."""
     record = findings.protocol()
     assert record["plugin"] == "codex@openai-codex"
     assert record["plugin_version"] == "1.0.6"
     assert record["json_schema_draft"] == "https://json-schema.org/draft/2020-12/schema"
     raw = (findings.PROTOCOL_DIR / record["schema"]).read_bytes()
-    assert hashlib.sha256(raw).hexdigest() == record["sha256"]
+    assert findings.canonical_digest(raw) == record["canonical_sha256"]
 
 
 @pytest.mark.skipif(
@@ -3809,7 +3810,7 @@ def test_the_vendored_protocol_still_matches_the_installed_plugin():
     record = findings.protocol()
     installed = runner.DEFAULT_PLUGIN_SCRIPT.parent.parent / "schemas" / record["schema"]
     assert installed.exists(), installed
-    assert hashlib.sha256(installed.read_bytes()).hexdigest() == record["sha256"], (
+    assert findings.canonical_digest(installed.read_bytes()) == record["canonical_sha256"], (
         "the installed plugin's schema differs from the vendored copy; re-vendor it "
         "and re-read what changed before trusting either"
     )
