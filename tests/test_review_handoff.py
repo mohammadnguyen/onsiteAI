@@ -1291,3 +1291,99 @@ def test_every_gate_attempt_keeps_its_own_logs(
     assert first_log.exists() and second_log.exists()
     assert "exit: 1" in first_log.read_text(encoding="utf-8")
     assert "exit: 0" in second_log.read_text(encoding="utf-8")
+
+
+# ------------------------------------------------------------------------
+# Regressions for the two defects found on the fourth round
+# (.claude/handoff/self-v2, review 03).
+# ------------------------------------------------------------------------
+
+
+def test_editing_an_untracked_non_ascii_file_invalidates_the_approval(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """git quotes and escapes non-ASCII paths unless asked not to, and the
+    escaped name does not exist on disk. Reading it failed, a constant was
+    hashed instead, and every later edit to that file left the digest
+    unchanged."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[APPROVE_OUTPUT]))
+
+    exotic = repo / "caf\u00e9-\u6e2c\u8a66.txt"
+    exotic.write_text("first contents\n", encoding="utf-8")
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    assert state.load_state(run_dir).passing_round(repo) is not None
+
+    exotic.write_text("entirely different contents\n", encoding="utf-8")
+    assert state.load_state(run_dir).passing_round(repo) is None
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+def test_an_unreadable_untracked_file_fails_closed(repo: Path, monkeypatch):
+    """A file that cannot be read cannot be shown to be unchanged, so the
+    fingerprint refuses rather than hashing a placeholder."""
+    (repo / "unreadable.bin").write_bytes(b"x")
+    real_read = Path.read_bytes
+
+    def boom(self):
+        if self.name == "unreadable.bin":
+            raise OSError(13, "Permission denied")
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", boom)
+    with pytest.raises(state.StateError) as info:
+        state.tree_digest(repo)
+    assert "cannot read untracked file" in str(info.value)
+
+
+def test_an_interrupted_gate_is_recorded_incomplete_and_blocks_delivery(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Recording a gate only on completion meant an interrupted re-run left
+    an older passing gate as the newest record, so a delivery could sit on
+    verification that never finished."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[APPROVE_OUTPUT]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    assert state.load_state(run_dir).passing_round(repo) is not None
+
+    # A second verification that dies part-way through.
+    def die(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "run_gate_commands", die)
+    with pytest.raises(KeyboardInterrupt):
+        _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+
+    saved = state.load_state(run_dir)
+    assert len(saved.gates) == 2
+    assert saved.gates[-1]["passed"] is False
+    assert "never completed" in saved.gates[-1]["note"]
+    monkeypatch.undo()
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+def test_a_retry_after_an_interrupted_gate_keeps_both_directories(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+
+    def die(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "run_gate_commands", die)
+    with pytest.raises(KeyboardInterrupt):
+        _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    monkeypatch.undo()
+
+    assert _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    saved = state.load_state(run_dir)
+    assert len(saved.gates) == 2
+    assert saved.gates[0]["passed"] is False and saved.gates[1]["passed"] is True
+    # The retry claimed its own directory rather than the interrupted one.
+    assert Path(saved.gates[1]["commands"][0]["log"]).parent.name == "gate-02"

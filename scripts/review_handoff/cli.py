@@ -247,6 +247,26 @@ def cmd_gate(args: argparse.Namespace) -> int:
     # logs, so a failed attempt could vanish while its record still pointed
     # at the replacement output. Observed in this workflow's own run.
     log_dir = run_dir / f"gate-{len(state.gates) + 1:02d}"
+    # The attempt is recorded as INCOMPLETE and its directory reserved before
+    # any command runs. Recording only on completion meant an interrupted
+    # re-run left an older passing gate as the newest record — so a delivery
+    # could sit on verification that never finished — and the retry reused
+    # the interrupted attempt's directory, overwriting its logs.
+    state.gates.append(
+        {
+            "at": utc_now().isoformat(timespec="seconds"),
+            "head": head_before,
+            "tree_digest": digest_before,
+            "inputs_stable": True,
+            "commands": [],
+            "passed": False,
+            "ran": 0,
+            "of": len(brief.verification_commands),
+            "note": "verification was started but never completed",
+        }
+    )
+    state.save(run_dir)
+
     results = run_gate_commands(
         brief.verification_commands,
         cwd=Path(state.repo_root),
@@ -276,7 +296,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
         "ran": len(results),
         "of": len(brief.verification_commands),
     }
-    state.gates.append(record)
+    state.gates[-1] = record
     state.save(run_dir)
 
     for result in results:

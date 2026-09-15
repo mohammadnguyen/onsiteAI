@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -60,6 +61,26 @@ def git_output(repo_root: Path, *args: str) -> str:
     return proc.stdout.strip()
 
 
+def git_bytes(repo_root: Path, *args: str) -> bytes:
+    """Read-only git, output kept as BYTES.
+
+    Paths and diffs are byte strings that git does not promise are in the
+    locale encoding. Letting subprocess decode them corrupted non-ASCII
+    filenames here (cp1252 on Windows turned "café" into "cafÃ©"), which
+    then failed to open — so decoding happens explicitly, with the
+    filesystem's own encoding, only where a real path is needed.
+    """
+    proc = subprocess.run(
+        ["git", *args], cwd=repo_root, capture_output=True, timeout=120
+    )
+    if proc.returncode != 0:
+        raise StateError(
+            f"git {' '.join(args)} failed ({proc.returncode}): "
+            f"{proc.stderr.decode('utf-8', 'replace').strip()}"
+        )
+    return proc.stdout
+
+
 def head_sha(repo_root: Path) -> str:
     return git_output(repo_root, "rev-parse", "HEAD")
 
@@ -101,17 +122,27 @@ def tree_digest(repo_root: Path) -> str:
     # different edits to the same tracked binary produce different diffs.
     # `--binary` would also work but embeds the entire payload, which costs
     # real time on a large asset for no extra safety.
-    digest.update(git_output(repo_root, "diff", "HEAD").encode("utf-8", "replace"))
-    untracked = git_output(
-        repo_root, "ls-files", "--others", "--exclude-standard"
-    ).splitlines()
-    for rel in sorted(untracked):
+    digest.update(git_bytes(repo_root, "diff", "HEAD"))
+    # -z: NUL-delimited and UNQUOTED. Without it git quotes and escapes any
+    # non-ASCII path, and reading that literal name fails — which used to
+    # hash a constant, so every later edit to such a file left the digest
+    # unchanged and an old approval kept counting.
+    raw = git_bytes(repo_root, "ls-files", "-z", "--others", "--exclude-standard")
+    untracked = [chunk for chunk in raw.split(b"\0") if chunk]
+    for rel_bytes in sorted(untracked):
         digest.update(b"\0untracked\0")
-        digest.update(rel.encode("utf-8", "replace"))
+        digest.update(rel_bytes)
+        rel = os.fsdecode(rel_bytes)
         try:
             digest.update((repo_root / rel).read_bytes())
-        except OSError:
-            digest.update(b"<unreadable>")
+        except OSError as exc:
+            # Fail closed: a file that cannot be read cannot be shown to be
+            # unchanged, so the run stops rather than approving a tree it
+            # could not see.
+            raise StateError(
+                f"cannot read untracked file {rel!r} while fingerprinting the "
+                f"working tree: {exc}"
+            ) from exc
     return digest.hexdigest()
 
 
