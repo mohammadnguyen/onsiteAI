@@ -860,16 +860,14 @@ def _review(args: argparse.Namespace, run_dir: Path, state: RunState, brief: Bri
     )
     gating, prose = results[CHANNEL_VERDICT], results[CHANNEL_FINDINGS]
     gating_read = read_channel(
-        payload=gating.payload(),
-        payload_mode=gating.payload_mode(),
+        envelope=gating.envelope(),
         raw_text=gating.combined,
         exit_code=gating.exit_code,
         timed_out=gating.timed_out,
         expects_verdict=True,
     )
     prose_read = read_channel(
-        payload=prose.payload(),
-        payload_mode=prose.payload_mode(),
+        envelope=prose.envelope(),
         raw_text=prose.combined,
         exit_code=prose.exit_code,
         timed_out=prose.timed_out,

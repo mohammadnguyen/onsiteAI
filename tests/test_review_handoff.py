@@ -41,11 +41,6 @@ def fixture(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
 
 
-APPROVE_OUTPUT = fixture("approve.txt")
-ATTENTION_OUTPUT = fixture("needs-attention.txt")
-NATIVE_OUTPUT = fixture("native-clean.txt")
-
-
 # --------------------------------------------------------------- fixtures
 
 
@@ -243,6 +238,35 @@ def _structured_finding(
     }
 
 
+def _native_payload(text: str) -> str:
+    """The shape the plugin really prints for the NATIVE channel under --json.
+
+    Note what is NOT in it: no `result`, no `rawOutput`. The review prose
+    lives only in codex.stdout, and the plugin leaves that empty when a turn
+    completes without ever producing review text.
+    """
+    return json.dumps(
+        {
+            "review": "Review",
+            "target": {"mode": "branch", "label": "branch diff against abc"},
+            "threadId": "t-1",
+            "sourceThreadId": "t-1",
+            "codex": {"status": 0, "stderr": "", "stdout": text, "reasoning": []},
+        }
+    )
+
+
+# The only shape a reviewer answer can legitimately take: every channel is
+# invoked with --json, so every channel owes a JSON envelope. Tests that use
+# anything else are testing a refusal.
+APPROVE_OUTPUT = _payload("approve")
+ATTENTION_OUTPUT = _payload("needs-attention")
+NATIVE_OUTPUT = _native_payload(
+    "I read the whole range and the archived verification output. Nothing "
+    "material to report on this head."
+)
+
+
 def _run(repo: Path, monkeypatch, argv: list[str]) -> int:
     monkeypatch.chdir(repo)
     return cli.main(argv)
@@ -402,14 +426,20 @@ def test_defect_then_fix_then_approve(repo: Path, monkeypatch, brief_file, tmp_p
 @pytest.mark.parametrize(
     "outputs, exit_code, expected_reason",
     [
-        (["Verdict: approve"], 3, "exited"),  # reviewer crashed
-        ([""], 0, "too short"),  # empty result
-        (["a long review body with plenty of prose but no verdict line at all"], 0, "no recognised verdict"),
+        ([_payload("approve")], 3, "exited"),  # reviewer crashed
+        ([""], 0, "not a JSON envelope"),  # nothing at all
+        (
+            ["a long review body with plenty of prose but no verdict line at all"],
+            0,
+            "not a JSON envelope",
+        ),
         (
             ["Verdict: approve\nsome text\nVerdict: needs-attention\n"],
             0,
-            "conflicting verdicts",
+            "not a JSON envelope",
         ),
+        ([json.dumps({"review": "x", "codex": {"status": 0, "stdout": "", "stderr": ""}})],
+         0, "does not match the plugin's protocol"),  # envelope, no result
     ],
 )
 def test_unusable_review_blocks_and_never_passes(
@@ -727,34 +757,6 @@ def test_build_review_argv_is_explicit_about_base_and_waiting():
     assert argv[-2:] == ["--", "F"]
 
 
-# ------------------------------------------------- the verdict parse itself
-
-
-@pytest.mark.parametrize(
-    "text, expected",
-    [
-        ("Verdict: approve", verdict.APPROVE),
-        ("verdict: Approved", verdict.APPROVE),
-        ("**Verdict:** needs-attention", verdict.NEEDS_ATTENTION),
-        ("Verdict: changes requested", verdict.NEEDS_ATTENTION),
-        ("Verdict: mostly fine probably", verdict.UNUSABLE),
-        ("the reviewer approves of this change wholeheartedly", verdict.UNUSABLE),
-    ],
-)
-def test_verdict_markers(text, expected):
-    padded = text + "\n" + "x" * verdict.MIN_USEFUL_CHARS
-    assert verdict.parse_verdict(padded).value == expected
-
-
-def test_only_a_usable_approve_is_a_pass():
-    body = "Verdict: approve\n" + "x" * verdict.MIN_USEFUL_CHARS
-    assert verdict.parse_verdict(body).is_pass is True
-    assert verdict.parse_verdict(body, exit_code=1).is_pass is False
-    assert verdict.parse_verdict(body, timed_out=True).is_pass is False
-    assert verdict.parse_verdict(None).is_pass is False
-    assert verdict.parse_verdict("Verdict: needs-attention" + "x" * 40).is_pass is False
-
-
 # ------------------------------------------- both channels, and the base
 
 
@@ -903,23 +905,6 @@ def test_delivery_records_measurable_cost(repo: Path, monkeypatch, brief_file, t
     assert isinstance(summary["review_seconds"], (int, float))
 
 
-@pytest.mark.parametrize(
-    "name, expected",
-    [
-        ("approve.txt", verdict.APPROVE),
-        ("needs-attention.txt", verdict.NEEDS_ATTENTION),
-        ("no-verdict.txt", verdict.UNUSABLE),
-        ("conflicting.txt", verdict.UNUSABLE),
-        ("empty.txt", verdict.UNUSABLE),
-        ("native-clean.txt", verdict.UNUSABLE),
-    ],
-)
-def test_every_fixture_maps_to_the_documented_action(name, expected):
-    """The fixture table in the skill directory is the contract; this keeps
-    the table and the code from drifting apart."""
-    assert verdict.parse_verdict(fixture(name)).value == expected
-
-
 def test_a_brief_saying_python_uses_this_interpreter():
     """Caught by running this workflow on itself: a bare "python" resolved to
     the system interpreter, which has none of the project's tooling, and the
@@ -964,7 +949,7 @@ def test_an_empty_findings_channel_is_not_a_completed_review(
     run_dir = tmp_path / "run"
     _start(repo, monkeypatch, brief_file(), run_dir)
     plugin = _write_fake_plugin(
-        tmp_path, outputs=[APPROVE_OUTPUT], findings_output=""
+        tmp_path, outputs=[APPROVE_OUTPUT], findings_output=_native_payload("")
     )
     _install_fake_plugin(monkeypatch, plugin)
 
@@ -2232,9 +2217,9 @@ def test_a_payload_with_no_structured_result_and_no_verdict_line_is_unusable(
     assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
     saved = state.load_state(run_dir)
     assert not saved.rounds[0].usable
-    assert "structured result" in saved.rounds[0].reason
-    # And the prose it did print must not be read as a second opinion.
-    assert "does not substitute" in saved.rounds[0].reason
+    # The envelope arrived; what it carried does not match the protocol, and
+    # the prose beside it is not consulted.
+    assert "does not match the plugin's protocol" in saved.rounds[0].reason
 
 
 # ------------------------------------------------- the reviewer instructions
@@ -2316,24 +2301,6 @@ def test_a_failed_plugin_call_records_why_it_failed(
 # first one. Same rule as everything above - plant the failure, assert the
 # workflow's action.
 # =======================================================================
-
-
-def _native_payload(text: str) -> str:
-    """The shape the plugin really prints for the NATIVE channel under --json.
-
-    Note what is NOT in it: no `result`, no `rawOutput`. The review prose
-    lives only in codex.stdout, and the plugin leaves that empty when a turn
-    completes without ever producing review text.
-    """
-    return json.dumps(
-        {
-            "review": "Review",
-            "target": {"mode": "branch", "label": "branch diff against abc"},
-            "threadId": "t-1",
-            "sourceThreadId": "t-1",
-            "codex": {"status": 0, "stderr": "", "stdout": text, "reasoning": []},
-        }
-    )
 
 
 def test_an_empty_native_review_is_not_a_completed_channel(
@@ -3521,44 +3488,9 @@ def test_malformed_plugin_json_cannot_be_talked_into_an_approval(
 
     saved = state.load_state(run_dir)
     assert not saved.rounds[0].usable
-    assert "could not be parsed" in saved.rounds[0].reason
-    assert "not a substitute" in saved.rounds[0].reason
+    assert "not a JSON envelope" in saved.rounds[0].reason
     assert saved.triage == [] and saved.findings == []
     assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
-
-
-def test_a_reviewer_build_that_emits_no_json_still_uses_its_verdict_line(
-    repo: Path, monkeypatch, brief_file, tmp_path
-):
-    """The legitimate path that must survive the rule above. Plain text is a
-    different MODE, not a broken structure: a plugin build that ignores
-    --json prints its rendered review, and its explicit verdict line is the
-    documented fallback."""
-    run_dir = tmp_path / "run"
-    _start(repo, monkeypatch, brief_file(), run_dir)
-    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[APPROVE_OUTPUT]))
-    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
-    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
-    assert state.load_state(run_dir).rounds[0].verdict == "approve"
-
-
-def test_payload_reading_separates_json_malformed_and_text():
-    """Three modes, told apart at the point the bytes are read."""
-    ok = runner.CommandResult(
-        argv=["x"], exit_code=0, stdout='{"a": 1}', stderr="",
-        duration_seconds=0.0, timed_out=False,
-    )
-    broken = runner.CommandResult(
-        argv=["x"], exit_code=0, stdout='{"a": ', stderr="",
-        duration_seconds=0.0, timed_out=False,
-    )
-    text = runner.CommandResult(
-        argv=["x"], exit_code=0, stdout="# Codex Review\n\nVerdict: approve\n", stderr="",
-        duration_seconds=0.0, timed_out=False,
-    )
-    assert ok.payload() == {"a": 1} and ok.payload_mode() == "json"
-    assert broken.payload() is None and broken.payload_mode() == "malformed"
-    assert text.payload() is None and text.payload_mode() == "text"
 
 
 def _finished_run_with_an_open_finding(
@@ -3662,3 +3594,185 @@ def test_a_linked_run_that_does_not_load_is_refused_at_start(
          "--linked-run", str(empty), "--integration-ref", "main"],
     ) == cli.EXIT_MISUSE
     assert not (tmp_path / "newer" / "run.json").exists()
+
+
+# =======================================================================
+# The call contract. Every channel is invoked with --json, so every channel
+# owes a JSON envelope; anything else is a refusal, not a dialect.
+# =======================================================================
+
+
+NON_CONFORMING_APPROVAL = fixture("non-conforming-approval.txt")
+
+
+def test_non_conforming_output_with_an_approval_line_is_refused(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The controlled input: a banner, a truncated object, then
+    "Verdict: approve". It does not begin with "{", so a first-character test
+    classified it as a plugin that never emits JSON and the prose reader took
+    the approval. The call asked for JSON; this is not JSON."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch, _write_fake_plugin(tmp_path, outputs=[NON_CONFORMING_APPROVAL])
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+    saved = state.load_state(run_dir)
+    assert not saved.rounds[0].usable
+    assert saved.rounds[0].verdict == "unusable"
+    assert "not a JSON envelope" in saved.rounds[0].reason
+    assert saved.triage == [] and saved.findings == []
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+@pytest.mark.parametrize(
+    "stdout, why",
+    [
+        ("Everything is fine.\n\nVerdict: approve\n", "prose with an approval line"),
+        ('{"result": {"verdict": "approve"', "a truncated object"),
+        ('["approve"]', "JSON that is not an object"),
+        ("", "nothing at all"),
+        ("   \n\n  ", "whitespace"),
+        ('{"result": {"verdict": "approve"} } trailing junk', "an object plus trailing text"),
+    ],
+)
+def test_every_non_envelope_shape_yields_no_verdict(stdout, why):
+    """One rule, applied at the boundary, rather than a test per shape in the
+    reader. None of these is a dialect to be accommodated."""
+    result = runner.CommandResult(
+        argv=["node", "plugin.mjs", "adversarial-review", "--wait", "--json"],
+        exit_code=0,
+        stdout=stdout,
+        stderr="",
+        duration_seconds=1.0,
+        timed_out=False,
+    )
+    assert result.envelope() is None, why
+    read = verdict.read_channel(
+        envelope=result.envelope(),
+        raw_text=result.combined,
+        exit_code=0,
+        timed_out=False,
+        expects_verdict=True,
+    )
+    assert read.ok is False, why
+    assert read.verdict.value == verdict.UNUSABLE, why
+    assert read.verdict.usable is False, why
+
+
+def test_an_approval_on_stderr_is_never_read_as_a_verdict():
+    """stderr is diagnostic. It explains a failure; it does not decide one."""
+    result = runner.CommandResult(
+        argv=["node", "plugin.mjs", "adversarial-review", "--wait", "--json"],
+        exit_code=0,
+        stdout="",
+        stderr="Verdict: approve\n" * 5,
+        duration_seconds=1.0,
+        timed_out=False,
+    )
+    read = verdict.read_channel(
+        envelope=result.envelope(),
+        raw_text=result.combined,
+        exit_code=0,
+        timed_out=False,
+        expects_verdict=True,
+    )
+    assert read.ok is False and read.verdict.value == verdict.UNUSABLE
+
+
+def test_a_valid_envelope_is_the_way_through(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The legitimate path, stated as its own case so the rule above cannot
+    harden into refusing everything."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[fixture("structured-approve.json")],
+            findings_output=fixture("native-prose.json"),
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+
+    saved = state.load_state(run_dir)
+    assert saved.rounds[0].verdict == "approve" and saved.rounds[0].usable
+    _run(
+        repo,
+        monkeypatch,
+        ["findings", "none", "--run-dir", str(run_dir), "--round", "1",
+         "--channel", runner.CHANNEL_FINDINGS, "--note", "read the archived prose"],
+    )
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+
+
+def test_a_verdict_outside_the_protocols_enum_is_refused(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """A valid envelope is not enough: the verdict itself comes from the
+    plugin's enum, and an unfamiliar word is not guessed at."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch, _write_fake_plugin(tmp_path, outputs=[fixture("structured-bad-verdict.json")])
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    assert "unrecognised verdict" in state.load_state(run_dir).rounds[0].reason
+
+
+def test_the_native_channel_reads_its_review_from_inside_the_envelope(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The native channel keeps the contract too, and its prose is still
+    read - from codex.stdout, not from the raw stream."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    body = (
+        "One thing worth a look: the retry loop has no ceiling when the "
+        "caller passes no deadline."
+    )
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path, outputs=[_payload("approve")], findings_output=_native_payload(body)
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+    archived = Path(state.load_state(run_dir).rounds[0].raw_paths[runner.CHANNEL_FINDINGS])
+    assert body in archived.read_text(encoding="utf-8")
+
+
+def test_the_native_channel_also_refuses_non_conforming_output(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Both channels are called with --json, so both owe an envelope."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[_payload("approve")],
+            findings_output="# Codex Review\n\nNothing to report on this head at all.\n",
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    assert not state.load_state(run_dir).rounds[0].usable
+
+
+def test_no_first_character_test_survives_in_the_reader():
+    """The rule this replaced was a startswith check. Keeping it out is the
+    point, so it is asserted rather than trusted."""
+    source = (REPO_ROOT / "scripts/review_handoff/verdict.py").read_text(encoding="utf-8")
+    runner_source = (REPO_ROOT / "scripts/review_handoff/runner.py").read_text(encoding="utf-8")
+    assert "startswith" not in source
+    assert "startswith" not in runner_source.split("def envelope")[1].split("def ")[0]

@@ -108,35 +108,25 @@ class CommandResult:
             return f"{self.stdout}\n--- stderr ---\n{self.stderr}"
         return self.stdout
 
-    def payload(self) -> dict | None:
-        """The plugin's ``--json`` object, when the output is one.
+    def envelope(self) -> dict | None:
+        """The JSON envelope this call required, or ``None``.
 
-        Only stdout is considered: progress notes and warnings land on stderr
-        and would turn a valid payload into unparseable text.
+        Every review channel is invoked with ``--json``, so stdout owes a
+        JSON object. This asks exactly that question and nothing else: no
+        first-character test, no search for an object embedded in prose, no
+        second mode for output that merely resembles JSON. Those heuristics
+        are how a non-conforming answer — a banner, then a truncated object,
+        then "Verdict: approve" — gets read as a review; the caller treats a
+        ``None`` here as a refusal rather than as a different dialect.
+
+        Only stdout is considered. Progress notes and warnings go to stderr,
+        which is diagnostic and never carries a verdict.
         """
-        text = self.stdout.strip()
-        if not text.startswith("{"):
-            return None
         try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
+            parsed = json.loads(self.stdout)
+        except ValueError:  # covers JSONDecodeError
             return None
         return parsed if isinstance(parsed, dict) else None
-
-    def payload_mode(self) -> str:
-        """Which of three things the output is: json, malformed, or text.
-
-        Collapsing the last two was a hole: output that BEGINS as JSON and
-        does not parse is a broken structure, but it looked identical to a
-        plugin build that never emits JSON at all, so it fell through to the
-        prose reader — and a "Verdict: approve" line after the broken object
-        became an approval. A different mode and a broken structure are not
-        the same thing and are no longer treated as one.
-        """
-        text = self.stdout.strip()
-        if not text.startswith("{"):
-            return "text"
-        return "json" if self.payload() is not None else "malformed"
 
 
 def _decode(raw: bytes | None) -> str:

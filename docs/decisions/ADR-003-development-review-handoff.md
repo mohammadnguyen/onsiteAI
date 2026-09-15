@@ -122,12 +122,24 @@ is UNKNOWN is neither, and must never be treated as the second. An unknown
 result is not evidence that nothing was found, and it is accounted for
 explicitly, recorded as unknown rather than as clean.
 
-### 6. Structured results are read; prose is never classified
+### 6. The call contract decides what counts as an answer
+
+Every channel is invoked with `--json`, so **every channel owes a JSON
+envelope**. That is what is read, and it is the only thing read. Output in
+any other shape yields no verdict, and neither does stderr.
+
+There is no text mode, no "looks like JSON" test and no compatibility path.
+That is not tidiness: a first-character test classified a banner followed by
+a truncated object as "a build that emits no JSON", the prose reader then
+took the `Verdict: approve` line printed underneath it, and non-conforming
+output became an approval. One rule at the boundary — parse, or refuse —
+leaves nowhere for that to happen.
 
 The plugin runs its adversarial channel against its own JSON output schema,
-so that channel returns an object: a verdict and a list of findings with
-severities. That object is **read** — mechanically, with no interpretation —
-and it is preferred over any verdict line in the surrounding prose.
+so inside a valid envelope that channel returns an object: a verdict and a
+list of findings with severities. That object is **read** — mechanically,
+with no interpretation — and its verdict comes from the protocol's own enum,
+never from prose beside it.
 
 The structured result is checked against the protocol the plugin promises —
 verdict, summary, findings, next_steps — and each way it can fail is a
@@ -139,9 +151,9 @@ verdict line in the surrounding prose does not rescue it — accepting one
 would let an incomplete structure be talked into an approval, which is the
 failure the schema exists to catch.
 
-The other channel returns prose, and it is told nothing: the plugin rejects
-focus text on the native channel outright, so the brief, the scope and the
-evidence path reach the adversarial channel alone. The native channel is run for what it finds unprompted, which is
+The other channel returns prose **inside its envelope**, and it is told
+nothing: the plugin rejects focus text on the native channel outright, so the
+brief, the scope and the evidence path reach the adversarial channel alone. The native channel is run for what it finds unprompted, which is
 precisely why it has caught defects the first channel missed. Its content is
 never pattern-matched into a score. The agent reads it and records what it found;
 that record is an explicit act, not an inference. No model judges another

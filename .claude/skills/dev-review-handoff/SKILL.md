@@ -128,12 +128,14 @@ the run.
 
 ## What never counts as a pass
 
-Archived evidence that has been deleted or rewritten, or that carries no
-recorded digest and so cannot be checked at all. A structured result that
-does not match the plugin's protocol — absent, null or wrong-typed fields
-are not empty ones, and a verdict line in the prose does not rescue them. A
-channel whose outcome is unknown. A plugin call that failed. A missing or
-empty result. No structured result
+Output that is not a JSON envelope. Every channel is called with `--json`,
+so anything else — prose, a truncated object, a banner above one, an
+approval line on stderr — is refused outright rather than read. Archived
+evidence that has been deleted or rewritten, or that carries no recorded
+digest and so cannot be checked at all. A structured result that does not
+match the plugin's protocol — absent, null or wrong-typed fields are not
+empty ones. A verdict outside the protocol's own enum. A channel whose
+outcome is unknown. A plugin call that failed. A missing or empty result. No structured result
 and no verdict line, or two verdicts that disagree. A structured finding
 that cannot be read. A round where one channel did not complete. A verdict
 that describes an older tree. A failing verification command. An untriaged

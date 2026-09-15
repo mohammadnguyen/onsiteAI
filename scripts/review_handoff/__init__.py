@@ -13,7 +13,7 @@ or refuting it — stays with the primary agent following
 
 from .brief import Brief, BriefError, Limits, load_brief
 from .state import RoundRecord, RunState, StateError, load_state, new_state
-from .verdict import APPROVE, NEEDS_ATTENTION, UNUSABLE, Verdict, parse_verdict
+from .verdict import APPROVE, NEEDS_ATTENTION, UNUSABLE, Verdict, read_channel
 
 __all__ = [
     "APPROVE",
@@ -29,5 +29,5 @@ __all__ = [
     "load_brief",
     "load_state",
     "new_state",
-    "parse_verdict",
+    "read_channel",
 ]

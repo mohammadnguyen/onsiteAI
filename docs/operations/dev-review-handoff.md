@@ -55,7 +55,7 @@ printed and recorded.
 |---|---|
 | `start` | The base is the merge base with the integration branch, not HEAD. The brief is archived verbatim. Limits are fixed and can only be lowered from here. |
 | `gate` | The brief's commands run in order, stop at the first failure, and are archived verbatim. Sequential is a correctness requirement: these suites share one database. |
-| `review` | Refuses a dirty work tree: the reviewer reads the commits `base..HEAD` and would never see uncommitted work. Both review channels then run against the pinned base with `--wait --json`; both raw outputs are archived; the adversarial channel's structured findings are recorded with their severities; one verdict is recorded for the round. |
+| `review` | Refuses a dirty work tree: the reviewer reads the commits `base..HEAD` and would never see uncommitted work. Both review channels then run against the pinned base with `--wait --json`, and **both owe a JSON envelope** — output in any other shape is refused, never parsed for a verdict; both raw outputs are archived; the adversarial channel's structured findings are recorded with their severities; one verdict is recorded for the round. |
 | `findings` | Every finding carries a disposition. Blocking ones stop delivery until fixed or refuted, whichever channel raised them. |
 | `status` | Whether a current pass exists, whether an earlier approval has gone stale, and what is still blocking release. |
 | `finish` | Refuses unless a usable `approve` describes the current tree, every channel was triaged, and no blocking finding is open. Writes the evidence index. |
@@ -99,7 +99,8 @@ evidence index into the PR body.
 | `review` exits 1, "no structured result" | the reviewer did not answer against the plugin's own schema | read the raw file; retry once; twice in a row is a stop |
 | `finish` exits 1, "unaccounted for" | a channel produced a review nobody read, or its outcome was never recorded | read the archive, then `findings record` or `findings none`; say in the note which of the two it was |
 | `finish` exits 1, "not verifiable" | the evidence a delivery would rest on has no recorded digest (an older run) | re-run `gate` and `review` on this head; nothing back-fills a digest |
-| `review` exits 1, "no usable structured result" | the reviewer's result does not match the plugin's protocol | read the raw file; retry once; twice in a row is a stop |
+| `review` exits 1, "not a JSON envelope" | the call requested `--json` and the reviewer answered in some other shape | read the raw file; this is a plugin or auth failure, not a verdict — retry once; twice in a row is a stop |
+| `review` exits 1, "does not match the plugin's protocol" | an envelope arrived but its `result` is not the schema's shape | read the raw file; retry once; twice in a row is a stop |
 
 ## Concurrency
 

@@ -1,8 +1,0 @@
-# Codex Adversarial Review
-
-Target: branch diff against BASE
-Verdict: approve
-
-On reflection the earlier assessment was wrong.
-
-Verdict: needs-attention
