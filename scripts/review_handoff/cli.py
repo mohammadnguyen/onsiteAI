@@ -29,10 +29,12 @@ from .cli_triage import add_findings_parser
 from .console import EXIT_BLOCKED, EXIT_MISUSE, EXIT_OK, emit
 from .findings import (
     AWAITING,
+    BLOCKING_SEVERITIES,
     RESOLVED_DISPOSITIONS,
     Finding,
     FindingsError,
     duplicates_of,
+    group_findings,
     findings_from_structured,
     protocol,
     unresolved_blocking,
@@ -354,6 +356,21 @@ def _release_block(state: RunState) -> str | None:
         return (
             f"{len(blockers)} blocking finding(s) are unresolved, so no channel's "
             f"approval releases this run: {lines}"
+        )
+    inherited = [
+        item
+        for item in _linked_unresolved(state)
+        if item["severity"] in BLOCKING_SEVERITIES
+    ]
+    if inherited:
+        lines = "; ".join(
+            f"{i['origin_run']}/{i['id']} [{i['severity']}] {i['title']}" for i in inherited
+        )
+        return (
+            f"{len(inherited)} blocking finding(s) inherited from the runs this one "
+            f"continues are still unresolved: {lines} — record a disposition for each "
+            "('findings resolve --origin-run <run>'); carrying them forward is a "
+            "release condition, not a report"
         )
     missing = untriaged_channels(
         rounds=state.rounds,
@@ -1238,8 +1255,23 @@ def _carried_history(state: RunState) -> list[dict]:
 
     out: list[dict] = []
     for _, older in walk.runs:
-        for finding in _records(older):
-            closure = later.get((older.run_id, finding.id))
+        ancestral = _records(older)
+        # An ancestor's duplicate whose primary was resolved is closed, the
+        # same way it is closed inside the run that raised it. Reading each
+        # disposition on its own reported such an item as still open, so a
+        # defect already dealt with came back as an inherited blocker.
+        open_in_origin = {f.id for f in unresolved_blocking(ancestral)}
+        grouped = group_findings(ancestral)
+        primary_of = {
+            member.id: primary_id
+            for primary_id, group in grouped.items()
+            for member in group
+        }
+        for finding in ancestral:
+            primary_id = primary_of.get(finding.id, finding.id)
+            closure = later.get((older.run_id, finding.id)) or later.get(
+                (older.run_id, primary_id)
+            )
             # Only fixed and refuted close anything. Recording that an
             # inherited defect is still pending, or is waiting on the
             # founder, is the opposite of closing it - treating any entry as
@@ -1248,7 +1280,13 @@ def _carried_history(state: RunState) -> list[dict]:
             closed_later = bool(
                 closure and closure["disposition"] in RESOLVED_DISPOSITIONS
             )
-            if finding.resolved and closure is None:
+            closed_in_origin = (
+                finding.resolved
+                or (finding.id not in open_in_origin and primary_id != finding.id)
+                or (primary_id == finding.id and finding.id not in open_in_origin
+                    and any(m.resolved for m in grouped[primary_id]))
+            )
+            if closed_in_origin and closure is None:
                 continue  # closed in its own record; nothing carried
             out.append(
                 {
@@ -1262,7 +1300,7 @@ def _carried_history(state: RunState) -> list[dict]:
                     "disposition": finding.disposition,
                     # what happened afterwards, recorded elsewhere
                     "resolved_later": closure,
-                    "still_open": not finding.resolved and not closed_later,
+                    "still_open": not closed_in_origin and not closed_later,
                 }
             )
     return out

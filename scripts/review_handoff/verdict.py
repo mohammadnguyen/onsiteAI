@@ -97,25 +97,25 @@ def combine_round(
     return verdict_channel
 
 
-def _payload_text(envelope: dict) -> str:
-    """The review text the envelope carries, if it carries any.
+def _review_body(envelope: dict) -> str | None:
+    """The review text a VALID envelope carries, or ``None`` if it is not one.
 
-    The native channel keeps its prose in ``codex.stdout``; the adversarial
-    channel repeats its structured result there and in ``rawOutput``. Nothing
-    outside the envelope is consulted.
+    Parsing a JSON object is not validating an envelope. Accepting any object
+    that happened to carry a long enough ``result.summary`` or ``rawOutput``
+    let malformed output satisfy the native channel's completion check and
+    support a delivery. The plugin always emits its report through
+    ``codex.stdout``, alongside the run's ``status``; that is the shape
+    required here, and there are no fallbacks to something else in the
+    document.
     """
     codex = envelope.get("codex")
-    if isinstance(codex, dict) and isinstance(codex.get("stdout"), str):
-        text = codex["stdout"].strip()
-        if text:
-            return text
-    raw = envelope.get("rawOutput")
-    if isinstance(raw, str) and raw.strip():
-        return raw.strip()
-    result = envelope.get("result")
-    if isinstance(result, dict) and isinstance(result.get("summary"), str):
-        return result["summary"].strip()
-    return ""
+    if not isinstance(codex, dict):
+        return None
+    if not isinstance(codex.get("status"), int) or isinstance(codex.get("status"), bool):
+        return None
+    if not isinstance(codex.get("stdout"), str):
+        return None
+    return codex["stdout"].strip()
 
 
 def _failure_detail(envelope: dict | None, raw_text: str = "") -> str:
@@ -128,7 +128,7 @@ def _failure_detail(envelope: dict | None, raw_text: str = "") -> str:
     become a verdict. No approval is ever extracted from a stream.
     """
     codex = envelope.get("codex") if isinstance(envelope, dict) else None
-    candidates = []
+    candidates: list[object] = []
     if isinstance(envelope, dict):
         candidates.append(envelope.get("parseError"))
     if isinstance(codex, dict):
@@ -202,7 +202,15 @@ def read_channel(
             expects_verdict,
         )
 
-    text = _payload_text(envelope)
+    body = _review_body(envelope)
+    if body is None:
+        return _not_ok(
+            "the reviewer's envelope is not the plugin's",
+            "stdout parsed as JSON but is not the plugin's envelope: a bare object "
+            "is not a review, whatever it happens to contain",
+            expects_verdict,
+        )
+    text = body
 
     if not expects_verdict:
         # The native channel reports in prose INSIDE the envelope. It is read

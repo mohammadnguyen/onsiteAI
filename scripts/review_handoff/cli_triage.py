@@ -238,9 +238,14 @@ def cmd_findings_resolve(args: argparse.Namespace) -> int:
         return EXIT_BLOCKED
     try:
         origin_run = (getattr(args, "origin_run", "") or "").strip()
-        target = None
-        if not origin_run:
+        # Naming THIS run is an ordinary local resolution. Routing it through
+        # the ancestral path recorded a carried resolution instead, so the
+        # command reported success while the release check still saw the
+        # finding pending - and its scope checks were skipped.
+        if origin_run in ("", state.run_id):
             target = next((f for f in state.findings if f["id"] == args.id), None)
+        else:
+            target = None
         if target is None:
             # It may belong to a run earlier in the chain. That record is left
             # exactly as it is - rewriting it would destroy the history it
@@ -257,10 +262,7 @@ def cmd_findings_resolve(args: argparse.Namespace) -> int:
                 if any(f["id"] == args.id for f in older.findings)
             ]
             if origin_run:
-                if any(f["id"] == args.id for f in state.findings) and origin_run == state.run_id:
-                    matches = [state]
-                else:
-                    matches = [older for older in matches if older.run_id == origin_run]
+                matches = [older for older in matches if older.run_id == origin_run]
                 if not matches:
                     emit(
                         f"MISUSE: no finding {args.id!r} in a run called {origin_run!r} "

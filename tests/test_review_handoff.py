@@ -3550,12 +3550,25 @@ def test_a_linked_runs_open_items_survive_finishing_from_another_directory(
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
+
+    # The inherited item is blocking, so it gates - and that gate has to work
+    # from here too, which is the point of resolving the paths.
+    assert cli.main(["finish", "--run-dir", str(newer)]) == cli.EXIT_BLOCKED
+    inherited = cli._linked_unresolved(state.load_state(newer))
+    assert inherited, "the older run's open item vanished between records"
+    assert inherited[0]["severity"] == "high"
+    assert cli.main(
+        ["findings", "resolve", "--run-dir", str(newer), "--id", inherited[0]["id"],
+         "--origin-run", inherited[0]["origin_run"], "--disposition", "fixed",
+         "--note", "closed by commit abc1234, recorded from another directory"]
+    ) == cli.EXIT_OK
     assert cli.main(["finish", "--run-dir", str(newer)]) == cli.EXIT_OK
 
     summary = json.loads((newer / "delivery.json").read_text(encoding="utf-8"))
-    carried = summary["linked_unresolved"]
-    assert carried, "the older run's open item vanished between records"
-    assert carried[0]["severity"] == "high"
+    assert summary["linked_unresolved"] == []
+    carried = summary["carried_history"]
+    assert carried and carried[0]["severity"] == "high"
+    assert carried[0]["resolved_later"]["disposition"] == "fixed"
 
 
 def test_a_linked_run_that_cannot_be_read_blocks_instead_of_reporting_none(
@@ -3963,14 +3976,27 @@ def test_the_chain_is_followed_through_three_generations(
     _run(repo, monkeypatch, ["gate", "--run-dir", str(c)])
     _run(repo, monkeypatch, ["review", "--run-dir", str(c)])
     _triage_all(repo, monkeypatch, c)
-    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(c)]) == cli.EXIT_OK
 
-    summary = json.loads((c / "delivery.json").read_text(encoding="utf-8"))
-    origins = {item["origin_run"] for item in summary["carried_history"]}
-    assert origins == {"a", "b"}, summary["carried_history"]
-    for item in summary["carried_history"]:
+    # Inherited blocking findings are blocking findings. Reporting them
+    # without enforcing them would make the carry-forward decorative.
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(c)]) == cli.EXIT_BLOCKED
+
+    inherited = cli._carried_history(state.load_state(c))
+    assert {item["origin_run"] for item in inherited} == {"a", "b"}, inherited
+    for item in inherited:
         assert item["id"].startswith("r01-")  # original finding ids preserved
         assert item["still_open"] is True
+        assert _run(
+            repo, monkeypatch,
+            ["findings", "resolve", "--run-dir", str(c), "--id", item["id"],
+             "--origin-run", item["origin_run"], "--disposition", "fixed",
+             "--note", f"closed for {item['origin_run']} by commit abc1234"],
+        ) == cli.EXIT_OK
+
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(c)]) == cli.EXIT_OK
+    summary = json.loads((c / "delivery.json").read_text(encoding="utf-8"))
+    assert summary["linked_unresolved"] == []
+    assert {i["origin_run"] for i in summary["carried_history"]} == {"a", "b"}
 
 
 @pytest.mark.parametrize(
@@ -4322,3 +4348,191 @@ def test_linking_a_duplicate_cannot_bypass_the_out_of_scope_stop(
     records = [findings.Finding(**f) for f in state.load_state(run_dir).findings]
     assert findings.unresolved_blocking(records), "the group was retired without authorisation"
     assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+# =======================================================================
+# Round 3: what the second review found (run self-v6, review 02).
+# =======================================================================
+
+
+def test_a_json_object_is_not_a_native_envelope(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Parsing a JSON object is not validating an envelope. Any object with a
+    long enough result.summary counted as a completed native review, so
+    malformed output could satisfy the completion check and support a
+    delivery alongside an adversarial approval."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    impostor = json.dumps(
+        {"result": {"summary": "x" * 200}, "rawOutput": "y" * 200}
+    )
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(tmp_path, outputs=[_payload("approve")], findings_output=impostor),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+    saved = state.load_state(run_dir)
+    assert not saved.rounds[0].usable
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(run_dir)]) == cli.EXIT_BLOCKED
+
+
+def test_a_genuine_native_envelope_still_completes(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The legitimate path, so the rule above cannot harden into refusing
+    every native review."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[_payload("approve")],
+            findings_output=_native_payload(
+                "I read the range and the archived output. Nothing material here."
+            ),
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    assert _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)]) == cli.EXIT_OK
+
+
+def test_an_inherited_blocking_finding_blocks_delivery(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The carry-forward is a release condition, not a report."""
+    brief = brief_file()
+    a = _run_with_open_finding(repo, monkeypatch, brief, tmp_path, tmp_path / "a")
+    ancestral = state.load_state(a).findings[0]["id"]
+    b = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "b", a)
+
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(b)]) == cli.EXIT_BLOCKED
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "resolve", "--run-dir", str(b), "--id", ancestral,
+         "--disposition", "fixed", "--note", "closed by commit abc1234"],
+    ) == cli.EXIT_OK
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(b)]) == cli.EXIT_OK
+
+
+def test_an_inherited_non_blocking_finding_does_not_block(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Only blocking severities gate. A low-severity item is carried and
+    reported, not turned into a barrier."""
+    brief = brief_file()
+    a = tmp_path / "a"
+    _run(
+        repo, monkeypatch,
+        ["start", "--brief", str(brief), "--run-dir", str(a), "--integration-ref", "main"],
+    )
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[
+                _payload(
+                    "needs-attention",
+                    findings_list=[_structured_finding(severity="low", title="a nit")],
+                )
+            ],
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(a)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(a)])
+    _run(repo, monkeypatch, ["stop", "--run-dir", str(a), "--reason", "stopped with a nit open"])
+
+    b = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "b", a)
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(b)]) == cli.EXIT_OK
+    summary = json.loads((b / "delivery.json").read_text(encoding="utf-8"))
+    assert [i["severity"] for i in summary["linked_unresolved"]] == ["low"]
+
+
+def test_resolving_a_current_run_finding_by_origin_uses_the_local_path(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """--origin-run naming THIS run recorded a carried resolution instead of
+    dispositioning the finding, so the command reported success while the
+    release check still saw it pending."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[_payload("needs-attention", findings_list=[_structured_finding()])],
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    saved = state.load_state(run_dir)
+    own = saved.findings[0]["id"]
+
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "resolve", "--run-dir", str(run_dir), "--id", own,
+         "--origin-run", saved.run_id, "--disposition", "refuted",
+         "--note", "checked the caller; cannot occur"],
+    ) == cli.EXIT_OK
+
+    reloaded = state.load_state(run_dir)
+    assert reloaded.findings[0]["disposition"] == "refuted"
+    assert reloaded.carried_resolutions == []
+    assert findings.unresolved_blocking([findings.Finding(**f) for f in reloaded.findings]) == []
+
+
+def test_an_ancestors_duplicate_group_is_read_with_group_semantics(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """An ancestor's duplicate whose primary was resolved is closed. Reading
+    each disposition independently reported it as still open, so a defect
+    already dealt with came back as an inherited blocker."""
+    brief = brief_file()
+    a = tmp_path / "a"
+    _run(
+        repo, monkeypatch,
+        ["start", "--brief", str(brief), "--run-dir", str(a), "--integration-ref", "main"],
+    )
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[_payload("needs-attention", findings_list=[_structured_finding()])],
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(a)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(a)])
+    primary = state.load_state(a).findings[0]["id"]
+    _run(
+        repo, monkeypatch,
+        ["findings", "record", "--run-dir", str(a), "--round", "1",
+         "--channel", runner.CHANNEL_FINDINGS, "--severity", "medium",
+         "--title", "the same defect", "--file", "file.txt", "--line", "1",
+         "--duplicate-of", primary],
+    )
+    _run(
+        repo, monkeypatch,
+        ["findings", "resolve", "--run-dir", str(a), "--id", primary,
+         "--disposition", "fixed", "--note", "fixed with a regression"],
+    )
+    _run(repo, monkeypatch, ["stop", "--run-dir", str(a), "--reason", "done"])
+
+    b = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "b", a)
+    carried = cli._carried_history(state.load_state(b))
+    assert carried == [], carried
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(b)]) == cli.EXIT_OK
+
+
+def test_the_validator_dependency_is_declared_for_local_installation():
+    """The import is unconditional, so a documented local setup that cannot
+    install it cannot run the CLI at all. CI pinned it; nothing else did."""
+    manifest = REPO_ROOT / "requirements-tooling.txt"
+    assert manifest.exists(), "no pinned manifest a local environment can install from"
+    text = manifest.read_text(encoding="utf-8")
+    assert "jsonschema==4.26.0" in text
+    workflow = (REPO_ROOT / ".github/workflows/backend-ci.yml").read_text(encoding="utf-8")
+    assert "requirements-tooling.txt" in workflow, "CI must install from the same manifest"
+    runbook = (REPO_ROOT / "docs/operations/dev-review-handoff.md").read_text(encoding="utf-8")
+    assert "requirements-tooling.txt" in runbook

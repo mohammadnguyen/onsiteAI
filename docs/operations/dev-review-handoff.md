@@ -9,6 +9,16 @@ This workflow never merges and never deploys. It ends at a Draft PR.
 
 ## Prerequisites
 
+Install the root tooling first — `ruff`, `pytest` and the protocol validator
+are pinned together:
+
+```bash
+pip install -r requirements-tooling.txt
+```
+
+CI installs from the same file. Without it `scripts/review_handoff` cannot be
+imported at all, so every command below fails before doing anything.
+
 - The reviewer plugin is installed and authenticated. Check with
   `node <plugin>/scripts/codex-companion.mjs status`. Authentication lives
   outside the repository and expires; a run cannot repair it and will stop.
