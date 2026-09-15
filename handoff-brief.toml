@@ -1,8 +1,13 @@
 # The brief for THIS work package, used to exercise the workflow on itself.
 # Kept in the tree as a worked example of the template; a real package's
 # brief may live anywhere the founder approves it.
+#
+# Revised for the supplementary correction round authorised after run
+# self-v2 stopped at its round limit. The original requirements are kept
+# because the package still has to satisfy them; the correction round's
+# requirements are added, not substituted.
 
-name = "dev-review-handoff v1"
+name = "dev-review-handoff v1 (correction round)"
 
 requirements = [
   "A versioned skill is the entry point and reuses existing tools; the deterministic parts (state, result validation, rounds, timeout, evidence archiving) are plain scripts, and the scripts, tests and process documentation are versioned with it.",
@@ -10,6 +15,11 @@ requirements = [
   "The reviewer reads the actual change, the requirements and the raw verification output; every review is bound to an explicit base and head, and a verdict stops applying when the worktree or its inputs change. Raw plugin results are kept; a summary written by the agent is not evidence.",
   "Clear in-scope defects are fixed automatically; a defect may be refuted with code or tests rather than appeased. After one initial review there are at most three automatic fix-and-review rounds, a count a resumed session cannot reset, plus a configurable total time limit. Tests sharing a database run serially.",
   "The run stops and explains itself on a requirements conflict, on needing scope it was not granted, on insufficient permission, and on reaching the round or time limit. A failed call, a missing or invalid result, stale evidence, a failing required test or an incomplete review is never treated as a pass.",
+  "CORRECTION 1. Arguments are passed according to the installed plugin's real interface, so Windows paths, spaces, Chinese text, apostrophes and option-like text arrive intact. Concurrent writes to one run's state cannot overwrite each other, and two runs sharing one test database cannot verify at the same time. Subprocess output encoding, explicit-base SHA pinning, run artefacts polluting the code fingerprint, and work left running after a timeout are all fixed. Stopping another session or a shared runtime is NOT in scope.",
+  "CORRECTION 2. The release condition is complete: an unresolved blocking finding on any channel cannot be overridden by another channel's approve; each finding carries a fixed / refuted / awaiting-adjudication status that is checked at finish. Judgement stays with the agent - no model judge and no natural-language scoring system is added - and the plugin's own structured results are preferred where it provides them.",
+  "CORRECTION 3. The review instructions name correctness, maintainability and project fit as the standard. 'Minimal fix first' and the ban on reporting out-of-scope issues are removed. Necessary work outside the approved scope must be reported and the run stopped to request authorisation; it is never changed automatically and the reviewer must not conceal it.",
+  "CORRECTION 4. Evidence and governance records are corrected: the earlier argv-corrupted reviews stay as history but are not proof that requirements and logs were read; a real plugin handoff is performed after the fix; unfounded narratives in the ADR are removed; authorisation, acceptance and trial approval are recorded separately; the kill criterion remains pending approval.",
+  "CORRECTION 5. Real failure behaviour is verified: concurrent stop and review, duplicate execution, shared-database mutual exclusion, complete argument passing, timeout termination, a pinned base, and that one channel's approve cannot deliver while another channel has an unresolved blocking finding. Raw output is kept; anything that cannot be confirmed is marked unconfirmed.",
 ]
 
 acceptance_criteria = [
@@ -17,6 +27,8 @@ acceptance_criteria = [
   "Failure scenarios are driven by isolated samples rather than a live service, and the real handoff is demonstrated by at least one genuine plugin invocation whose raw output is archived.",
   "Tests assert what the workflow does, not how the reviewer phrased itself; no scoring system is built over model wording.",
   "The repository's existing gates still pass and none of them is weakened.",
+  "Each of the five corrections above is demonstrated by a test that fails when its fix is reverted.",
+  "The earlier run keeps its stopped status, its counts and its history; the corrected work is a new run linked to it.",
 ]
 
 allowed_paths = [
@@ -36,6 +48,7 @@ prohibitions = [
   "do not change business functionality or any product behaviour",
   "do not start A2a.2 or any other work package",
   "do not change account credentials, repository permissions or branch protection",
+  "do not stop, kill or restart another session or a shared runtime",
   "do not merge and do not deploy",
 ]
 
@@ -48,3 +61,4 @@ verification_commands = [
 [limits]
 max_review_rounds = 3
 max_total_seconds = 14400
+shared_lock = "sitetracker-test-database"
