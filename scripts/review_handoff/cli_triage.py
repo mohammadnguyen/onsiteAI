@@ -65,6 +65,31 @@ def _load(args: argparse.Namespace):
     return run_dir, lock, state
 
 
+def _scope_block(findings: list[dict], target_id: str) -> str | None:
+    """Why this defect may not be recorded as dealt with, or None.
+
+    The whole GROUP, not just the one record: an out-of-scope sighting
+    linked as a duplicate still needs the founder, and closing the in-scope
+    half must not retire it.
+    """
+    group = [
+        f for f in findings if f["id"] == target_id or f.get("duplicate_of") == target_id
+    ]
+    blocked = next(
+        (
+            f
+            for f in group
+            if f.get("out_of_scope") and f["disposition"] not in RESOLVED_DISPOSITIONS
+        ),
+        None,
+    )
+    if blocked is None:
+        return None
+    if blocked["id"] == target_id:
+        return "is marked out of the approved scope"
+    return f"is linked to {blocked['id']}, which is out of the approved scope"
+
+
 def _round(state, number: int):
     for record in state.rounds:
         if record.number == number:
@@ -89,10 +114,16 @@ def cmd_findings_record(args: argparse.Namespace) -> int:
         if record is None:
             emit(f"MISUSE: this run has no review round {args.round}")
             return EXIT_MISUSE
+        # Attestations made FOR AN ANCESTOR live here too, and they say
+        # nothing about this run's own round of the same number. Counting
+        # them locally refused the local triage while _release_block still
+        # demanded it, leaving the run with no way to move at all.
         attested = [
             a
             for a in state.triage
-            if int(a["round"]) == args.round and a["channel"] == args.channel
+            if not a.get("origin_run")
+            and int(a["round"]) == args.round
+            and a["channel"] == args.channel
         ]
         if attested:
             emit(
@@ -242,7 +273,9 @@ def cmd_findings_none(args: argparse.Namespace) -> int:
             )
             return EXIT_MISUSE
         if any(
-            int(a["round"]) == args.round and a["channel"] == args.channel
+            not a.get("origin_run")
+            and int(a["round"]) == args.round
+            and a["channel"] == args.channel
             for a in state.triage
         ):
             emit(f"MISUSE: round {args.round} channel {args.channel} is already attested")
@@ -327,6 +360,20 @@ def cmd_findings_resolve(args: argparse.Namespace) -> int:
                 emit(f"MISUSE: no finding {args.id!r} in this run or anywhere behind it")
                 return EXIT_MISUSE
             origin = matches[0]
+            # Inheriting a finding does not authorise it. The ancestral path
+            # returned before the guard below, so a successor with exactly
+            # the same approved scope could close an inherited out-of-scope
+            # blocker as "fixed" and release the delivery.
+            if args.disposition in RESOLVED_DISPOSITIONS:
+                which = _scope_block(origin.findings, args.id)
+                if which is not None:
+                    emit(
+                        f"BLOCKED: {args.id} {which}, in {origin.run_id}. Inheriting "
+                        "it does not authorise it: this run may not change it "
+                        "either, so it cannot be recorded as fixed here; leave it "
+                        "awaiting adjudication and stop for authorisation."
+                    )
+                    return EXIT_BLOCKED
             # Appended, never replaced: an item may be marked as awaiting the
             # founder and then, once authorised, actually closed, and both
             # steps are part of the record. The latest entry is the one that
@@ -351,22 +398,8 @@ def cmd_findings_resolve(args: argparse.Namespace) -> int:
             )
             return EXIT_OK
         if args.disposition in RESOLVED_DISPOSITIONS:
-            # The whole group, not just this record. An out-of-scope sighting
-            # linked as a duplicate still needs the founder, and closing the
-            # in-scope half must not retire it.
-            group = [target] + [
-                f for f in state.findings if f.get("duplicate_of") == args.id
-            ]
-            blocked = next(
-                (f for f in group if f.get("out_of_scope") and f["disposition"] not in RESOLVED_DISPOSITIONS),
-                None,
-            )
-            if blocked is not None:
-                which = (
-                    "is marked out of the approved scope"
-                    if blocked["id"] == args.id
-                    else f"is linked to {blocked['id']}, which is out of the approved scope"
-                )
+            which = _scope_block(state.findings, args.id)
+            if which is not None:
                 emit(
                     f"BLOCKED: {args.id} {which}. This run may not change it, so it "
                     "cannot be recorded as fixed; leave it awaiting adjudication and "

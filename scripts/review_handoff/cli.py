@@ -227,6 +227,20 @@ def _budget_block(state: RunState) -> str | None:
     return None
 
 
+def _marks_out_of_scope(title: str) -> bool:
+    """Whether the reviewer used the prefix the prompt asks it to use.
+
+    The instruction is to PREFIX the title with the marker. Matching it
+    anywhere in the title flagged a finding that merely DISCUSSES
+    out-of-scope work - this run's own second review reported one, titled
+    "Inherited out-of-scope findings can be closed without authorisation" -
+    and the false positive is expensive in both directions: it stops the run
+    for an authorisation nobody needs, and the record can no longer be
+    closed by the run that raised it.
+    """
+    return title.strip().upper().lstrip("[(*#- ").startswith(OUT_OF_SCOPE_MARKER)
+
+
 def _records(state: RunState) -> list[Finding]:
     return [Finding(**f) for f in state.findings]
 
@@ -930,7 +944,7 @@ def _review(args: argparse.Namespace, run_dir: Path, state: RunState, brief: Bri
             )
         if not findings_unreadable:
             for finding in recorded:
-                if OUT_OF_SCOPE_MARKER in finding.title.upper():
+                if _marks_out_of_scope(finding.title):
                     finding.out_of_scope = True
                     finding.disposition = AWAITING
                     finding.note = "reported as necessary but outside the approved scope"

@@ -4820,3 +4820,227 @@ def test_an_inherited_duplicate_closes_with_its_primary(
     b = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "b", a)
     assert cli._carried_history(state.load_state(b)) == []
     assert _run(repo, monkeypatch, ["finish", "--run-dir", str(b)]) == cli.EXIT_OK
+
+
+# =======================================================================
+# The confirming run's review (self-v7, review 02): the carry-forward
+# opened three holes of its own.
+# =======================================================================
+
+
+def _ancestor_with_an_out_of_scope_finding(repo, monkeypatch, brief, tmp_path, run_dir):
+    _run(
+        repo, monkeypatch,
+        ["start", "--brief", str(brief), "--run-dir", str(run_dir), "--integration-ref", "main"],
+    )
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+    _run(
+        repo, monkeypatch,
+        ["findings", "record", "--run-dir", str(run_dir), "--round", "1",
+         "--channel", runner.CHANNEL_FINDINGS, "--severity", "medium",
+         "--title", "the caller must change too", "--file", "other.py",
+         "--out-of-scope"],
+    )
+    _run(repo, monkeypatch, ["stop", "--run-dir", str(run_dir), "--reason", "needs authorisation"])
+    return run_dir
+
+
+def test_an_inherited_out_of_scope_finding_cannot_be_closed_unauthorised(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Inheriting a finding does not authorise it. The ancestral resolution
+    path returned before the scope guard, so a successor with exactly the
+    same approved scope could close an inherited out-of-scope blocker as
+    'fixed' and release the delivery - the local path refuses the same
+    thing."""
+    brief = brief_file()
+    a = _ancestor_with_an_out_of_scope_finding(repo, monkeypatch, brief, tmp_path, tmp_path / "a")
+    ancestral = state.load_state(a).findings[0]["id"]
+    b = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "b", a)
+    _discharge_inherited(repo, monkeypatch, b)
+
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "resolve", "--run-dir", str(b), "--id", ancestral,
+         "--origin-run", "a", "--disposition", "fixed", "--note", "done in this run"],
+    ) == cli.EXIT_BLOCKED
+    assert cli._linked_unresolved(state.load_state(b)), "the blocker was released"
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(b)]) == cli.EXIT_BLOCKED
+
+    # Recording that it is WAITING on the founder stays possible: that is the
+    # disposition the run is supposed to be able to reach on its own.
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "resolve", "--run-dir", str(b), "--id", ancestral,
+         "--origin-run", "a", "--disposition", "awaiting-adjudication",
+         "--note", "asked the founder"],
+    ) == cli.EXIT_OK
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(b)]) == cli.EXIT_BLOCKED
+
+
+def test_an_inherited_out_of_scope_duplicate_holds_its_primary_closed(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The group, not the record: closing the in-scope half from a successor
+    must not retire the half that needs the founder."""
+    brief = brief_file()
+    a = tmp_path / "a"
+    _run(
+        repo, monkeypatch,
+        ["start", "--brief", str(brief), "--run-dir", str(a), "--integration-ref", "main"],
+    )
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[_payload("needs-attention", findings_list=[_structured_finding()])],
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(a)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(a)])
+    primary = state.load_state(a).findings[0]["id"]
+    _run(
+        repo, monkeypatch,
+        ["findings", "record", "--run-dir", str(a), "--round", "1",
+         "--channel", runner.CHANNEL_FINDINGS, "--severity", "medium",
+         "--title", "the same defect, and the caller must change too",
+         "--file", "other.py", "--duplicate-of", primary, "--out-of-scope"],
+    )
+    _run(repo, monkeypatch, ["stop", "--run-dir", str(a), "--reason", "needs authorisation"])
+
+    b = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "b", a)
+    _discharge_inherited(repo, monkeypatch, b)
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "resolve", "--run-dir", str(b), "--id", primary,
+         "--origin-run", "a", "--disposition", "fixed", "--note", "fixed the in-scope half"],
+    ) == cli.EXIT_BLOCKED
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(b)]) == cli.EXIT_BLOCKED
+
+
+def test_an_ancestors_attestation_leaves_the_local_channel_recordable(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Attestations made FOR AN ANCESTOR live in the successor's record too,
+    and they say nothing about the successor's own round of the same number.
+    Counting them locally refused both local triage commands while the
+    release check still demanded one, leaving the run unable to move at
+    all."""
+    brief = brief_file()
+    a = _run_with_open_finding(repo, monkeypatch, brief, tmp_path, tmp_path / "a")
+    b = tmp_path / "b"
+    _run(
+        repo, monkeypatch,
+        ["start", "--brief", str(brief), "--run-dir", str(b),
+         "--linked-run", str(a), "--integration-ref", "main"],
+    )
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(b)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(b)])
+    _discharge_inherited(repo, monkeypatch, b)  # a's round 1, both channels
+
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "record", "--run-dir", str(b), "--round", "1",
+         "--channel", runner.CHANNEL_FINDINGS, "--severity", "low",
+         "--title", "something this run's own review turned up",
+         "--file", "file.txt", "--line", "2"],
+    ) == cli.EXIT_OK
+
+
+def test_an_ancestors_attestation_leaves_the_local_channel_attestable(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The other local command, for the same reason."""
+    brief = brief_file()
+    a = _run_with_open_finding(repo, monkeypatch, brief, tmp_path, tmp_path / "a")
+    b = tmp_path / "b"
+    _run(
+        repo, monkeypatch,
+        ["start", "--brief", str(brief), "--run-dir", str(b),
+         "--linked-run", str(a), "--integration-ref", "main"],
+    )
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(b)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(b)])
+    _discharge_inherited(repo, monkeypatch, b)
+
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "none", "--run-dir", str(b), "--round", "1",
+         "--channel", runner.CHANNEL_FINDINGS, "--note", "read this run's own prose"],
+    ) == cli.EXIT_OK
+    # And the local attestation is still recorded only once.
+    assert _run(
+        repo, monkeypatch,
+        ["findings", "none", "--run-dir", str(b), "--round", "1",
+         "--channel", runner.CHANNEL_FINDINGS, "--note", "again"],
+    ) == cli.EXIT_MISUSE
+
+
+def test_a_title_that_merely_mentions_the_marker_is_not_flagged(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The prompt asks the reviewer to PREFIX the title with the marker.
+    Matching it anywhere flagged a finding that only discusses out-of-scope
+    work - this run's own second review reported exactly that title - and a
+    false positive stops the run for an authorisation nobody needs while
+    making the record impossible to close."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[
+                _payload(
+                    "needs-attention",
+                    findings_list=[
+                        _structured_finding(
+                            title="Inherited out-of-scope findings can be closed "
+                            "without authorisation"
+                        )
+                    ],
+                )
+            ],
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+
+    recorded = state.load_state(run_dir).findings[0]
+    assert recorded["out_of_scope"] is False, recorded
+    assert recorded["disposition"] == "pending", recorded
+
+
+def test_a_title_prefixed_with_the_marker_is_still_flagged(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The other half, so the rule above cannot be narrowed into nothing."""
+    run_dir = tmp_path / "run"
+    _start(repo, monkeypatch, brief_file(), run_dir)
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[
+                _payload(
+                    "needs-attention",
+                    findings_list=[
+                        _structured_finding(
+                            title="OUT-OF-SCOPE the caller in another package must "
+                            "change too"
+                        )
+                    ],
+                )
+            ],
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(run_dir)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(run_dir)])
+
+    recorded = state.load_state(run_dir).findings[0]
+    assert recorded["out_of_scope"] is True, recorded
+    assert recorded["disposition"] == cli.AWAITING, recorded
