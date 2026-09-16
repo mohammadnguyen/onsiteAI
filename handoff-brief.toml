@@ -2,12 +2,14 @@
 # Kept in the tree as a worked example of the template; a real package's
 # brief may live anywhere the founder approves it.
 #
-# Revised for the correction task authorised after run self-v5 stopped at
-# needs-attention. Earlier requirements are kept - the package still has to
-# satisfy them - and the two acceptance criteria below are added.
+# The requirements below were implemented across 03d4cec..405df28 under the
+# correction task authorised after self-v5. Run self-v6 then stopped at its
+# round budget with the final review UNUSABLE - both channels failed
+# plugin-side, which is not a review outcome - so the work is verified
+# locally and in CI but has never carried a usable review verdict.
 #
-# NEWLY AUTHORISED BUDGET, recorded here so it is not inferred from the
-# earlier runs: a first two-channel review plus AT MOST TWO fix-and-review
+# RE-AUTHORISED BUDGET for this run, recorded here so it is not inferred from
+# the earlier ones: a first two-channel review plus AT MOST TWO fix-and-review
 # rounds, four hours in total. Clear defects inside the authorised scope are
 # fixed and verified without returning each one for approval. A technical
 # retry for plugin no-response keeps the previous boundary - one per channel,
@@ -15,8 +17,8 @@
 # and the program's counters untouched. Going over budget, needing a change
 # outside the scope, or hitting a requirements conflict means stopping and
 # reporting; no separate task is created to carry on. Runs self-v2 through
-# self-v5 keep their counts and history untouched; this is a new run linked
-# to self-v5, and the open items of every run behind it travel with the
+# self-v6 keep their counts and history untouched; this is a new run linked
+# to self-v6, and the open items of every run behind it travel with the
 # delivery.
 
 name = "dev-review-handoff v1 (close-out)"
