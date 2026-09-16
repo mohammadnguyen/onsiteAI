@@ -179,6 +179,53 @@ def cmd_findings_none(args: argparse.Namespace) -> int:
         if args.channel not in REVIEW_CHANNELS:
             emit(f"MISUSE: unknown channel {args.channel!r}; expected one of {REVIEW_CHANNELS}")
             return EXIT_MISUSE
+        origin_run = (getattr(args, "origin_run", "") or "").strip()
+        if origin_run and origin_run != state.run_id:
+            # Accounting for a channel of a run earlier in the chain. Its own
+            # record is left exactly as it is; the attestation belongs here.
+            origin = next(
+                (
+                    older
+                    for _, older in linked_chain(state).runs
+                    if older.run_id == origin_run
+                ),
+                None,
+            )
+            if origin is None:
+                emit(
+                    f"MISUSE: no run called {origin_run!r} anywhere behind this one"
+                )
+                return EXIT_MISUSE
+            if _round(origin, args.round) is None:
+                emit(f"MISUSE: {origin_run} has no review round {args.round}")
+                return EXIT_MISUSE
+            if any(
+                a.get("origin_run") == origin_run
+                and int(a["round"]) == args.round
+                and a["channel"] == args.channel
+                for a in state.triage
+            ):
+                emit(
+                    f"MISUSE: {origin_run} round {args.round} channel {args.channel} "
+                    "is already attested in this run"
+                )
+                return EXIT_MISUSE
+            state.triage.append(
+                {
+                    "origin_run": origin_run,
+                    "round": args.round,
+                    "channel": args.channel,
+                    "at": utc_now().isoformat(timespec="seconds"),
+                    "note": args.note.strip(),
+                    "channel_status": channel_state(_round(origin, args.round), args.channel),
+                }
+            )
+            state.save(run_dir)
+            emit(
+                f"attested: {origin_run} round {args.round} channel {args.channel} "
+                "accounted for here; that run's own record is unchanged"
+            )
+            return EXIT_OK
         record = _round(state, args.round)
         if record is None:
             emit(f"MISUSE: this run has no review round {args.round}")
@@ -397,6 +444,12 @@ def add_findings_parser(sub, lock_arguments) -> None:
     none.add_argument("--run-dir", required=True)
     none.add_argument("--round", type=int, required=True)
     none.add_argument("--channel", required=True)
+    none.add_argument(
+        "--origin-run",
+        default="",
+        help="the run that RAN the channel, when accounting for one earlier in "
+        "the chain; that run's own record is left untouched",
+    )
     none.add_argument("--note", required=True, help="what you read, and where")
     lock_arguments(none)
     none.set_defaults(func=cmd_findings_none)

@@ -301,6 +301,30 @@ def _triage_all(repo: Path, monkeypatch, run_dir: Path) -> None:
             )
 
 
+def _discharge_inherited(repo: Path, monkeypatch, run_dir: Path) -> None:
+    """Account for the review channels of the runs this one continues.
+
+    Continuing a run that stopped mid-review inherits its unread channels:
+    the release condition requires them read HERE, and reading them leaves
+    that run's own record untouched. Tests about something else say so in
+    one line; the requirement has its own tests.
+    """
+    for obligation in cli._carried_obligations(state.load_state(run_dir)):
+        _run(
+            repo,
+            monkeypatch,
+            [
+                "findings", "none",
+                "--run-dir", str(run_dir),
+                "--origin-run", obligation["origin_run"],
+                "--round", str(obligation["round"]),
+                "--channel", obligation["channel"],
+                "--note", "read the archived output of the run this one continues",
+            ],
+        )
+
+
+
 def _start(repo: Path, monkeypatch, brief: Path, run_dir: Path) -> int:
     # The throwaway repository has no remote, so the integration reference is
     # its own branch. An unresolvable reference is a MISUSE by design and is
@@ -3551,6 +3575,7 @@ def test_a_linked_runs_open_items_survive_finishing_from_another_directory(
         ["findings", "none", "--run-dir", str(newer), "--round", "1",
          "--channel", runner.CHANNEL_FINDINGS, "--note", "read it"]
     ) == cli.EXIT_OK
+    _discharge_inherited(repo, monkeypatch, newer)
 
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
@@ -3981,6 +4006,7 @@ def test_the_chain_is_followed_through_three_generations(
     _run(repo, monkeypatch, ["gate", "--run-dir", str(c)])
     _run(repo, monkeypatch, ["review", "--run-dir", str(c)])
     _triage_all(repo, monkeypatch, c)
+    _discharge_inherited(repo, monkeypatch, c)
 
     # Inherited blocking findings are blocking findings. Reporting them
     # without enforcing them would make the carry-forward decorative.
@@ -4070,6 +4096,7 @@ def test_an_item_closed_later_is_not_reported_as_a_current_defect(
     _run(repo, monkeypatch, ["gate", "--run-dir", str(b)])
     _run(repo, monkeypatch, ["review", "--run-dir", str(b)])
     _triage_all(repo, monkeypatch, b)
+    _discharge_inherited(repo, monkeypatch, b)
 
     assert _run(
         repo, monkeypatch,
@@ -4412,6 +4439,7 @@ def test_an_inherited_blocking_finding_blocks_delivery(
     a = _run_with_open_finding(repo, monkeypatch, brief, tmp_path, tmp_path / "a")
     ancestral = state.load_state(a).findings[0]["id"]
     b = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "b", a)
+    _discharge_inherited(repo, monkeypatch, b)
 
     assert _run(repo, monkeypatch, ["finish", "--run-dir", str(b)]) == cli.EXIT_BLOCKED
     assert _run(
@@ -4450,6 +4478,7 @@ def test_an_inherited_non_blocking_finding_does_not_block(
     _run(repo, monkeypatch, ["stop", "--run-dir", str(a), "--reason", "stopped with a nit open"])
 
     b = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "b", a)
+    _discharge_inherited(repo, monkeypatch, b)
     assert _run(repo, monkeypatch, ["finish", "--run-dir", str(b)]) == cli.EXIT_OK
     summary = json.loads((b / "delivery.json").read_text(encoding="utf-8"))
     assert [i["severity"] for i in summary["linked_unresolved"]] == ["low"]
@@ -4595,3 +4624,199 @@ def test_a_newer_schema_than_this_code_knows_is_still_refused(
     with pytest.raises(state.StateError) as info:
         state.load_state(run_dir)
     assert "is not supported" in str(info.value)
+
+
+# =======================================================================
+# The confirming run's review (self-v7, review 01): three ways the
+# linked-chain carry-forward could still release something.
+# =======================================================================
+
+
+def test_an_ancestors_unaccounted_channel_is_carried_forward(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """A run interrupted after the first channel blocks on its own account -
+    one channel completed and unread, the other's outcome unknown. Once it is
+    stopped and continued, the successor never looked, so a fresh approving
+    review could deliver without anyone reading that evidence."""
+    brief = brief_file()
+    a = tmp_path / "a"
+    _run(
+        repo, monkeypatch,
+        ["start", "--brief", str(brief), "--run-dir", str(a), "--integration-ref", "main"],
+    )
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(a)])
+    _interrupt_after_first_channel(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        _run(repo, monkeypatch, ["review", "--run-dir", str(a)])
+    monkeypatch.undo()
+    _run(repo, monkeypatch, ["stop", "--run-dir", str(a), "--reason", "interrupted"])
+
+    # It really is unaccounted for in its own run.
+    ancestral = state.load_state(a)
+    assert ancestral.rounds[0].channel_status[runner.CHANNEL_VERDICT] == "completed"
+    assert ancestral.rounds[0].channel_status[runner.CHANNEL_FINDINGS] == "pending"
+
+    b = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "b", a)
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(b)]) == cli.EXIT_BLOCKED
+
+    obligations = cli._carried_obligations(state.load_state(b))
+    assert {(o["origin_run"], o["channel"]) for o in obligations} == {
+        ("a", runner.CHANNEL_VERDICT),
+        ("a", runner.CHANNEL_FINDINGS),
+    }, obligations
+
+    for obligation in obligations:
+        assert _run(
+            repo, monkeypatch,
+            ["findings", "none", "--run-dir", str(b), "--origin-run", obligation["origin_run"],
+             "--round", str(obligation["round"]), "--channel", obligation["channel"],
+             "--note", "read a's archive; nothing actionable in it"],
+        ) == cli.EXIT_OK
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(b)]) == cli.EXIT_OK
+
+
+def test_accounting_for_an_ancestors_channel_does_not_touch_that_record(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    brief = brief_file()
+    a = tmp_path / "a"
+    _run(
+        repo, monkeypatch,
+        ["start", "--brief", str(brief), "--run-dir", str(a), "--integration-ref", "main"],
+    )
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(a)])
+    _interrupt_after_first_channel(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        _run(repo, monkeypatch, ["review", "--run-dir", str(a)])
+    monkeypatch.undo()
+    _run(repo, monkeypatch, ["stop", "--run-dir", str(a), "--reason", "interrupted"])
+    before = (a / "run.json").read_bytes()
+
+    b = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "b", a)
+    _run(
+        repo, monkeypatch,
+        ["findings", "none", "--run-dir", str(b), "--origin-run", "a", "--round", "1",
+         "--channel", runner.CHANNEL_VERDICT, "--note", "read it"],
+    )
+    assert (a / "run.json").read_bytes() == before
+    attestation = state.load_state(b).triage[-1]
+    assert attestation["origin_run"] == "a" and attestation["channel"] == runner.CHANNEL_VERDICT
+
+
+def test_an_inherited_out_of_scope_finding_blocks_whatever_its_severity(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """Out of scope needs the founder. It blocks its own run through
+    Finding.blocking regardless of severity, and inheriting it must not be a
+    way to release it - the inherited filter looked at severity alone and the
+    carried record dropped the flag entirely."""
+    brief = brief_file()
+    a = tmp_path / "a"
+    _run(
+        repo, monkeypatch,
+        ["start", "--brief", str(brief), "--run-dir", str(a), "--integration-ref", "main"],
+    )
+    _install_fake_plugin(monkeypatch, _write_fake_plugin(tmp_path, outputs=[_payload("approve")]))
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(a)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(a)])
+    _run(
+        repo, monkeypatch,
+        ["findings", "record", "--run-dir", str(a), "--round", "1",
+         "--channel", runner.CHANNEL_FINDINGS, "--severity", "low",
+         "--title", "the caller must change too", "--file", "other.py", "--out-of-scope"],
+    )
+    _run(repo, monkeypatch, ["stop", "--run-dir", str(a), "--reason", "needs authorisation"])
+
+    b = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "b", a)
+    carried = cli._carried_history(state.load_state(b))
+    assert len(carried) == 1
+    assert carried[0]["out_of_scope"] is True
+    assert carried[0]["blocking"] is True
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(b)]) == cli.EXIT_BLOCKED
+
+
+def test_an_inherited_duplicate_is_open_while_its_primary_is(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """open_in_origin holds only primary ids, so every duplicate read as
+    closed. A low-severity primary with a high-severity duplicate lost the
+    high record entirely and stopped blocking."""
+    brief = brief_file()
+    a = tmp_path / "a"
+    _run(
+        repo, monkeypatch,
+        ["start", "--brief", str(brief), "--run-dir", str(a), "--integration-ref", "main"],
+    )
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[
+                _payload(
+                    "needs-attention",
+                    findings_list=[_structured_finding(severity="low", title="a small thing")],
+                )
+            ],
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(a)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(a)])
+    primary = state.load_state(a).findings[0]["id"]
+    _run(
+        repo, monkeypatch,
+        ["findings", "record", "--run-dir", str(a), "--round", "1",
+         "--channel", runner.CHANNEL_FINDINGS, "--severity", "high",
+         "--title", "the same thing, and it is worse than it looks",
+         "--file", "file.txt", "--line", "1", "--duplicate-of", primary],
+    )
+    _run(repo, monkeypatch, ["stop", "--run-dir", str(a), "--reason", "left open"])
+
+    b = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "b", a)
+    carried = {item["id"]: item for item in cli._carried_history(state.load_state(b))}
+    assert len(carried) == 2, carried  # both records survive
+    assert all(item["still_open"] for item in carried.values()), carried
+    # The group's worst sighting is what gates, not the primary's own severity.
+    assert any(item["blocking"] for item in carried.values())
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(b)]) == cli.EXIT_BLOCKED
+
+
+def test_an_inherited_duplicate_closes_with_its_primary(
+    repo: Path, monkeypatch, brief_file, tmp_path
+):
+    """The other half, so the rule above cannot harden into never closing."""
+    brief = brief_file()
+    a = tmp_path / "a"
+    _run(
+        repo, monkeypatch,
+        ["start", "--brief", str(brief), "--run-dir", str(a), "--integration-ref", "main"],
+    )
+    _install_fake_plugin(
+        monkeypatch,
+        _write_fake_plugin(
+            tmp_path,
+            outputs=[_payload("needs-attention", findings_list=[_structured_finding()])],
+        ),
+    )
+    _run(repo, monkeypatch, ["gate", "--run-dir", str(a)])
+    _run(repo, monkeypatch, ["review", "--run-dir", str(a)])
+    primary = state.load_state(a).findings[0]["id"]
+    _run(
+        repo, monkeypatch,
+        ["findings", "record", "--run-dir", str(a), "--round", "1",
+         "--channel", runner.CHANNEL_FINDINGS, "--severity", "medium",
+         "--title", "the same defect", "--file", "file.txt", "--line", "1",
+         "--duplicate-of", primary],
+    )
+    _run(
+        repo, monkeypatch,
+        ["findings", "resolve", "--run-dir", str(a), "--id", primary,
+         "--disposition", "fixed", "--note", "fixed with a regression"],
+    )
+    _run(repo, monkeypatch, ["stop", "--run-dir", str(a), "--reason", "done"])
+
+    b = _successor(repo, monkeypatch, brief, tmp_path, tmp_path / "b", a)
+    assert cli._carried_history(state.load_state(b)) == []
+    assert _run(repo, monkeypatch, ["finish", "--run-dir", str(b)]) == cli.EXIT_OK

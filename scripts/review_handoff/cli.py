@@ -29,13 +29,14 @@ from .cli_triage import add_findings_parser
 from .console import EXIT_BLOCKED, EXIT_MISUSE, EXIT_OK, emit
 from .findings import (
     AWAITING,
-    BLOCKING_SEVERITIES,
     RESOLVED_DISPOSITIONS,
     Finding,
     FindingsError,
     duplicates_of,
-    group_findings,
     findings_from_structured,
+    group_findings,
+    group_is_blocking,
+    open_group_ids,
     protocol,
     unresolved_blocking,
     untriaged_channels,
@@ -357,14 +358,13 @@ def _release_block(state: RunState) -> str | None:
             f"{len(blockers)} blocking finding(s) are unresolved, so no channel's "
             f"approval releases this run: {lines}"
         )
-    inherited = [
-        item
-        for item in _linked_unresolved(state)
-        if item["severity"] in BLOCKING_SEVERITIES
-    ]
+    inherited = [item for item in _linked_unresolved(state) if item["blocking"]]
     if inherited:
         lines = "; ".join(
-            f"{i['origin_run']}/{i['id']} [{i['severity']}] {i['title']}" for i in inherited
+            f"{i['origin_run']}/{i['id']} [{i['severity']}"
+            + (", out-of-scope" if i["out_of_scope"] else "")
+            + f"] {i['title']}"
+            for i in inherited
         )
         return (
             f"{len(inherited)} blocking finding(s) inherited from the runs this one "
@@ -372,10 +372,20 @@ def _release_block(state: RunState) -> str | None:
             "('findings resolve --origin-run <run>'); carrying them forward is a "
             "release condition, not a report"
         )
+    obligations = _carried_obligations(state)
+    if obligations:
+        return (
+            "these review channels of the runs this one continues are unaccounted "
+            "for: "
+            + ", ".join(f"{o['origin_run']} {o['detail']}" for o in obligations)
+            + " — read their archives and attest what you found ('findings none "
+            "--origin-run <run>'); inheriting a run does not discharge what it "
+            "never read"
+        )
     missing = untriaged_channels(
         rounds=state.rounds,
         findings=_records(state),
-        attestations=state.triage,
+        attestations=[a for a in state.triage if not a.get("origin_run")],
         channels=REVIEW_CHANNELS,
     )
     if missing:
@@ -1047,6 +1057,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "evidence_block": _evidence_block(state, run_dir) or "",
         "history_block": _linked_block(state) or "",
         "carried_still_open": len(_linked_unresolved(state)),
+        "carried_obligations": len(_carried_obligations(state)),
         "gates_run": len(state.gates),
         "last_gate_passed": bool(state.gates and state.gates[-1]["passed"]),
     }
@@ -1193,6 +1204,7 @@ def _finish(args: argparse.Namespace, run_dir: Path, state: RunState) -> int:
         # any closure a later run recorded against it - separately.
         "carried_history": _carried_history(state),
         "linked_unresolved": _linked_unresolved(state),
+        "carried_obligations": _carried_obligations(state),
         "carried_resolutions": state.carried_resolutions,
         "protocol": protocol(),
         "events": state.events,
@@ -1256,11 +1268,9 @@ def _carried_history(state: RunState) -> list[dict]:
     out: list[dict] = []
     for _, older in walk.runs:
         ancestral = _records(older)
-        # An ancestor's duplicate whose primary was resolved is closed, the
-        # same way it is closed inside the run that raised it. Reading each
-        # disposition on its own reported such an item as still open, so a
-        # defect already dealt with came back as an inherited blocker.
-        open_in_origin = {f.id for f in unresolved_blocking(ancestral)}
+        # Judged exactly as the run that raised it judges them: by GROUP, so
+        # a duplicate is open while its primary is, and closed when it is.
+        open_in_origin = open_group_ids(ancestral)
         grouped = group_findings(ancestral)
         primary_of = {
             member.id: primary_id
@@ -1280,12 +1290,7 @@ def _carried_history(state: RunState) -> list[dict]:
             closed_later = bool(
                 closure and closure["disposition"] in RESOLVED_DISPOSITIONS
             )
-            closed_in_origin = (
-                finding.resolved
-                or (finding.id not in open_in_origin and primary_id != finding.id)
-                or (primary_id == finding.id and finding.id not in open_in_origin
-                    and any(m.resolved for m in grouped[primary_id]))
-            )
+            closed_in_origin = finding.id not in open_in_origin
             if closed_in_origin and closure is None:
                 continue  # closed in its own record; nothing carried
             out.append(
@@ -1296,6 +1301,13 @@ def _carried_history(state: RunState) -> list[dict]:
                     "title": finding.title,
                     "file": finding.file,
                     "channel": finding.channel,
+                    # Carried, because it is why this one gates: out of scope
+                    # needs the founder at any severity, and dropping the flag
+                    # made inheriting a finding a way to release it.
+                    "out_of_scope": finding.out_of_scope,
+                    # Whether the DEFECT gates, judged over its whole group -
+                    # the group's worst sighting, not this record's severity.
+                    "blocking": group_is_blocking(grouped[primary_id]),
                     # what the older record itself says, unmodified
                     "disposition": finding.disposition,
                     # what happened afterwards, recorded elsewhere
@@ -1309,6 +1321,56 @@ def _carried_history(state: RunState) -> list[dict]:
 def _linked_unresolved(state: RunState) -> list[dict]:
     """Carried items that nobody has closed, in their own record or since."""
     return [item for item in _carried_history(state) if item["still_open"]]
+
+
+def _carried_obligations(state: RunState) -> list[dict]:
+    """Review channels earlier in the chain that nobody has accounted for.
+
+    A run interrupted after its first channel blocks on its own account: one
+    channel completed and unread, the other's outcome unknown. Once it was
+    stopped and continued, nothing looked again - the release check examined
+    only the current run - so a fresh approving review could deliver without
+    that evidence ever being read.
+
+    An obligation is discharged in the SUCCESSOR, with
+    ``findings none --origin-run``, leaving the older record untouched.
+    """
+    walk = linked_chain(state)
+    if not walk.runs:
+        return []
+    holders = [state] + [older for _, older in walk.runs]
+    out: list[dict] = []
+    for _, older in walk.runs:
+        # Attestations for this ancestor, wherever they were recorded: its
+        # own, and any a later run made against it.
+        attestations = [
+            a
+            for holder in holders
+            for a in holder.triage
+            if a.get("origin_run", holder.run_id) == older.run_id
+        ]
+        for label in untriaged_channels(
+            rounds=older.rounds,
+            findings=_records(older),
+            attestations=attestations,
+            channels=REVIEW_CHANNELS,
+        ):
+            number, channel = _parse_channel_label(label)
+            out.append(
+                {
+                    "origin_run": older.run_id,
+                    "round": number,
+                    "channel": channel,
+                    "detail": label,
+                }
+            )
+    return out
+
+
+def _parse_channel_label(label: str) -> tuple[int, str]:
+    """Pull the round and channel back out of untriaged_channels' wording."""
+    parts = label.split()
+    return int(parts[1]), parts[3]
 
 
 def cmd_stop(args: argparse.Namespace) -> int:

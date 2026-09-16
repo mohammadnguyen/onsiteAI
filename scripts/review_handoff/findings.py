@@ -283,6 +283,28 @@ def group_findings(findings: list[Finding]) -> dict[str, list[Finding]]:
     return groups
 
 
+def group_is_open(group: list[Finding], primary: Finding) -> bool:
+    """Whether a defect is still outstanding, judged over its whole group.
+
+    The primary carries the disposition, since that is the record it is
+    written on. An out-of-scope member keeps the group open whatever the
+    primary says: linking two sightings must not become a way to retire the
+    one that needs the founder.
+    """
+    awaiting_founder = any(f.out_of_scope and not f.resolved for f in group)
+    return not primary.resolved or awaiting_founder
+
+
+def group_is_blocking(group: list[Finding]) -> bool:
+    """Whether a defect gates, judged over its whole group.
+
+    ANY blocking member blocks - a milder second sighting does not soften the
+    first, and out-of-scope blocks at any severity because it needs the
+    founder.
+    """
+    return any(f.blocking for f in group)
+
+
 def unresolved_blocking(findings: list[Finding]) -> list[Finding]:
     """Blocking findings still open, counted once per defect.
 
@@ -290,23 +312,30 @@ def unresolved_blocking(findings: list[Finding]) -> list[Finding]:
     records are kept and both are reported, but the group counts once:
     counting them separately would overstate what is outstanding and demand
     the same fix be signed off twice.
-
-    Within a group, blocking is whether ANY member is blocking - the lower
-    severity of a second sighting does not soften the first - and resolved is
-    whether the PRIMARY has been dispositioned, since that is the record the
-    disposition is written on.
     """
     by_id = {f.id: f for f in findings}
     out: list[Finding] = []
     for primary_id, group in group_findings(findings).items():
         primary = by_id[primary_id]
-        # An out-of-scope member keeps the whole group open whatever the
-        # primary says. Linking two sightings must not become a way to retire
-        # the one that needs the founder: closing the in-scope half would
-        # otherwise take the other half with it.
-        awaiting_founder = any(f.out_of_scope and not f.resolved for f in group)
-        if any(f.blocking for f in group) and (not primary.resolved or awaiting_founder):
+        if group_is_blocking(group) and group_is_open(group, primary):
             out.append(primary)
+    return out
+
+
+def open_group_ids(findings: list[Finding]) -> set[str]:
+    """Ids of every finding whose DEFECT is still open in this run's terms.
+
+    Membership is by group, so a duplicate is open exactly while its primary
+    is. An earlier version compared against the primary ids returned by
+    ``unresolved_blocking``, which no duplicate is ever in - so every
+    duplicate read as closed, and a low-severity primary with a high-severity
+    duplicate lost the high record entirely.
+    """
+    by_id = {f.id: f for f in findings}
+    out: set[str] = set()
+    for primary_id, group in group_findings(findings).items():
+        if group_is_open(group, by_id[primary_id]):
+            out.update(member.id for member in group)
     return out
 
 
