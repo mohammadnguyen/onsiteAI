@@ -1,0 +1,15 @@
+# Pinned tooling for the root gate: ruff, the root test suite, and the
+# reviewer-protocol validator.
+#
+# One manifest, installed by CI and by a local environment alike. jsonschema
+# was previously pinned only inside the CI workflow, so a correctly set up
+# local checkout could not import scripts/review_handoff at all - the
+# documented CLI commands failed before doing anything.
+#
+#   pip install -r requirements-tooling.txt
+#
+# The backend has its own dependencies; this file is only what the root gate
+# needs.
+pytest>=9,<10
+ruff==0.15.11
+jsonschema==4.26.0

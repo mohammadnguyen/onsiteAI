@@ -37,10 +37,14 @@ jobs:
           python-version: "3.12"
 
       - name: Install pinned tooling
-        run: pip install "pytest>=9,<10" "ruff==0.15.11"
+        # One manifest, shared with local environments. jsonschema validates
+        # the reviewer protocol against the copy vendored in
+        # scripts/review_handoff/protocol, pinned there by plugin version and
+        # digest, so the whole check runs offline.
+        run: pip install -r requirements-tooling.txt
 
-      - name: Ruff (calibration tooling + root tests)
-        run: ruff check evals/extraction/tools tests
+      - name: Ruff (calibration tooling + scripts + root tests)
+        run: ruff check evals/extraction/tools scripts tests
 
       - name: Root test suite (drift fixtures + calibration path policy)
         run: python -m pytest tests/ -q

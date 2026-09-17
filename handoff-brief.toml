@@ -1,0 +1,89 @@
+# The brief for THIS work package, used to exercise the workflow on itself.
+# Kept in the tree as a worked example of the template; a real package's
+# brief may live anywhere the founder approves it.
+#
+# The requirements below were implemented across 03d4cec..405df28 under the
+# correction task authorised after self-v5. Run self-v6 then stopped at its
+# round budget with the final review UNUSABLE - both channels failed
+# plugin-side, which is not a review outcome - so the work is verified
+# locally and in CI but has never carried a usable review verdict.
+#
+# RE-AUTHORISED BUDGET for this run, recorded here so it is not inferred from
+# the earlier ones: a first two-channel review plus AT MOST TWO fix-and-review
+# rounds, four hours in total. Clear defects inside the authorised scope are
+# fixed and verified without returning each one for approval. A technical
+# retry for plugin no-response keeps the previous boundary - one per channel,
+# counted inside the same total time limit, with the failed record preserved
+# and the program's counters untouched. Going over budget, needing a change
+# outside the scope, or hitting a requirements conflict means stopping and
+# reporting; no separate task is created to carry on. Runs self-v2 through
+# self-v6 keep their counts and history untouched; this is a new run linked
+# to self-v6, and the open items of every run behind it travel with the
+# delivery.
+
+name = "dev-review-handoff v1 (close-out)"
+
+requirements = [
+  "A versioned skill is the entry point and reuses existing tools; the deterministic parts (state, result validation, rounds, timeout, evidence archiving) are plain scripts, and the scripts, tests and process documentation are versioned with it.",
+  "The approved requirements, acceptance criteria, allowed change scope, prohibitions and verification commands are recorded as the run's input; solution choice is judged on correctness, maintainability and fit with this repository, never on smallest diff.",
+  "The reviewer reads the actual change, the requirements and the raw verification output; every review is bound to an explicit base and head, and a verdict stops applying when the worktree or its inputs change. Raw plugin results are kept; a summary written by the agent is not evidence.",
+  "Clear in-scope defects are fixed automatically; a defect may be refuted with code or tests rather than appeased. The round and time limits are configurable, survive a restart, and a resumed session cannot reset them. Tests sharing a database run serially.",
+  "The run stops and explains itself on a requirements conflict, on needing scope it was not granted, on insufficient permission, and on reaching the round or time limit. A failed call, a missing or invalid result, stale evidence, a failing required test or an incomplete review is never treated as a pass.",
+  "CLOSE-OUT 1. Historical evidence that carries no recorded digest must not support a pass. Older states stay readable and their history is not rewritten, but a delivery requires complete, checkable evidence bound to the current version. A digest may not be computed for an old log and then presented as proof of that log's historical integrity.",
+  "CLOSE-OUT 2. Each review channel's raw result, exit status, digest and remaining state are persisted before the next channel starts. An interrupted run must not lose findings that were already produced, and a state that is unknown must never be counted as no findings.",
+  "CLOSE-OUT 3. The run directory and every evidence path are fixed to an unambiguous location, so resuming from a different directory reads the same evidence.",
+  "CLOSE-OUT 4. An empty findings list, an absent field, a null field and a wrong type are strictly distinguished. Only an explicitly empty list, in a result matching the plugin's actual protocol, means no findings; an incomplete structure never passes, and a text fallback must not turn one into an approval.",
+  "PROTOCOL BOUNDARY. The problem is solved at the call contract, not by inspecting the output: a call that requests JSON must obtain a valid JSON envelope, and no textual approval may be extracted from non-conforming output or from stderr. Adversarial results are validated against the installed plugin's structured protocol; the native channel still reads its review body from a valid envelope. No further first-character special cases, and no unapproved compatibility modes.",
+  "COMPLETE PROTOCOL VALIDATION. A standard JSON Schema mechanism validates the result against the installed plugin version's whole schema - nested objects, array elements, required fields, types, enums and bounds. The protocol version is pinned and recorded so CI can reproduce the check offline. Verdict and findings are extracted only after validation succeeds, and no default value or type conversion may paper over an invalid field. Both the legitimate pass and the invalid refusal are covered, by one rule rather than a special case per example.",
+  "COMPLETE HISTORY TRACKING. The linked_run chain is followed to its end, preserving each item's originating run id and finding id. Coverage includes at least three generations, a broken link, an unreadable record and a cycle; an anomalous chain must never present as having no historical items. Older records stay unchanged, historical status and later fix evidence are presented separately, and an item already fixed but not rewritten in its own record is not reported as a current unresolved defect.",
+  "EVIDENCE AND REPORTING. When both channels find the same defect, the two pieces of evidence are linked so the item is not counted twice. CI's commit and raw test results are checked, CI and local status are reported separately, and the gate is completed under the existing rules.",
+]
+
+acceptance_criteria = [
+  "The key paths are covered by tests that assert the action taken: verification passes, a defect is found then fixed, a review result is invalid or missing, the version changes, a limit is reached, and the run stops out of bounds.",
+  "Failure scenarios are driven by isolated samples rather than a live service, and the real handoff is demonstrated by at least one genuine plugin invocation whose raw output is archived.",
+  "Tests assert what the workflow does, not how the reviewer phrased itself; no scoring system is built over model wording.",
+  "The repository's existing gates still pass and none of them is weakened.",
+  "Each close-out item has a regression that failed before its fix and passes after it, and the legitimate completion path is shown to still pass.",
+  "The protocol-boundary defect is reproduced before it is fixed, and both paths are covered afterwards: a legitimate pass through a valid envelope, and a refusal for non-conforming output.",
+  "Schema validation is exercised on both paths and the pinned protocol version is checked against the installed plugin wherever one is present.",
+  "The history chain is exercised across three generations and on each anomaly, with the originating run and finding ids preserved.",
+  "The earlier runs keep their stopped status, their counts and their history; this run is linked to self-v3 and carries its open items forward in the delivery.",
+]
+
+allowed_paths = [
+  "scripts/__init__.py",
+  "scripts/review_handoff/",
+  "tests/test_review_handoff.py",
+  ".claude/skills/dev-review-handoff/",
+  "docs/decisions/ADR-003-development-review-handoff.md",
+  "docs/decisions/ADR-001-automation-and-agent-architecture.md",
+  "docs/operations/dev-review-handoff.md",
+  ".github/workflows/backend-ci.yml",
+  "handoff-brief.toml",
+]
+
+prohibitions = [
+  "do not weaken or remove any existing gate",
+  "do not change business functionality or any product behaviour",
+  "do not start A2a.2 or any other work package",
+  "do not change account credentials, repository permissions or branch protection",
+  "do not stop, kill or restart another session or a shared runtime",
+  "do not add a new multi-dimensional review layer or expand the fix loop",
+  "do not extend functionality beyond the four close-out items",
+  "do not merge and do not deploy",
+]
+
+verification_commands = [
+  ["python", "-m", "ruff", "check", "evals/extraction/tools", "scripts", "tests"],
+  ["python", "-m", "pytest", "tests/", "-q"],
+  ["python", "scripts/check_decision_drift.py", "--require-full-coverage"],
+]
+
+[limits]
+# A first two-channel review plus at most two fix-and-review rounds, inside
+# a four-hour total. A technical retry for plugin no-response shares this
+# budget rather than extending it.
+max_review_rounds = 2
+max_total_seconds = 14400
+shared_lock = "sitetracker-test-database"
