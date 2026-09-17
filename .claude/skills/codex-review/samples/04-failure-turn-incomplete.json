@@ -1,0 +1,19 @@
+{
+  "review": "adversarial-review",
+  "target": {
+    "mode": "branch",
+    "label": "branch diff against 0000000000000000000000000000000000000000",
+    "baseRef": "0000000000000000000000000000000000000000",
+    "explicit": true
+  },
+  "threadId": "00000000-0000-0000-0000-00000000bbbb",
+  "codex": {
+    "status": 1,
+    "stdout": "I\u2019ll inspect the diff and the raw gate logs, then trace the retry and cleanup paths.",
+    "stderr": ""
+  },
+  "result": null,
+  "rawOutput": "I\u2019ll inspect the diff and the raw gate logs, then trace the retry and cleanup paths.",
+  "parseError": "Unexpected token 'I', \"I\u2019ll inspe\"... is not valid JSON",
+  "reasoningSummary": []
+}

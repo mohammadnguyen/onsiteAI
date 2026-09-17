@@ -1,0 +1,27 @@
+{
+  "review": "adversarial-review",
+  "target": {
+    "mode": "branch",
+    "label": "branch diff against 0000000000000000000000000000000000000000",
+    "baseRef": "0000000000000000000000000000000000000000",
+    "explicit": true
+  },
+  "threadId": "00000000-0000-0000-0000-00000000eeee",
+  "codex": {
+    "status": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "result": {
+    "verdict": "needs-attention",
+    "summary": "I could not establish whether the retry path holds the row lock while it waits, and the tests do not exercise a concurrent retry. Flagging rather than approving.",
+    "findings": [],
+    "next_steps": [
+      "Confirm whether the retry runs inside the lock scope.",
+      "Add a concurrent-retry test, or explain why one cannot occur."
+    ]
+  },
+  "rawOutput": "<the structured result, verbatim>",
+  "parseError": null,
+  "reasoningSummary": []
+}

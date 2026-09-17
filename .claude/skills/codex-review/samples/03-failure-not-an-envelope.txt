@@ -1,0 +1,8 @@
+Codex Review
+
+Target: branch diff against 0000000000000000000000000000000000000000
+
+I looked at the diff and the gate logs. The retry handling looks reasonable and
+the tests cover the new paths.
+
+Verdict: approve
