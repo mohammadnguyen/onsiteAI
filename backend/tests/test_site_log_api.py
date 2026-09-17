@@ -595,3 +595,110 @@ async def test_inline_replay_edge_cases_over_http(
     assert rep.json()["attachments"][0]["state"] == "pending"
     assert await _att_state(db_session, str(inline2)) == ("pending", 1)
     assert await _audit_counts(db_session) == before
+
+
+# -------------------------------------------------------------------
+# A2a.2 inline-text integrity, over HTTP.
+# -------------------------------------------------------------------
+
+
+async def test_inline_row_is_reserved_over_http(
+    client, contributor_token, other_token, admin_token
+):
+    """A client PUT to the server-owned inline row is refused with 422 and a
+    named code, and the denial ORDER is preserved: a caller who cannot see
+    the event still learns only that it is absent.
+
+    The declare here is made to fail so the row is left in the state that
+    opens the substitution window. Nothing is written after that 502: this
+    module's shared-session harness cannot serve a later write on a request
+    that ended in an exception, which is a property of the harness and not
+    of the guard. The healthy-event case is the next test.
+    """
+    from app.main import app
+    from app.services.evidence_storage import EvidenceStorageError, get_evidence_storage
+
+    class _Broken:
+        backend_name = "local"
+
+        async def put(self, evidence_id, chunks, *, attempt_no=None):
+            async for _ in chunks:
+                pass
+            raise EvidenceStorageError("backend unavailable")
+
+        def open(self, key):
+            raise AssertionError
+
+        async def exists(self, key):
+            return False
+
+    cid = str(uuid.uuid4())
+    app.dependency_overrides[get_evidence_storage] = lambda: _Broken()
+    try:
+        declared = await _declare(
+            client, contributor_token, capture_client_id=cid,
+            body_text="Poured 12m3 bay 3",
+        )
+    finally:
+        app.dependency_overrides.pop(get_evidence_storage, None)
+    assert declared.status_code == 502
+    eid = declared.json()["detail"]["site_log_event_id"]
+    url = f"/site-log-events/{eid}/attachments/{svc.inline_attachment_id(uuid.UUID(cid))}"
+
+    refused = await client.put(
+        url, files=_file(b"Poured 2m3 bay 3", "text/plain", "note.txt"),
+        headers=_auth(contributor_token),
+    )
+    assert refused.status_code == 422
+    assert "inline_text_reserved" in refused.json()["detail"]
+
+    # An admin is refused too: this is not a permission level, it is a row
+    # that no client owns.
+    assert (
+        await client.put(
+            url, files=_file(b"admin bytes", "text/plain", "note.txt"),
+            headers=_auth(admin_token),
+        )
+    ).status_code == 422
+
+    # Someone who cannot see the event gets the same answer they would get
+    # for an event that does not exist.
+    assert (
+        await client.put(
+            url, files=_file(b"nope", "text/plain", "note.txt"),
+            headers=_auth(other_token),
+        )
+    ).status_code == 404
+
+
+async def test_ordinary_attachments_are_unaffected_over_http(
+    client, contributor_token, site_log_session_factory
+):
+    """The guard is scoped to the one server-owned row, not to events that
+    carry inline text: on a healthy event the ordinary row uploads normally
+    and only the inline id is refused."""
+    a = _att(media="audio")
+    declared = await _declare(
+        client, contributor_token, body_text="also has inline text",
+        attachments=[a],
+    )
+    assert declared.status_code == 201, declared.text
+    eid = declared.json()["site_log_event_id"]
+    ordinary = await client.put(
+        f"/site-log-events/{eid}/attachments/{a['attachment_client_id']}",
+        files=_file(), headers=_auth(contributor_token),
+    )
+    assert ordinary.status_code == 201, ordinary.text  # first attempt: created
+
+    inline_id = next(
+        x["attachment_client_id"]
+        for x in declared.json()["attachments"]
+        if x["declared_media_type"] == "text"
+    )
+    refused = await client.put(
+        f"/site-log-events/{eid}/attachments/{inline_id}",
+        files=_file(b"restated", "text/plain", "note.txt"),
+        headers=_auth(contributor_token),
+    )
+    assert refused.status_code == 422
+    assert "inline_text_reserved" in refused.json()["detail"]

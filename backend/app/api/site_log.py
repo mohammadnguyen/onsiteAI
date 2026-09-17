@@ -80,6 +80,12 @@ def _map(exc: svc.SiteLogError) -> HTTPException:
         svc.SiteLogUploadInProgress: (409, "Upload in progress"),
         svc.SiteLogAttemptSuperseded: (409, "Upload attempt superseded"),
         svc.SiteLogMediaMismatch: (422, "MIME type disagrees with declared media type"),
+        svc.SiteLogInlineReserved: (
+            422, "inline_text_reserved: the inline-text attachment is written by "
+            "the server from the event's own text and cannot be uploaded"),
+        svc.SiteLogContentMismatch: (
+            422, "inline_text_content_mismatch: the stored object does not match "
+            "the event's text"),
         svc.SiteLogTooLarge: (413, "Upload exceeds the evidence size limit"),
         svc.SiteLogResetNotEligible: (409, "Pending attempt is not yet eligible for reset"),
         svc.SiteLogNothingToReset: (409, "Attachment is not pending"),

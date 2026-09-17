@@ -182,11 +182,68 @@ class SiteLogSameJob(SiteLogError):
     pass
 
 
+class SiteLogInlineReserved(SiteLogError):
+    """A client tried to upload to the server-owned inline-text row.
+
+    The inline row exists to hold revision 1's own words. Only the server
+    path may supply its bytes; a client upload to it would restate what was
+    captured without appending a revision, which is the correction
+    mechanism that exists to make such a change visible and reasoned.
+    """
+
+
+class SiteLogContentMismatch(SiteLogError):
+    """A stored inline object does not match revision 1's text.
+
+    Raised after the completion CAS and before the row is marked stored, so
+    the attempt fails and the Evidence row is never bound to bytes that
+    disagree with the words the event says were captured.
+    """
+
+
 class SiteLogAlreadyAssigned(SiteLogError):
     """assign-job on an event that already has a Job — use relink — 409."""
 
 
 # ------------------------------------------------------------- helpers
+
+
+@dataclass(frozen=True)
+class InlineExpectation:
+    """Revision 1's text, and the receipt an honest upload of it produces."""
+
+    body_text: str
+    sha256: str
+    size_bytes: int
+
+
+async def _inline_expectation(
+    db: AsyncSession, event: SiteLogEvent
+) -> InlineExpectation | None:
+    """What the inline object must contain, read from revision 1 itself.
+
+    Revision 1 is the as-captured original and is the ONLY source of inline
+    bytes. The request body is never used — not on the first attempt and
+    not on a retry — so re-sending different text cannot change what the
+    event is recorded as having said.
+
+    Returns None when revision 1 is absent or carries no text. Callers
+    refuse; none of them falls back to a caller-supplied value.
+    """
+    q = select(SiteLogEventRevision).where(
+        SiteLogEventRevision.site_log_event_id == event.site_log_event_id,
+        SiteLogEventRevision.tenant_id == event.tenant_id,
+        SiteLogEventRevision.revision_no == 1,
+    )
+    revision = (await db.execute(q)).scalar_one_or_none()
+    if revision is None or revision.body_text is None:
+        return None
+    raw = revision.body_text.encode("utf-8")  # exact bytes, no normalisation
+    return InlineExpectation(
+        body_text=revision.body_text,
+        sha256=hashlib.sha256(raw).hexdigest(),
+        size_bytes=len(raw),
+    )
 
 
 def inline_attachment_id(capture_client_id: uuid.UUID) -> uuid.UUID:
@@ -663,7 +720,6 @@ async def declare_capture(
             user=user,
             event=event,
             inline_id=inline_id,
-            body_text=body_text,
             max_bytes=max_bytes,
         )
         if not inline_failed and not attachments:
@@ -683,14 +739,30 @@ async def _run_inline_text(
     user: User,
     event: SiteLogEvent,
     inline_id: uuid.UUID,
-    body_text: str,
     max_bytes: int,
 ) -> bool:
     """Upload the inline row if it is awaiting/failed; leave pending alone
-    (2.1 §1). Returns True when the upload was attempted and failed."""
+    (2.1 §1). Returns True when the upload was attempted and failed.
+
+    The bytes come from revision 1 in the database, never from the request
+    that triggered this call. A declaration replay therefore re-uploads the
+    words the event was captured with, even if the caller sent different
+    ones — and a caller who sends different ones is already refused by the
+    declaration fingerprint before reaching here.
+    """
+    expectation = await _inline_expectation(db, event)
+    if expectation is None:
+        # Revision 1 is missing or carries no text. There is nothing
+        # authoritative to upload, and the request body is not a substitute
+        # for it, so the attempt is refused rather than guessed at.
+        logger.error(
+            "site_log inline upload refused: revision 1 unreadable event_id=%s",
+            event.site_log_event_id,
+        )
+        return True
 
     async def _one_chunk():
-        yield body_text.encode("utf-8")  # exact bytes, no normalisation
+        yield expectation.body_text.encode("utf-8")  # exact bytes, no normalisation
 
     try:
         await upload_attachment(
@@ -703,11 +775,12 @@ async def _run_inline_text(
             mime_type=INLINE_TEXT_MIME,
             chunks=_one_chunk(),
             max_bytes=max_bytes,
+            internal=True,
         )
         return False
     except SiteLogUploadInProgress:
         return False  # pending@N — never touched by a replay
-    except (EvidenceStorageError, SiteLogTooLarge):
+    except (EvidenceStorageError, SiteLogTooLarge, SiteLogContentMismatch):
         return True
 
 
@@ -728,11 +801,16 @@ async def acquire_attachment(
     event_id: uuid.UUID,
     attachment_client_id: uuid.UUID,
     mime_type: str,
+    internal: bool = False,
 ) -> tuple[SiteLogEventAttachment, Evidence, int, bool]:
     """Upload Txn A (2.1 §2 rows 1 and 9). Commits.
 
     Returns ``(attachment, evidence, attempt_no, replay)``. ``replay`` is
     True when the row is already ``stored`` — nothing is written.
+
+    ``internal`` is set only by the server's own inline-text path. Every
+    route into this function from the API leaves it False, which is what
+    reserves the inline row.
     """
     async with _lock_scope(db) as sp:
         event = await _lock_event(db, event_id)
@@ -744,6 +822,15 @@ async def acquire_attachment(
         att = await _lock_attachment(db, event, attachment_client_id)
         if att is None:
             raise SiteLogNotFound()
+        if not internal and attachment_client_id == inline_attachment_id(
+            event.capture_client_id
+        ):
+            # The inline row is server-owned. Refused AFTER the visibility
+            # and author/admin checks above, so a caller who cannot see the
+            # event still learns only that it does not exist; and refused
+            # BEFORE any branch that writes, so a refusal changes no state
+            # and records no audit. Ordinary rows are untouched by this.
+            raise SiteLogInlineReserved()
         if att.state is AttachmentState.stored:
             evidence = await db.get(Evidence, att.evidence_id)
             await sp.rollback()  # no-write replay: release locks only
@@ -894,6 +981,39 @@ async def _complete_once(
         raise SiteLogAttemptSuperseded()
     ev_rows = await _lock_evidence_rows(db, [att.evidence_id])
     evidence = ev_rows[0]
+    if att.attachment_client_id == inline_attachment_id(event.capture_client_id):
+        # Past the CAS, so this is the winning attempt and an obsolete one
+        # can never fail it. Before any write, so a mismatch binds nothing.
+        # Covers every route that produces a receipt, the adoption branch
+        # included: what is checked is the receipt, not how it was obtained.
+        expectation = await _inline_expectation(db, event)
+        if (
+            expectation is None
+            or stored.sha256 != expectation.sha256
+            or stored.size_bytes != expectation.size_bytes
+        ):
+            att.state = AttachmentState.failed
+            evidence.status = EvidenceStatus.failed
+            # Content-free on purpose: neither the stored bytes, their hash
+            # nor their length is recorded, so the audit cannot become a
+            # copy of the text it exists to protect.
+            db.add(
+                _evidence_audit(
+                    evidence.evidence_id, actor_id, "failed",
+                    {"reason": "content_mismatch", "attempt_no": attempt_no},
+                )
+            )
+            db.add(
+                _audit(
+                    event.site_log_event_id, event.tenant_id, actor_id,
+                    SiteLogAuditAction.attachment_state_changed,
+                    {"attachment_client_id": str(att.attachment_client_id),
+                     "from": "pending", "to": "failed",
+                     "attempt_no": attempt_no, "reason": "content_mismatch"},
+                )
+            )
+            await db.commit()  # the failure and its audit land together
+            raise SiteLogContentMismatch()
     # Value columns written exactly once, here, for the winning attempt.
     evidence.status = EvidenceStatus.stored
     evidence.size_bytes = stored.size_bytes
@@ -976,11 +1096,13 @@ async def upload_attachment(
     mime_type: str,
     chunks: AsyncIterator[bytes],
     max_bytes: int,
+    internal: bool = False,
 ) -> UploadResult:
     """Phase 2 orchestration: Txn A → stream (no lock) → Txn B / fail."""
     att, evidence, attempt_no, replay = await acquire_attachment(
         db, user=user, event_id=event_id,
         attachment_client_id=attachment_client_id, mime_type=mime_type,
+        internal=internal,
     )
     if replay:
         return UploadResult(attachment=att, evidence=evidence, replay=True)

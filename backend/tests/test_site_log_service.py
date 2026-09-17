@@ -8,6 +8,7 @@ adapter rooted in ``tmp_path``. Synthetic identifiers and bytes only.
 from __future__ import annotations
 
 import ast
+import json
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -37,6 +38,7 @@ from app.services import site_log as svc
 from app.services.evidence_storage import (
     EvidenceStorageError,
     LocalEvidenceStorage,
+    StoredObject,
     make_object_key,
 )
 
@@ -1178,3 +1180,280 @@ async def test_failed_inline_replay_502_again_then_200(
     row = await _att_row(db_session, first.view.event.site_log_event_id,
                          svc.inline_attachment_id(cid))
     assert (row.state, row.upload_attempt_no) == (AttachmentState.stored, 3)
+
+
+# ===================================================================
+# A2a.2 inline-text integrity: the inline Evidence must hold revision 1's
+# own words, and only the server may put them there.
+# ===================================================================
+
+
+class _FailingStorage(LocalEvidenceStorage):
+    """Fails the first ``fail_times`` puts, then behaves normally."""
+
+    def __init__(self, root, fail_times=1):
+        super().__init__(root)
+        self.fail_times = fail_times
+
+    async def put(self, evidence_id, chunks, attempt_no=None):
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            async for _ in chunks:
+                pass
+            raise EvidenceStorageError("backend unavailable")
+        return await super().put(evidence_id, chunks, attempt_no=attempt_no)
+
+
+class _ForgingStorage(LocalEvidenceStorage):
+    """Stores honestly but reports a receipt for different bytes.
+
+    Stands in for any route that can bind an object the caller did not
+    verify - a provider fault, or the adoption branch picking up an object
+    whose contents were not checked against this event.
+    """
+
+    async def put(self, evidence_id, chunks, attempt_no=None):
+        stored = await super().put(evidence_id, chunks, attempt_no=attempt_no)
+        return StoredObject(
+            key=stored.key,
+            sha256="f" * 64,
+            size_bytes=stored.size_bytes + 7,
+        )
+
+
+async def _inline_declare(db, storage, factory, user, body="Poured 12m3 bay 3"):
+    """Declare with inline text; returns (result, event_id, inline_id, body)."""
+    cid = uuid.uuid4()
+    res = await _declare(
+        db, storage, factory, user, capture_client_id=cid, body_text=body
+    )
+    return res, res.view.event.site_log_event_id, svc.inline_attachment_id(cid), body
+
+
+async def _stored_bytes(storage, db, evidence_id):
+    ev = await db.get(Evidence, evidence_id)
+    return b"".join([c async for c in storage.open(ev.storage_key)])
+
+
+async def test_client_cannot_upload_to_the_reserved_inline_row(
+    db_session, seeded_admin, site_log_session_factory, tmp_path
+):
+    """The defect: after the server's inline upload fails, the row is left
+    failed and its id is handed back to the caller, who can then PUT
+    different text to it. The Evidence then disagrees with revision 1 for
+    ever - Evidence is immutable and ``stored`` has no outgoing edge."""
+    storage = _FailingStorage(tmp_path)
+    res, eid, inline_id, body = await _inline_declare(
+        db_session, storage, site_log_session_factory, seeded_admin
+    )
+    assert res.inline_failed
+    att = await _att_row(db_session, eid, inline_id)
+    assert att.state is AttachmentState.failed
+
+    before_audit = await _count(db_session, SiteLogEventAuditLog, site_log_event_id=eid)
+    before_attempt = att.upload_attempt_no
+
+    with pytest.raises(svc.SiteLogInlineReserved):
+        await svc.upload_attachment(
+            db_session, storage, site_log_session_factory,
+            user=seeded_admin, event_id=eid, attachment_client_id=inline_id,
+            mime_type="text/plain; charset=utf-8",
+            chunks=_chunks(b"Poured 2m3 bay 3"), max_bytes=MAX_BYTES,
+        )
+
+    att = await _att_row(db_session, eid, inline_id)
+    assert att.state is AttachmentState.failed          # unchanged
+    assert att.upload_attempt_no == before_attempt      # no attempt consumed
+    assert await _count(
+        db_session, SiteLogEventAuditLog, site_log_event_id=eid
+    ) == before_audit                                    # refusal writes no audit
+
+
+@pytest.mark.parametrize("entry_state", ["failed", "awaiting_upload", "stored"])
+async def test_the_reserved_row_is_refused_in_every_entry_state(
+    db_session, seeded_admin, site_log_session_factory, tmp_path, entry_state
+):
+    """All three windows the retry design deliberately makes reachable."""
+    storage = (
+        LocalEvidenceStorage(tmp_path) if entry_state == "stored"
+        else _FailingStorage(tmp_path, fail_times=5)
+    )
+    res, eid, inline_id, _ = await _inline_declare(
+        db_session, storage, site_log_session_factory, seeded_admin
+    )
+    if entry_state == "awaiting_upload":
+        # The process-death window: declare committed, the upload never ran.
+        att = await _att_row(db_session, eid, inline_id)
+        att.state = AttachmentState.awaiting_upload
+        att.upload_attempt_no = 0
+        await db_session.commit()
+
+    with pytest.raises(svc.SiteLogInlineReserved):
+        await svc.upload_attachment(
+            db_session, storage, site_log_session_factory,
+            user=seeded_admin, event_id=eid, attachment_client_id=inline_id,
+            mime_type="text/plain; charset=utf-8",
+            chunks=_chunks(b"substituted"), max_bytes=MAX_BYTES,
+        )
+
+
+async def test_an_event_the_caller_cannot_see_is_still_404_not_422(
+    db_session, seeded_admin, seeded_contributor, site_log_session_factory, tmp_path
+):
+    """The denial ORDER matters: visibility and authorship are answered
+    before the reserved-row rule, so refusing the inline row never reveals
+    that an event exists to someone who could not otherwise tell."""
+    storage = _FailingStorage(tmp_path)
+    _, eid, inline_id, _ = await _inline_declare(
+        db_session, storage, site_log_session_factory, seeded_admin
+    )
+    with pytest.raises(svc.SiteLogNotFound):
+        await svc.upload_attachment(
+            db_session, storage, site_log_session_factory,
+            user=seeded_contributor, event_id=eid, attachment_client_id=inline_id,
+            mime_type="text/plain; charset=utf-8",
+            chunks=_chunks(b"substituted"), max_bytes=MAX_BYTES,
+        )
+
+
+async def test_ordinary_attachments_are_unaffected_by_the_reservation(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """The guard is scoped to the one server-owned row."""
+    a = _att(media="audio")
+    res = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        body_text="has inline text too", attachments=[a],
+    )
+    eid = res.view.event.site_log_event_id
+    out = await svc.upload_attachment(
+        db_session, storage, site_log_session_factory,
+        user=seeded_admin, event_id=eid,
+        attachment_client_id=a["attachment_client_id"],
+        mime_type="audio/m4a", chunks=_chunks(b"ordinary bytes"),
+        max_bytes=MAX_BYTES,
+    )
+    assert not out.replay
+    assert out.attachment.state is AttachmentState.stored
+    assert await _stored_bytes(storage, db_session, out.evidence.evidence_id) == (
+        b"ordinary bytes"
+    )
+
+
+async def test_a_receipt_that_disagrees_with_revision_1_fails_the_attempt(
+    db_session, seeded_admin, site_log_session_factory, tmp_path
+):
+    """Second half of the defect: even with the row reserved, a receipt for
+    bytes nobody checked must not be bound to the Evidence. Verified past
+    the CAS and before any write, so a mismatch binds nothing."""
+    storage = _ForgingStorage(tmp_path)
+    res, eid, inline_id, _ = await _inline_declare(
+        db_session, storage, site_log_session_factory, seeded_admin
+    )
+    assert res.inline_failed  # the mismatch is reported as a failed inline upload
+
+    att = await _att_row(db_session, eid, inline_id)
+    assert att.state is AttachmentState.failed
+    status, sha, _ = await _ev_cols(db_session, att.evidence_id)
+    assert status is EvidenceStatus.failed
+    assert sha is None  # nothing bound
+
+    audits = (
+        await db_session.execute(
+            select(SiteLogEventAuditLog).where(
+                SiteLogEventAuditLog.site_log_event_id == eid
+            )
+        )
+    ).scalars().all()
+    mismatch = [
+        a for a in audits if a.changed_fields.get("reason") == "content_mismatch"
+    ]
+    assert len(mismatch) == 1
+    # Content-free: the audit must not become a copy of the text it protects.
+    payload = json.dumps(mismatch[0].changed_fields)
+    assert "sha256" not in payload and "size_bytes" not in payload
+
+
+async def test_inline_recovery_stores_revision_1_text(
+    db_session, seeded_admin, site_log_session_factory, tmp_path
+):
+    """Recovery, within the replay conditions that already exist: a failed
+    inline row is re-uploaded by the server on the next declare replay, and
+    what lands is revision 1's text."""
+    storage = _FailingStorage(tmp_path, fail_times=1)
+    res, eid, inline_id, body = await _inline_declare(
+        db_session, storage, site_log_session_factory, seeded_admin
+    )
+    assert res.inline_failed
+
+    replay = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        capture_client_id=res.view.event.capture_client_id, body_text=body,
+    )
+    assert not replay.created and not replay.inline_failed
+    att = await _att_row(db_session, eid, inline_id)
+    assert att.state is AttachmentState.stored
+    assert await _stored_bytes(storage, db_session, att.evidence_id) == body.encode()
+
+
+async def test_inline_bytes_come_from_revision_1_not_from_the_request(
+    db_session, seeded_admin, site_log_session_factory, tmp_path
+):
+    """The authority is the stored revision, not whatever the caller sent.
+    Revision 1 is edited here to make the two differ; the upload must
+    follow the database."""
+    storage = _FailingStorage(tmp_path, fail_times=1)
+    res, eid, inline_id, body = await _inline_declare(
+        db_session, storage, site_log_session_factory, seeded_admin
+    )
+    revision = (
+        await db_session.execute(
+            select(SiteLogEventRevision).where(
+                SiteLogEventRevision.site_log_event_id == eid,
+                SiteLogEventRevision.revision_no == 1,
+            )
+        )
+    ).scalar_one()
+    revision.body_text = "what the record actually says"
+    await db_session.commit()
+
+    await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        capture_client_id=res.view.event.capture_client_id, body_text=body,
+    )
+    att = await _att_row(db_session, eid, inline_id)
+    assert att.state is AttachmentState.stored
+    assert await _stored_bytes(storage, db_session, att.evidence_id) == (
+        b"what the record actually says"
+    )
+
+
+async def test_a_missing_revision_1_refuses_rather_than_using_the_request(
+    db_session, seeded_admin, site_log_session_factory, tmp_path
+):
+    """No fallback. If the authoritative text cannot be read there is
+    nothing to upload, and the request body is not a substitute for it."""
+    storage = _FailingStorage(tmp_path, fail_times=1)
+    res, eid, inline_id, body = await _inline_declare(
+        db_session, storage, site_log_session_factory, seeded_admin
+    )
+    revision = (
+        await db_session.execute(
+            select(SiteLogEventRevision).where(
+                SiteLogEventRevision.site_log_event_id == eid,
+                SiteLogEventRevision.revision_no == 1,
+            )
+        )
+    ).scalar_one()
+    revision.body_text = None
+    await db_session.commit()
+
+    replay = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        capture_client_id=res.view.event.capture_client_id, body_text=body,
+    )
+    assert replay.inline_failed
+    att = await _att_row(db_session, eid, inline_id)
+    assert att.state is AttachmentState.failed
+    status, sha, _ = await _ev_cols(db_session, att.evidence_id)
+    assert sha is None  # nothing was uploaded from the request body

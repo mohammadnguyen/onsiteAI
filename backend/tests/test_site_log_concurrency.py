@@ -37,7 +37,11 @@ from app.models import (
 )
 from app.models.user import LanguageCode, User, UserRole
 from app.services import site_log as svc
-from app.services.evidence_storage import LocalEvidenceStorage
+from app.services.evidence_storage import (
+    EvidenceStorageError,
+    LocalEvidenceStorage,
+    StoredObject,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -512,3 +516,123 @@ async def test_positive_path_commits_caller_transaction(engine, factory, actors,
         assert (db.commits, db.rollbacks) == (1, 0)
     visible, _ = await _observed(engine, sentinel)
     assert visible == 1
+
+
+# ------------------------------------------------------------------
+# A2a.2 inline-text integrity, raced on a real database.
+# ------------------------------------------------------------------
+
+
+async def _inline_prepare(factory, storage, user, body="Poured 12m3 bay 3"):
+    """Declare inline text whose server-side upload fails, leaving the
+    reserved row in the state that opens the substitution window."""
+    cid = uuid.uuid4()
+    async with factory() as s:
+        res = await svc.declare_capture(
+            s, storage, factory, user=user, capture_client_id=cid, job_id=None,
+            occurred_at=None, internal_location=None, body_text=body,
+            attachments=[], max_bytes=MAX_BYTES,
+        )
+        return res.view.event.site_log_event_id, svc.inline_attachment_id(cid), cid, body
+
+
+class _FailOnce(LocalEvidenceStorage):
+    def __init__(self, root):
+        super().__init__(root)
+        self.failed = False
+
+    async def put(self, evidence_id, chunks, attempt_no=None):
+        if not self.failed:
+            self.failed = True
+            async for _ in chunks:
+                pass
+            raise EvidenceStorageError("backend unavailable")
+        return await super().put(evidence_id, chunks, attempt_no=attempt_no)
+
+
+async def test_a_client_put_racing_the_server_retry_never_wins(
+    engine, factory, actors, tmp_path
+):
+    """Two real connections, one row. Whatever the interleaving, the client
+    upload is refused and the Evidence ends up holding revision 1's text."""
+    admin, _contrib, _job_a, _job_b = actors
+    storage = _FailOnce(tmp_path)
+    eid, inline_id, cid, body = await _inline_prepare(factory, storage, admin)
+
+    async def client_put():
+        async with factory() as s:
+            with contextlib.suppress(svc.SiteLogUploadInProgress):
+                return await svc.upload_attachment(
+                    s, storage, factory, user=admin, event_id=eid,
+                    attachment_client_id=inline_id,
+                    mime_type="text/plain; charset=utf-8",
+                    chunks=_chunks(b"Poured 2m3 bay 3"), max_bytes=MAX_BYTES,
+                )
+
+    async def server_replay():
+        async with factory() as s:
+            with contextlib.suppress(svc.SiteLogUploadInProgress):
+                return await svc.declare_capture(
+                    s, storage, factory, user=admin, capture_client_id=cid,
+                    job_id=None, occurred_at=None, internal_location=None,
+                    body_text=body, attachments=[], max_bytes=MAX_BYTES,
+                )
+
+    results = await asyncio.gather(client_put(), server_replay(), return_exceptions=True)
+
+    # The decisive assertion is behavioural, not about which exception type
+    # appeared: whatever the interleaving, no object holding the client's
+    # words may end up bound to this event.
+    att, ev, _event = await _state(factory, eid, inline_id)
+    assert ev is not None
+    if ev.storage_key:
+        got = b"".join([c async for c in storage.open(ev.storage_key)])
+        assert got == body.encode("utf-8"), got
+    assert att.state in (AttachmentState.stored, AttachmentState.failed)
+
+    # And the refusal is the specific one, so a future change cannot satisfy
+    # the assertion above by accident (e.g. by failing the row for some
+    # unrelated reason).
+    assert any(
+        type(r).__name__ == "SiteLogInlineReserved" for r in results
+    ), results
+
+
+async def test_an_obsolete_attempt_cannot_fail_the_newer_one(
+    engine, factory, actors, tmp_path
+):
+    """An old attempt arriving late with a bad receipt must be rejected by
+    the CAS, not allowed to mark the current attempt content_mismatch."""
+    admin, _contrib, _job_a, _job_b = actors
+    storage = _FailOnce(tmp_path)
+    eid, inline_id, cid, body = await _inline_prepare(factory, storage, admin)
+
+    async with factory() as s:
+        att = (
+            await s.execute(
+                select(SiteLogEventAttachment).where(
+                    SiteLogEventAttachment.site_log_event_id == eid,
+                    SiteLogEventAttachment.attachment_client_id == inline_id,
+                )
+            )
+        ).scalar_one()
+        att_id, old_attempt = att.attachment_id, att.upload_attempt_no
+
+    # A newer attempt supersedes it.
+    async with factory() as s:
+        await svc.declare_capture(
+            s, storage, factory, user=admin, capture_client_id=cid, job_id=None,
+            occurred_at=None, internal_location=None, body_text=body,
+            attachments=[], max_bytes=MAX_BYTES,
+        )
+
+    bogus = StoredObject(key="evidence/x/deadbeef.a1", sha256="e" * 64, size_bytes=1)
+    with pytest.raises(svc.SiteLogAttemptSuperseded):
+        await svc.complete_attachment(
+            factory, actor_id=admin.user_id, event_id=eid, attachment_id=att_id,
+            attempt_no=old_attempt, stored=bogus, backend_name=storage.backend_name,
+        )
+
+    att, ev, _event = await _state(factory, eid, inline_id)
+    assert att.state is AttachmentState.stored
+    assert ev.status is EvidenceStatus.stored
