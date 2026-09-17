@@ -1273,7 +1273,20 @@ async def test_client_cannot_upload_to_the_reserved_inline_row(
 async def test_the_reserved_row_is_refused_in_every_entry_state(
     db_session, seeded_admin, site_log_session_factory, tmp_path, entry_state
 ):
-    """All three windows the retry design deliberately makes reachable."""
+    """The refusal holds whatever state the row is in.
+
+    A UNIT check over the three states, and honest about how each is
+    reached: ``failed`` and ``stored`` are produced by the service itself,
+    while ``awaiting_upload`` is CONSTRUCTED here by writing the row - it is
+    not a lifecycle test and does not prove that window is reachable.
+
+    The lifecycle versions of all three windows live in
+    ``test_site_log_concurrency.py`` on a real database, reached by pausing
+    the server rather than by editing rows:
+    ``test_a_client_put_in_the_declare_window_is_refused`` (process death),
+    ``test_an_admin_reset_reopens_nothing_for_a_client`` (reset), and
+    ``test_a_client_put_racing_the_server_retry_never_wins`` (retry).
+    """
     storage = (
         LocalEvidenceStorage(tmp_path) if entry_state == "stored"
         else _FailingStorage(tmp_path, fail_times=5)
@@ -1282,7 +1295,6 @@ async def test_the_reserved_row_is_refused_in_every_entry_state(
         db_session, storage, site_log_session_factory, seeded_admin
     )
     if entry_state == "awaiting_upload":
-        # The process-death window: declare committed, the upload never ran.
         att = await _att_row(db_session, eid, inline_id)
         att.state = AttachmentState.awaiting_upload
         att.upload_attempt_no = 0

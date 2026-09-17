@@ -550,52 +550,239 @@ class _FailOnce(LocalEvidenceStorage):
         return await super().put(evidence_id, chunks, attempt_no=attempt_no)
 
 
+class _ServerGate:
+    """A sync point inside the server's own inline path.
+
+    ``acquire_attachment`` is wrapped so the SERVER call (``internal=True``)
+    stops at a known place and waits to be released. The client's call is
+    never gated, so the interleaving under test is produced deliberately
+    rather than hoped for: ``asyncio.gather`` starting two coroutines is not
+    evidence that they contended for anything.
+
+    ``before`` gates the call BEFORE Txn A runs - the window after the
+    declare has committed and before the server owns the row. ``after``
+    gates it once the server holds the row pending at its new attempt.
+    """
+
+    def __init__(self, monkeypatch, *, when):
+        self.reached = asyncio.Event()
+        self.release = asyncio.Event()
+        self.when = when
+        self._real = svc.acquire_attachment
+
+        async def wrapper(db, **kw):
+            if not kw.get("internal"):
+                return await self._real(db, **kw)
+            if self.when == "before":
+                self.reached.set()
+                await self.release.wait()
+                return await self._real(db, **kw)
+            out = await self._real(db, **kw)
+            self.reached.set()
+            await self.release.wait()
+            return out
+
+        monkeypatch.setattr(svc, "acquire_attachment", wrapper)
+
+
+async def _audit_count(factory, event_id):
+    async with factory() as s:
+        return (
+            await s.execute(
+                select(func.count())
+                .select_from(SiteLogEventAuditLog)
+                .where(SiteLogEventAuditLog.site_log_event_id == event_id)
+            )
+        ).scalar_one()
+
+
+async def _read_back(storage, factory, event_id, client_id):
+    att, ev, _ = await _state(factory, event_id, client_id)
+    assert ev is not None and ev.storage_key, (att.state, ev)
+    return b"".join([c async for c in storage.open(ev.storage_key)])
+
+
 async def test_a_client_put_racing_the_server_retry_never_wins(
+    engine, factory, actors, tmp_path, monkeypatch
+):
+    """A REAL race on a real database, at a controlled point.
+
+    The server's recovery is held at the moment it owns the inline row at a
+    fresh attempt; the client's PUT then arrives on its own connection and
+    contends for that row. Both outcomes are asserted separately, so a
+    server-side failure cannot hide behind the client's refusal.
+    """
+    admin, _contrib, _job_a, _job_b = actors
+    storage = _FailOnce(tmp_path)
+    eid, inline_id, cid, body = await _inline_prepare(factory, storage, admin)
+    gate = _ServerGate(monkeypatch, when="after")
+
+    async def server_replay():
+        async with factory() as s:
+            return await svc.declare_capture(
+                s, storage, factory, user=admin, capture_client_id=cid,
+                job_id=None, occurred_at=None, internal_location=None,
+                body_text=body, attachments=[], max_bytes=MAX_BYTES,
+            )
+
+    server = asyncio.create_task(server_replay())
+    await asyncio.wait_for(gate.reached.wait(), timeout=10)
+
+    # The server now holds the row pending at its new attempt. The client
+    # arrives here, on an independent connection.
+    client_error = None
+    async with factory() as s:
+        try:
+            await svc.upload_attachment(
+                s, storage, factory, user=admin, event_id=eid,
+                attachment_client_id=inline_id,
+                mime_type="text/plain; charset=utf-8",
+                chunks=_chunks(b"Poured 2m3 bay 3"), max_bytes=MAX_BYTES,
+            )
+        except Exception as exc:  # noqa: BLE001 - the type is the assertion
+            client_error = exc
+
+    # Refused by the reservation itself, not by an incidental in-progress
+    # conflict: the guard runs before the state branches.
+    assert isinstance(client_error, svc.SiteLogInlineReserved), client_error
+
+    gate.release.set()
+    result = await asyncio.wait_for(server, timeout=30)   # raises on server failure
+    assert not result.inline_failed
+
+    att, ev, _ = await _state(factory, eid, inline_id)
+    assert att.state is AttachmentState.stored
+    assert ev.status is EvidenceStatus.stored
+    assert await _read_back(storage, factory, eid, inline_id) == body.encode("utf-8")
+
+
+async def test_a_client_put_in_the_declare_window_is_refused(
+    engine, factory, actors, tmp_path, monkeypatch
+):
+    """The process-death window, reached through the real lifecycle.
+
+    The server is stopped after the declare has COMMITTED and before it
+    acquires the inline row, which is exactly the state a process death
+    leaves behind - the row is awaiting_upload at attempt 0 because the
+    service put it there, not because a test rewrote it. The client's PUT
+    runs on an independent connection inside that window.
+    """
+    admin, _contrib, _job_a, _job_b = actors
+    storage = LocalEvidenceStorage(tmp_path)
+    gate = _ServerGate(monkeypatch, when="before")
+    cid, body = uuid.uuid4(), "Poured 12m3 bay 3"
+    inline_id = svc.inline_attachment_id(cid)
+
+    async def declare():
+        async with factory() as s:
+            return await svc.declare_capture(
+                s, storage, factory, user=admin, capture_client_id=cid,
+                job_id=None, occurred_at=None, internal_location=None,
+                body_text=body, attachments=[], max_bytes=MAX_BYTES,
+            )
+
+    server = asyncio.create_task(declare())
+    await asyncio.wait_for(gate.reached.wait(), timeout=10)
+
+    # The declare is committed and visible on another connection; the row
+    # exists and the server has not taken it yet.
+    async with factory() as s:
+        event = (
+            await s.execute(
+                select(SiteLogEvent).where(SiteLogEvent.capture_client_id == cid)
+            )
+        ).scalar_one()
+        eid = event.site_log_event_id
+    att, _ev, _ = await _state(factory, eid, inline_id)
+    assert att.state is AttachmentState.awaiting_upload
+    assert att.upload_attempt_no == 0
+
+    client_error = None
+    async with factory() as s:
+        try:
+            await svc.upload_attachment(
+                s, storage, factory, user=admin, event_id=eid,
+                attachment_client_id=inline_id,
+                mime_type="text/plain; charset=utf-8",
+                chunks=_chunks(b"Poured 2m3 bay 3"), max_bytes=MAX_BYTES,
+            )
+        except Exception as exc:  # noqa: BLE001 - the type is the assertion
+            client_error = exc
+    assert isinstance(client_error, svc.SiteLogInlineReserved), client_error
+
+    gate.release.set()
+    result = await asyncio.wait_for(server, timeout=30)
+    assert not result.inline_failed
+
+    att, ev, _ = await _state(factory, eid, inline_id)
+    assert att.state is AttachmentState.stored and ev.status is EvidenceStatus.stored
+    assert await _read_back(storage, factory, eid, inline_id) == body.encode("utf-8")
+
+
+async def test_an_admin_reset_reopens_nothing_for_a_client(
     engine, factory, actors, tmp_path
 ):
-    """Two real connections, one row. Whatever the interleaving, the client
-    upload is refused and the Evidence ends up holding revision 1's text."""
+    """The third entry window, produced by actually resetting.
+
+    The row is made pending by the server's own Txn A, then an admin reset
+    moves it pending -> failed through the real service call. A client PUT
+    into that window is refused and writes nothing, and the legitimate
+    server replay still recovers revision 1's text.
+    """
     admin, _contrib, _job_a, _job_b = actors
     storage = _FailOnce(tmp_path)
     eid, inline_id, cid, body = await _inline_prepare(factory, storage, admin)
 
-    async def client_put():
-        async with factory() as s:
-            with contextlib.suppress(svc.SiteLogUploadInProgress):
-                return await svc.upload_attachment(
-                    s, storage, factory, user=admin, event_id=eid,
-                    attachment_client_id=inline_id,
-                    mime_type="text/plain; charset=utf-8",
-                    chunks=_chunks(b"Poured 2m3 bay 3"), max_bytes=MAX_BYTES,
-                )
+    # Server-side Txn A only, on the failed row: it is left pending at a new
+    # attempt, which is the state a reset exists for. Reached through the
+    # service, not by writing the row.
+    async with factory() as s:
+        await svc.acquire_attachment(
+            s, user=admin, event_id=eid, attachment_client_id=inline_id,
+            mime_type="text/plain; charset=utf-8", internal=True,
+        )
 
-    async def server_replay():
-        async with factory() as s:
-            with contextlib.suppress(svc.SiteLogUploadInProgress):
-                return await svc.declare_capture(
-                    s, storage, factory, user=admin, capture_client_id=cid,
-                    job_id=None, occurred_at=None, internal_location=None,
-                    body_text=body, attachments=[], max_bytes=MAX_BYTES,
-                )
+    att, _ev, _ = await _state(factory, eid, inline_id)
+    assert att.state is AttachmentState.pending
 
-    results = await asyncio.gather(client_put(), server_replay(), return_exceptions=True)
+    async with factory() as s:
+        await svc.reset_attachment(
+            s, admin=admin, event_id=eid, attachment_client_id=inline_id,
+            reason="stuck upload", now=att.updated_at + timedelta(minutes=16),
+        )
+    att, _ev, _ = await _state(factory, eid, inline_id)
+    assert att.state is AttachmentState.failed
 
-    # The decisive assertion is behavioural, not about which exception type
-    # appeared: whatever the interleaving, no object holding the client's
-    # words may end up bound to this event.
-    att, ev, _event = await _state(factory, eid, inline_id)
-    assert ev is not None
-    if ev.storage_key:
-        got = b"".join([c async for c in storage.open(ev.storage_key)])
-        assert got == body.encode("utf-8"), got
-    assert att.state in (AttachmentState.stored, AttachmentState.failed)
+    before_state = (att.state, att.upload_attempt_no)
+    before_audit = await _audit_count(factory, eid)
 
-    # And the refusal is the specific one, so a future change cannot satisfy
-    # the assertion above by accident (e.g. by failing the row for some
-    # unrelated reason).
-    assert any(
-        type(r).__name__ == "SiteLogInlineReserved" for r in results
-    ), results
+    client_error = None
+    async with factory() as s:
+        try:
+            await svc.upload_attachment(
+                s, storage, factory, user=admin, event_id=eid,
+                attachment_client_id=inline_id,
+                mime_type="text/plain; charset=utf-8",
+                chunks=_chunks(b"Poured 2m3 bay 3"), max_bytes=MAX_BYTES,
+            )
+        except Exception as exc:  # noqa: BLE001 - the type is the assertion
+            client_error = exc
+    assert isinstance(client_error, svc.SiteLogInlineReserved), client_error
+
+    att, _ev, _ = await _state(factory, eid, inline_id)
+    assert (att.state, att.upload_attempt_no) == before_state  # no state written
+    assert await _audit_count(factory, eid) == before_audit    # no audit written
+
+    async with factory() as s:
+        replay = await svc.declare_capture(
+            s, storage, factory, user=admin, capture_client_id=cid, job_id=None,
+            occurred_at=None, internal_location=None, body_text=body,
+            attachments=[], max_bytes=MAX_BYTES,
+        )
+    assert not replay.inline_failed
+    att, ev, _ = await _state(factory, eid, inline_id)
+    assert att.state is AttachmentState.stored and ev.status is EvidenceStatus.stored
+    assert await _read_back(storage, factory, eid, inline_id) == body.encode("utf-8")
 
 
 async def test_an_obsolete_attempt_cannot_fail_the_newer_one(
