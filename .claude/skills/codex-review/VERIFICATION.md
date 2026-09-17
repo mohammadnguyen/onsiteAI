@@ -30,7 +30,7 @@ a valid native result. It is now `02-native-envelope.json`.
 
 ## 2. One real Codex call — succeeded
 
-The procedure reviewing itself. Raw result kept in `verification/call-01.log`,
+The procedure reviewing itself. Raw result kept in `verification/call-01.txt`,
 input verbatim in `verification/call-01.focus.txt`.
 
 ```
