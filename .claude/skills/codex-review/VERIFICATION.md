@@ -47,7 +47,8 @@ exit: 0   duration_seconds: 71.7
 structured `result` with a verdict and three findings — no intermediary, no
 state file, no controller.
 
-**Bound to the correct code version**: the envelope's own target says so.
+**Bound to a named range — established by three facts together, not by the
+envelope alone.** The envelope's target says:
 
 ```json
 {"mode": "branch",
@@ -56,9 +57,18 @@ state file, no controller.
  "explicit": true}
 ```
 
-`baseRef` is the base that was passed, `explicit: true`, and the tree was clean
-at `4254402`, so the reviewed range is exactly `78b5e2b..4254402` — the commit
-that introduced this procedure and nothing else.
+`baseRef` proves only **which base was passed in**, and `explicit: true` that the
+plugin used it rather than guessing. It says nothing about HEAD and nothing about
+the working tree. The other two facts come from outside the envelope, recorded in
+the log header of the call: `git rev-parse HEAD` was `4254402…`, and
+`git status --porcelain` was empty, checked before the call.
+
+Those three together make the reviewed range `78b5e2b..4254402`.
+
+**A gap in this record:** HEAD and the tree were checked *before* the call and not
+again after it. Nothing moved — no command in that window wrote to the worktree —
+but the after-check is what would have proven it, and it was not run. The
+procedure now requires both checks; this call predates that requirement.
 
 ### What it found — verdict `needs-attention`
 

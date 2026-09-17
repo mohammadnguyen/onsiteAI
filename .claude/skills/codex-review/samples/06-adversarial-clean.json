@@ -1,0 +1,24 @@
+{
+  "review": "adversarial-review",
+  "target": {
+    "mode": "branch",
+    "label": "branch diff against 0000000000000000000000000000000000000000",
+    "baseRef": "0000000000000000000000000000000000000000",
+    "explicit": true
+  },
+  "threadId": "00000000-0000-0000-0000-00000000dddd",
+  "codex": {
+    "status": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "result": {
+    "verdict": "approve",
+    "summary": "The retry now fetches a fresh token and the cleanup writes the failed status first. No defect I would hold this for.",
+    "findings": [],
+    "next_steps": []
+  },
+  "rawOutput": "<the structured result, verbatim>",
+  "parseError": null,
+  "reasoningSummary": []
+}

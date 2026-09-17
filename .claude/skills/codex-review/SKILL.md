@@ -173,15 +173,53 @@ channel never saw. Do not simplify this to one channel.
 
 ### Reading the result
 
-Parse `stdout` as JSON. It must yield an object. That is the whole test — no
-first-character check, no hunting for an object embedded in prose, no second mode
-for output that merely resembles JSON. Those heuristics are how a non-conforming
-answer becomes an approval. **stderr is diagnostic only and never carries a
-verdict.**
+Four checks, in order. **Parsing is the first of them, not the whole test** — an
+envelope that parses can still carry a failed call, an absent result or a result
+that does not conform.
+
+1. **The call succeeded.** Process exit code 0 **and** `codex.status` 0. Exit 1
+   or `codex.status` 1 means the turn did not complete, whatever else the
+   envelope contains.
+2. **It parses.** `stdout` parses as JSON and yields an object. No
+   first-character check, no hunting for an object embedded in prose, no second
+   mode for output that merely resembles JSON — those heuristics are how a
+   non-conforming answer becomes an approval. **stderr is diagnostic only and
+   never carries a verdict.**
+3. **There is a result.** On the adversarial channel, `result` is present and
+   non-null, `parseError` is null, and `result.findings` is an actual list —
+   an absent list and an empty list are different answers. On the native channel
+   there is no `result` key by design, and the check is that `codex.stdout`
+   carries a body rather than being empty.
+4. **It conforms to the protocol.** The structured result satisfies the plugin's
+   own `review-output.schema.json` for the installed version: required fields
+   present, types and enums as declared, `verdict` one of the values the schema
+   permits. A field that is missing, null or the wrong type is a protocol
+   violation, not a field to default. Read the schema in the installed plugin if
+   you need to check a shape.
+
+Fail any of the four and there is no verdict to read. Do not repair the gap.
 
 The adversarial channel returns a structured `result` with a verdict and
 findings. The native channel returns prose in `codex.stdout`; **read it
 yourself** — nothing classifies it for you.
+
+### Before and after every review call, check the version you reviewed
+
+`target.baseRef` in the envelope proves only **which base you passed in**. It
+says nothing about HEAD and nothing about the working tree, so it does not on its
+own establish what was reviewed.
+
+Record, and check yourself, immediately before and immediately after each call:
+
+```bash
+git rev-parse HEAD
+git status --porcelain
+```
+
+The review describes `base..HEAD` only if the recorded base is still an ancestor,
+HEAD is the same before and after, and the tree was clean at both points. If HEAD
+moved or the tree was dirty, the result describes something other than what you
+are about to claim it describes — discard it and call again on a settled tree.
 
 ### None of these is a pass
 
@@ -199,9 +237,18 @@ yourself** — nothing classifies it for you.
 
 ### Account for both channels, in writing
 
-For each channel, either enumerate its findings or state that you read it and it
-reported nothing. There is no third state. And keep "it reported nothing"
-distinct from "we never found out" — they are not the same statement.
+Every channel of every round ends in exactly **one of three** recorded outcomes,
+and they are recorded as three different things:
+
+| Outcome | What it means | What you write |
+|---|---|---|
+| **Completed, findings** | All four checks passed and the channel reported something | Enumerate every finding, with its severity and location |
+| **Completed, no findings** | All four checks passed and the channel reported nothing | State that you read it and it reported nothing — name the channel and the round |
+| **Failed or unknown** | Any of the four checks failed, or the call never returned, or the session ended before the outcome was recorded | Record the failure verbatim with its exit code and whatever the envelope said. **This is not "no findings"** |
+
+Collapsing the third into the second is the failure this table exists to prevent:
+"it reported nothing" and "we never found out" are not the same statement, and a
+round in which one channel failed is not a round that found nothing.
 
 ## 4. Decide, per finding
 
@@ -238,6 +285,23 @@ pieces of evidence, not two defects.
 (if anything was fixed) commit → gate → review again`. Every gate log and both
 channel outputs in a round belong to **one** HEAD. If they do not, the round is
 not evidence about anything.
+
+### Run the loop to its end — do not return each round for approval
+
+Inside a work package the founder has already approved, in-scope fixes, their
+tests and the re-review **proceed continuously**. Fixing a clear in-scope defect
+needs no fresh permission; that permission is what approving the package was.
+Stop only at the end of the package, or when a stop condition below fires.
+
+Reporting after every round, or asking whether to fix an in-scope defect the
+reviewer just found, is not caution — it spends the founder's attention on
+decisions they already made, which is the cost this whole procedure exists to
+reduce.
+
+This does **not** loosen the gate tiers. Those decide whether the *package* may
+be worked on at all and are settled before implementation starts; the light
+gate's STOP ends the turn at the package boundary, not between the rounds of a
+package already approved.
 
 ## 5. Stop
 
