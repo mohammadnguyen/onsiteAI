@@ -131,13 +131,27 @@ distinguished by reading it.
 Two channels, every round:
 
 ```bash
-BASE=$(git merge-base origin/main HEAD)
+BASE=<the SHA you recorded before you started>   # never recomputed here
 PLUGIN=~/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/codex-companion.mjs
 
 node "$PLUGIN" adversarial-review --wait --json --base "$BASE" --scope branch -- "<review input>"
 node "$PLUGIN" review            --wait --json --base "$BASE" --scope branch
 ```
 
+- **Use the base you recorded before you started. Do not recompute it.**
+  `git merge-base origin/main HEAD` is how you *found* it once; running it again
+  each round is how the review shrinks. If `origin/main` absorbs part of this
+  package between rounds, the new merge base excludes those commits and both
+  channels then report on a smaller range while the report still claims the
+  recorded one.
+  Check the recorded base is still an ancestor before each round:
+
+  ```bash
+  git merge-base --is-ancestor "$BASE" HEAD && echo ok
+  ```
+
+  If that fails, the branch history moved under you. **Stop and reassess the
+  review range** rather than picking a new base quietly.
 - **Pass `--base` explicitly, always.** Without it the plugin picks its own base
   and the review silently shrinks to a slice of the change.
 - **Flags and the review input are separate argv elements, never one string.**
@@ -193,8 +207,12 @@ distinct from "we never found out" — they are not the same statement.
 
 Every finding gets exactly one disposition, with the evidence behind it.
 
-- **Real and in scope** → fix it, then return to step 2. The gate runs again and
-  the review runs again; a fix is not done until both have.
+- **Real and in scope** → fix it, **commit it**, then return to step 2 with that
+  commit as the new HEAD. The gate runs again on that HEAD and both review
+  channels run again against the same HEAD and the recorded base; a fix is not
+  done until both have. Gating an uncommitted fix produces evidence for a tree
+  the reviewer will then refuse to look at, because step 3 requires a clean
+  tree — the loop cannot close any other way.
 - **Not real** → refute it with evidence: a test that passes, a line of code that
   already handles it, a scenario that cannot occur. Changing code you believe is
   correct, to make a reviewer stop complaining, is the failure this step exists
@@ -213,6 +231,13 @@ work, and a false positive is expensive in both directions.
 
 If both channels report the same defect, say so — it is one defect with two
 pieces of evidence, not two defects.
+
+### The loop, in one line
+
+`implement → commit → gate → review both channels → disposition every finding →
+(if anything was fixed) commit → gate → review again`. Every gate log and both
+channel outputs in a round belong to **one** HEAD. If they do not, the round is
+not evidence about anything.
 
 ## 5. Stop
 
