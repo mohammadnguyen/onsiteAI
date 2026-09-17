@@ -190,12 +190,18 @@ that does not conform.
    an absent list and an empty list are different answers. On the native channel
    there is no `result` key by design, and the check is that `codex.stdout`
    carries a body rather than being empty.
-4. **It conforms to the protocol.** The structured result satisfies the plugin's
-   own `review-output.schema.json` for the installed version: required fields
-   present, types and enums as declared, `verdict` one of the values the schema
-   permits. A field that is missing, null or the wrong type is a protocol
-   violation, not a field to default. Read the schema in the installed plugin if
-   you need to check a shape.
+4. **It conforms to what that channel owes.** The two channels owe different
+   things, and holding the native one to the structured contract would reject
+   every successful native review:
+
+   | | adversarial-review | review (native) |
+   |---|---|---|
+   | check 3 | `result` present and non-null, `parseError` null, `result.findings` an actual list | no `result` key by design; `codex.stdout` carries a non-empty body |
+   | check 4 | the result satisfies the plugin's own `review-output.schema.json` for the installed version — required fields present, types and enums as declared, `verdict` one of the values the schema permits | there is no schema; the body is prose, and the check is that you have **read it** and written down what it said |
+
+   On the structured side, a field that is missing, null or the wrong type is a
+   protocol violation, not a field to default. Read the schema in the installed
+   plugin if you need to check a shape.
 
 Fail any of the four and there is no verdict to read. Do not repair the gap.
 
@@ -242,13 +248,30 @@ and they are recorded as three different things:
 
 | Outcome | What it means | What you write |
 |---|---|---|
-| **Completed, findings** | All four checks passed and the channel reported something | Enumerate every finding, with its severity and location |
-| **Completed, no findings** | All four checks passed and the channel reported nothing | State that you read it and it reported nothing — name the channel and the round |
+| **Completed, findings** | All four checks passed and the channel reported something to deal with | Enumerate every finding, with its severity and location |
+| **Completed, no findings** | All four checks passed **and** the channel said, in every part of its answer, that it found nothing | State that you read it and it reported nothing — name the channel and the round |
 | **Failed or unknown** | Any of the four checks failed, or the call never returned, or the session ended before the outcome was recorded | Record the failure verbatim with its exit code and whatever the envelope said. **This is not "no findings"** |
 
 Collapsing the third into the second is the failure this table exists to prevent:
 "it reported nothing" and "we never found out" are not the same statement, and a
 round in which one channel failed is not a round that found nothing.
+
+**An empty `findings` list is not by itself a clean review.** The schema permits
+`verdict: needs-attention` with `findings: []`, and the review input template
+asks the reviewer to say `needs-attention` when it is unsure — so that shape is
+expected, not malformed. Read the whole answer before deciding which row a
+channel is in:
+
+- `approve`, `findings: []`, and nothing actionable in `summary` or `next_steps`
+  → **completed, no findings**.
+- `needs-attention` with `findings: []`, or anything actionable sitting only in
+  `summary` or `next_steps` → **completed, findings**. The verdict *is* the
+  finding. Disposition it like any other: extract the concern and fix, refute or
+  escalate it, or go back to the reviewer for the specifics inside the budget you
+  already have. What you may not do is record the channel as clean because the
+  list happened to be empty.
+- The same applies to the native channel, whose prose has no list at all: a body
+  that raises a concern in words is a finding, whatever it lacks in structure.
 
 ## 4. Decide, per finding
 
