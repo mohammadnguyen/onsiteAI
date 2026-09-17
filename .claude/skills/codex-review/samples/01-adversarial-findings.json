@@ -1,0 +1,58 @@
+{
+  "review": "adversarial-review",
+  "target": {
+    "mode": "branch",
+    "label": "branch diff against 0000000000000000000000000000000000000000",
+    "baseRef": "0000000000000000000000000000000000000000",
+    "explicit": true
+  },
+  "threadId": "00000000-0000-0000-0000-00000000aaaa",
+  "codex": {
+    "status": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "result": {
+    "verdict": "needs-attention",
+    "summary": "Do not ship yet: a retry replays an expired token, and the client half of the change is outside this package.",
+    "findings": [
+      {
+        "severity": "high",
+        "title": "Retry loop reuses the expired upload token",
+        "body": "On a transient storage failure the retry re-sends the token captured before the first attempt. A token that expired during the first attempt is therefore replayed on every retry, so the retry can only fail, and the row is left pending with no error recorded.",
+        "file": "backend/app/services/example_upload.py",
+        "line_start": 212,
+        "line_end": 229,
+        "confidence": 0.95,
+        "recommendation": "Fetch a fresh token inside the retry, or fail the attempt explicitly when the token has expired rather than replaying it."
+      },
+      {
+        "severity": "low",
+        "title": "Log line names the wrong field",
+        "body": "The failure log prints attempt_id where the surrounding code means upload_id, so a reader chasing a failure looks up the wrong row.",
+        "file": "backend/app/services/example_upload.py",
+        "line_start": 241,
+        "line_end": 241,
+        "confidence": 0.9,
+        "recommendation": "Print upload_id."
+      },
+      {
+        "severity": "medium",
+        "title": "OUT-OF-SCOPE The caller in the mobile client must change too",
+        "body": "The new error classification is only meaningful if the mobile client stops treating every failure as retryable. mobile/src/upload/queue.ts is outside this package's approved paths, so the fix cannot be made here, but shipping the backend half alone leaves the client retrying permanent failures for ever.",
+        "file": "mobile/src/upload/queue.ts",
+        "line_start": 88,
+        "line_end": 104,
+        "confidence": 0.8,
+        "recommendation": "Ask the founder to authorise the client change, or ship both halves together."
+      }
+    ],
+    "next_steps": [
+      "Fix the token replay, then re-gate and re-review.",
+      "Stop and ask the founder about the mobile caller."
+    ]
+  },
+  "rawOutput": "<the structured result, verbatim>",
+  "parseError": null,
+  "reasoningSummary": []
+}

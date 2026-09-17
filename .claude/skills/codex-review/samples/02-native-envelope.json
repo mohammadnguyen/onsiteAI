@@ -1,0 +1,17 @@
+{
+  "review": "review",
+  "target": {
+    "mode": "branch",
+    "label": "branch diff against 0000000000000000000000000000000000000000",
+    "baseRef": "0000000000000000000000000000000000000000",
+    "explicit": true
+  },
+  "threadId": "00000000-0000-0000-0000-00000000cccc",
+  "sourceThreadId": "00000000-0000-0000-0000-00000000cccc",
+  "codex": {
+    "status": 0,
+    "stdout": "The change is sound overall and the new classification is applied consistently.\nOne issue is worth raising before this ships.\n\nFull review comments:\n\n- [P2] Cleanup runs before the row is marked failed - backend/app/services/example_upload.py:266-274\n  The cleanup deletes the staged object and only then writes the failed status.\n  If the process dies between the two, the next reader sees a pending row whose\n  object no longer exists, and the recovery path cannot tell that case from a\n  slow upload still in flight. Write the status first, or make the reader treat a\n  missing object on a pending row as a failure rather than as work in progress.\n\nThis is the only defect I would hold the change for.\n",
+    "stderr": "",
+    "reasoning": []
+  }
+}
