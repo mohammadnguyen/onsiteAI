@@ -585,6 +585,34 @@ class _ServerGate:
         monkeypatch.setattr(svc, "acquire_attachment", wrapper)
 
 
+@contextlib.asynccontextmanager
+async def _gated_server(gate, coro):
+    """Run the gated server task so it can never be left suspended.
+
+    A client assertion that fails before the gate is released would
+    otherwise strand the server for ever, still holding the connection it
+    read revision 1 on - and this module drops its scratch database at
+    teardown, which a checked-out connection blocks. A reservation
+    regression, the very failure these tests exist to catch, would then
+    surface as a hung teardown instead of a clean assertion.
+
+    The caller still awaits the task explicitly on the happy path, so a
+    server-side failure propagates rather than being swallowed here.
+    """
+    task = asyncio.create_task(coro)
+    try:
+        yield task
+    finally:
+        gate.release.set()
+        if not task.done():
+            task.cancel()
+            # Only the cancellation we just requested is suppressed. A real
+            # server error still surfaces - and if the body is already
+            # unwinding, that error is the more informative one.
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
 async def _audit_count(factory, event_id):
     async with factory() as s:
         return (
@@ -625,30 +653,30 @@ async def test_a_client_put_racing_the_server_retry_never_wins(
                 body_text=body, attachments=[], max_bytes=MAX_BYTES,
             )
 
-    server = asyncio.create_task(server_replay())
-    await asyncio.wait_for(gate.reached.wait(), timeout=10)
+    async with _gated_server(gate, server_replay()) as server:
+        await asyncio.wait_for(gate.reached.wait(), timeout=10)
 
-    # The server now holds the row pending at its new attempt. The client
-    # arrives here, on an independent connection.
-    client_error = None
-    async with factory() as s:
-        try:
-            await svc.upload_attachment(
-                s, storage, factory, user=admin, event_id=eid,
-                attachment_client_id=inline_id,
-                mime_type="text/plain; charset=utf-8",
-                chunks=_chunks(b"Poured 2m3 bay 3"), max_bytes=MAX_BYTES,
-            )
-        except Exception as exc:  # noqa: BLE001 - the type is the assertion
-            client_error = exc
+        # The server now holds the row pending at its new attempt. The
+        # client arrives here, on an independent connection.
+        client_error = None
+        async with factory() as s:
+            try:
+                await svc.upload_attachment(
+                    s, storage, factory, user=admin, event_id=eid,
+                    attachment_client_id=inline_id,
+                    mime_type="text/plain; charset=utf-8",
+                    chunks=_chunks(b"Poured 2m3 bay 3"), max_bytes=MAX_BYTES,
+                )
+            except Exception as exc:  # noqa: BLE001 - the type is the assertion
+                client_error = exc
 
-    # Refused by the reservation itself, not by an incidental in-progress
-    # conflict: the guard runs before the state branches.
-    assert isinstance(client_error, svc.SiteLogInlineReserved), client_error
+        # Refused by the reservation itself, not by an incidental
+        # in-progress conflict: the guard runs before the state branches.
+        assert isinstance(client_error, svc.SiteLogInlineReserved), client_error
 
-    gate.release.set()
-    result = await asyncio.wait_for(server, timeout=30)   # raises on server failure
-    assert not result.inline_failed
+        gate.release.set()
+        result = await asyncio.wait_for(server, timeout=30)  # re-raises server failures
+        assert not result.inline_failed
 
     att, ev, _ = await _state(factory, eid, inline_id)
     assert att.state is AttachmentState.stored
@@ -681,38 +709,38 @@ async def test_a_client_put_in_the_declare_window_is_refused(
                 body_text=body, attachments=[], max_bytes=MAX_BYTES,
             )
 
-    server = asyncio.create_task(declare())
-    await asyncio.wait_for(gate.reached.wait(), timeout=10)
+    async with _gated_server(gate, declare()) as server:
+        await asyncio.wait_for(gate.reached.wait(), timeout=10)
 
-    # The declare is committed and visible on another connection; the row
-    # exists and the server has not taken it yet.
-    async with factory() as s:
-        event = (
-            await s.execute(
-                select(SiteLogEvent).where(SiteLogEvent.capture_client_id == cid)
-            )
-        ).scalar_one()
-        eid = event.site_log_event_id
-    att, _ev, _ = await _state(factory, eid, inline_id)
-    assert att.state is AttachmentState.awaiting_upload
-    assert att.upload_attempt_no == 0
+        # The declare is committed and visible on another connection; the
+        # row exists and the server has not taken it yet.
+        async with factory() as s:
+            event = (
+                await s.execute(
+                    select(SiteLogEvent).where(SiteLogEvent.capture_client_id == cid)
+                )
+            ).scalar_one()
+            eid = event.site_log_event_id
+        att, _ev, _ = await _state(factory, eid, inline_id)
+        assert att.state is AttachmentState.awaiting_upload
+        assert att.upload_attempt_no == 0
 
-    client_error = None
-    async with factory() as s:
-        try:
-            await svc.upload_attachment(
-                s, storage, factory, user=admin, event_id=eid,
-                attachment_client_id=inline_id,
-                mime_type="text/plain; charset=utf-8",
-                chunks=_chunks(b"Poured 2m3 bay 3"), max_bytes=MAX_BYTES,
-            )
-        except Exception as exc:  # noqa: BLE001 - the type is the assertion
-            client_error = exc
-    assert isinstance(client_error, svc.SiteLogInlineReserved), client_error
+        client_error = None
+        async with factory() as s:
+            try:
+                await svc.upload_attachment(
+                    s, storage, factory, user=admin, event_id=eid,
+                    attachment_client_id=inline_id,
+                    mime_type="text/plain; charset=utf-8",
+                    chunks=_chunks(b"Poured 2m3 bay 3"), max_bytes=MAX_BYTES,
+                )
+            except Exception as exc:  # noqa: BLE001 - the type is the assertion
+                client_error = exc
+        assert isinstance(client_error, svc.SiteLogInlineReserved), client_error
 
-    gate.release.set()
-    result = await asyncio.wait_for(server, timeout=30)
-    assert not result.inline_failed
+        gate.release.set()
+        result = await asyncio.wait_for(server, timeout=30)
+        assert not result.inline_failed
 
     att, ev, _ = await _state(factory, eid, inline_id)
     assert att.state is AttachmentState.stored and ev.status is EvidenceStatus.stored
