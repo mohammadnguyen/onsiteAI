@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -25,6 +26,7 @@ import {
 import { useMe } from '../../src/api/hooks/useAuth';
 import { useJobs } from '../../src/api/hooks/useJobs';
 import { JobPickerSheet } from '../../src/components/JobPickerSheet';
+import { BackLink } from '../../src/siteLog/BackLink';
 import { newCaptureId as newId } from '../../src/siteLog/ids';
 import { deriveMediaType } from '../../src/siteLog/media';
 import { runSubmit } from '../../src/siteLog/submit';
@@ -50,6 +52,14 @@ export default function NewSiteLogEntry() {
   // declaration is pinned, so edits could never reach the server.
   const [submitted, setSubmitted] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
+
+  // Attachments need the native file APIs: the picker URI is read back with
+  // expo-file-system before upload, and sent as a React Native file part.
+  // Neither works in a browser, and the flow's own file check would report
+  // every attachment as missing - so on web they are not offered at all,
+  // and the screen says why instead of failing quietly. Text capture works
+  // on every platform.
+  const attachmentsSupported = Platform.OS !== 'web';
 
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [recording, setRecording] = useState(false);
@@ -293,6 +303,7 @@ export default function NewSiteLogEntry() {
   return (
     <SafeAreaView style={s.safe} edges={['top', 'bottom']}>
       <ScrollView contentContainerStyle={s.body} keyboardShouldPersistTaps="handled">
+        <BackLink fallback="/site-log" />
         <Text style={s.h1}>{t('siteLog.new.title')}</Text>
 
         <TextInput
@@ -315,23 +326,27 @@ export default function NewSiteLogEntry() {
         </Pressable>
         <Text style={s.hint}>{t('siteLog.new.job_hint')}</Text>
 
-        <View style={s.actions}>
-          <Pressable style={s.action} onPress={pickPhoto} disabled={submitted}>
-            <Text style={s.actionText}>{t('siteLog.new.add_photo')}</Text>
-          </Pressable>
-          <Pressable style={s.action} onPress={pickDocument} disabled={submitted}>
-            <Text style={s.actionText}>{t('siteLog.new.add_document')}</Text>
-          </Pressable>
-          <Pressable
-            style={[s.action, recording ? s.actionActive : null]}
-            onPress={toggleRecording}
-            disabled={submitted || audioBusy}
-          >
-            <Text style={s.actionText}>
-              {recording ? t('siteLog.new.stop_recording') : t('siteLog.new.record_voice')}
-            </Text>
-          </Pressable>
-        </View>
+        {attachmentsSupported ? (
+          <View style={s.actions}>
+            <Pressable style={s.action} onPress={pickPhoto} disabled={submitted}>
+              <Text style={s.actionText}>{t('siteLog.new.add_photo')}</Text>
+            </Pressable>
+            <Pressable style={s.action} onPress={pickDocument} disabled={submitted}>
+              <Text style={s.actionText}>{t('siteLog.new.add_document')}</Text>
+            </Pressable>
+            <Pressable
+              style={[s.action, recording ? s.actionActive : null]}
+              onPress={toggleRecording}
+              disabled={submitted || audioBusy}
+            >
+              <Text style={s.actionText}>
+                {recording ? t('siteLog.new.stop_recording') : t('siteLog.new.record_voice')}
+              </Text>
+            </Pressable>
+          </View>
+        ) : (
+          <Text style={s.hint}>{t('siteLog.new.attachments_mobile_only')}</Text>
+        )}
 
         {attachments.map((a) => (
           <View key={a.attachment_client_id} style={s.att}>

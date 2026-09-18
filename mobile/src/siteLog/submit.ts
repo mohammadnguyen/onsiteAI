@@ -249,6 +249,14 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
 
   // ---- 2. Declare, if it does not exist yet ---------------------------
   if (!event) {
+    // Written BEFORE the request goes out, and flushed. Between the server
+    // creating the record and this client hearing about it there is a
+    // window in which the process can die - a crash, a kill, a battery.
+    // With the draft still saying "not sent", the next launch would assert
+    // something nobody observed, and the user would be invited to capture
+    // it all again. Saying "unknown" is both true and recoverable: resuming
+    // asks the server first, under the same capture_client_id.
+    await patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
     try {
       event = await declareCapture(declaration);
     } catch (err) {
@@ -274,6 +282,9 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
         await patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
         return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
       }
+      // The server ANSWERED and refused. Nothing was created, so the
+      // result is not unknown and the draft must stop saying it is.
+      await patch({ unconfirmed: false, last_message: null });
       const anyErr = err as { response?: { status?: number; data?: { detail?: unknown } } };
       const detail =
         typeof anyErr?.response?.data?.detail === 'string'

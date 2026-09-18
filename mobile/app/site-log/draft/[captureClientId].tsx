@@ -14,6 +14,7 @@ import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { useMe } from '../../../src/api/hooks/useAuth';
+import { BackLink } from '../../../src/siteLog/BackLink';
 import { runSubmit } from '../../../src/siteLog/submit';
 import { useAuthStore } from '../../../src/store/auth';
 import { useSiteLogDrafts } from '../../../src/store/siteLogDrafts';
@@ -115,6 +116,7 @@ export default function ResumeSiteLogDraft() {
   if (!draft) {
     return (
       <SafeAreaView style={s.safe} edges={['top']}>
+        <BackLink fallback="/site-log" />
         <Text style={s.empty}>{t('siteLog.draft.not_found')}</Text>
       </SafeAreaView>
     );
@@ -123,6 +125,7 @@ export default function ResumeSiteLogDraft() {
   return (
     <SafeAreaView style={s.safe} edges={['top', 'bottom']}>
       <ScrollView contentContainerStyle={s.body}>
+        <BackLink fallback="/site-log" />
         <Text style={s.h1}>{t('siteLog.draft.title')}</Text>
 
         {/* Three different things, never conflated: the save result is

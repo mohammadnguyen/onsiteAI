@@ -197,7 +197,10 @@
     "retry": "重试",
     "error_timeout": "请求超时，请检查网络后重试。",
     "error_offline": "无网络连接，请检查网络后重试。",
-    "unavailable_in_this_version": "此功能暂未开放。当前版本请使用「开支」和「项目」。"
+    "unavailable_in_this_version": "此功能暂未开放。当前版本请使用「开支」和「项目」。",
+    "back": "返回",
+    "ok": "好",
+    "remove": "移除"
   },
   "capture": {
     "title": "记一笔",
@@ -672,7 +675,8 @@
       "stop_recording": "停止录音",
       "submit": "保存现场记录",
       "sent_hint": "已发送。可在“我的现场记录”中查看或重试。",
-      "recording_note": "请先停止录音。停止后语音才会附加到本条记录。"
+      "recording_note": "请先停止录音。停止后语音才会附加到本条记录。",
+      "attachments_mobile_only": "照片、文件和语音需在手机 App 中添加。"
     },
     "list": {
       "title": "我的现场记录",
@@ -680,11 +684,11 @@
       "draft_no_text": "（无文字）",
       "no_text": "（无文字）",
       "empty": "暂无现场记录。",
-      "attachment_count": "{{count}} 个附件",
       "attachment_count_other": "{{count}} 个附件",
       "new": "新建",
       "drafts_section": "未完成的记录",
-      "draft_on_server": "已在服务器创建 — 状态：{{status}}"
+      "draft_on_server": "已在服务器创建 — 状态：{{status}}",
+      "attachment_count_one": "{{count}} 个附件"
     },
     "detail": {
       "title": "现场记录",

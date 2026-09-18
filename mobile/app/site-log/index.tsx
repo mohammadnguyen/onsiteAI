@@ -13,6 +13,7 @@ import { useTranslation } from 'react-i18next';
 import { useInfiniteQuery } from '@tanstack/react-query';
 
 import { useMe } from '../../src/api/hooks/useAuth';
+import { BackLink } from '../../src/siteLog/BackLink';
 import { MINE_PAGE_SIZE, listMine } from '../../src/api/siteLog';
 import { captureStatusBadgeKey } from '../../src/siteLog/status';
 import { useSiteLogDrafts } from '../../src/store/siteLogDrafts';
@@ -41,6 +42,9 @@ export default function MySiteLogRecords() {
 
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
+      <View style={s.backRow}>
+        <BackLink fallback="/(tabs)/home" />
+      </View>
       <View style={s.head}>
         <Text style={s.h1}>{t('siteLog.list.title')}</Text>
         <Pressable
@@ -130,6 +134,7 @@ export default function MySiteLogRecords() {
 
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: tokens.bg },
+  backRow: { paddingHorizontal: 8, paddingTop: 4 },
   head: {
     flexDirection: 'row',
     alignItems: 'center',

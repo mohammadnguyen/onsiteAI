@@ -17,6 +17,7 @@ import * as Sharing from 'expo-sharing';
 import { useAudioPlayer } from 'expo-audio';
 
 import { api } from '../../src/api/client';
+import { BackLink } from '../../src/siteLog/BackLink';
 import { getEvent, type AttachmentOut } from '../../src/api/siteLog';
 import { captureStatusBadgeKey } from '../../src/siteLog/status';
 import { useAuthStore } from '../../src/store/auth';
@@ -123,9 +124,18 @@ export default function SiteLogRecordDetail() {
       });
     };
 
-    let res = await attempt();
-    if (res.status === 401 && (await refreshSession())) {
+    let res;
+    try {
       res = await attempt();
+      if (res.status === 401 && (await refreshSession())) {
+        res = await attempt();
+      }
+    } catch {
+      // A dropped connection REJECTS rather than answering. Left uncaught it
+      // escaped the screen's handler, which has only a finally: the spinner
+      // cleared and nothing said why.
+      await FileSystem.deleteAsync(scratch, { idempotent: true });
+      return null;
     }
     if (res.status !== 200) {
       await FileSystem.deleteAsync(scratch, { idempotent: true });
@@ -169,6 +179,10 @@ export default function SiteLogRecordDetail() {
             file.mime ? { mimeType: file.mime } : undefined,
           );
         }
+      } catch {
+        // Playback and the share sheet can both throw. Whatever went wrong,
+        // the user is told rather than left with a button that did nothing.
+        setError(t('siteLog.error.download'));
       } finally {
         setBusyId(null);
       }
@@ -177,12 +191,20 @@ export default function SiteLogRecordDetail() {
   );
 
   if (q.isLoading) return <ActivityIndicator style={s.spinner} />;
-  if (!q.data) return <Text style={s.empty}>{t('siteLog.detail.not_found')}</Text>;
+  if (!q.data) {
+    return (
+      <SafeAreaView style={s.safe} edges={['top']}>
+        <BackLink fallback="/site-log" />
+        <Text style={s.empty}>{t('siteLog.detail.not_found')}</Text>
+      </SafeAreaView>
+    );
+  }
 
   const e = q.data;
   return (
     <SafeAreaView style={s.safe} edges={['top', 'bottom']}>
       <ScrollView contentContainerStyle={s.body}>
+        <BackLink fallback="/site-log" />
         <View style={s.headRow}>
           <Text style={s.h1}>{t('siteLog.detail.title')}</Text>
           <StatusBadge

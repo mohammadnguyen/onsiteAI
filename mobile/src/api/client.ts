@@ -142,6 +142,10 @@ api.interceptors.response.use(
         await useAuthStore.getState().clear();
         return Promise.reject(err);
       }
+      // The session this refresh belongs to. A refresh started under one
+      // account can answer after a sign-out and sign-in, and its answer
+      // must not reach into the session that replaced it.
+      const refreshStartedUnder = useAuthStore.getState().sessionNonce;
       refreshInFlight = (async () => {
         try {
           const r = await api.post<{
@@ -180,7 +184,13 @@ api.interceptors.response.use(
             refreshStatus === 401 ||
             refreshStatus === 403 ||
             refreshStatus === 422;
-          if (authFatal) {
+          // Only the session that ASKED can be ended by the answer. A
+          // stale 401 for account A, arriving after B signed in, would
+          // otherwise log B out - and nothing was wrong with B's token.
+          if (
+            authFatal &&
+            useAuthStore.getState().sessionNonce === refreshStartedUnder
+          ) {
             await useAuthStore.getState().clear();
           }
           return null;

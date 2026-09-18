@@ -197,7 +197,10 @@
     "retry": "Retry",
     "error_timeout": "Request timed out. Check your connection and try again.",
     "error_offline": "No connection. Check your network and try again.",
-    "unavailable_in_this_version": "This feature isn't available in the current version. For now, please use Expenses and Jobs."
+    "unavailable_in_this_version": "This feature isn't available in the current version. For now, please use Expenses and Jobs.",
+    "back": "Back",
+    "ok": "OK",
+    "remove": "Remove"
   },
   "capture": {
     "title": "Add expense",
@@ -672,7 +675,8 @@
       "stop_recording": "Stop recording",
       "submit": "Save site log entry",
       "sent_hint": "Already sent. Open it from My site log to check or retry.",
-      "recording_note": "Stop the recording first. A voice note is only attached once you stop."
+      "recording_note": "Stop the recording first. A voice note is only attached once you stop.",
+      "attachments_mobile_only": "Photos, documents and voice notes can be attached in the mobile app."
     },
     "list": {
       "title": "My site log",
@@ -680,11 +684,11 @@
       "draft_no_text": "(no text)",
       "no_text": "(no text)",
       "empty": "No site log records yet.",
-      "attachment_count": "{{count}} attachment",
       "attachment_count_other": "{{count}} attachments",
       "new": "New entry",
       "drafts_section": "Unfinished captures",
-      "draft_on_server": "Created on the server — status: {{status}}"
+      "draft_on_server": "Created on the server — status: {{status}}",
+      "attachment_count_one": "{{count}} attachment"
     },
     "detail": {
       "title": "Site log record",
