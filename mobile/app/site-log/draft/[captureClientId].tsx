@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -50,6 +50,12 @@ export default function ResumeSiteLogDraft() {
   // submission it started is still running.
   const sending = store.submitting.includes(String(captureClientId));
   const [banner, setBanner] = useState<string | null>(null);
+  // A submission outlives this screen; navigating after the user has moved
+  // on would replace whatever they opened next.
+  const mountedRef = useRef(true);
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
 
   const resume = useCallback(async () => {
     if (!draft || !userId) return;
@@ -66,10 +72,17 @@ export default function ResumeSiteLogDraft() {
         sessionNonce,
         patch: (p) => store.patchDurable(draft.capture_client_id, p),
       });
+    } catch {
+      // A progress write to storage rejected. The draft is still on disk;
+      // say so rather than leaving a spinner and a dead button.
+      setBanner(t('siteLog.error.draft_save_failed'));
+      return;
     } finally {
       store.endSubmit(draft.capture_client_id);
       setBusy(false);
     }
+
+    if (!mountedRef.current) return;
 
     if (outcome.kind !== 'error') {
       qc.invalidateQueries({ queryKey: ['site-log', 'mine'] });

@@ -670,3 +670,61 @@ describe('rescuing an older draft with no network', () => {
     expect(memfs.files.has(r.state.attachments[0].uri)).toBe(true);
   });
 });
+
+describe('a 502 that carries the event', () => {
+  it('does not put the rescued attachment back in the cache', async () => {
+    const legacyUri = 'file:///cache/legacy-502.jpg';
+    memfs.reset();
+    memfs.put(legacyUri, 16);
+    const d = draft({
+      attachments: [attachment({ uri: legacyUri, retained: undefined, size: 16 })],
+    });
+    mocked.findMineByCaptureClientId.mockResolvedValue(null);
+    mocked.declareCapture.mockRejectedValue(
+      httpError(502, serverEvent([
+        serverAttachment('att-1', 'awaiting_upload'),
+        serverAttachment(INLINE_ID, 'failed'),
+      ])),
+    );
+
+    const r = recorder(d);
+    const outcome = await runSubmit(r.ctx);
+
+    expect(outcome.kind).toBe('created_not_uploaded');
+    // The rescue happened before the declare; this path must not undo it,
+    // or the next resume would copy from a cache file that has gone.
+    expect(r.state.attachments[0].retained).toBe(true);
+    expect(r.state.attachments[0].uri).toContain(`/${USER}/${CAPTURE}/`);
+  });
+});
+
+describe('a server error while repairing the text', () => {
+  it('is reported as unknown, not as something that cannot be retried', async () => {
+    const d = draft({
+      declaration: {
+        capture_client_id: CAPTURE,
+        job_id: null,
+        occurred_at: null,
+        internal_location: null,
+        body_text: 'Poured 12m3 bay 3',
+        attachments: [],
+      },
+      attachments: [],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'partial_failed', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment(INLINE_ID, 'failed')], 'partial_failed'),
+    );
+    mocked.declareCapture.mockRejectedValue(httpError(500));
+
+    const r = recorder(d);
+    const outcome = await runSubmit(r.ctx);
+
+    // The same pinned declaration can be replayed, and it may even have
+    // taken behind the gateway. Telling the user it cannot be retried is
+    // the one thing that must not happen.
+    expect(outcome.kind).toBe('unconfirmed');
+    expect(r.state.last_message).toBe('siteLog.status.unconfirmed');
+    expect(r.state.server?.site_log_event_id).toBe(EVENT_ID);
+  });
+});

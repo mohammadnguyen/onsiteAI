@@ -252,10 +252,20 @@ export default function NewSiteLogEntry() {
   // Read by the unmount cleanup, which must see the CURRENT values rather
   // than the ones captured when the effect first ran.
   const sentRef = useRef(false);
+  /**
+   * Whether this screen is still the one the user is looking at.
+   *
+   * A submission outlives the screen that started it. Navigating with a
+   * global router from a screen that is gone would replace whatever the
+   * user opened next - and if that is another capture, its unmount cleanup
+   * takes its attachments with it.
+   */
+  const mountedRef = useRef(true);
   const userIdRef = useRef<string | null>(null);
   userIdRef.current = userId ?? null;
   useEffect(() => {
     return () => {
+      mountedRef.current = false;
       // Leaving this screen without sending discards the capture - the
       // attachments only ever existed in this screen's state - so the kept
       // copies go with it. A capture that WAS sent owns a draft now, and
@@ -346,10 +356,21 @@ export default function NewSiteLogEntry() {
         sessionNonce,
         patch: (p) => drafts.patchDurable(captureClientId, p),
       });
+    } catch {
+      // A progress write to storage rejected. The draft itself is already
+      // on disk, so nothing is lost, but the user must be told rather than
+      // left looking at a locked form.
+      setBanner(t('siteLog.error.draft_save_failed'));
+      return;
     } finally {
       drafts.endSubmit(captureClientId);
       setBusy(false);
     }
+
+    // Everything below decides what the USER sees next. The work is done
+    // and persisted either way; if they have moved on, leave them where
+    // they are.
+    if (!mountedRef.current) return;
 
     // The list screen stays mounted behind this one, so without this it
     // would still show the state from before this capture existed.

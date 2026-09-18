@@ -299,7 +299,10 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
         // The record EXISTS. Only the server's own inline upload failed.
         await rememberEvent(patch, carried);
         await patch({
-          attachments: mergeAttachmentStates(draft.attachments, carried),
+          // The RESCUED list: merging the draft's original one would put
+          // the cache URIs back and drop the retained flags, and the next
+          // resume would then copy from a file that is no longer there.
+          attachments: mergeAttachmentStates(attachments, carried),
           last_message: 'siteLog.status.inline_failed',
         });
         return {
@@ -368,14 +371,24 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
         await patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
         return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
       } else {
-        // An HTTP answer that is not a 502: the replay was refused and will
-        // be refused again. A job completed since the declare is the usual
-        // reason. The record and its ids stand as they are; the closed
-        // recovery path is recorded on the draft AND returned, so the screen
-        // states it instead of inviting a retry that cannot work. No
-        // substitute record is created and nothing is reported as saved.
-        limitation = 'siteLog.status.inline_unrecoverable';
-        await patch({ last_message: limitation });
+        const status = (err as { response?: { status?: number } })?.response?.status;
+        if (typeof status === 'number' && status < 500) {
+          // The server itself refused, and will refuse the same replay
+          // again - a job completed since the declare is the usual reason.
+          // The record and its ids stand; the closed recovery path is
+          // recorded AND returned so the screen states it instead of
+          // inviting a retry that cannot work. No substitute record is
+          // created and nothing is reported as saved.
+          limitation = 'siteLog.status.inline_unrecoverable';
+          await patch({ last_message: limitation });
+        } else {
+          // A 5xx or a 502 with no event in it says nothing about whether
+          // the replay took. Calling that permanent would tell the user to
+          // stop trying at exactly the moment trying again is the right
+          // thing to do.
+          await patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
+          return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
+        }
       }
     }
     if (sessionChanged()) return stale;
