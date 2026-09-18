@@ -73,6 +73,9 @@ export type SiteLogDraft = {
 type State = {
   drafts: SiteLogDraft[];
   upsert: (d: SiteLogDraft) => void;
+  /** Resolves once the persisted copy has actually been written. */
+  upsertDurable: (d: SiteLogDraft) => Promise<void>;
+  patchDurable: (captureClientId: string, p: Partial<SiteLogDraft>) => Promise<void>;
   patch: (captureClientId: string, p: Partial<SiteLogDraft>) => void;
   remove: (captureClientId: string) => void;
   forUser: (userId: string) => SiteLogDraft[];
@@ -81,6 +84,19 @@ type State = {
 };
 
 const MAX_DRAFTS = 20;
+const STORAGE_KEY = 'site-log-drafts';
+
+/**
+ * Write the current drafts to storage and wait for it.
+ *
+ * The persist middleware's own write is fire-and-forget; this repeats it
+ * synchronously with the same key and shape so a caller can be sure the
+ * recovery information is on disk before it sends anything.
+ */
+async function flushDrafts(): Promise<void> {
+  const state = { drafts: useSiteLogDrafts.getState().drafts };
+  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ state, version: 0 }));
+}
 
 export const useSiteLogDrafts = create<State>()(
   persist(
@@ -91,6 +107,17 @@ export const useSiteLogDrafts = create<State>()(
           drafts: [d, ...s.drafts.filter((x) => x.capture_client_id !== d.capture_client_id)]
             .slice(0, MAX_DRAFTS),
         })),
+      // zustand's persist middleware writes asynchronously, so a plain
+      // set() gives no guarantee the recovery information survives a crash
+      // a moment later. These await the write before the caller proceeds.
+      upsertDurable: async (d) => {
+        get().upsert(d);
+        await flushDrafts();
+      },
+      patchDurable: async (id, p) => {
+        get().patch(id, p);
+        await flushDrafts();
+      },
       patch: (id, p) =>
         set((s) => ({
           drafts: s.drafts.map((x) =>
@@ -103,6 +130,6 @@ export const useSiteLogDrafts = create<State>()(
       get: (id) => get().drafts.find((d) => d.capture_client_id === id),
       clearAll: () => set({ drafts: [] }),
     }),
-    { name: 'site-log-drafts', storage: createJSONStorage(() => AsyncStorage) },
+    { name: STORAGE_KEY, storage: createJSONStorage(() => AsyncStorage) },
   ),
 );

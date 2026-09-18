@@ -32,6 +32,7 @@ export default function SiteLogRecordDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const token = useAuthStore((s) => s.accessToken);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [playingUri, setPlayingUri] = useState<string | null>(null);
   const player = useAudioPlayer(playingUri ? { uri: playingUri } : null);
 
@@ -52,13 +53,22 @@ export default function SiteLogRecordDetail() {
       const target = `${FileSystem.cacheDirectory}sitelog-${att.evidence_id}`;
       const existing = await FileSystem.getInfoAsync(target);
       if (existing.exists) return target;
+      // Downloaded to a temporary name first. downloadAsync writes the
+      // response body whatever the status, so promoting on existence alone
+      // would cache a 401 page and then keep serving it as the attachment.
+      const scratch = `${target}.part`;
       const base = api.defaults.baseURL ?? '';
       const res = await FileSystem.downloadAsync(
         `${base}/evidence/${att.evidence_id}/download`,
-        target,
+        scratch,
         { headers: token ? { Authorization: `Bearer ${token}` } : undefined },
       );
-      return res.status === 200 ? res.uri : null;
+      if (res.status !== 200) {
+        await FileSystem.deleteAsync(scratch, { idempotent: true });
+        return null;
+      }
+      await FileSystem.moveAsync({ from: scratch, to: target });
+      return target;
     },
     [token],
   );
@@ -66,11 +76,19 @@ export default function SiteLogRecordDetail() {
   const open = useCallback(
     async (att: AttachmentOut) => {
       setBusyId(att.attachment_client_id);
+      setError(null);
       try {
         const uri = await fetchToCache(att);
-        if (!uri) return;
+        if (!uri) {
+          setError(t('siteLog.error.download'));
+          return;
+        }
         if (att.declared_media_type === 'audio') {
+          // Replace the source on the player we hold, then play it. Setting
+          // state and calling play() in the same tick played whatever the
+          // player had before - on the first tap, nothing at all.
           setPlayingUri(uri);
+          player.replace({ uri });
           player.play();
           return;
         }
@@ -79,7 +97,7 @@ export default function SiteLogRecordDetail() {
         setBusyId(null);
       }
     },
-    [fetchToCache, player],
+    [fetchToCache, player, t],
   );
 
   if (q.isLoading) return <ActivityIndicator style={s.spinner} />;
@@ -129,6 +147,7 @@ export default function SiteLogRecordDetail() {
           </View>
         ))}
 
+        {error ? <Text style={s.warnNote}>{error}</Text> : null}
         {e.capture_status === 'partial_failed' ? (
           <Text style={s.warnNote}>{t('siteLog.detail.partial_note')}</Text>
         ) : null}

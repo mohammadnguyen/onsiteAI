@@ -1648,10 +1648,42 @@ async def test_list_mine_returns_newest_first(
 async def test_list_mine_clamps_an_oversized_limit(
     db_session, seeded_admin, storage, site_log_session_factory
 ):
-    """The service clamps rather than trusting its caller; the route also
-    refuses out-of-range values, so the cap holds from both directions."""
-    await _declare(
-        db_session, storage, site_log_session_factory, seeded_admin, body_text="one"
-    )
-    views = await svc.list_mine(db_session, seeded_admin, limit=10_000)
-    assert len(views) <= svc.MINE_PAGE_MAX
+    """The service clamps rather than trusting its caller.
+
+    Proved against MORE records than the cap allows: asserting ``<= MAX``
+    over a handful of records is satisfied by any limit at all, so it would
+    have passed with no clamp in the code.
+    """
+    for i in range(svc.MINE_PAGE_MAX + 3):
+        await _declare(
+            db_session, storage, site_log_session_factory, seeded_admin,
+            body_text=f"record {i}",
+        )
+
+    clamped = await svc.list_mine(db_session, seeded_admin, limit=10_000)
+    assert len(clamped) == svc.MINE_PAGE_MAX
+
+    # And a limit inside the cap is honoured exactly, so the clamp is not
+    # simply overriding every request with the maximum.
+    assert len(await svc.list_mine(db_session, seeded_admin, limit=5)) == 5
+
+
+async def test_list_mine_pages_without_overlap_or_gaps(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """Stable order means consecutive pages partition the set."""
+    made = set()
+    for i in range(7):
+        res = await _declare(
+            db_session, storage, site_log_session_factory, seeded_admin,
+            body_text=f"page record {i}",
+        )
+        made.add(res.view.event.site_log_event_id)
+
+    seen: list = []
+    for offset in (0, 3, 6):
+        page = await svc.list_mine(db_session, seeded_admin, limit=3, offset=offset)
+        seen.extend(v.event.site_log_event_id for v in page)
+
+    assert len(seen) == len(set(seen)), "a record appeared on two pages"
+    assert made.issubset(set(seen)), "a record was skipped between pages"

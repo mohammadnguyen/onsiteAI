@@ -670,7 +670,8 @@
       "add_document": "Add document",
       "record_voice": "Record voice",
       "stop_recording": "Stop recording",
-      "submit": "Save site log entry"
+      "submit": "Save site log entry",
+      "sent_hint": "Already sent. Open it from My site log to check or retry."
     },
     "list": {
       "title": "My site log",
@@ -734,7 +735,11 @@
       "empty": "Add some text or an attachment first.",
       "photo_permission": "Photo access is needed to attach a photo.",
       "declare": "The site log entry could not be created.",
-      "lookup": "We could not reach the server to check this record."
+      "lookup": "We could not reach the server to check this record.",
+      "mic_permission": "Microphone access is needed to record a voice note.",
+      "recording": "The recording could not be started.",
+      "download": "That attachment could not be downloaded.",
+      "not_yours": "That draft belongs to a different account."
     }
   }
 }

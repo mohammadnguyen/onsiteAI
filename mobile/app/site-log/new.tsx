@@ -14,20 +14,21 @@ import { router } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
-import { useAudioRecorder, RecordingPresets } from 'expo-audio';
+import {
+  RecordingPresets,
+  requestRecordingPermissionsAsync,
+  setAudioModeAsync,
+  useAudioRecorder,
+} from 'expo-audio';
 
 import { useMe } from '../../src/api/hooks/useAuth';
 import { useJobs } from '../../src/api/hooks/useJobs';
 import { JobPickerSheet } from '../../src/components/JobPickerSheet';
+import { newCaptureId as newId } from '../../src/siteLog/ids';
 import { runSubmit } from '../../src/siteLog/submit';
 import { useSiteLogDrafts, type DraftAttachment } from '../../src/store/siteLogDrafts';
 import { PrimaryButton } from '../../src/ui/kit';
 import { tokens } from '../../src/ui/tokens';
-
-function newId(): string {
-  // RFC4122 v4 via the runtime's crypto, which React Native provides.
-  return (globalThis.crypto as Crypto).randomUUID();
-}
 
 export default function NewSiteLogEntry() {
   const { t } = useTranslation();
@@ -41,6 +42,9 @@ export default function NewSiteLogEntry() {
   const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
   const [jobPickerOpen, setJobPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Once a capture has been sent it is no longer editable here: the
+  // declaration is pinned, so edits could never reach the server.
+  const [submitted, setSubmitted] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
 
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
@@ -98,13 +102,34 @@ export default function NewSiteLogEntry() {
 
   const toggleRecording = useCallback(async () => {
     if (!recording) {
-      await recorder.prepareToRecordAsync();
-      recorder.record();
-      setRecording(true);
+      // Permission and the recording audio session both have to be in place
+      // first: Android rejects prepareToRecordAsync without the permission,
+      // and iOS refuses to start until the mode allows recording.
+      const perm = await requestRecordingPermissionsAsync();
+      if (!perm.granted) {
+        setBanner(t('siteLog.error.mic_permission'));
+        return;
+      }
+      try {
+        await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+        await recorder.prepareToRecordAsync();
+        recorder.record();
+        setRecording(true);
+      } catch {
+        setBanner(t('siteLog.error.recording'));
+        setRecording(false);
+      }
       return;
     }
-    await recorder.stop();
+    try {
+      await recorder.stop();
+    } catch {
+      setBanner(t('siteLog.error.recording'));
+    }
     setRecording(false);
+    // Hand the session back to playback so a recording can be played here
+    // or on the detail screen straight afterwards.
+    await setAudioModeAsync({ allowsRecording: false });
     const uri = recorder.uri;
     if (!uri) return;
     add({
@@ -116,7 +141,7 @@ export default function NewSiteLogEntry() {
       size: null,
       status: 'awaiting_upload',
     });
-  }, [add, recorder, recording]);
+  }, [add, recorder, recording, t]);
 
   const submit = useCallback(async () => {
     if (!me?.user_id) return;
@@ -127,28 +152,40 @@ export default function NewSiteLogEntry() {
     setBusy(true);
     setBanner(null);
 
-    const draft = {
-      capture_client_id: captureClientId,
-      user_id: me.user_id,
-      created_at: Date.now(),
-      updated_at: Date.now(),
-      declaration: null,
-      body_text: bodyText,
-      job_id: jobId,
-      attachments,
-      server: null,
-      unconfirmed: false,
-      last_message: null,
-    };
-    // Saved BEFORE the first request: if this request never returns, the
-    // typed text, the chosen files and the ids all survive.
-    drafts.upsert(draft);
+    // A draft for this capture may already exist, from a previous attempt
+    // whose answer was lost. Reuse it: overwriting would discard the pinned
+    // declaration and the server id, and a fresh declaration under the same
+    // capture id is either ignored or a fingerprint conflict.
+    const existing = drafts.get(captureClientId);
+    const draft =
+      existing ?? {
+        capture_client_id: captureClientId,
+        user_id: me.user_id,
+        created_at: Date.now(),
+        updated_at: Date.now(),
+        declaration: null,
+        body_text: bodyText,
+        job_id: jobId,
+        attachments,
+        server: null,
+        unconfirmed: false,
+        last_message: null,
+      };
+    // Written and FLUSHED before the first request: if the process dies now,
+    // the typed text, the chosen files and the ids are all still on disk.
+    await drafts.upsertDurable(draft);
+    setSubmitted(true);
 
-    const outcome = await runSubmit({
-      draft,
-      patch: (p) => drafts.patch(captureClientId, p),
-    });
-    setBusy(false);
+    let outcome;
+    try {
+      outcome = await runSubmit({
+        draft,
+        userId: me.user_id,
+        patch: (p) => drafts.patchDurable(captureClientId, p),
+      });
+    } finally {
+      setBusy(false);
+    }
 
     if (outcome.kind === 'complete') {
       drafts.remove(captureClientId);
@@ -156,7 +193,9 @@ export default function NewSiteLogEntry() {
       return;
     }
     if (outcome.kind === 'unconfirmed') {
-      setBanner(t('siteLog.status.unconfirmed'));
+      // The record may exist. Continue in the resume screen, which reads
+      // server state first — editing here would diverge from what was sent.
+      router.replace(`/site-log/draft/${captureClientId}` as never);
       return;
     }
     if (outcome.kind === 'error') {
@@ -189,6 +228,7 @@ export default function NewSiteLogEntry() {
           style={s.input}
           value={bodyText}
           onChangeText={setBodyText}
+          editable={!submitted}
           placeholder={t('siteLog.new.text_placeholder')}
           multiline
           accessibilityLabel={t('siteLog.new.text_placeholder')}
@@ -240,8 +280,9 @@ export default function NewSiteLogEntry() {
         <PrimaryButton
           label={t('siteLog.new.submit')}
           onPress={submit}
-          disabled={busy}
+          disabled={busy || submitted}
         />
+        {submitted ? <Text style={s.hint}>{t('siteLog.new.sent_hint')}</Text> : null}
       </ScrollView>
 
       <JobPickerSheet

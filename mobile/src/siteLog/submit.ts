@@ -45,8 +45,18 @@ export type SubmitOutcome =
 
 type Ctx = {
   draft: SiteLogDraft;
-  /** Persist progress after every step that learns something durable. */
-  patch: (p: Partial<SiteLogDraft>) => void;
+  /**
+   * Persist progress, durably. Awaited at every step that learns something
+   * which must survive the process dying a moment later.
+   */
+  patch: (p: Partial<SiteLogDraft>) => Promise<void>;
+  /**
+   * The signed-in user. A draft belongs to the account that created it and is
+   * never sent under another one - drafts deliberately survive an involuntary
+   * logout, so the next person to sign in on a shared phone must not be able
+   * to submit, or even resume, what the previous one wrote.
+   */
+  userId: string;
 };
 
 /** The event body a 502 from declare carries, if it carries one. */
@@ -95,8 +105,8 @@ async function serverStateFor(draft: SiteLogDraft): Promise<SiteLogEventOut | nu
   return await findMineByCaptureClientId(draft.capture_client_id);
 }
 
-function rememberEvent(ctx: Ctx, event: SiteLogEventOut): void {
-  ctx.patch({
+async function rememberEvent(ctx: Ctx, event: SiteLogEventOut): Promise<void> {
+  await ctx.patch({
     server: {
       site_log_event_id: event.site_log_event_id,
       capture_status: event.capture_status,
@@ -127,6 +137,9 @@ function mergeAttachmentStates(
  */
 export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   const { draft } = ctx;
+  if (draft.user_id !== ctx.userId) {
+    return { kind: 'error', messageKey: 'siteLog.error.not_yours' };
+  }
   const declaration: Declaration = draft.declaration ?? {
     capture_client_id: draft.capture_client_id,
     job_id: draft.job_id,
@@ -141,7 +154,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   };
   // Pin the declaration before the first request, so a retry replays exactly
   // what was first sent even if the user has since edited the form.
-  if (!draft.declaration) ctx.patch({ declaration });
+  if (!draft.declaration) await ctx.patch({ declaration });
 
   let event: SiteLogEventOut | null = null;
 
@@ -150,7 +163,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
     event = await serverStateFor(draft);
   } catch (err) {
     if (isUnconfirmed(err)) {
-      ctx.patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
+      await ctx.patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
       return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
     }
     return { kind: 'error', messageKey: 'siteLog.error.lookup' };
@@ -164,15 +177,15 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
       const carried = eventFrom502(err);
       if (carried) {
         // The record EXISTS. Only the server's own inline upload failed.
-        rememberEvent(ctx, carried);
-        ctx.patch({
+        await rememberEvent(ctx, carried);
+        await ctx.patch({
           attachments: mergeAttachmentStates(draft, carried),
           last_message: 'siteLog.status.inline_failed',
         });
         return { kind: 'created_not_uploaded', event: carried, blocked: [] };
       }
       if (isUnconfirmed(err)) {
-        ctx.patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
+        await ctx.patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
         return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
       }
       const anyErr = err as { response?: { status?: number; data?: { detail?: unknown } } };
@@ -183,7 +196,41 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
       return { kind: 'error', messageKey: 'siteLog.error.declare', detail };
     }
   }
-  rememberEvent(ctx, event);
+  await rememberEvent(ctx, event);
+
+  // ---- 2b. Recover the server-owned inline row, if it needs it --------
+  // The only way to repair inline text is to replay the declaration: the row
+  // is the server's, the client may not upload to it, and the bytes come from
+  // revision 1. Without this, a record whose inline upload failed once stayed
+  // partially failed for ever, because every later attempt found the event
+  // and skipped declare.
+  const declaredIdsForInline = declaration.attachments.map((a) => a.attachment_client_id);
+  const inlineNeedsRecovery = event.attachments.some(
+    (a) =>
+      !declaredIdsForInline.includes(a.attachment_client_id) &&
+      (a.state === 'failed' || a.state === 'awaiting_upload'),
+  );
+  if (inlineNeedsRecovery) {
+    try {
+      event = await declareCapture(declaration);
+      await rememberEvent(ctx, event);
+    } catch (err) {
+      const carried = eventFrom502(err);
+      if (carried) {
+        // Still failing server-side. The record stands; say so rather than
+        // retrying into the same wall.
+        event = carried;
+        await rememberEvent(ctx, event);
+        await ctx.patch({ last_message: 'siteLog.status.inline_failed' });
+      } else if (isUnconfirmed(err)) {
+        await ctx.patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
+        return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
+      }
+      // A 422 here means the declaration can no longer be replayed - a
+      // completed job is the usual reason. The record is kept as it is and
+      // the limitation is reported; no substitute record is created.
+    }
+  }
 
   // ---- 3. Upload what still needs uploading ---------------------------
   const declaredIds = declaration.attachments.map((a) => a.attachment_client_id);
@@ -192,6 +239,12 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
 
   const failed: string[] = [];
   const blocked: string[] = [];
+  // Whether the FILE is still on this phone is a local fact, tracked apart
+  // from the server's view of the attachment. Folding it into the same field
+  // let the final merge overwrite "the file is gone" with the server's
+  // `awaiting_upload`, and the screen then offered a retry that could only
+  // fail again.
+  const missingLocally = new Set<string>();
 
   for (const att of draft.attachments) {
     if (serverOwned.has(att.attachment_client_id)) continue; // never ours to send
@@ -206,13 +259,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
     }
     if (!(await fileStillExists(att.uri))) {
       failed.push(att.attachment_client_id);
-      ctx.patch({
-        attachments: draft.attachments.map((a) =>
-          a.attachment_client_id === att.attachment_client_id
-            ? { ...a, status: 'missing' }
-            : a,
-        ),
-      });
+      missingLocally.add(att.attachment_client_id);
       continue;
     }
     try {
@@ -225,7 +272,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
       if (isUnconfirmed(err)) {
         // The bytes may or may not have landed. Leave it; the next attempt
         // re-reads state and will skip it if it is stored.
-        ctx.patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
+        await ctx.patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
         return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
       }
       failed.push(att.attachment_client_id);
@@ -233,22 +280,42 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   }
 
   // ---- 4. Finalize, once nothing is still in flight -------------------
-  let finalEvent = await getEvent(event.site_log_event_id);
+  // This read is inside the uncertainty path like every other request. Left
+  // outside it, a connection lost after the uploads rejected out of the whole
+  // routine: the caller's spinner never cleared, and the draft was left
+  // marked confirmed when it was anything but.
+  let finalEvent: SiteLogEventOut;
+  try {
+    finalEvent = await getEvent(event.site_log_event_id);
+  } catch (err) {
+    if (isUnconfirmed(err)) {
+      await ctx.patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
+      return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
+    }
+    return { kind: 'error', messageKey: 'siteLog.error.lookup', event };
+  }
+
   const stillPending = finalEvent.attachments.some((a) => a.state === 'pending');
   if (!stillPending) {
     try {
       finalEvent = await finalizeCapture(finalEvent.site_log_event_id);
     } catch (err) {
       if (isUnconfirmed(err)) {
-        ctx.patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
+        await ctx.patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
         return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
       }
       // Finalize refuses while anything is in flight; the record still exists.
     }
   }
 
-  rememberEvent(ctx, finalEvent);
-  ctx.patch({ attachments: mergeAttachmentStates(draft, finalEvent) });
+  await rememberEvent(ctx, finalEvent);
+  await ctx.patch({
+    attachments: mergeAttachmentStates(draft, finalEvent).map((a) =>
+      missingLocally.has(a.attachment_client_id) && a.status !== 'stored'
+        ? { ...a, status: 'missing' as const }
+        : a,
+    ),
+  });
 
   if (blocked.length > 0) {
     return { kind: 'created_not_uploaded', event: finalEvent, blocked };

@@ -12,6 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 
+import { useMe } from '../../../src/api/hooks/useAuth';
 import { runSubmit } from '../../../src/siteLog/submit';
 import { useSiteLogDrafts } from '../../../src/store/siteLogDrafts';
 import { PrimaryButton } from '../../../src/ui/kit';
@@ -28,7 +29,13 @@ export default function ResumeSiteLogDraft() {
   const { t } = useTranslation();
   const { captureClientId } = useLocalSearchParams<{ captureClientId: string }>();
   const store = useSiteLogDrafts();
-  const draft = store.get(String(captureClientId));
+  const { data: me } = useMe();
+  const found = store.get(String(captureClientId));
+  // Drafts survive an involuntary logout on purpose, so the next person to
+  // sign in on a shared phone must not be able to read - let alone resume -
+  // what the previous one wrote. Ownership is checked here, not only in the
+  // list that happens to filter.
+  const draft = found && me?.user_id && found.user_id === me.user_id ? found : undefined;
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
 
@@ -36,11 +43,17 @@ export default function ResumeSiteLogDraft() {
     if (!draft) return;
     setBusy(true);
     setBanner(null);
-    const outcome = await runSubmit({
-      draft,
-      patch: (p) => store.patch(draft.capture_client_id, p),
-    });
-    setBusy(false);
+    if (!me?.user_id) return;
+    let outcome;
+    try {
+      outcome = await runSubmit({
+        draft,
+        userId: me.user_id,
+        patch: (p) => store.patchDurable(draft.capture_client_id, p),
+      });
+    } finally {
+      setBusy(false);
+    }
 
     if (outcome.kind === 'complete') {
       store.remove(draft.capture_client_id);
@@ -68,7 +81,7 @@ export default function ResumeSiteLogDraft() {
         },
       ],
     );
-  }, [draft, store, t]);
+  }, [draft, me?.user_id, store, t]);
 
   const discard = useCallback(() => {
     if (!draft) return;
