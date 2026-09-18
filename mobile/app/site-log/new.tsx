@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -27,6 +27,12 @@ import { useMe } from '../../src/api/hooks/useAuth';
 import { useJobs } from '../../src/api/hooks/useJobs';
 import { JobPickerSheet } from '../../src/components/JobPickerSheet';
 import { BackLink } from '../../src/siteLog/BackLink';
+import {
+  RetentionError,
+  releaseAttachment,
+  releaseCapture,
+  retainAttachment,
+} from '../../src/siteLog/files';
 import { newCaptureId as newId } from '../../src/siteLog/ids';
 import { deriveMediaType } from '../../src/siteLog/media';
 import { runSubmit } from '../../src/siteLog/submit';
@@ -38,6 +44,10 @@ import { tokens } from '../../src/ui/tokens';
 export default function NewSiteLogEntry() {
   const { t } = useTranslation();
   const { data: me } = useMe();
+  // Same reason as the list screen: a capture must be startable with no
+  // signal, and it must be filed under the right account when it is.
+  const tokenUserId = useAuthStore((s) => s.userId);
+  const userId = me?.user_id ?? tokenUserId;
   const { data: jobs } = useJobs();
   const drafts = useSiteLogDrafts();
   const qc = useQueryClient();
@@ -77,9 +87,40 @@ export default function NewSiteLogEntry() {
     [activeJobs, jobId],
   );
 
-  const add = useCallback((a: DraftAttachment) => {
-    setAttachments((prev) => [...prev, a]);
-  }, []);
+  /**
+   * Keep the bytes, then record the attachment.
+   *
+   * In that order, and never the other way round: an attachment recorded
+   * against a cache URI is a draft claiming to hold something it may lose.
+   * If the copy fails - no space is the usual reason - the user is told and
+   * nothing is added, rather than a draft being quietly left incomplete.
+   */
+  const add = useCallback(
+    async (a: DraftAttachment, sourceUri: string): Promise<void> => {
+      if (!userId) return;
+      try {
+        const kept = await retainAttachment({
+          userId,
+          captureClientId,
+          attachmentId: a.attachment_client_id,
+          sourceUri,
+          name: a.name,
+          expectedSize: a.size,
+        });
+        setAttachments((prev) => [
+          ...prev,
+          { ...a, uri: kept.uri, size: a.size ?? kept.size, retained: true },
+        ]);
+      } catch (err) {
+        setBanner(
+          err instanceof RetentionError && err.cause === 'unavailable'
+            ? t('siteLog.error.attachments_unavailable')
+            : t('siteLog.error.attachment_not_kept'),
+        );
+      }
+    },
+    [captureClientId, t, userId],
+  );
 
   const pickPhoto = useCallback(async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -91,15 +132,18 @@ export default function NewSiteLogEntry() {
     const asset = res.canceled ? null : res.assets[0];
     if (!asset) return;
     const mime = asset.mimeType ?? 'image/jpeg';
-    add({
-      attachment_client_id: newId(),
-      media_type: deriveMediaType(mime),
-      uri: asset.uri,
-      name: asset.fileName ?? 'photo.jpg',
-      mime,
-      size: asset.fileSize ?? null,
-      status: 'awaiting_upload',
-    });
+    await add(
+      {
+        attachment_client_id: newId(),
+        media_type: deriveMediaType(mime),
+        uri: asset.uri,
+        name: asset.fileName ?? 'photo.jpg',
+        mime,
+        size: asset.fileSize ?? null,
+        status: 'awaiting_upload',
+      },
+      asset.uri,
+    );
   }, [add, t]);
 
   const pickDocument = useCallback(async () => {
@@ -112,15 +156,18 @@ export default function NewSiteLogEntry() {
     // The declaration is pinned, so that refusal was permanent: the class is
     // derived here the same way instead.
     const mime = asset.mimeType ?? 'application/octet-stream';
-    add({
-      attachment_client_id: newId(),
-      media_type: deriveMediaType(mime),
-      uri: asset.uri,
-      name: asset.name,
-      mime,
-      size: asset.size ?? null,
-      status: 'awaiting_upload',
-    });
+    await add(
+      {
+        attachment_client_id: newId(),
+        media_type: deriveMediaType(mime),
+        uri: asset.uri,
+        name: asset.name,
+        mime,
+        size: asset.size ?? null,
+        status: 'awaiting_upload',
+      },
+      asset.uri,
+    );
   }, [add]);
 
   const toggleRecording = useCallback(async () => {
@@ -161,15 +208,20 @@ export default function NewSiteLogEntry() {
       // capture.
       const uri = recorder.uri;
       if (uri) {
-        add({
-          attachment_client_id: newId(),
-          media_type: 'audio',
+        // A recording lives in a temporary file by definition, so this copy
+        // is the only thing that makes it survive.
+        await add(
+          {
+            attachment_client_id: newId(),
+            media_type: 'audio',
+            uri,
+            name: `voice-${Date.now()}.m4a`,
+            mime: 'audio/m4a',
+            size: null,
+            status: 'awaiting_upload',
+          },
           uri,
-          name: `voice-${Date.now()}.m4a`,
-          mime: 'audio/m4a',
-          size: null,
-          status: 'awaiting_upload',
-        });
+        );
       }
       setRecording(false);
       // Hand the session back to playback so a recording can be played here
@@ -186,8 +238,26 @@ export default function NewSiteLogEntry() {
     }
   }, [add, recorder, recording, t]);
 
+  // Read by the unmount cleanup, which must see the CURRENT values rather
+  // than the ones captured when the effect first ran.
+  const sentRef = useRef(false);
+  const userIdRef = useRef<string | null>(null);
+  userIdRef.current = userId ?? null;
+  useEffect(() => {
+    return () => {
+      // Leaving this screen without sending discards the capture - the
+      // attachments only ever existed in this screen's state - so the kept
+      // copies go with it. A capture that WAS sent owns a draft now, and
+      // its files are released only when the server confirms it saved or
+      // the user discards it.
+      if (sentRef.current) return;
+      const userId = userIdRef.current;
+      if (userId) void releaseCapture(userId, captureClientId);
+    };
+  }, [captureClientId]);
+
   const submit = useCallback(async () => {
-    if (!me?.user_id) return;
+    if (!userId) return;
     if (!bodyText.trim() && attachments.length === 0) {
       setBanner(t('siteLog.error.empty'));
       return;
@@ -204,7 +274,7 @@ export default function NewSiteLogEntry() {
     // declaration and the server id, and a fresh declaration under the same
     // capture id is either ignored or a fingerprint conflict.
     const existing = drafts.get(captureClientId);
-    if (!existing && drafts.atCapacity(me.user_id)) {
+    if (!existing && drafts.atCapacity(userId)) {
       // Refused rather than making room: the oldest unfinished capture is
       // somebody's unsent work, and its text and files exist nowhere else.
       setBusy(false);
@@ -214,7 +284,7 @@ export default function NewSiteLogEntry() {
     const draft =
       existing ?? {
         capture_client_id: captureClientId,
-        user_id: me.user_id,
+        user_id: userId,
         created_at: Date.now(),
         updated_at: Date.now(),
         declaration: null,
@@ -244,12 +314,13 @@ export default function NewSiteLogEntry() {
       return;
     }
     setSubmitted(true);
+    sentRef.current = true;
 
     let outcome;
     try {
       outcome = await runSubmit({
         draft,
-        userId: me.user_id,
+        userId,
         sessionNonce,
         patch: (p) => drafts.patchDurable(captureClientId, p),
       });
@@ -264,7 +335,8 @@ export default function NewSiteLogEntry() {
     }
 
     if (outcome.kind === 'complete') {
-      drafts.remove(captureClientId);
+      // Confirmed saved: the draft and the files it kept can go.
+      await drafts.removeAndRelease(captureClientId);
       router.replace(`/site-log/${outcome.event.site_log_event_id}` as never);
       return;
     }
@@ -298,7 +370,7 @@ export default function NewSiteLogEntry() {
         },
       ],
     );
-  }, [attachments, bodyText, captureClientId, drafts, jobId, me?.user_id, qc, t]);
+  }, [attachments, bodyText, captureClientId, drafts, jobId, qc, t, userId]);
 
   return (
     <SafeAreaView style={s.safe} edges={['top', 'bottom']}>
@@ -355,11 +427,13 @@ export default function NewSiteLogEntry() {
             </Text>
             <Pressable
               disabled={submitted}
-              onPress={() =>
+              onPress={() => {
                 setAttachments((prev) =>
                   prev.filter((x) => x.attachment_client_id !== a.attachment_client_id),
-                )
-              }
+                );
+                // Nothing references it any more: it was never in a draft.
+                void releaseAttachment(a.uri);
+              }}
             >
               <Text style={s.remove}>{t('common.remove')}</Text>
             </Pressable>

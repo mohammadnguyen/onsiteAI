@@ -13,6 +13,7 @@ import { useTranslation } from 'react-i18next';
 import { useInfiniteQuery } from '@tanstack/react-query';
 
 import { useMe } from '../../src/api/hooks/useAuth';
+import { useAuthStore } from '../../src/store/auth';
 import { BackLink } from '../../src/siteLog/BackLink';
 import { MINE_PAGE_SIZE, listMine } from '../../src/api/siteLog';
 import { captureStatusBadgeKey } from '../../src/siteLog/status';
@@ -23,8 +24,13 @@ import { tokens } from '../../src/ui/tokens';
 export default function MySiteLogRecords() {
   const { t } = useTranslation();
   const { data: me } = useMe();
+  // /auth/me needs the network; the token does not. On a cold start with no
+  // signal the unsent captures on this phone must still be findable, and
+  // they must still be the right account's.
+  const tokenUserId = useAuthStore((s) => s.userId);
+  const userId = me?.user_id ?? tokenUserId;
   const drafts = useSiteLogDrafts();
-  const mine = me?.user_id ? drafts.forUser(me.user_id) : [];
+  const mine = userId ? drafts.forUser(userId) : [];
 
   const q = useInfiniteQuery({
     queryKey: ['site-log', 'mine'],
@@ -101,6 +107,11 @@ export default function MySiteLogRecords() {
         ListEmptyComponent={
           q.isLoading ? (
             <ActivityIndicator style={s.spinner} />
+          ) : q.isError ? (
+            // "We could not ask" and "you have none" are different facts.
+            // Showing the empty text for a failed request tells the user
+            // their records are gone.
+            <Text style={s.error}>{t('siteLog.list.load_failed')}</Text>
           ) : (
             <Text style={s.empty}>{t('siteLog.list.empty')}</Text>
           )
@@ -177,5 +188,11 @@ const s = StyleSheet.create({
   rowText: { color: tokens.ink },
   rowMeta: { color: tokens.ink3, fontSize: 12, marginTop: 4 },
   empty: { color: tokens.muted, textAlign: 'center', marginTop: 32 },
+  error: {
+    color: tokens.warnMid,
+    textAlign: 'center',
+    marginTop: 32,
+    paddingHorizontal: 24,
+  },
   spinner: { marginVertical: 16 },
 });

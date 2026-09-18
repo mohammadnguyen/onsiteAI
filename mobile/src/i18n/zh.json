@@ -688,7 +688,8 @@
       "new": "新建",
       "drafts_section": "未完成的记录",
       "draft_on_server": "已在服务器创建 — 状态：{{status}}",
-      "attachment_count_one": "{{count}} 个附件"
+      "attachment_count_one": "{{count}} 个附件",
+      "load_failed": "无法连接服务器，已保存的记录暂不显示。本机上的内容仍在上方列出。"
     },
     "detail": {
       "title": "现场记录",
@@ -749,7 +750,9 @@
       "not_yours": "该草稿属于其他账号。",
       "session_changed": "登录账号已更改，因此未继续发送。请以发起该记录的账号重新登录。",
       "draft_save_failed": "本机无法保存该记录，因此未发送任何内容。请清理存储空间后重试。",
-      "draft_capacity": "本机已保存了数量上限的未完成现场记录。请先完成或删除其中一条，再新建。"
+      "draft_capacity": "本机已保存了数量上限的未完成现场记录。请先完成或删除其中一条，再新建。",
+      "attachment_not_kept": "无法将该文件保存到本机，因此未添加。请清理存储空间后重试。",
+      "attachments_unavailable": "附件需在手机 App 中添加，当前平台没有可用的存储。"
     }
   }
 }

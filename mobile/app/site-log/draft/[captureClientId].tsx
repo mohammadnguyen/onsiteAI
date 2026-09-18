@@ -33,18 +33,22 @@ export default function ResumeSiteLogDraft() {
   const { captureClientId } = useLocalSearchParams<{ captureClientId: string }>();
   const store = useSiteLogDrafts();
   const { data: me } = useMe();
+  // Works offline, and is no weaker: the id comes from the token the server
+  // issued to this session.
+  const tokenUserId = useAuthStore((s) => s.userId);
+  const userId = me?.user_id ?? tokenUserId;
   const qc = useQueryClient();
   const found = store.get(String(captureClientId));
   // Drafts survive an involuntary logout on purpose, so the next person to
   // sign in on a shared phone must not be able to read - let alone resume -
   // what the previous one wrote. Ownership is checked here, not only in the
   // list that happens to filter.
-  const draft = found && me?.user_id && found.user_id === me.user_id ? found : undefined;
+  const draft = found && userId && found.user_id === userId ? found : undefined;
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
 
   const resume = useCallback(async () => {
-    if (!draft || !me?.user_id) return;
+    if (!draft || !userId) return;
     // The session this resume was started in - read before any await.
     const sessionNonce = useAuthStore.getState().sessionNonce;
     setBusy(true);
@@ -53,7 +57,7 @@ export default function ResumeSiteLogDraft() {
     try {
       outcome = await runSubmit({
         draft,
-        userId: me.user_id,
+        userId,
         sessionNonce,
         patch: (p) => store.patchDurable(draft.capture_client_id, p),
       });
@@ -66,7 +70,7 @@ export default function ResumeSiteLogDraft() {
     }
 
     if (outcome.kind === 'complete') {
-      store.remove(draft.capture_client_id);
+      await store.removeAndRelease(draft.capture_client_id);
       router.replace(`/site-log/${outcome.event.site_log_event_id}` as never);
       return;
     }
@@ -96,7 +100,7 @@ export default function ResumeSiteLogDraft() {
         },
       ],
     );
-  }, [draft, me?.user_id, qc, store, t]);
+  }, [draft, qc, store, t, userId]);
 
   const discard = useCallback(() => {
     if (!draft) return;
@@ -106,7 +110,8 @@ export default function ResumeSiteLogDraft() {
         text: t('siteLog.draft.discard_confirm'),
         style: 'destructive',
         onPress: () => {
-          store.remove(draft.capture_client_id);
+          // Explicitly discarded by the user: the kept files go with it.
+          void store.removeAndRelease(draft.capture_client_id);
           router.back();
         },
       },
@@ -143,7 +148,8 @@ export default function ResumeSiteLogDraft() {
           <Text style={s.meta}>{t('siteLog.list.draft_not_sent')}</Text>
         )}
 
-        {draft.last_message ? (
+        {draft.last_message && draft.last_message !== 'siteLog.status.unconfirmed' ? (
+          // Skipped when it would repeat the banner above word for word.
           <Text style={s.warnNote}>{t(draft.last_message)}</Text>
         ) : null}
 

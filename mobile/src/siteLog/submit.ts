@@ -1,6 +1,3 @@
-// SDK 54 moved the classic file API behind /legacy; the new Paths/File
-// surface is not needed here and this keeps the call sites unchanged.
-import * as FileSystem from 'expo-file-system/legacy';
 import { classifyApiError } from '../api/errors';
 import {
   declareCapture,
@@ -13,6 +10,7 @@ import {
 import type { AttachmentOut, Declaration, SiteLogEventOut } from '../api/siteLog';
 import type { DraftAttachment, SiteLogDraft } from '../store/siteLogDrafts';
 import { useAuthStore } from '../store/auth';
+import { fileExists } from './files';
 
 /**
  * Running one capture to the server, safely enough to retry.
@@ -132,14 +130,15 @@ function isUnconfirmed(err: unknown): boolean {
   return kind === 'timeout' || kind === 'offline';
 }
 
-/** Verify a picked file is still where the picker left it. */
+/**
+ * Verify the kept copy is still there.
+ *
+ * It normally is - the app's own document directory is not reclaimed the
+ * way the cache is - but clearing app data or a reinstall removes it, and
+ * that must be reported rather than discovered as an upload failure.
+ */
 export async function fileStillExists(uri: string): Promise<boolean> {
-  try {
-    const info = await FileSystem.getInfoAsync(uri);
-    return info.exists;
-  } catch {
-    return false;
-  }
+  return await fileExists(uri);
 }
 
 /**

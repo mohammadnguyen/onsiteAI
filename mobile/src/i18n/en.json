@@ -688,7 +688,8 @@
       "new": "New entry",
       "drafts_section": "Unfinished captures",
       "draft_on_server": "Created on the server — status: {{status}}",
-      "attachment_count_one": "{{count}} attachment"
+      "attachment_count_one": "{{count}} attachment",
+      "load_failed": "We could not reach the server, so your saved records are not shown. Anything on this phone is still listed above."
     },
     "detail": {
       "title": "Site log record",
@@ -749,7 +750,9 @@
       "not_yours": "That draft belongs to a different account.",
       "session_changed": "The signed-in account changed, so nothing further was sent. Sign in again as the account that started this capture.",
       "draft_save_failed": "This phone could not store the capture, so nothing was sent. Free up some space and try again.",
-      "draft_capacity": "This phone is already holding the most unfinished site log entries it can. Finish or discard one before starting another."
+      "draft_capacity": "This phone is already holding the most unfinished site log entries it can. Finish or discard one before starting another.",
+      "attachment_not_kept": "That file could not be kept on this phone, so it was not added. Free up some space and try again.",
+      "attachments_unavailable": "Attachments need the mobile app - this platform has no storage for them."
     }
   }
 }
