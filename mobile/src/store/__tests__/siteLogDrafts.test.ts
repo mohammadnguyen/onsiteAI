@@ -156,3 +156,33 @@ describe('releasing files', () => {
     expect(JSON.parse(raw as string).state.drafts).toEqual([]);
   });
 });
+
+describe('a submission in flight', () => {
+  it('is known to every screen, not just the one that started it', async () => {
+    const { store } = freshStore();
+    await store.getState().upsertDurable(makeDraft());
+
+    store.getState().beginSubmit('capture-1');
+    // A second screen instance reads the same store.
+    expect(store.getState().submitting).toContain('capture-1');
+
+    store.getState().endSubmit('capture-1');
+    expect(store.getState().submitting).not.toContain('capture-1');
+  });
+
+  it('is not remembered across a restart', async () => {
+    const { store, AsyncStorage } = freshStore();
+    await store.getState().upsertDurable(makeDraft());
+    store.getState().beginSubmit('capture-1');
+    await store.getState().patchDurable('capture-1', { last_message: null });
+
+    const raw = await AsyncStorage.getItem(STORAGE_KEY);
+    // A restart has nothing in flight; a persisted entry would lock the
+    // draft for ever.
+    expect(JSON.parse(raw as string).state.submitting).toBeUndefined();
+
+    const restarted = freshStore();
+    await restarted.store.persist.rehydrate();
+    expect(restarted.store.getState().submitting).toEqual([]);
+  });
+});

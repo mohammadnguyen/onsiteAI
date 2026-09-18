@@ -1,7 +1,6 @@
 import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -15,6 +14,7 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { useMe } from '../../../src/api/hooks/useAuth';
 import { BackLink } from '../../../src/siteLog/BackLink';
+import { confirmDestructive, notify } from '../../../src/siteLog/dialogs';
 import { runSubmit } from '../../../src/siteLog/submit';
 import { useAuthStore } from '../../../src/store/auth';
 import { useSiteLogDrafts } from '../../../src/store/siteLogDrafts';
@@ -45,6 +45,10 @@ export default function ResumeSiteLogDraft() {
   // list that happens to filter.
   const draft = found && userId && found.user_id === userId ? found : undefined;
   const [busy, setBusy] = useState(false);
+  // Whether THIS capture is being sent, by any screen. `busy` belongs to
+  // this instance, and navigating away and back gives a fresh one while the
+  // submission it started is still running.
+  const sending = store.submitting.includes(String(captureClientId));
   const [banner, setBanner] = useState<string | null>(null);
 
   const resume = useCallback(async () => {
@@ -53,6 +57,7 @@ export default function ResumeSiteLogDraft() {
     const sessionNonce = useAuthStore.getState().sessionNonce;
     setBusy(true);
     setBanner(null);
+    store.beginSubmit(draft.capture_client_id);
     let outcome;
     try {
       outcome = await runSubmit({
@@ -62,6 +67,7 @@ export default function ResumeSiteLogDraft() {
         patch: (p) => store.patchDurable(draft.capture_client_id, p),
       });
     } finally {
+      store.endSubmit(draft.capture_client_id);
       setBusy(false);
     }
 
@@ -82,9 +88,9 @@ export default function ResumeSiteLogDraft() {
       setBanner(outcome.detail ?? t(outcome.messageKey));
       return;
     }
-    Alert.alert(
-      t('siteLog.status.created_title'),
-      [
+    notify({
+      title: t('siteLog.status.created_title'),
+      body: [
         outcome.kind === 'partial'
           ? t('siteLog.status.partial_body')
           : t(outcome.bodyKey),
@@ -92,30 +98,27 @@ export default function ResumeSiteLogDraft() {
       ]
         .filter(Boolean)
         .join('\n\n'),
-      [
-        {
-          text: t('common.ok'),
-          onPress: () =>
-            router.replace(`/site-log/${outcome.event.site_log_event_id}` as never),
-        },
-      ],
-    );
+      okLabel: t('common.ok'),
+      onOk: () => router.replace(`/site-log/${outcome.event.site_log_event_id}` as never),
+    });
   }, [draft, qc, store, t, userId]);
 
   const discard = useCallback(() => {
     if (!draft) return;
-    Alert.alert(t('siteLog.draft.discard_title'), t('siteLog.draft.discard_body'), [
-      { text: t('common.cancel'), style: 'cancel' },
-      {
-        text: t('siteLog.draft.discard_confirm'),
-        style: 'destructive',
-        onPress: () => {
-          // Explicitly discarded by the user: the kept files go with it.
-          void store.removeAndRelease(draft.capture_client_id);
-          router.back();
-        },
+    // Checked again here, not only through the disabled button: the store
+    // is the only thing that knows about a submission started elsewhere.
+    if (store.submitting.includes(draft.capture_client_id)) return;
+    confirmDestructive({
+      title: t('siteLog.draft.discard_title'),
+      body: t('siteLog.draft.discard_body'),
+      confirmLabel: t('siteLog.draft.discard_confirm'),
+      cancelLabel: t('common.cancel'),
+      onConfirm: () => {
+        // Explicitly discarded by the user: the kept files go with it.
+        void store.removeAndRelease(draft.capture_client_id);
+        router.back();
       },
-    ]);
+    });
   }, [draft, store, t]);
 
   if (!draft) {
@@ -178,12 +181,19 @@ export default function ResumeSiteLogDraft() {
         {banner ? <Text style={s.banner}>{banner}</Text> : null}
         {busy ? <ActivityIndicator style={s.spinner} /> : null}
 
-        <PrimaryButton label={t('siteLog.draft.resume')} onPress={resume} disabled={busy} />
+        <PrimaryButton
+          label={t('siteLog.draft.resume')}
+          onPress={resume}
+          disabled={busy || sending}
+        />
+        {sending && !busy ? (
+          <Text style={s.meta}>{t('siteLog.draft.sending_elsewhere')}</Text>
+        ) : null}
         {/* Not while a submission is running: discarding would delete the
             recovery information and the files it is still using, without
             stopping it. */}
-        <Pressable onPress={discard} style={s.discard} disabled={busy}>
-          <Text style={busy ? s.discardDisabled : s.discardText}>
+        <Pressable onPress={discard} style={s.discard} disabled={busy || sending}>
+          <Text style={busy || sending ? s.discardDisabled : s.discardText}>
             {t('siteLog.draft.discard')}
           </Text>
         </Pressable>

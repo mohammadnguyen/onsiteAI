@@ -701,7 +701,8 @@
       "open": "打开",
       "partial_note": "记录已创建，但部分附件未保存成功。",
       "read_only": "此记录为只读，无法在此修改。",
-      "not_found": "无法打开该记录。"
+      "not_found": "无法打开该记录。",
+      "open_mobile_only": "附件需在手机 App 中打开。"
     },
     "draft": {
       "title": "未发送的现场记录",
@@ -712,7 +713,8 @@
       "discard_confirm": "丢弃",
       "not_found": "本机已无此草稿。",
       "record_exists": "服务器上已创建，状态：{{status}}",
-      "file_gone": "文件已不在本机，无法上传。记录的其余部分不受影响。"
+      "file_gone": "文件已不在本机，无法上传。记录的其余部分不受影响。",
+      "sending_elsewhere": "该记录正在发送中，完成前无法重试或删除。"
     },
     "status": {
       "pending_upload": "正在保存附件",

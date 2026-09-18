@@ -529,9 +529,11 @@ describe('a server error is not proof that nothing was saved', () => {
     const r = recorder(draft());
     const outcome = await runSubmit(r.ctx);
 
-    expect(outcome.kind).toBe('error');
-    // A gateway can answer 504 after the backend committed the event. The
-    // draft must not claim the record does not exist.
+    // A gateway can answer 504 after the backend committed the event, so
+    // the result is unknown - and must be REPORTED as unknown, not as "the
+    // entry could not be created", which is what the screen would say for
+    // an error outcome while the draft says the opposite.
+    expect(outcome.kind).toBe('unconfirmed');
     expect(r.state.unconfirmed).toBe(true);
   });
 
@@ -643,5 +645,28 @@ describe('an account change part way through the uploads', () => {
 
     expect(mocked.uploadAttachment).toHaveBeenCalledTimes(1);
     expect(outcome).toEqual({ kind: 'error', messageKey: 'siteLog.error.session_changed' });
+  });
+});
+
+describe('rescuing an older draft with no network', () => {
+  it('keeps the bytes before it asks the server anything', async () => {
+    // The resume that matters happens on a phone with no signal. If the
+    // migration waited for a successful lookup, those bytes would still be
+    // sitting in a cache the system can reclaim.
+    const legacyUri = 'file:///cache/legacy-offline.jpg';
+    memfs.reset();
+    memfs.put(legacyUri, 32);
+    const d = draft({
+      attachments: [attachment({ uri: legacyUri, retained: undefined, size: 32 })],
+    });
+    mocked.findMineByCaptureClientId.mockRejectedValue(timeoutError());
+
+    const r = recorder(d);
+    const outcome = await runSubmit(r.ctx);
+
+    expect(outcome.kind).toBe('unconfirmed');
+    expect(r.state.attachments[0].retained).toBe(true);
+    expect(r.state.attachments[0].uri).toContain(`/${USER}/${CAPTURE}/`);
+    expect(memfs.files.has(r.state.attachments[0].uri)).toBe(true);
   });
 });

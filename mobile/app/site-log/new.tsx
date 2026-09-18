@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Platform,
   Pressable,
   ScrollView,
@@ -27,6 +26,7 @@ import { useMe } from '../../src/api/hooks/useAuth';
 import { useJobs } from '../../src/api/hooks/useJobs';
 import { JobPickerSheet } from '../../src/components/JobPickerSheet';
 import { BackLink } from '../../src/siteLog/BackLink';
+import { notify } from '../../src/siteLog/dialogs';
 import {
   RetentionError,
   releaseAttachment,
@@ -315,6 +315,9 @@ export default function NewSiteLogEntry() {
     // the screen during it would otherwise run the abandon-cleanup and
     // delete the very files the submission is about to send.
     sentRef.current = true;
+    // Other screens need to know this capture is in flight - the resume
+    // screen must not let it be discarded from under this submission.
+    drafts.beginSubmit(captureClientId);
     try {
       await drafts.upsertDurable(draft);
     } catch {
@@ -328,6 +331,7 @@ export default function NewSiteLogEntry() {
       // abandonable again. The kept copies stay: the form still holds the
       // attachments, and the user may simply try again.
       sentRef.current = Boolean(existing);
+      drafts.endSubmit(captureClientId);
       setBusy(false);
       setBanner(t('siteLog.error.draft_save_failed'));
       return;
@@ -343,6 +347,7 @@ export default function NewSiteLogEntry() {
         patch: (p) => drafts.patchDurable(captureClientId, p),
       });
     } finally {
+      drafts.endSubmit(captureClientId);
       setBusy(false);
     }
 
@@ -370,9 +375,9 @@ export default function NewSiteLogEntry() {
     }
     // Created, but not everything is saved. The record exists — say so, and
     // send the user to it rather than implying nothing happened.
-    Alert.alert(
-      t('siteLog.status.created_title'),
-      [
+    notify({
+      title: t('siteLog.status.created_title'),
+      body: [
         outcome.kind === 'partial'
           ? t('siteLog.status.partial_body')
           : t(outcome.bodyKey),
@@ -380,14 +385,9 @@ export default function NewSiteLogEntry() {
       ]
         .filter(Boolean)
         .join('\n\n'),
-      [
-        {
-          text: t('common.ok'),
-          onPress: () =>
-            router.replace(`/site-log/${outcome.event.site_log_event_id}` as never),
-        },
-      ],
-    );
+      okLabel: t('common.ok'),
+      onOk: () => router.replace(`/site-log/${outcome.event.site_log_event_id}` as never),
+    });
   }, [attachments, bodyText, captureClientId, drafts, jobId, qc, t, userId]);
 
   return (
@@ -427,7 +427,10 @@ export default function NewSiteLogEntry() {
             <Pressable
               style={[s.action, recording ? s.actionActive : null]}
               onPress={toggleRecording}
-              disabled={submitted || audioBusy}
+              // `busy` too: the first durable write is awaited with
+              // `submitted` still false, and a recording started in that
+              // window could never reach the declaration being pinned.
+              disabled={submitted || audioBusy || busy}
             >
               <Text style={s.actionText}>
                 {recording ? t('siteLog.new.stop_recording') : t('siteLog.new.record_voice')}

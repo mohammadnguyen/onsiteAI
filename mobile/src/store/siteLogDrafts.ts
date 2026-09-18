@@ -106,6 +106,17 @@ type State = {
   forUser: (userId: string) => SiteLogDraft[];
   /** True when this account may not start another capture until one ends. */
   atCapacity: (userId: string) => boolean;
+  /**
+   * Captures with a submission running right now.
+   *
+   * Kept in the store, not in a screen: the screen that started one can be
+   * navigated away from and reopened, and the new instance must still know
+   * that discarding would delete the recovery information and the files a
+   * live submission is using.
+   */
+  submitting: string[];
+  beginSubmit: (captureClientId: string) => void;
+  endSubmit: (captureClientId: string) => void;
   get: (captureClientId: string) => SiteLogDraft | undefined;
   clearAll: () => void;
 };
@@ -129,6 +140,12 @@ export const useSiteLogDrafts = create<State>()(
   persist(
     (set, get) => ({
       drafts: [],
+      submitting: [],
+      beginSubmit: (id) =>
+        set((s) =>
+          s.submitting.includes(id) ? s : { submitting: [...s.submitting, id] },
+        ),
+      endSubmit: (id) => set((s) => ({ submitting: s.submitting.filter((x) => x !== id) })),
       upsert: (d) =>
         set((s) => ({
           // No slice: see the capacity note above. Nothing already here is
@@ -172,6 +189,13 @@ export const useSiteLogDrafts = create<State>()(
         void releaseAllRetained();
       },
     }),
-    { name: STORAGE_KEY, storage: createJSONStorage(() => AsyncStorage) },
+    {
+      name: STORAGE_KEY,
+      storage: createJSONStorage(() => AsyncStorage),
+      // Only the drafts are persisted. `submitting` describes this run of
+      // the app; a restart has no submission in flight, and a stale entry
+      // would lock a draft for ever.
+      partialize: (s) => ({ drafts: s.drafts }) as unknown as State,
+    },
   ),
 );

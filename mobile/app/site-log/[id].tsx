@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -92,6 +93,10 @@ export default function SiteLogRecordDetail() {
   // cached under a previous sign-in is never reused, and a failed download
   // leaves nothing behind to be served later.
   const cached = useRef(new Map<string, CachedFile>());
+  // Opening an attachment downloads it with expo-file-system, which has no
+  // web implementation. Offering a button that cannot work is worse than
+  // saying where it does work.
+  const canOpenAttachments = Platform.OS !== 'web';
 
   const q = useQuery({
     queryKey: ['site-log', 'event', id],
@@ -231,7 +236,7 @@ export default function SiteLogRecordDetail() {
               <Text style={s.attType}>{t(`siteLog.media.${a.declared_media_type}`)}</Text>
               <Text style={s.attState}>{t(`siteLog.attachment.${a.state}`)}</Text>
             </View>
-            {a.state === 'stored' && a.evidence_id ? (
+            {a.state === 'stored' && a.evidence_id && canOpenAttachments ? (
               <Pressable onPress={() => open(a)} disabled={busyId === a.attachment_client_id}>
                 <Text style={s.openLink}>
                   {a.declared_media_type === 'audio'
@@ -245,6 +250,9 @@ export default function SiteLogRecordDetail() {
           </View>
         ))}
 
+        {!canOpenAttachments && e.attachments.some((a) => a.state === 'stored') ? (
+          <Text style={s.readOnly}>{t('siteLog.detail.open_mobile_only')}</Text>
+        ) : null}
         {error ? <Text style={s.warnNote}>{error}</Text> : null}
         {e.capture_status === 'partial_failed' ? (
           <Text style={s.warnNote}>{t('siteLog.detail.partial_note')}</Text>

@@ -10,7 +10,7 @@ import {
 import type { AttachmentOut, Declaration, SiteLogEventOut } from '../api/siteLog';
 import type { DraftAttachment, SiteLogDraft } from '../store/siteLogDrafts';
 import { useAuthStore } from '../store/auth';
-import { RetentionError, fileExists, retainAttachment } from './files';
+import { fileExists, retainAttachment } from './files';
 
 /**
  * Running one capture to the server, safely enough to retry.
@@ -232,6 +232,37 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   // what was first sent even if the user has since edited the form.
   if (!draft.declaration) await patch({ declaration });
 
+  // ---- 0. Rescue anything an older build left in the OS cache --------
+  // Before ANY request: a resume with no signal returns long before the
+  // upload loop, and those bytes can be reclaimed at any moment. Keeping
+  // them changes where they live and nothing else - same id, same
+  // declaration, same bytes.
+  const local = new Map(draft.attachments.map((a) => [a.attachment_client_id, a]));
+  const unkeepable = new Set<string>();
+  for (const att of draft.attachments) {
+    if (att.retained === true) continue;
+    try {
+      const kept = await retainAttachment({
+        userId: ctx.userId,
+        captureClientId: draft.capture_client_id,
+        attachmentId: att.attachment_client_id,
+        sourceUri: att.uri,
+        name: att.name,
+        expectedSize: att.size,
+      });
+      local.set(att.attachment_client_id, { ...att, uri: kept.uri, retained: true });
+    } catch {
+      // The cache file has gone, or it cannot be copied. Either way this
+      // attachment cannot be sent from this phone; saying so beats failing
+      // an upload later with something unexplainable.
+      unkeepable.add(att.attachment_client_id);
+    }
+  }
+  const attachments = [...local.values()];
+  if (attachments.some((a, i) => a !== draft.attachments[i])) {
+    await patch({ attachments });
+  }
+
   let event: SiteLogEventOut | null = null;
 
   // ---- 1. What does the server already have? --------------------------
@@ -293,6 +324,11 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
       // stands and the next attempt asks before doing anything.
       if (typeof status === 'number' && status < 500) {
         await patch({ unconfirmed: false, last_message: null });
+      } else {
+        // A 5xx is not an answer about what happened. Reporting "the entry
+        // could not be created" would contradict the flag just persisted
+        // and send the user off to capture it all again.
+        return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
       }
       const detail =
         typeof anyErr?.response?.data?.detail === 'string'
@@ -349,10 +385,6 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   const declaredIds = declaration.attachments.map((a) => a.attachment_client_id);
   const serverOwned = new Set(serverOwnedAttachmentIds(event, declaredIds));
   const byId = new Map(event.attachments.map((a) => [a.attachment_client_id, a]));
-  // The local view of each attachment, which the loop may update: a draft
-  // written before retention existed points at the OS cache, and its bytes
-  // are moved into the app's own directory here before anything is sent.
-  const local = new Map(draft.attachments.map((a) => [a.attachment_client_id, a]));
 
   const failed: string[] = [];
   const blocked: string[] = [];
@@ -363,9 +395,14 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   // fail again.
   const missingLocally = new Set<string>();
 
-  for (const declared of draft.attachments) {
-    let att = declared;
+  for (const att of attachments) {
     if (serverOwned.has(att.attachment_client_id)) continue; // never ours to send
+    if (unkeepable.has(att.attachment_client_id)) {
+      // Its bytes could not be rescued above.
+      failed.push(att.attachment_client_id);
+      missingLocally.add(att.attachment_client_id);
+      continue;
+    }
     const state = byId.get(att.attachment_client_id)?.state ?? 'awaiting_upload';
     if (state === 'stored') continue; // already saved: do not send again
     if (state === 'pending') {
@@ -374,33 +411,6 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
       // minutes. Say so; do not retry into a certain 409.
       blocked.push(att.attachment_client_id);
       continue;
-    }
-    if (att.retained !== true) {
-      // Written by a build that did not copy picked files. The bytes are
-      // still in the OS cache, which can be reclaimed at any moment, so
-      // they are kept NOW - same id, same declaration, same bytes, only a
-      // different place to read them from.
-      try {
-        const kept = await retainAttachment({
-          userId: ctx.userId,
-          captureClientId: draft.capture_client_id,
-          attachmentId: att.attachment_client_id,
-          sourceUri: att.uri,
-          name: att.name,
-          expectedSize: att.size,
-        });
-        att = { ...att, uri: kept.uri, retained: true };
-        local.set(att.attachment_client_id, att);
-        await patch({ attachments: [...local.values()] });
-      } catch (err) {
-        // The cache file has gone, or it cannot be copied. Either way this
-        // attachment cannot be sent from this phone, and saying so beats
-        // failing an upload with something unexplainable.
-        void (err as RetentionError);
-        failed.push(att.attachment_client_id);
-        missingLocally.add(att.attachment_client_id);
-        continue;
-      }
     }
     if (!(await fileStillExists(att.uri))) {
       failed.push(att.attachment_client_id);
@@ -461,7 +471,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
 
   await rememberEvent(patch, finalEvent);
   await patch({
-    attachments: mergeAttachmentStates([...local.values()], finalEvent).map((a) =>
+    attachments: mergeAttachmentStates(attachments, finalEvent).map((a) =>
       missingLocally.has(a.attachment_client_id) && a.status !== 'stored'
         ? { ...a, status: 'missing' as const }
         : a,

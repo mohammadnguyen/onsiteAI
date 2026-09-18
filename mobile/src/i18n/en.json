@@ -701,7 +701,8 @@
       "open": "Open",
       "partial_note": "The record was created, but some attachments did not save.",
       "read_only": "This record is read-only. It cannot be edited from here.",
-      "not_found": "That record could not be opened."
+      "not_found": "That record could not be opened.",
+      "open_mobile_only": "Attachments can be opened in the mobile app."
     },
     "draft": {
       "title": "Unsent site log entry",
@@ -712,7 +713,8 @@
       "discard_confirm": "Discard",
       "not_found": "That draft is no longer on this phone.",
       "record_exists": "Already created on the server — status: {{status}}",
-      "file_gone": "A file is no longer on this phone, so it cannot be uploaded. The rest of the record is unaffected."
+      "file_gone": "A file is no longer on this phone, so it cannot be uploaded. The rest of the record is unaffected.",
+      "sending_elsewhere": "This capture is being sent right now. It cannot be resumed or discarded until that finishes."
     },
     "status": {
       "pending_upload": "Saving attachments",
