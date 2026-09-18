@@ -55,7 +55,7 @@ export default function MySiteLogRecords() {
 
       {mine.length > 0 ? (
         <View style={s.draftBlock}>
-          <Text style={s.sectionLabel}>{t('siteLog.list.drafts')}</Text>
+          <Text style={s.sectionLabel}>{t('siteLog.list.drafts_section')}</Text>
           {mine.map((d) => (
             <Pressable
               key={d.capture_client_id}
@@ -68,7 +68,11 @@ export default function MySiteLogRecords() {
               <Text style={s.draftHint}>
                 {d.unconfirmed
                   ? t('siteLog.status.unconfirmed_short')
-                  : t('siteLog.list.draft_not_sent')}
+                  : d.server
+                    ? t('siteLog.list.draft_on_server', {
+                        status: t(`siteLog.status.${d.server.capture_status}`),
+                      })
+                    : t('siteLog.list.draft_not_sent')}
               </Text>
             </Pressable>
           ))}

@@ -671,18 +671,20 @@
       "record_voice": "录音",
       "stop_recording": "停止录音",
       "submit": "保存现场记录",
-      "sent_hint": "已发送。可在“我的现场记录”中查看或重试。"
+      "sent_hint": "已发送。可在“我的现场记录”中查看或重试。",
+      "recording_note": "请先停止录音。停止后语音才会附加到本条记录。"
     },
     "list": {
       "title": "我的现场记录",
-      "drafts": "尚未保存到服务器",
       "draft_not_sent": "仅保存在本机，打开后可发送",
       "draft_no_text": "（无文字）",
       "no_text": "（无文字）",
       "empty": "暂无现场记录。",
       "attachment_count": "{{count}} 个附件",
       "attachment_count_other": "{{count}} 个附件",
-      "new": "新建"
+      "new": "新建",
+      "drafts_section": "未完成的记录",
+      "draft_on_server": "已在服务器创建 — 状态：{{status}}"
     },
     "detail": {
       "title": "现场记录",
@@ -715,7 +717,8 @@
       "inline_failed": "记录已创建，但文字附件未保存成功。",
       "created_title": "记录已创建",
       "partial_body": "记录已存在，但部分附件未保存成功，可打开后重试。",
-      "blocked_body": "记录已存在。某个附件仍在处理中，暂时无法重试。"
+      "blocked_body": "记录已存在。某个附件仍在处理中，暂时无法重试。",
+      "inline_unrecoverable": "该记录的文字未能保存，且无法在此重试。记录本身及其他已保存内容不受影响。"
     },
     "attachment": {
       "awaiting_upload": "未上传",
@@ -739,7 +742,9 @@
       "mic_permission": "需要麦克风权限才能录音。",
       "recording": "无法开始录音。",
       "download": "无法下载该附件。",
-      "not_yours": "该草稿属于其他账号。"
+      "not_yours": "该草稿属于其他账号。",
+      "session_changed": "登录账号已更改，因此未继续发送。请以发起该记录的账号重新登录。",
+      "draft_save_failed": "本机无法保存该记录，因此未发送任何内容。请清理存储空间后重试。"
     }
   }
 }

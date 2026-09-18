@@ -12,6 +12,7 @@ import {
 } from '../api/siteLog';
 import type { AttachmentOut, Declaration, SiteLogEventOut } from '../api/siteLog';
 import type { DraftAttachment, SiteLogDraft } from '../store/siteLogDrafts';
+import { useAuthStore } from '../store/auth';
 
 /**
  * Running one capture to the server, safely enough to retry.
@@ -34,12 +35,29 @@ import type { DraftAttachment, SiteLogDraft } from '../store/siteLogDrafts';
  *  5. STATE DECIDES. `stored` is never re-uploaded. `pending` is never reset
  *     and never hammered - the client cannot clear it (reset is admin-only,
  *     and only after 15 minutes), so it is reported honestly and left alone.
+ *  6. ONE SUBMISSION BELONGS TO ONE SESSION. The account can change while
+ *     this is running - a sign-out, or another person signing in. Every
+ *     request boundary re-checks it, because the next request would
+ *     otherwise go out with the new account's credentials and file one
+ *     person's capture under another's name.
  */
 
 export type SubmitOutcome =
   | { kind: 'complete'; event: SiteLogEventOut }
-  | { kind: 'partial'; event: SiteLogEventOut; failed: string[]; blocked: string[] }
-  | { kind: 'created_not_uploaded'; event: SiteLogEventOut; blocked: string[] }
+  | {
+      kind: 'partial';
+      event: SiteLogEventOut;
+      failed: string[];
+      blocked: string[];
+      /** A recovery path that is closed, named so the screen can say so. */
+      limitation?: string;
+    }
+  | {
+      kind: 'created_not_uploaded';
+      event: SiteLogEventOut;
+      blocked: string[];
+      limitation?: string;
+    }
   | { kind: 'unconfirmed'; messageKey: string }
   | { kind: 'error'; messageKey: string; detail?: string; event?: SiteLogEventOut };
 
@@ -58,6 +76,19 @@ type Ctx = {
    */
   userId: string;
 };
+
+/**
+ * Has the signed-in account changed since this submission started?
+ *
+ * The axios client reads the CURRENT token for every request, so a
+ * submission that outlives its sign-in would keep going under whoever is
+ * signed in next. The draft's own owner check runs once at the start; this
+ * repeats the question at every request boundary.
+ */
+function sessionGuard(): () => boolean {
+  const startedUnder = useAuthStore.getState().sessionNonce;
+  return () => useAuthStore.getState().sessionNonce !== startedUnder;
+}
 
 /** The event body a 502 from declare carries, if it carries one. */
 function eventFrom502(err: unknown): SiteLogEventOut | null {
@@ -140,6 +171,16 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   if (draft.user_id !== ctx.userId) {
     return { kind: 'error', messageKey: 'siteLog.error.not_yours' };
   }
+  const sessionChanged = sessionGuard();
+  // Nothing is written to the draft store on this path: after a sign-out the
+  // draft may legitimately have been wiped, and re-adding it would resurrect
+  // one account's capture inside another's session.
+  const stale: SubmitOutcome = {
+    kind: 'error',
+    messageKey: 'siteLog.error.session_changed',
+  };
+  /** A limitation that was hit and could not be worked around. */
+  let limitation: string | undefined;
   const declaration: Declaration = draft.declaration ?? {
     capture_client_id: draft.capture_client_id,
     job_id: draft.job_id,
@@ -168,6 +209,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
     }
     return { kind: 'error', messageKey: 'siteLog.error.lookup' };
   }
+  if (sessionChanged()) return stale;
 
   // ---- 2. Declare, if it does not exist yet ---------------------------
   if (!event) {
@@ -197,6 +239,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
     }
   }
   await rememberEvent(ctx, event);
+  if (sessionChanged()) return stale;
 
   // ---- 2b. Recover the server-owned inline row, if it needs it --------
   // The only way to repair inline text is to replay the declaration: the row
@@ -225,11 +268,18 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
       } else if (isUnconfirmed(err)) {
         await ctx.patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
         return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
+      } else {
+        // An HTTP answer that is not a 502: the replay was refused and will
+        // be refused again. A job completed since the declare is the usual
+        // reason. The record and its ids stand as they are; the closed
+        // recovery path is recorded on the draft AND returned, so the screen
+        // states it instead of inviting a retry that cannot work. No
+        // substitute record is created and nothing is reported as saved.
+        limitation = 'siteLog.status.inline_unrecoverable';
+        await ctx.patch({ last_message: limitation });
       }
-      // A 422 here means the declaration can no longer be replayed - a
-      // completed job is the usual reason. The record is kept as it is and
-      // the limitation is reported; no substitute record is created.
     }
+    if (sessionChanged()) return stale;
   }
 
   // ---- 3. Upload what still needs uploading ---------------------------
@@ -247,6 +297,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   const missingLocally = new Set<string>();
 
   for (const att of draft.attachments) {
+    if (sessionChanged()) return stale;
     if (serverOwned.has(att.attachment_client_id)) continue; // never ours to send
     const state = byId.get(att.attachment_client_id)?.state ?? 'awaiting_upload';
     if (state === 'stored') continue; // already saved: do not send again
@@ -284,6 +335,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   // outside it, a connection lost after the uploads rejected out of the whole
   // routine: the caller's spinner never cleared, and the draft was left
   // marked confirmed when it was anything but.
+  if (sessionChanged()) return stale;
   let finalEvent: SiteLogEventOut;
   try {
     finalEvent = await getEvent(event.site_log_event_id);
@@ -318,10 +370,10 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   });
 
   if (blocked.length > 0) {
-    return { kind: 'created_not_uploaded', event: finalEvent, blocked };
+    return { kind: 'created_not_uploaded', event: finalEvent, blocked, limitation };
   }
   if (finalEvent.capture_status === 'complete') {
     return { kind: 'complete', event: finalEvent };
   }
-  return { kind: 'partial', event: finalEvent, failed, blocked };
+  return { kind: 'partial', event: finalEvent, failed, blocked, limitation };
 }

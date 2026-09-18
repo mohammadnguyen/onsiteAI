@@ -11,6 +11,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useTranslation } from 'react-i18next';
+import { useQueryClient } from '@tanstack/react-query';
 
 import { useMe } from '../../../src/api/hooks/useAuth';
 import { runSubmit } from '../../../src/siteLog/submit';
@@ -30,6 +31,7 @@ export default function ResumeSiteLogDraft() {
   const { captureClientId } = useLocalSearchParams<{ captureClientId: string }>();
   const store = useSiteLogDrafts();
   const { data: me } = useMe();
+  const qc = useQueryClient();
   const found = store.get(String(captureClientId));
   // Drafts survive an involuntary logout on purpose, so the next person to
   // sign in on a shared phone must not be able to read - let alone resume -
@@ -40,10 +42,9 @@ export default function ResumeSiteLogDraft() {
   const [banner, setBanner] = useState<string | null>(null);
 
   const resume = useCallback(async () => {
-    if (!draft) return;
+    if (!draft || !me?.user_id) return;
     setBusy(true);
     setBanner(null);
-    if (!me?.user_id) return;
     let outcome;
     try {
       outcome = await runSubmit({
@@ -53,6 +54,10 @@ export default function ResumeSiteLogDraft() {
       });
     } finally {
       setBusy(false);
+    }
+
+    if (outcome.kind !== 'error') {
+      qc.invalidateQueries({ queryKey: ['site-log', 'mine'] });
     }
 
     if (outcome.kind === 'complete') {
@@ -70,9 +75,14 @@ export default function ResumeSiteLogDraft() {
     }
     Alert.alert(
       t('siteLog.status.created_title'),
-      outcome.kind === 'partial'
-        ? t('siteLog.status.partial_body')
-        : t('siteLog.status.blocked_body'),
+      [
+        outcome.kind === 'partial'
+          ? t('siteLog.status.partial_body')
+          : t('siteLog.status.blocked_body'),
+        outcome.limitation ? t(outcome.limitation) : null,
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
       [
         {
           text: t('common.ok'),
@@ -81,7 +91,7 @@ export default function ResumeSiteLogDraft() {
         },
       ],
     );
-  }, [draft, me?.user_id, store, t]);
+  }, [draft, me?.user_id, qc, store, t]);
 
   const discard = useCallback(() => {
     if (!draft) return;
@@ -111,18 +121,23 @@ export default function ResumeSiteLogDraft() {
       <ScrollView contentContainerStyle={s.body}>
         <Text style={s.h1}>{t('siteLog.draft.title')}</Text>
 
+        {/* Three different things, never conflated: the save result is
+            unknown; the server already holds the record and something about
+            it is unfinished; or nothing has been sent at all. */}
         {draft.unconfirmed ? (
           <Text style={s.unconfirmed}>{t('siteLog.status.unconfirmed')}</Text>
-        ) : (
-          <Text style={s.meta}>{t('siteLog.list.draft_not_sent')}</Text>
-        )}
-
-        {draft.server ? (
+        ) : draft.server ? (
           <Text style={s.meta}>
             {t('siteLog.draft.record_exists', {
               status: t(`siteLog.status.${draft.server.capture_status}`),
             })}
           </Text>
+        ) : (
+          <Text style={s.meta}>{t('siteLog.list.draft_not_sent')}</Text>
+        )}
+
+        {draft.last_message ? (
+          <Text style={s.warnNote}>{t(draft.last_message)}</Text>
         ) : null}
 
         <Text style={s.text}>{draft.body_text || t('siteLog.list.no_text')}</Text>

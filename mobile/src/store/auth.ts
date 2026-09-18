@@ -47,6 +47,16 @@ export type AuthState = {
   accessToken: string | null;
   refreshToken: string | null;
   hydrated: boolean;
+  /**
+   * Which signed-in session this is. Incremented whenever the tokens are
+   * replaced or cleared - a sign-in or a sign-out - and NOT by the refresh
+   * interceptor, which renews the same session's access token.
+   *
+   * It exists so long-running work can tell that the account changed under
+   * it. Comparing tokens would not do: a refresh rotates the access token
+   * within one session, and the value itself is a credential.
+   */
+  sessionNonce: number;
   hydrate: () => Promise<void>;
   setTokens: (a: string, r: string) => Promise<void>;
   /**
@@ -60,17 +70,18 @@ export type AuthState = {
   clear: () => Promise<void>;
 };
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   accessToken: null,
   refreshToken: null,
   hydrated: false,
+  sessionNonce: 0,
   hydrate: async () => {
     const [a, r] = await Promise.all([getItem(ACCESS_KEY), getItem(REFRESH_KEY)]);
     set({ accessToken: a, refreshToken: r, hydrated: true });
   },
   setTokens: async (a, r) => {
     await Promise.all([setItem(ACCESS_KEY, a), setItem(REFRESH_KEY, r)]);
-    set({ accessToken: a, refreshToken: r });
+    set({ accessToken: a, refreshToken: r, sessionNonce: get().sessionNonce + 1 });
   },
   setAccessToken: async (a) => {
     await setItem(ACCESS_KEY, a);
@@ -78,6 +89,6 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
   clear: async () => {
     await Promise.all([deleteItem(ACCESS_KEY), deleteItem(REFRESH_KEY)]);
-    set({ accessToken: null, refreshToken: null });
+    set({ accessToken: null, refreshToken: null, sessionNonce: get().sessionNonce + 1 });
   },
 }));

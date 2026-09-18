@@ -33,8 +33,10 @@ export default function SiteLogRecordDetail() {
   const token = useAuthStore((s) => s.accessToken);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [playingUri, setPlayingUri] = useState<string | null>(null);
-  const player = useAudioPlayer(playingUri ? { uri: playingUri } : null);
+  // Created ONCE, with no source. useAudioPlayer rebuilds - and releases -
+  // the player whenever the source it is given changes, so driving it from
+  // state meant every tap released the player that was about to play.
+  const player = useAudioPlayer(null);
 
   const q = useQuery({
     queryKey: ['site-log', 'event', id],
@@ -84,10 +86,8 @@ export default function SiteLogRecordDetail() {
           return;
         }
         if (att.declared_media_type === 'audio') {
-          // Replace the source on the player we hold, then play it. Setting
-          // state and calling play() in the same tick played whatever the
-          // player had before - on the first tap, nothing at all.
-          setPlayingUri(uri);
+          // Imperative, on the instance this screen keeps: replace the source,
+          // then play it.
           player.replace({ uri });
           player.play();
           return;

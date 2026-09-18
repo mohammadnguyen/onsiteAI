@@ -671,18 +671,20 @@
       "record_voice": "Record voice",
       "stop_recording": "Stop recording",
       "submit": "Save site log entry",
-      "sent_hint": "Already sent. Open it from My site log to check or retry."
+      "sent_hint": "Already sent. Open it from My site log to check or retry.",
+      "recording_note": "Stop the recording first. A voice note is only attached once you stop."
     },
     "list": {
       "title": "My site log",
-      "drafts": "Not yet saved on the server",
       "draft_not_sent": "Saved on this phone only — open to send",
       "draft_no_text": "(no text)",
       "no_text": "(no text)",
       "empty": "No site log records yet.",
       "attachment_count": "{{count}} attachment",
       "attachment_count_other": "{{count}} attachments",
-      "new": "New entry"
+      "new": "New entry",
+      "drafts_section": "Unfinished captures",
+      "draft_on_server": "Created on the server — status: {{status}}"
     },
     "detail": {
       "title": "Site log record",
@@ -715,7 +717,8 @@
       "inline_failed": "The record was created, but its text attachment did not save.",
       "created_title": "Record created",
       "partial_body": "The record exists, but some attachments did not save. You can open it and try those again.",
-      "blocked_body": "The record exists. An attachment is still being processed and cannot be retried yet."
+      "blocked_body": "The record exists. An attachment is still being processed and cannot be retried yet.",
+      "inline_unrecoverable": "The record's text could not be saved and cannot be retried from here. The record itself, and everything else saved in it, is unaffected."
     },
     "attachment": {
       "awaiting_upload": "Not uploaded",
@@ -739,7 +742,9 @@
       "mic_permission": "Microphone access is needed to record a voice note.",
       "recording": "The recording could not be started.",
       "download": "That attachment could not be downloaded.",
-      "not_yours": "That draft belongs to a different account."
+      "not_yours": "That draft belongs to a different account.",
+      "session_changed": "The signed-in account changed, so nothing further was sent. Sign in again as the account that started this capture.",
+      "draft_save_failed": "This phone could not store the capture, so nothing was sent. Free up some space and try again."
     }
   }
 }

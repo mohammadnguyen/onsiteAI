@@ -12,6 +12,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { useTranslation } from 'react-i18next';
+import { useQueryClient } from '@tanstack/react-query';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import {
@@ -25,6 +26,7 @@ import { useMe } from '../../src/api/hooks/useAuth';
 import { useJobs } from '../../src/api/hooks/useJobs';
 import { JobPickerSheet } from '../../src/components/JobPickerSheet';
 import { newCaptureId as newId } from '../../src/siteLog/ids';
+import { deriveMediaType } from '../../src/siteLog/media';
 import { runSubmit } from '../../src/siteLog/submit';
 import { useSiteLogDrafts, type DraftAttachment } from '../../src/store/siteLogDrafts';
 import { PrimaryButton } from '../../src/ui/kit';
@@ -35,6 +37,7 @@ export default function NewSiteLogEntry() {
   const { data: me } = useMe();
   const { data: jobs } = useJobs();
   const drafts = useSiteLogDrafts();
+  const qc = useQueryClient();
 
   const [captureClientId] = useState(newId);
   const [bodyText, setBodyText] = useState('');
@@ -74,12 +77,13 @@ export default function NewSiteLogEntry() {
     const res = await ImagePicker.launchImageLibraryAsync({ quality: 0.8 });
     const asset = res.canceled ? null : res.assets[0];
     if (!asset) return;
+    const mime = asset.mimeType ?? 'image/jpeg';
     add({
       attachment_client_id: newId(),
-      media_type: 'image',
+      media_type: deriveMediaType(mime),
       uri: asset.uri,
       name: asset.fileName ?? 'photo.jpg',
-      mime: asset.mimeType ?? 'image/jpeg',
+      mime,
       size: asset.fileSize ?? null,
       status: 'awaiting_upload',
     });
@@ -89,12 +93,18 @@ export default function NewSiteLogEntry() {
     const res = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
     const asset = res.canceled ? null : res.assets[0];
     if (!asset) return;
+    // The picker returns whatever the user chose - a photo, a voice memo, a
+    // text file. Declaring all of them `document` made the server refuse the
+    // upload, because it derives the class from the bytes' MIME and compares.
+    // The declaration is pinned, so that refusal was permanent: the class is
+    // derived here the same way instead.
+    const mime = asset.mimeType ?? 'application/octet-stream';
     add({
       attachment_client_id: newId(),
-      media_type: 'document',
+      media_type: deriveMediaType(mime),
       uri: asset.uri,
       name: asset.name,
-      mime: asset.mimeType ?? 'application/octet-stream',
+      mime,
       size: asset.size ?? null,
       status: 'awaiting_upload',
     });
@@ -105,12 +115,12 @@ export default function NewSiteLogEntry() {
       // Permission and the recording audio session both have to be in place
       // first: Android rejects prepareToRecordAsync without the permission,
       // and iOS refuses to start until the mode allows recording.
-      const perm = await requestRecordingPermissionsAsync();
-      if (!perm.granted) {
-        setBanner(t('siteLog.error.mic_permission'));
-        return;
-      }
       try {
+        const perm = await requestRecordingPermissionsAsync();
+        if (!perm.granted) {
+          setBanner(t('siteLog.error.mic_permission'));
+          return;
+        }
         await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
         await recorder.prepareToRecordAsync();
         recorder.record();
@@ -128,8 +138,14 @@ export default function NewSiteLogEntry() {
     }
     setRecording(false);
     // Hand the session back to playback so a recording can be played here
-    // or on the detail screen straight afterwards.
-    await setAudioModeAsync({ allowsRecording: false });
+    // or on the detail screen straight afterwards. Failing to do so must not
+    // cost the user the recording that was just made.
+    try {
+      await setAudioModeAsync({ allowsRecording: false });
+    } catch {
+      // Playback may be affected until the next session change; the recording
+      // itself is on disk and is still attached below.
+    }
     const uri = recorder.uri;
     if (!uri) return;
     add({
@@ -172,8 +188,17 @@ export default function NewSiteLogEntry() {
         last_message: null,
       };
     // Written and FLUSHED before the first request: if the process dies now,
-    // the typed text, the chosen files and the ids are all still on disk.
-    await drafts.upsertDurable(draft);
+    // the typed text, the chosen files and the ids are all still on disk. If
+    // the phone cannot write it, nothing is sent - an unsaved capture whose
+    // ids exist only in memory is exactly what this flow must never create -
+    // and the button is given back rather than left spinning.
+    try {
+      await drafts.upsertDurable(draft);
+    } catch {
+      setBusy(false);
+      setBanner(t('siteLog.error.draft_save_failed'));
+      return;
+    }
     setSubmitted(true);
 
     let outcome;
@@ -185,6 +210,12 @@ export default function NewSiteLogEntry() {
       });
     } finally {
       setBusy(false);
+    }
+
+    // The list screen stays mounted behind this one, so without this it
+    // would still show the state from before this capture existed.
+    if (outcome.kind !== 'error') {
+      qc.invalidateQueries({ queryKey: ['site-log', 'mine'] });
     }
 
     if (outcome.kind === 'complete') {
@@ -206,9 +237,14 @@ export default function NewSiteLogEntry() {
     // send the user to it rather than implying nothing happened.
     Alert.alert(
       t('siteLog.status.created_title'),
-      outcome.kind === 'partial'
-        ? t('siteLog.status.partial_body')
-        : t('siteLog.status.blocked_body'),
+      [
+        outcome.kind === 'partial'
+          ? t('siteLog.status.partial_body')
+          : t('siteLog.status.blocked_body'),
+        outcome.limitation ? t(outcome.limitation) : null,
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
       [
         {
           text: t('common.ok'),
@@ -217,7 +253,7 @@ export default function NewSiteLogEntry() {
         },
       ],
     );
-  }, [attachments, bodyText, captureClientId, drafts, jobId, me?.user_id, t]);
+  }, [attachments, bodyText, captureClientId, drafts, jobId, me?.user_id, qc, t]);
 
   return (
     <SafeAreaView style={s.safe} edges={['top', 'bottom']}>
@@ -234,22 +270,27 @@ export default function NewSiteLogEntry() {
           accessibilityLabel={t('siteLog.new.text_placeholder')}
         />
 
-        <Pressable style={s.row} onPress={() => setJobPickerOpen(true)}>
+        <Pressable
+          style={s.row}
+          onPress={() => setJobPickerOpen(true)}
+          disabled={submitted}
+        >
           <Text style={s.rowLabel}>{t('siteLog.new.job')}</Text>
           <Text style={s.rowValue}>{jobName ?? t('siteLog.new.job_unassigned')}</Text>
         </Pressable>
         <Text style={s.hint}>{t('siteLog.new.job_hint')}</Text>
 
         <View style={s.actions}>
-          <Pressable style={s.action} onPress={pickPhoto}>
+          <Pressable style={s.action} onPress={pickPhoto} disabled={submitted}>
             <Text style={s.actionText}>{t('siteLog.new.add_photo')}</Text>
           </Pressable>
-          <Pressable style={s.action} onPress={pickDocument}>
+          <Pressable style={s.action} onPress={pickDocument} disabled={submitted}>
             <Text style={s.actionText}>{t('siteLog.new.add_document')}</Text>
           </Pressable>
           <Pressable
             style={[s.action, recording ? s.actionActive : null]}
             onPress={toggleRecording}
+            disabled={submitted}
           >
             <Text style={s.actionText}>
               {recording ? t('siteLog.new.stop_recording') : t('siteLog.new.record_voice')}
@@ -263,6 +304,7 @@ export default function NewSiteLogEntry() {
               {a.name}
             </Text>
             <Pressable
+              disabled={submitted}
               onPress={() =>
                 setAttachments((prev) =>
                   prev.filter((x) => x.attachment_client_id !== a.attachment_client_id),
@@ -280,8 +322,9 @@ export default function NewSiteLogEntry() {
         <PrimaryButton
           label={t('siteLog.new.submit')}
           onPress={submit}
-          disabled={busy || submitted}
+          disabled={busy || submitted || recording}
         />
+        {recording ? <Text style={s.hint}>{t('siteLog.new.recording_note')}</Text> : null}
         {submitted ? <Text style={s.hint}>{t('siteLog.new.sent_hint')}</Text> : null}
       </ScrollView>
 

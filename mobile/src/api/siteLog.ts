@@ -42,7 +42,14 @@ export type SiteLogEventOut = {
 
 export type AttachmentDeclare = {
   attachment_client_id: string;
-  declared_media_type: Exclude<MediaType, 'text'>;
+  /**
+   * All four classes are declarable by the client. `text` included: the
+   * server-owned inline row is reserved by its ID, not by its class, so a
+   * picked .txt or .csv is an ordinary attachment that happens to be text.
+   * What matters is that this MATCHES what the server derives from the
+   * uploaded MIME - see src/siteLog/media.ts.
+   */
+  declared_media_type: MediaType;
   declared_size_bytes?: number | null;
 };
 

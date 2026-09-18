@@ -30,7 +30,8 @@ export type DraftAttachmentStatus = AttachmentState | 'missing';
 
 export type DraftAttachment = {
   attachment_client_id: string;
-  media_type: Exclude<MediaType, 'text'>;
+  /** Derived from the file's MIME exactly as the server derives it. */
+  media_type: MediaType;
   uri: string;
   name: string;
   mime: string;
