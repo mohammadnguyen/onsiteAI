@@ -41,6 +41,8 @@ from app.services.evidence_storage import (
     StoredObject,
     make_object_key,
 )
+from app.services.site_log import core as svc_core
+from app.services.site_log import upload as svc_upload
 
 SERVICES_DIR = Path(__file__).resolve().parent.parent / "app" / "services"
 MAX_BYTES = 1024 * 1024
@@ -388,7 +390,7 @@ async def test_obsolete_attempt_cannot_complete_after_newer_acquisition(
         attachment_client_id=cid, mime_type="audio/m4a",
     )
     row = await _att_row(db_session, eid, cid)
-    await svc._fail_attachment(
+    await svc_upload._fail_attachment(
         db_session, actor=seeded_admin, event_id=eid,
         attachment_id=row.attachment_id, attempt_no=n1, reason="storage_error",
     )
@@ -526,14 +528,14 @@ def _dbapi(sqlstate=None, invalidated=False):
 
 
 def test_retry_whitelist():
-    assert svc._is_retryable(_dbapi("40001"))
-    assert svc._is_retryable(_dbapi("40P01"))
-    assert svc._is_retryable(_dbapi("55P03"))
-    assert svc._is_retryable(_dbapi(None, invalidated=True))
-    assert not svc._is_retryable(_dbapi("23505"))
-    assert not svc._is_retryable(_dbapi("08006"))
-    assert not svc._is_retryable(IntegrityError("stmt", None, _FakeOrig("23505")))
-    assert not svc._is_retryable(RuntimeError("x"))
+    assert svc_core._is_retryable(_dbapi("40001"))
+    assert svc_core._is_retryable(_dbapi("40P01"))
+    assert svc_core._is_retryable(_dbapi("55P03"))
+    assert svc_core._is_retryable(_dbapi(None, invalidated=True))
+    assert not svc_core._is_retryable(_dbapi("23505"))
+    assert not svc_core._is_retryable(_dbapi("08006"))
+    assert not svc_core._is_retryable(IntegrityError("stmt", None, _FakeOrig("23505")))
+    assert not svc_core._is_retryable(RuntimeError("x"))
 
 
 async def test_txn_b_retries_on_fresh_session_then_succeeds(
@@ -590,7 +592,7 @@ async def test_txn_b_retries_on_fresh_session_then_succeeds(
     async def fake_sleep(secs):
         sleeps.append(secs)
 
-    monkeypatch.setattr(svc.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(svc_upload.asyncio, "sleep", fake_sleep)
     out = await svc.complete_attachment(
         factory, actor_id=seeded_admin.user_id, event_id=eid,
         attachment_id=row.attachment_id, attempt_no=n, stored=stored,
@@ -645,7 +647,7 @@ async def test_txn_b_exhausts_retries_then_raises(
     async def fake_sleep(secs):
         sleeps.append(secs)
 
-    monkeypatch.setattr(svc.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(svc_upload.asyncio, "sleep", fake_sleep)
     with pytest.raises(DBAPIError):
         await svc.complete_attachment(
             factory, actor_id=seeded_admin.user_id, event_id=eid,
@@ -690,7 +692,7 @@ async def test_txn_b_does_not_retry_non_whitelisted(
     async def fake_sleep(secs):
         sleeps.append(secs)
 
-    monkeypatch.setattr(svc.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(svc_upload.asyncio, "sleep", fake_sleep)
     with pytest.raises(DBAPIError):
         await svc.complete_attachment(
             lambda: _Broken(site_log_session_factory()),
@@ -877,48 +879,175 @@ async def test_audits_and_logs_are_content_free(
 # --------------------------------------------------------- thinness pins
 
 
+def _site_log_sources() -> list[tuple[str, str]]:
+    """Every source file the site_log service is made of, (label, text).
+
+    Works whether the service is one module or a package, so the structural
+    checks below mean the same thing before and after the A2a.1 split. A
+    check that reads one hard-coded path stops covering whatever moves out
+    of it - and stops failing, which is worse than failing.
+    """
+    single = SERVICES_DIR / "site_log.py"
+    if single.is_file():
+        return [(single.name, single.read_text(encoding="utf-8"))]
+    package = SERVICES_DIR / "site_log"
+    files = sorted(package.rglob("*.py"))
+    assert files, f"no site_log service source found under {package}"
+    return [
+        (str(p.relative_to(package)), p.read_text(encoding="utf-8")) for p in files
+    ]
+
+
+def _count_across_service(needle: str) -> int:
+    return sum(text.count(needle) for _label, text in _site_log_sources())
+
+
 def test_thinness_pins_write_sites():
-    src = (SERVICES_DIR / "site_log.py").read_text(encoding="utf-8")
+    """The write sites stay singular across the WHOLE service.
+
+    Counted over every file the service is made of, so moving code between
+    modules cannot turn "exactly one write site" into "one per module".
+    """
     ev_src = (SERVICES_DIR / "evidence.py").read_text(encoding="utf-8")
     # NULL→value binding of evidence_id: exactly one site, in site_log.
-    assert src.count("att.evidence_id = evidence.evidence_id") == 1
-    assert src.count(".evidence_id = ") == 1
+    assert _count_across_service("att.evidence_id = evidence.evidence_id") == 1
+    assert _count_across_service(".evidence_id = ") == 1
     # evidence.py never touches manifest rows at all.
     assert "att.evidence_id" not in ev_src
     assert "SiteLogEventAttachment" not in ev_src
     # Evidence row creation: legacy create_evidence + site_log Txn A only.
     assert ev_src.count("evidence = Evidence(") == 1
-    assert src.count("evidence = Evidence(") == 1
+    assert _count_across_service("evidence = Evidence(") == 1
     # Status writes to stored: one per module.
-    assert src.count("status = EvidenceStatus.stored") == 1
+    assert _count_across_service("status = EvidenceStatus.stored") == 1
     assert ev_src.count("status = EvidenceStatus.stored") == 1
+
+
+LOCK_LATER = frozenset({"_lock_attachments", "_lock_attachment", "_lock_evidence_rows"})
+LOCK_FIRST = "_lock_event"
+# Receives an already-locked event from its callers.
+LOCK_ORDER_EXEMPT = frozenset({"_sync_job"})
+
+
+def _lock_calls(fn: ast.AST) -> list[str]:
+    """The lock helpers this function calls, in source order.
+
+    Both call forms count: a bare name (``_lock_event(...)``) and an
+    attribute on an imported module (``core._lock_event(...)``). Matching
+    only bare names would make this analysis blind the moment the service
+    becomes a package and the helpers are reached through their module.
+    """
+    calls = []
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name):
+            name = func.id
+        elif isinstance(func, ast.Attribute):
+            name = func.attr
+        else:
+            continue
+        if name in LOCK_LATER | {LOCK_FIRST}:
+            calls.append((node.lineno, node.col_offset, name))
+    return [name for _line, _col, name in sorted(calls)]
+
+
+def _lock_order_violations(sources: list[tuple[str, str]]) -> tuple[list[str], int]:
+    """(violations, functions_examined) over the given (label, text) sources."""
+    violations: list[str] = []
+    examined = 0
+    for label, text in sources:
+        for fn in ast.walk(ast.parse(text)):
+            if not isinstance(fn, ast.AsyncFunctionDef | ast.FunctionDef):
+                continue
+            order = _lock_calls(fn)
+            if not any(name in LOCK_LATER for name in order):
+                continue
+            if fn.name in LOCK_ORDER_EXEMPT:
+                continue
+            examined += 1
+            where = f"{label}:{fn.name} {order}"
+            if not order or order[0] != LOCK_FIRST:
+                violations.append(f"event not locked first: {where}")
+                continue
+            ev_idx = [i for i, n in enumerate(order) if n == "_lock_evidence_rows"]
+            att_idx = [
+                i
+                for i, n in enumerate(order)
+                if n in ("_lock_attachments", "_lock_attachment")
+            ]
+            if ev_idx and att_idx and max(att_idx) >= min(ev_idx):
+                violations.append(f"Evidence locked before manifest: {where}")
+    return violations, examined
 
 
 def test_lock_order_invariant():
     """Every function locking manifest/Evidence rows locks the event first."""
-    tree = ast.parse((SERVICES_DIR / "site_log.py").read_text(encoding="utf-8"))
-    later = {"_lock_attachments", "_lock_attachment", "_lock_evidence_rows"}
-    for fn in ast.walk(tree):
-        if not isinstance(fn, ast.AsyncFunctionDef):
-            continue
-        calls = [
-            n
-            for n in ast.walk(fn)
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-            and n.func.id in later | {"_lock_event"}
-        ]
-        # ast.walk is breadth-first; order by source position.
-        order = [n.func.id for n in sorted(calls, key=lambda n: (n.lineno, n.col_offset))]
-        if any(name in later for name in order):
-            # _sync_job receives an already-locked event from its callers.
-            if fn.name == "_sync_job":
-                continue
-            assert order and order[0] == "_lock_event", (fn.name, order)
-            ev_idx = [i for i, n in enumerate(order) if n == "_lock_evidence_rows"]
-            att_names = ("_lock_attachments", "_lock_attachment")
-            att_idx = [i for i, n in enumerate(order) if n in att_names]
-            if ev_idx and att_idx:
-                assert max(att_idx) < min(ev_idx), (fn.name, order)
+    violations, examined = _lock_order_violations(_site_log_sources())
+    assert violations == []
+    # A silent zero would mean the analysis found nothing to check - which is
+    # how this guard would quietly stop guarding after a split.
+    assert examined >= 5, examined
+
+
+BAD_EVENT_NOT_FIRST = """
+async def broken(db, event_id):
+    atts = await _lock_attachments(db, event)
+    event = await _lock_event(db, event_id)
+    return atts
+"""
+
+BAD_EVIDENCE_BEFORE_MANIFEST = """
+async def broken(db, event_id):
+    event = await _lock_event(db, event_id)
+    rows = await _lock_evidence_rows(db, ids)
+    att = await _lock_attachment(db, event, cid)
+    return att
+"""
+
+BAD_VIA_ATTRIBUTE = """
+from . import core
+
+async def broken(db, event_id):
+    atts = await core._lock_attachments(db, event)
+    event = await core._lock_event(db, event_id)
+    return atts
+"""
+
+
+@pytest.mark.parametrize(
+    "label, source, expected",
+    [
+        ("bare names, event last", BAD_EVENT_NOT_FIRST, "event not locked first"),
+        ("bare names, Evidence early", BAD_EVIDENCE_BEFORE_MANIFEST,
+         "Evidence locked before manifest"),
+        ("module-qualified calls", BAD_VIA_ATTRIBUTE, "event not locked first"),
+    ],
+)
+def test_lock_order_check_rejects_a_wrong_order(label, source, expected):
+    """The guard is shown to FAIL on real mis-orderings, in both call forms.
+
+    Proving it found some calls is not proof that it would object to a bad
+    one. The third case is the one the split makes possible: helpers reached
+    through their module rather than as bare names.
+    """
+    violations, examined = _lock_order_violations([("synthetic.py", source)])
+    assert examined == 1, (label, examined)
+    assert any(expected in v for v in violations), (label, violations)
+
+
+def test_lock_order_check_accepts_the_right_order():
+    """And it does not simply object to everything."""
+    good = """
+async def fine(db, event_id):
+    event = await _lock_event(db, event_id)
+    att = await _lock_attachment(db, event, cid)
+    rows = await _lock_evidence_rows(db, [att.evidence_id])
+    return rows
+"""
+    violations, examined = _lock_order_violations([("synthetic.py", good)])
+    assert (violations, examined) == ([], 1)
 
 
 # ------------------------------------------ transaction ownership (ruling B)
@@ -1038,7 +1167,7 @@ async def test_negative_paths_never_commit_or_rollback_caller_session(
             svc.SiteLogNotFound,
             svc.reset_attachment(spy, admin=ad, event_id=missing,
                                  attachment_client_id=missing, reason="r", now=now)),
-        "fail superseded": lambda: svc._fail_attachment(
+        "fail superseded": lambda: svc_upload._fail_attachment(
             spy, actor=ad, event_id=eid, attachment_id=missing, attempt_no=1, reason="x"),
         # readable but forbidden
         "relink forbidden": lambda: expect(

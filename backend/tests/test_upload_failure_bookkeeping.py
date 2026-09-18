@@ -54,6 +54,7 @@ from app.services.evidence_storage import (
     StorageTransientError,
     make_object_key,
 )
+from app.services.site_log import upload as svc_upload
 from tests.support.s3_fake import client_error, fake_s3_storage
 
 MAX_BYTES = 1024 * 1024
@@ -403,7 +404,7 @@ async def test_late_failure_of_superseded_attempt_leaves_new_attempt_intact(
     # The final step exercises the new boundary directly: on the base the
     # test never gets here (the stuck pending row blocks attempt 2).
     stale = OSError(5, "late attempt-1 failure")
-    await svc._fail_upload_attempt(
+    await svc_upload._fail_upload_attempt(
         db_session, actor=seeded_admin, event_id=eid,
         attachment_id=ok.attachment.attachment_id, attempt_no=1, error=stale,
     )
@@ -428,7 +429,7 @@ async def test_post_upload_failure_is_not_recorded_as_upload_failure(  # regress
     async def boom(*args, **kwargs):
         raise RuntimeError("txn b exploded")
 
-    monkeypatch.setattr(svc, "complete_attachment", boom)
+    monkeypatch.setattr(svc_upload, "complete_attachment", boom)
     with pytest.raises(RuntimeError):
         await svc.upload_attachment(
             db_session, storage, site_log_session_factory, user=seeded_admin,
@@ -498,7 +499,7 @@ async def test_bookkeeping_failure_reports_persistence_as_unconfirmed(
             raise RuntimeError("failure commit lost the connection")
         return await real_commit(self)
 
-    real_fail = svc._fail_attachment
+    real_fail = svc_upload._fail_attachment
 
     async def arming_fail(*args, **kwargs):
         armed["on"] = True
@@ -508,7 +509,7 @@ async def test_bookkeeping_failure_reports_persistence_as_unconfirmed(
             armed["on"] = False
 
     monkeypatch.setattr(type(db_session), "commit", flaky_commit)
-    monkeypatch.setattr(svc, "_fail_attachment", arming_fail)
+    monkeypatch.setattr(svc_upload, "_fail_attachment", arming_fail)
     with caplog.at_level("ERROR"), pytest.raises(OSError) as info:
         await svc.upload_attachment(
             db_session, storage, site_log_session_factory, user=seeded_admin,

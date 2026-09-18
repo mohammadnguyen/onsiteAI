@@ -42,6 +42,7 @@ from app.services.evidence_storage import (
     LocalEvidenceStorage,
     StoredObject,
 )
+from app.services.site_log import upload as svc_upload
 
 pytestmark = pytest.mark.asyncio
 
@@ -269,7 +270,7 @@ async def test_obsolete_attempt_never_completes_after_newer(engine, factory, act
     storage = LocalEvidenceStorage(tmp_path)
     eid, cid, att_id, ev_id, n1 = await _prepare(factory, storage, contrib)
     async with factory() as s:
-        await svc._fail_attachment(
+        await svc_upload._fail_attachment(
             s, actor=contrib, event_id=eid, attachment_id=att_id, attempt_no=n1,
             reason="storage_error",
         )
@@ -568,7 +569,7 @@ class _ServerGate:
         self.reached = asyncio.Event()
         self.release = asyncio.Event()
         self.when = when
-        self._real = svc.acquire_attachment
+        self._real = svc_upload.acquire_attachment
 
         async def wrapper(db, **kw):
             if not kw.get("internal"):
@@ -582,7 +583,7 @@ class _ServerGate:
             await self.release.wait()
             return out
 
-        monkeypatch.setattr(svc, "acquire_attachment", wrapper)
+        monkeypatch.setattr(svc_upload, "acquire_attachment", wrapper)
 
 
 @contextlib.asynccontextmanager
