@@ -22,7 +22,13 @@ import type { AttachmentState, CaptureStatus, Declaration, MediaType } from '../
  *    or by the app being reinstalled. A resumed draft therefore verifies each
  *    file still exists and marks the ones that do not as `missing`, rather than
  *    failing an upload later with something unexplainable.
- *  - Bounded: at most MAX_DRAFTS, newest first.
+ *  - Bounded, but never by throwing work away. A new capture is REFUSED
+ *    when this account already holds MAX_DRAFTS unfinished ones, and the
+ *    user is told; the store itself evicts nothing. Silently dropping the
+ *    oldest draft to make room destroys text and file references that
+ *    exist nowhere else - during a long outage that is exactly the work
+ *    the user most needs back. The cap is per account, so one person's
+ *    unfinished captures cannot crowd out another's.
  *  - Never tokens, never credentials, never raw response payloads.
  */
 
@@ -80,6 +86,8 @@ type State = {
   patch: (captureClientId: string, p: Partial<SiteLogDraft>) => void;
   remove: (captureClientId: string) => void;
   forUser: (userId: string) => SiteLogDraft[];
+  /** True when this account may not start another capture until one ends. */
+  atCapacity: (userId: string) => boolean;
   get: (captureClientId: string) => SiteLogDraft | undefined;
   clearAll: () => void;
 };
@@ -105,8 +113,9 @@ export const useSiteLogDrafts = create<State>()(
       drafts: [],
       upsert: (d) =>
         set((s) => ({
-          drafts: [d, ...s.drafts.filter((x) => x.capture_client_id !== d.capture_client_id)]
-            .slice(0, MAX_DRAFTS),
+          // No slice: see the capacity note above. Nothing already here is
+          // dropped to make room for this.
+          drafts: [d, ...s.drafts.filter((x) => x.capture_client_id !== d.capture_client_id)],
         })),
       // zustand's persist middleware writes asynchronously, so a plain
       // set() gives no guarantee the recovery information survives a crash
@@ -128,6 +137,8 @@ export const useSiteLogDrafts = create<State>()(
       remove: (id) =>
         set((s) => ({ drafts: s.drafts.filter((x) => x.capture_client_id !== id) })),
       forUser: (userId) => get().drafts.filter((d) => d.user_id === userId),
+      atCapacity: (userId) =>
+        get().drafts.filter((d) => d.user_id === userId).length >= MAX_DRAFTS,
       get: (id) => get().drafts.find((d) => d.capture_client_id === id),
       clearAll: () => set({ drafts: [] }),
     }),

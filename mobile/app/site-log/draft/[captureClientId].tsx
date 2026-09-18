@@ -15,6 +15,7 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { useMe } from '../../../src/api/hooks/useAuth';
 import { runSubmit } from '../../../src/siteLog/submit';
+import { useAuthStore } from '../../../src/store/auth';
 import { useSiteLogDrafts } from '../../../src/store/siteLogDrafts';
 import { PrimaryButton } from '../../../src/ui/kit';
 import { tokens } from '../../../src/ui/tokens';
@@ -43,6 +44,8 @@ export default function ResumeSiteLogDraft() {
 
   const resume = useCallback(async () => {
     if (!draft || !me?.user_id) return;
+    // The session this resume was started in - read before any await.
+    const sessionNonce = useAuthStore.getState().sessionNonce;
     setBusy(true);
     setBanner(null);
     let outcome;
@@ -50,6 +53,7 @@ export default function ResumeSiteLogDraft() {
       outcome = await runSubmit({
         draft,
         userId: me.user_id,
+        sessionNonce,
         patch: (p) => store.patchDurable(draft.capture_client_id, p),
       });
     } finally {
@@ -78,7 +82,7 @@ export default function ResumeSiteLogDraft() {
       [
         outcome.kind === 'partial'
           ? t('siteLog.status.partial_body')
-          : t('siteLog.status.blocked_body'),
+          : t(outcome.bodyKey),
         outcome.limitation ? t(outcome.limitation) : null,
       ]
         .filter(Boolean)

@@ -32,6 +32,7 @@ export const api: AxiosInstance = axios.create({
 });
 
 api.interceptors.request.use((config) => {
+  (config as RetryableConfig).__sessionNonce = useAuthStore.getState().sessionNonce;
   const token = useAuthStore.getState().accessToken;
   if (token) {
     config.headers = config.headers ?? {};
@@ -59,6 +60,14 @@ let refreshInFlight: Promise<string | null> | null = null;
  *  the original request and the retry). */
 type RetryableConfig = InternalAxiosRequestConfig & {
   __authRetry?: boolean;
+  /**
+   * The signed-in session this request was ISSUED under. The existing A4
+   * guard compares the refresh token across the refresh call itself, which
+   * does not catch a sign-out-and-sign-in that happened while the ORIGINAL
+   * request was in flight: the replay would then carry the new account's
+   * token and write one person's data under another's name.
+   */
+  __sessionNonce?: number;
 };
 
 /**
@@ -101,6 +110,16 @@ api.interceptors.response.use(
     const status = err.response?.status;
 
     if (status !== 401 || !original) {
+      return Promise.reject(err);
+    }
+
+    // Checked BEFORE anything that clears tokens or refreshes: after a
+    // sign-out-and-sign-in the stored tokens belong to somebody else, so
+    // this request is neither retryable nor grounds for logging THEM out.
+    if (
+      original.__sessionNonce !== undefined &&
+      original.__sessionNonce !== useAuthStore.getState().sessionNonce
+    ) {
       return Promise.reject(err);
     }
 

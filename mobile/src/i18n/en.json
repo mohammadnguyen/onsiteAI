@@ -744,7 +744,8 @@
       "download": "That attachment could not be downloaded.",
       "not_yours": "That draft belongs to a different account.",
       "session_changed": "The signed-in account changed, so nothing further was sent. Sign in again as the account that started this capture.",
-      "draft_save_failed": "This phone could not store the capture, so nothing was sent. Free up some space and try again."
+      "draft_save_failed": "This phone could not store the capture, so nothing was sent. Free up some space and try again.",
+      "draft_capacity": "This phone is already holding the most unfinished site log entries it can. Finish or discard one before starting another."
     }
   }
 }

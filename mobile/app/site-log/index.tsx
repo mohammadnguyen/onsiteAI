@@ -53,32 +53,6 @@ export default function MySiteLogRecords() {
         </Pressable>
       </View>
 
-      {mine.length > 0 ? (
-        <View style={s.draftBlock}>
-          <Text style={s.sectionLabel}>{t('siteLog.list.drafts_section')}</Text>
-          {mine.map((d) => (
-            <Pressable
-              key={d.capture_client_id}
-              style={s.draft}
-              onPress={() => router.push(`/site-log/draft/${d.capture_client_id}` as never)}
-            >
-              <Text style={s.draftText} numberOfLines={1}>
-                {d.body_text || t('siteLog.list.draft_no_text')}
-              </Text>
-              <Text style={s.draftHint}>
-                {d.unconfirmed
-                  ? t('siteLog.status.unconfirmed_short')
-                  : d.server
-                    ? t('siteLog.list.draft_on_server', {
-                        status: t(`siteLog.status.${d.server.capture_status}`),
-                      })
-                    : t('siteLog.list.draft_not_sent')}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-      ) : null}
-
       <FlatList
         data={events}
         keyExtractor={(e) => e.site_log_event_id}
@@ -87,6 +61,39 @@ export default function MySiteLogRecords() {
         onEndReached={() => {
           if (q.hasNextPage && !q.isFetchingNextPage) q.fetchNextPage();
         }}
+        // Inside the list, not above it: unfinished captures accumulate
+        // during an outage, and a fixed block of them pushed the saved
+        // records - and the older drafts themselves - off the screen with
+        // no way to scroll to them.
+        ListHeaderComponent={
+          mine.length > 0 ? (
+            <View style={s.draftBlock}>
+              <Text style={s.sectionLabel}>{t('siteLog.list.drafts_section')}</Text>
+              {mine.map((d) => (
+                <Pressable
+                  key={d.capture_client_id}
+                  style={s.draft}
+                  onPress={() =>
+                    router.push(`/site-log/draft/${d.capture_client_id}` as never)
+                  }
+                >
+                  <Text style={s.draftText} numberOfLines={1}>
+                    {d.body_text || t('siteLog.list.draft_no_text')}
+                  </Text>
+                  <Text style={s.draftHint}>
+                    {d.unconfirmed
+                      ? t('siteLog.status.unconfirmed_short')
+                      : d.server
+                        ? t('siteLog.list.draft_on_server', {
+                            status: t(`siteLog.status.${d.server.capture_status}`),
+                          })
+                        : t('siteLog.list.draft_not_sent')}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null
+        }
         ListEmptyComponent={
           q.isLoading ? (
             <ActivityIndicator style={s.spinner} />

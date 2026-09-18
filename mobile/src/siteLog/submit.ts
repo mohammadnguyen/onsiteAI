@@ -56,6 +56,13 @@ export type SubmitOutcome =
       kind: 'created_not_uploaded';
       event: SiteLogEventOut;
       blocked: string[];
+      /**
+       * Which unfinished thing this is, as a translation key. An upload the
+       * server is still processing and a text attachment the server failed
+       * to store are different facts and read differently to the user; one
+       * message for both told people to wait when they should retry.
+       */
+      bodyKey: string;
       limitation?: string;
     }
   | { kind: 'unconfirmed'; messageKey: string }
@@ -75,6 +82,15 @@ type Ctx = {
    * to submit, or even resume, what the previous one wrote.
    */
   userId: string;
+  /**
+   * The value of `useAuthStore.getState().sessionNonce` read by the SCREEN,
+   * synchronously, before it did anything else.
+   *
+   * Reading it here instead would be too late: the caller persists the draft
+   * first, and an account change during that write would be captured as the
+   * starting session rather than detected as a change.
+   */
+  sessionNonce: number;
 };
 
 /**
@@ -83,10 +99,14 @@ type Ctx = {
  * The axios client reads the CURRENT token for every request, so a
  * submission that outlives its sign-in would keep going under whoever is
  * signed in next. The draft's own owner check runs once at the start; this
- * repeats the question at every request boundary.
+ * repeats the question at every request boundary, and immediately before
+ * each request that writes.
+ *
+ * It cannot cancel a request already in flight. The client's 401 handler
+ * covers the other half: it refuses to replay a request into a session that
+ * is no longer the one it was issued under.
  */
-function sessionGuard(): () => boolean {
-  const startedUnder = useAuthStore.getState().sessionNonce;
+function sessionGuard(startedUnder: number): () => boolean {
   return () => useAuthStore.getState().sessionNonce !== startedUnder;
 }
 
@@ -136,8 +156,11 @@ async function serverStateFor(draft: SiteLogDraft): Promise<SiteLogEventOut | nu
   return await findMineByCaptureClientId(draft.capture_client_id);
 }
 
-async function rememberEvent(ctx: Ctx, event: SiteLogEventOut): Promise<void> {
-  await ctx.patch({
+async function rememberEvent(
+  patch: (p: Partial<SiteLogDraft>) => Promise<void>,
+  event: SiteLogEventOut,
+): Promise<void> {
+  await patch({
     server: {
       site_log_event_id: event.site_log_event_id,
       capture_status: event.capture_status,
@@ -171,7 +194,10 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   if (draft.user_id !== ctx.userId) {
     return { kind: 'error', messageKey: 'siteLog.error.not_yours' };
   }
-  const sessionChanged = sessionGuard();
+  const sessionChanged = sessionGuard(ctx.sessionNonce);
+  if (sessionChanged()) {
+    return { kind: 'error', messageKey: 'siteLog.error.session_changed' };
+  }
   // Nothing is written to the draft store on this path: after a sign-out the
   // draft may legitimately have been wiped, and re-adding it would resurrect
   // one account's capture inside another's session.
@@ -181,6 +207,16 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   };
   /** A limitation that was hit and could not be worked around. */
   let limitation: string | undefined;
+  /**
+   * Persist, unless the account has changed.
+   *
+   * After a sign-out the draft may legitimately have been wiped, and a late
+   * write would put one account's capture back inside another's session.
+   */
+  const patch = async (p: Partial<SiteLogDraft>): Promise<void> => {
+    if (sessionChanged()) return;
+    await ctx.patch(p);
+  };
   const declaration: Declaration = draft.declaration ?? {
     capture_client_id: draft.capture_client_id,
     job_id: draft.job_id,
@@ -195,7 +231,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   };
   // Pin the declaration before the first request, so a retry replays exactly
   // what was first sent even if the user has since edited the form.
-  if (!draft.declaration) await ctx.patch({ declaration });
+  if (!draft.declaration) await patch({ declaration });
 
   let event: SiteLogEventOut | null = null;
 
@@ -204,7 +240,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
     event = await serverStateFor(draft);
   } catch (err) {
     if (isUnconfirmed(err)) {
-      await ctx.patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
+      await patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
       return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
     }
     return { kind: 'error', messageKey: 'siteLog.error.lookup' };
@@ -219,15 +255,23 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
       const carried = eventFrom502(err);
       if (carried) {
         // The record EXISTS. Only the server's own inline upload failed.
-        await rememberEvent(ctx, carried);
-        await ctx.patch({
+        await rememberEvent(patch, carried);
+        await patch({
           attachments: mergeAttachmentStates(draft, carried),
           last_message: 'siteLog.status.inline_failed',
         });
-        return { kind: 'created_not_uploaded', event: carried, blocked: [] };
+        return {
+          kind: 'created_not_uploaded',
+          event: carried,
+          blocked: [],
+          // Not "still processing": the server's own inline upload FAILED.
+          // It is recoverable - resuming replays the declaration - so the
+          // message has to send the user to the retry, not to waiting.
+          bodyKey: 'siteLog.status.inline_failed',
+        };
       }
       if (isUnconfirmed(err)) {
-        await ctx.patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
+        await patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
         return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
       }
       const anyErr = err as { response?: { status?: number; data?: { detail?: unknown } } };
@@ -238,7 +282,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
       return { kind: 'error', messageKey: 'siteLog.error.declare', detail };
     }
   }
-  await rememberEvent(ctx, event);
+  await rememberEvent(patch, event);
   if (sessionChanged()) return stale;
 
   // ---- 2b. Recover the server-owned inline row, if it needs it --------
@@ -256,17 +300,17 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   if (inlineNeedsRecovery) {
     try {
       event = await declareCapture(declaration);
-      await rememberEvent(ctx, event);
+      await rememberEvent(patch, event);
     } catch (err) {
       const carried = eventFrom502(err);
       if (carried) {
         // Still failing server-side. The record stands; say so rather than
         // retrying into the same wall.
         event = carried;
-        await rememberEvent(ctx, event);
-        await ctx.patch({ last_message: 'siteLog.status.inline_failed' });
+        await rememberEvent(patch, event);
+        await patch({ last_message: 'siteLog.status.inline_failed' });
       } else if (isUnconfirmed(err)) {
-        await ctx.patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
+        await patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
         return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
       } else {
         // An HTTP answer that is not a 502: the replay was refused and will
@@ -276,7 +320,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
         // states it instead of inviting a retry that cannot work. No
         // substitute record is created and nothing is reported as saved.
         limitation = 'siteLog.status.inline_unrecoverable';
-        await ctx.patch({ last_message: limitation });
+        await patch({ last_message: limitation });
       }
     }
     if (sessionChanged()) return stale;
@@ -313,6 +357,9 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
       missingLocally.add(att.attachment_client_id);
       continue;
     }
+    // Re-checked here rather than only at the top of the loop: the file
+    // check above is itself an await.
+    if (sessionChanged()) return stale;
     try {
       await uploadAttachment(event.site_log_event_id, att.attachment_client_id, {
         uri: att.uri,
@@ -323,7 +370,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
       if (isUnconfirmed(err)) {
         // The bytes may or may not have landed. Leave it; the next attempt
         // re-reads state and will skip it if it is stored.
-        await ctx.patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
+        await patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
         return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
       }
       failed.push(att.attachment_client_id);
@@ -341,7 +388,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
     finalEvent = await getEvent(event.site_log_event_id);
   } catch (err) {
     if (isUnconfirmed(err)) {
-      await ctx.patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
+      await patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
       return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
     }
     return { kind: 'error', messageKey: 'siteLog.error.lookup', event };
@@ -349,19 +396,20 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
 
   const stillPending = finalEvent.attachments.some((a) => a.state === 'pending');
   if (!stillPending) {
+    if (sessionChanged()) return stale;
     try {
       finalEvent = await finalizeCapture(finalEvent.site_log_event_id);
     } catch (err) {
       if (isUnconfirmed(err)) {
-        await ctx.patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
+        await patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
         return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
       }
       // Finalize refuses while anything is in flight; the record still exists.
     }
   }
 
-  await rememberEvent(ctx, finalEvent);
-  await ctx.patch({
+  await rememberEvent(patch, finalEvent);
+  await patch({
     attachments: mergeAttachmentStates(draft, finalEvent).map((a) =>
       missingLocally.has(a.attachment_client_id) && a.status !== 'stored'
         ? { ...a, status: 'missing' as const }
@@ -370,7 +418,13 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   });
 
   if (blocked.length > 0) {
-    return { kind: 'created_not_uploaded', event: finalEvent, blocked, limitation };
+    return {
+      kind: 'created_not_uploaded',
+      event: finalEvent,
+      blocked,
+      bodyKey: 'siteLog.status.blocked_body',
+      limitation,
+    };
   }
   if (finalEvent.capture_status === 'complete') {
     return { kind: 'complete', event: finalEvent };

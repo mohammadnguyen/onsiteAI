@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -23,6 +23,57 @@ import { useAuthStore } from '../../src/store/auth';
 import { StatusBadge } from '../../src/ui/kit';
 import { tokens } from '../../src/ui/tokens';
 
+/** What a downloaded attachment is, once it is on this phone. */
+type CachedFile = { uri: string; mime?: string };
+
+/**
+ * Extensions for the types this flow produces, plus the common ones a user
+ * may attach. A cached file with no extension is handed to other apps as
+ * an unrecognisable blob - on Android the share sheet falls back to `*\/*`
+ * and nothing offers to open it.
+ */
+const EXTENSION_BY_MIME: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/heic': '.heic',
+  'image/webp': '.webp',
+  'image/gif': '.gif',
+  'audio/m4a': '.m4a',
+  'audio/mp4': '.m4a',
+  'audio/x-m4a': '.m4a',
+  'audio/mpeg': '.mp3',
+  'audio/wav': '.wav',
+  'application/pdf': '.pdf',
+  'text/plain': '.txt',
+  'text/csv': '.csv',
+};
+
+function headerValue(
+  headers: Record<string, string> | undefined,
+  name: string,
+): string | undefined {
+  if (!headers) return undefined;
+  const key = Object.keys(headers).find((k) => k.toLowerCase() === name);
+  return key ? headers[key] : undefined;
+}
+
+/**
+ * Renew the access token, if it can be renewed.
+ *
+ * expo-file-system's downloadAsync is a separate transport: it never passes
+ * through the axios interceptor that refreshes on 401. One cheap
+ * authenticated request does pass through it, so this borrows the shared
+ * refresh rather than duplicating it - no token handling lives here.
+ */
+async function refreshSession(): Promise<boolean> {
+  try {
+    await api.get('/auth/me');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Read-only. Opening a saved record grants no right to change it: this screen
  * has no edit affordance, and the backend has no revision writer either.
@@ -30,13 +81,16 @@ import { tokens } from '../../src/ui/tokens';
 export default function SiteLogRecordDetail() {
   const { t } = useTranslation();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const token = useAuthStore((s) => s.accessToken);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Created ONCE, with no source. useAudioPlayer rebuilds - and releases -
   // the player whenever the source it is given changes, so driving it from
   // state meant every tap released the player that was about to play.
   const player = useAudioPlayer(null);
+  // What this screen has already downloaded. Deliberately per visit: a file
+  // cached under a previous sign-in is never reused, and a failed download
+  // leaves nothing behind to be served later.
+  const cached = useRef(new Map<string, CachedFile>());
 
   const q = useQuery({
     queryKey: ['site-log', 'event', id],
@@ -49,50 +103,72 @@ export default function SiteLogRecordDetail() {
    * to a cache file first and then handed to the platform. Nothing is written
    * back to the record.
    */
-  const fetchToCache = useCallback(
-    async (att: AttachmentOut): Promise<string | null> => {
-      if (!att.evidence_id) return null;
-      const target = `${FileSystem.cacheDirectory}sitelog-${att.evidence_id}`;
-      const existing = await FileSystem.getInfoAsync(target);
-      if (existing.exists) return target;
-      // Downloaded to a temporary name first. downloadAsync writes the
-      // response body whatever the status, so promoting on existence alone
-      // would cache a 401 page and then keep serving it as the attachment.
-      const scratch = `${target}.part`;
-      const base = api.defaults.baseURL ?? '';
-      const res = await FileSystem.downloadAsync(
-        `${base}/evidence/${att.evidence_id}/download`,
-        scratch,
-        { headers: token ? { Authorization: `Bearer ${token}` } : undefined },
-      );
-      if (res.status !== 200) {
-        await FileSystem.deleteAsync(scratch, { idempotent: true });
-        return null;
-      }
-      await FileSystem.moveAsync({ from: scratch, to: target });
-      return target;
-    },
-    [token],
-  );
+  const fetchToCache = useCallback(async (att: AttachmentOut): Promise<CachedFile | null> => {
+    if (!att.evidence_id) return null;
+    const hit = cached.current.get(att.evidence_id);
+    if (hit) return hit;
+
+    const base = api.defaults.baseURL ?? '';
+    const url = `${base}/evidence/${att.evidence_id}/download`;
+    // Downloaded to a temporary name first. downloadAsync writes the
+    // response body whatever the status, so promoting on existence alone
+    // would cache a 401 page and then keep serving it as the attachment.
+    const scratch = `${FileSystem.cacheDirectory}sitelog-${att.evidence_id}.part`;
+    const attempt = () => {
+      // Read at each attempt, never closed over: after a refresh the stored
+      // token is a different one.
+      const token = useAuthStore.getState().accessToken;
+      return FileSystem.downloadAsync(url, scratch, {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+    };
+
+    let res = await attempt();
+    if (res.status === 401 && (await refreshSession())) {
+      res = await attempt();
+    }
+    if (res.status !== 200) {
+      await FileSystem.deleteAsync(scratch, { idempotent: true });
+      return null;
+    }
+
+    const mime = (headerValue(res.headers, 'content-type') ?? '').split(';')[0].trim();
+    const target =
+      `${FileSystem.cacheDirectory}sitelog-${att.evidence_id}` +
+      (EXTENSION_BY_MIME[mime] ?? '');
+    await FileSystem.deleteAsync(target, { idempotent: true });
+    await FileSystem.moveAsync({ from: scratch, to: target });
+
+    const entry: CachedFile = { uri: target, mime: mime || undefined };
+    cached.current.set(att.evidence_id, entry);
+    return entry;
+  }, []);
 
   const open = useCallback(
     async (att: AttachmentOut) => {
       setBusyId(att.attachment_client_id);
       setError(null);
       try {
-        const uri = await fetchToCache(att);
-        if (!uri) {
+        const file = await fetchToCache(att);
+        if (!file) {
           setError(t('siteLog.error.download'));
           return;
         }
         if (att.declared_media_type === 'audio') {
           // Imperative, on the instance this screen keeps: replace the source,
           // then play it.
-          player.replace({ uri });
+          player.replace({ uri: file.uri });
           player.play();
           return;
         }
-        if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri);
+        if (await Sharing.isAvailableAsync()) {
+          // The type goes with the file: without it the receiving app has
+          // only the name to go on.
+          await Sharing.shareAsync(
+            file.uri,
+            file.mime ? { mimeType: file.mime } : undefined,
+          );
+        }
       } finally {
         setBusyId(null);
       }

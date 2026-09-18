@@ -28,6 +28,7 @@ import { JobPickerSheet } from '../../src/components/JobPickerSheet';
 import { newCaptureId as newId } from '../../src/siteLog/ids';
 import { deriveMediaType } from '../../src/siteLog/media';
 import { runSubmit } from '../../src/siteLog/submit';
+import { useAuthStore } from '../../src/store/auth';
 import { useSiteLogDrafts, type DraftAttachment } from '../../src/store/siteLogDrafts';
 import { PrimaryButton } from '../../src/ui/kit';
 import { tokens } from '../../src/ui/tokens';
@@ -52,6 +53,8 @@ export default function NewSiteLogEntry() {
 
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [recording, setRecording] = useState(false);
+  /** True while a start or stop is in progress, awaits included. */
+  const [audioBusy, setAudioBusy] = useState(false);
 
   // Active jobs only: the backend refuses a completed job at declare time,
   // so offering one would be an invitation to a 422.
@@ -111,52 +114,66 @@ export default function NewSiteLogEntry() {
   }, [add]);
 
   const toggleRecording = useCallback(async () => {
-    if (!recording) {
-      // Permission and the recording audio session both have to be in place
-      // first: Android rejects prepareToRecordAsync without the permission,
-      // and iOS refuses to start until the mode allows recording.
-      try {
-        const perm = await requestRecordingPermissionsAsync();
-        if (!perm.granted) {
-          setBanner(t('siteLog.error.mic_permission'));
-          return;
+    // Held for the whole of this function, including its awaits. Saving is
+    // blocked throughout: starting and stopping both have gaps during which
+    // `recording` alone said the microphone was idle, and a capture saved in
+    // one of those gaps would have pinned a declaration without the voice
+    // note - which is then unattachable, because the declaration is pinned.
+    setAudioBusy(true);
+    try {
+      if (!recording) {
+        // Permission and the recording audio session both have to be in place
+        // first: Android rejects prepareToRecordAsync without the permission,
+        // and iOS refuses to start until the mode allows recording.
+        try {
+          const perm = await requestRecordingPermissionsAsync();
+          if (!perm.granted) {
+            setBanner(t('siteLog.error.mic_permission'));
+            return;
+          }
+          await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+          await recorder.prepareToRecordAsync();
+          recorder.record();
+          setRecording(true);
+        } catch {
+          setBanner(t('siteLog.error.recording'));
+          setRecording(false);
         }
-        await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-        await recorder.prepareToRecordAsync();
-        recorder.record();
-        setRecording(true);
+        return;
+      }
+      try {
+        await recorder.stop();
       } catch {
         setBanner(t('siteLog.error.recording'));
-        setRecording(false);
       }
-      return;
+      // Attached BEFORE `recording` is cleared, so there is no moment in
+      // which the button is live and the recording is not yet part of the
+      // capture.
+      const uri = recorder.uri;
+      if (uri) {
+        add({
+          attachment_client_id: newId(),
+          media_type: 'audio',
+          uri,
+          name: `voice-${Date.now()}.m4a`,
+          mime: 'audio/m4a',
+          size: null,
+          status: 'awaiting_upload',
+        });
+      }
+      setRecording(false);
+      // Hand the session back to playback so a recording can be played here
+      // or on the detail screen straight afterwards. Failing to do so must
+      // not cost the user the recording that was just made.
+      try {
+        await setAudioModeAsync({ allowsRecording: false });
+      } catch {
+        // Playback may be affected until the next session change; the
+        // recording itself is on disk and already attached above.
+      }
+    } finally {
+      setAudioBusy(false);
     }
-    try {
-      await recorder.stop();
-    } catch {
-      setBanner(t('siteLog.error.recording'));
-    }
-    setRecording(false);
-    // Hand the session back to playback so a recording can be played here
-    // or on the detail screen straight afterwards. Failing to do so must not
-    // cost the user the recording that was just made.
-    try {
-      await setAudioModeAsync({ allowsRecording: false });
-    } catch {
-      // Playback may be affected until the next session change; the recording
-      // itself is on disk and is still attached below.
-    }
-    const uri = recorder.uri;
-    if (!uri) return;
-    add({
-      attachment_client_id: newId(),
-      media_type: 'audio',
-      uri,
-      name: `voice-${Date.now()}.m4a`,
-      mime: 'audio/m4a',
-      size: null,
-      status: 'awaiting_upload',
-    });
   }, [add, recorder, recording, t]);
 
   const submit = useCallback(async () => {
@@ -165,6 +182,10 @@ export default function NewSiteLogEntry() {
       setBanner(t('siteLog.error.empty'));
       return;
     }
+    // Read synchronously, before anything is awaited: this is the session
+    // the user tapped Save in, and it is what every later step is checked
+    // against.
+    const sessionNonce = useAuthStore.getState().sessionNonce;
     setBusy(true);
     setBanner(null);
 
@@ -173,6 +194,13 @@ export default function NewSiteLogEntry() {
     // declaration and the server id, and a fresh declaration under the same
     // capture id is either ignored or a fingerprint conflict.
     const existing = drafts.get(captureClientId);
+    if (!existing && drafts.atCapacity(me.user_id)) {
+      // Refused rather than making room: the oldest unfinished capture is
+      // somebody's unsent work, and its text and files exist nowhere else.
+      setBusy(false);
+      setBanner(t('siteLog.error.draft_capacity'));
+      return;
+    }
     const draft =
       existing ?? {
         capture_client_id: captureClientId,
@@ -195,6 +223,12 @@ export default function NewSiteLogEntry() {
     try {
       await drafts.upsertDurable(draft);
     } catch {
+      // The in-memory copy was written before the flush failed. Left there,
+      // the next Save would reuse it and send the text and files as they
+      // were BEFORE the user's subsequent edits - including a file they had
+      // since removed. A capture that never reached storage is discarded
+      // instead; the form still holds everything.
+      if (!existing) drafts.remove(captureClientId);
       setBusy(false);
       setBanner(t('siteLog.error.draft_save_failed'));
       return;
@@ -206,6 +240,7 @@ export default function NewSiteLogEntry() {
       outcome = await runSubmit({
         draft,
         userId: me.user_id,
+        sessionNonce,
         patch: (p) => drafts.patchDurable(captureClientId, p),
       });
     } finally {
@@ -240,7 +275,7 @@ export default function NewSiteLogEntry() {
       [
         outcome.kind === 'partial'
           ? t('siteLog.status.partial_body')
-          : t('siteLog.status.blocked_body'),
+          : t(outcome.bodyKey),
         outcome.limitation ? t(outcome.limitation) : null,
       ]
         .filter(Boolean)
@@ -290,7 +325,7 @@ export default function NewSiteLogEntry() {
           <Pressable
             style={[s.action, recording ? s.actionActive : null]}
             onPress={toggleRecording}
-            disabled={submitted}
+            disabled={submitted || audioBusy}
           >
             <Text style={s.actionText}>
               {recording ? t('siteLog.new.stop_recording') : t('siteLog.new.record_voice')}
@@ -322,9 +357,11 @@ export default function NewSiteLogEntry() {
         <PrimaryButton
           label={t('siteLog.new.submit')}
           onPress={submit}
-          disabled={busy || submitted || recording}
+          disabled={busy || submitted || recording || audioBusy}
         />
-        {recording ? <Text style={s.hint}>{t('siteLog.new.recording_note')}</Text> : null}
+        {recording || audioBusy ? (
+          <Text style={s.hint}>{t('siteLog.new.recording_note')}</Text>
+        ) : null}
         {submitted ? <Text style={s.hint}>{t('siteLog.new.sent_hint')}</Text> : null}
       </ScrollView>
 
