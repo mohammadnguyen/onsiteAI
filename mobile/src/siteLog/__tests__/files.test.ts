@@ -138,3 +138,45 @@ describe('releasing kept files', () => {
     expect(memfs.files.has('file:///documents/somebody-elses-file')).toBe(true);
   });
 });
+
+describe('verifying the copy when the picker gave no size', () => {
+  it('refuses a truncated recording, whose size is never known in advance', async () => {
+    // Every recording arrives with expectedSize null: the recorder does not
+    // report one. Comparing only against the picker's number therefore
+    // checked nothing at all for exactly the file that cannot be picked
+    // again.
+    memfs.put('file:///cache/voice.m4a', 5000);
+    memfs.shortNextCopyTo = 120;
+
+    await expect(
+      retainAttachment({
+        userId: USER_A,
+        captureClientId: CAPTURE_1,
+        attachmentId: 'att-voice',
+        sourceUri: 'file:///cache/voice.m4a',
+        name: 'voice.m4a',
+        expectedSize: null,
+      }),
+    ).rejects.toMatchObject({ name: 'RetentionError', cause: 'size_mismatch' });
+
+    expect(memfs.files.has(`${captureDir(USER_A, CAPTURE_1)}att-voice.m4a`)).toBe(false);
+  });
+
+  it('refuses when the copy cannot be measured at all', async () => {
+    // "We could not check" is not "it is fine". An unmeasurable copy is not
+    // recorded as kept.
+    memfs.put('file:///cache/photo.jpg', 40);
+    memfs.hideSizeOf = `${captureDir(USER_A, CAPTURE_1)}att-x.jpg`;
+
+    await expect(
+      retainAttachment({
+        userId: USER_A,
+        captureClientId: CAPTURE_1,
+        attachmentId: 'att-x',
+        sourceUri: 'file:///cache/photo.jpg',
+        name: 'photo.jpg',
+        expectedSize: 40,
+      }),
+    ).rejects.toMatchObject({ name: 'RetentionError' });
+  });
+});

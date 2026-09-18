@@ -10,7 +10,7 @@ import {
 import type { AttachmentOut, Declaration, SiteLogEventOut } from '../api/siteLog';
 import type { DraftAttachment, SiteLogDraft } from '../store/siteLogDrafts';
 import { useAuthStore } from '../store/auth';
-import { fileExists } from './files';
+import { RetentionError, fileExists, retainAttachment } from './files';
 
 /**
  * Running one capture to the server, safely enough to retry.
@@ -170,13 +170,13 @@ async function rememberEvent(
 }
 
 function mergeAttachmentStates(
-  draft: SiteLogDraft,
+  attachments: DraftAttachment[],
   event: SiteLogEventOut,
 ): DraftAttachment[] {
   const byId = new Map<string, AttachmentOut>(
     event.attachments.map((a) => [a.attachment_client_id, a]),
   );
-  return draft.attachments.map((a) => {
+  return attachments.map((a) => {
     const server = byId.get(a.attachment_client_id);
     return server ? { ...a, status: server.state } : a;
   });
@@ -256,6 +256,10 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
     // it all again. Saying "unknown" is both true and recoverable: resuming
     // asks the server first, under the same capture_client_id.
     await patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
+    // That write is awaited, and an account change can land inside it. The
+    // next line sends a request; the client stamps it with whatever session
+    // is current, so nothing downstream would catch this.
+    if (sessionChanged()) return stale;
     try {
       event = await declareCapture(declaration);
     } catch (err) {
@@ -264,7 +268,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
         // The record EXISTS. Only the server's own inline upload failed.
         await rememberEvent(patch, carried);
         await patch({
-          attachments: mergeAttachmentStates(draft, carried),
+          attachments: mergeAttachmentStates(draft.attachments, carried),
           last_message: 'siteLog.status.inline_failed',
         });
         return {
@@ -281,10 +285,15 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
         await patch({ unconfirmed: true, last_message: 'siteLog.status.unconfirmed' });
         return { kind: 'unconfirmed', messageKey: 'siteLog.status.unconfirmed' };
       }
-      // The server ANSWERED and refused. Nothing was created, so the
-      // result is not unknown and the draft must stop saying it is.
-      await patch({ unconfirmed: false, last_message: null });
       const anyErr = err as { response?: { status?: number; data?: { detail?: unknown } } };
+      const status = anyErr?.response?.status;
+      // A 4xx is the SERVER refusing: nothing was created, so the result is
+      // not unknown any more. A 5xx is not that. A gateway can answer 502 or
+      // 504 after the backend committed the event, so the uncertainty
+      // stands and the next attempt asks before doing anything.
+      if (typeof status === 'number' && status < 500) {
+        await patch({ unconfirmed: false, last_message: null });
+      }
       const detail =
         typeof anyErr?.response?.data?.detail === 'string'
           ? (anyErr.response!.data!.detail as string)
@@ -340,6 +349,10 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   const declaredIds = declaration.attachments.map((a) => a.attachment_client_id);
   const serverOwned = new Set(serverOwnedAttachmentIds(event, declaredIds));
   const byId = new Map(event.attachments.map((a) => [a.attachment_client_id, a]));
+  // The local view of each attachment, which the loop may update: a draft
+  // written before retention existed points at the OS cache, and its bytes
+  // are moved into the app's own directory here before anything is sent.
+  const local = new Map(draft.attachments.map((a) => [a.attachment_client_id, a]));
 
   const failed: string[] = [];
   const blocked: string[] = [];
@@ -350,8 +363,8 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   // fail again.
   const missingLocally = new Set<string>();
 
-  for (const att of draft.attachments) {
-    if (sessionChanged()) return stale;
+  for (const declared of draft.attachments) {
+    let att = declared;
     if (serverOwned.has(att.attachment_client_id)) continue; // never ours to send
     const state = byId.get(att.attachment_client_id)?.state ?? 'awaiting_upload';
     if (state === 'stored') continue; // already saved: do not send again
@@ -362,13 +375,41 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
       blocked.push(att.attachment_client_id);
       continue;
     }
+    if (att.retained !== true) {
+      // Written by a build that did not copy picked files. The bytes are
+      // still in the OS cache, which can be reclaimed at any moment, so
+      // they are kept NOW - same id, same declaration, same bytes, only a
+      // different place to read them from.
+      try {
+        const kept = await retainAttachment({
+          userId: ctx.userId,
+          captureClientId: draft.capture_client_id,
+          attachmentId: att.attachment_client_id,
+          sourceUri: att.uri,
+          name: att.name,
+          expectedSize: att.size,
+        });
+        att = { ...att, uri: kept.uri, retained: true };
+        local.set(att.attachment_client_id, att);
+        await patch({ attachments: [...local.values()] });
+      } catch (err) {
+        // The cache file has gone, or it cannot be copied. Either way this
+        // attachment cannot be sent from this phone, and saying so beats
+        // failing an upload with something unexplainable.
+        void (err as RetentionError);
+        failed.push(att.attachment_client_id);
+        missingLocally.add(att.attachment_client_id);
+        continue;
+      }
+    }
     if (!(await fileStillExists(att.uri))) {
       failed.push(att.attachment_client_id);
       missingLocally.add(att.attachment_client_id);
       continue;
     }
-    // Re-checked here rather than only at the top of the loop: the file
-    // check above is itself an await.
+    // Checked once per attachment, here rather than at the top of the loop:
+    // retaining and checking the file are themselves awaits, so this is the
+    // last point before bytes go out under whatever account is current.
     if (sessionChanged()) return stale;
     try {
       await uploadAttachment(event.site_log_event_id, att.attachment_client_id, {
@@ -420,7 +461,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
 
   await rememberEvent(patch, finalEvent);
   await patch({
-    attachments: mergeAttachmentStates(draft, finalEvent).map((a) =>
+    attachments: mergeAttachmentStates([...local.values()], finalEvent).map((a) =>
       missingLocally.has(a.attachment_client_id) && a.status !== 'stored'
         ? { ...a, status: 'missing' as const }
         : a,

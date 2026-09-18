@@ -676,7 +676,8 @@
       "submit": "Save site log entry",
       "sent_hint": "Already sent. Open it from My site log to check or retry.",
       "recording_note": "Stop the recording first. A voice note is only attached once you stop.",
-      "attachments_mobile_only": "Photos, documents and voice notes can be attached in the mobile app."
+      "attachments_mobile_only": "Photos, documents and voice notes can be attached in the mobile app.",
+      "keeping_files": "Keeping the file on this phone…"
     },
     "list": {
       "title": "My site log",

@@ -87,6 +87,18 @@ export async function retainAttachment(args: {
     throw new RetentionError('unavailable', 'no document directory on this platform');
   }
   const target = `${dir}${args.attachmentId}${extensionOf(args.name)}`;
+
+  // What the copy must come out at. The picker's number when it gave one,
+  // otherwise the source file's own - a recording never reports a size in
+  // advance, and it is exactly the file that cannot be picked again.
+  let expected = args.expectedSize;
+  if (expected === null) {
+    const from = await FileSystem.getInfoAsync(args.sourceUri);
+    if (!from.exists) {
+      throw new RetentionError('copy_failed', 'the file to keep is not there');
+    }
+    expected = typeof from.size === 'number' ? from.size : null;
+  }
   try {
     await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
     await FileSystem.copyAsync({ from: args.sourceUri, to: target });
@@ -103,12 +115,15 @@ export async function retainAttachment(args: {
   }
   const size = typeof info.size === 'number' ? info.size : null;
   // A short copy is the shape a full disk takes: copyAsync can return
-  // without throwing and leave fewer bytes behind.
-  if (args.expectedSize !== null && size !== null && size !== args.expectedSize) {
+  // without throwing and leave fewer bytes behind. "We could not measure
+  // it" is not "it is fine" either - an unverified copy is not recorded as
+  // kept, because the draft would then be claiming something nobody
+  // checked.
+  if (size === null || (expected !== null && size !== expected)) {
     await deleteQuietly(target);
     throw new RetentionError(
       'size_mismatch',
-      `kept ${size} bytes of ${args.expectedSize}`,
+      size === null ? 'the copy could not be measured' : `kept ${size} bytes of ${expected}`,
     );
   }
   return { uri: target, size };

@@ -75,6 +75,14 @@ export default function NewSiteLogEntry() {
   const [recording, setRecording] = useState(false);
   /** True while a start or stop is in progress, awaits included. */
   const [audioBusy, setAudioBusy] = useState(false);
+  /**
+   * How many picked files are still being copied.
+   *
+   * A picker returns before the bytes are kept, and a declaration pinned in
+   * that window would not include the file - which then cannot be added to
+   * it at all, because the declaration is pinned.
+   */
+  const [retaining, setRetaining] = useState(0);
 
   // Active jobs only: the backend refuses a completed job at declare time,
   // so offering one would be an invitation to a 422.
@@ -98,6 +106,7 @@ export default function NewSiteLogEntry() {
   const add = useCallback(
     async (a: DraftAttachment, sourceUri: string): Promise<void> => {
       if (!userId) return;
+      setRetaining((n) => n + 1);
       try {
         const kept = await retainAttachment({
           userId,
@@ -117,6 +126,8 @@ export default function NewSiteLogEntry() {
             ? t('siteLog.error.attachments_unavailable')
             : t('siteLog.error.attachment_not_kept'),
         );
+      } finally {
+        setRetaining((n) => n - 1);
       }
     },
     [captureClientId, t, userId],
@@ -300,6 +311,10 @@ export default function NewSiteLogEntry() {
     // the phone cannot write it, nothing is sent - an unsaved capture whose
     // ids exist only in memory is exactly what this flow must never create -
     // and the button is given back rather than left spinning.
+    // Set BEFORE the write, not after it: the write is awaited, and leaving
+    // the screen during it would otherwise run the abandon-cleanup and
+    // delete the very files the submission is about to send.
+    sentRef.current = true;
     try {
       await drafts.upsertDurable(draft);
     } catch {
@@ -309,12 +324,15 @@ export default function NewSiteLogEntry() {
       // since removed. A capture that never reached storage is discarded
       // instead; the form still holds everything.
       if (!existing) drafts.remove(captureClientId);
+      // Nothing was sent and no draft survives, so this capture is
+      // abandonable again. The kept copies stay: the form still holds the
+      // attachments, and the user may simply try again.
+      sentRef.current = Boolean(existing);
       setBusy(false);
       setBanner(t('siteLog.error.draft_save_failed'));
       return;
     }
     setSubmitted(true);
-    sentRef.current = true;
 
     let outcome;
     try {
@@ -400,10 +418,10 @@ export default function NewSiteLogEntry() {
 
         {attachmentsSupported ? (
           <View style={s.actions}>
-            <Pressable style={s.action} onPress={pickPhoto} disabled={submitted}>
+            <Pressable style={s.action} onPress={pickPhoto} disabled={submitted || busy}>
               <Text style={s.actionText}>{t('siteLog.new.add_photo')}</Text>
             </Pressable>
-            <Pressable style={s.action} onPress={pickDocument} disabled={submitted}>
+            <Pressable style={s.action} onPress={pickDocument} disabled={submitted || busy}>
               <Text style={s.actionText}>{t('siteLog.new.add_document')}</Text>
             </Pressable>
             <Pressable
@@ -426,7 +444,7 @@ export default function NewSiteLogEntry() {
               {a.name}
             </Text>
             <Pressable
-              disabled={submitted}
+              disabled={submitted || busy}
               onPress={() => {
                 setAttachments((prev) =>
                   prev.filter((x) => x.attachment_client_id !== a.attachment_client_id),
@@ -446,11 +464,12 @@ export default function NewSiteLogEntry() {
         <PrimaryButton
           label={t('siteLog.new.submit')}
           onPress={submit}
-          disabled={busy || submitted || recording || audioBusy}
+          disabled={busy || submitted || recording || audioBusy || retaining > 0}
         />
         {recording || audioBusy ? (
           <Text style={s.hint}>{t('siteLog.new.recording_note')}</Text>
         ) : null}
+        {retaining > 0 ? <Text style={s.hint}>{t('siteLog.new.keeping_files')}</Text> : null}
         {submitted ? <Text style={s.hint}>{t('siteLog.new.sent_hint')}</Text> : null}
       </ScrollView>
 

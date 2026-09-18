@@ -12,6 +12,8 @@ export type MemFs = {
   failNextCopy: Error | null;
   /** Next copy writes this many bytes instead of the source's size. */
   shortNextCopyTo: number | null;
+  /** getInfoAsync reports no size for this path, as some platforms do. */
+  hideSizeOf: string | null;
   reset(): void;
   put(uri: string, size?: number): void;
 };
@@ -34,11 +36,13 @@ export const memfs: MemFs = {
   dirs: g.__memfsDirs,
   failNextCopy: null,
   shortNextCopyTo: null,
+  hideSizeOf: null,
   reset() {
     memfs.files.clear();
     memfs.dirs.clear();
     memfs.failNextCopy = null;
     memfs.shortNextCopyTo = null;
+    memfs.hideSizeOf = null;
   },
   put(uri, size = 10) {
     memfs.files.set(uri, size);
@@ -72,7 +76,11 @@ export async function getInfoAsync(
   uri: string,
 ): Promise<{ exists: boolean; size?: number; uri: string }> {
   const size = memfs.files.get(uri);
-  if (size !== undefined) return { exists: true, size, uri };
+  if (size !== undefined) {
+    return memfs.hideSizeOf === uri
+      ? { exists: true, uri }
+      : { exists: true, size, uri };
+  }
   if (memfs.dirs.has(uri)) return { exists: true, uri };
   return { exists: false, uri };
 }

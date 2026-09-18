@@ -179,8 +179,13 @@ export default function ResumeSiteLogDraft() {
         {busy ? <ActivityIndicator style={s.spinner} /> : null}
 
         <PrimaryButton label={t('siteLog.draft.resume')} onPress={resume} disabled={busy} />
-        <Pressable onPress={discard} style={s.discard}>
-          <Text style={s.discardText}>{t('siteLog.draft.discard')}</Text>
+        {/* Not while a submission is running: discarding would delete the
+            recovery information and the files it is still using, without
+            stopping it. */}
+        <Pressable onPress={discard} style={s.discard} disabled={busy}>
+          <Text style={busy ? s.discardDisabled : s.discardText}>
+            {t('siteLog.draft.discard')}
+          </Text>
         </Pressable>
       </ScrollView>
     </SafeAreaView>
@@ -223,5 +228,6 @@ const s = StyleSheet.create({
   spinner: { marginVertical: 8 },
   discard: { alignSelf: 'center', paddingVertical: 12 },
   discardText: { color: tokens.bad },
+  discardDisabled: { color: tokens.muted },
   empty: { color: tokens.muted, textAlign: 'center', marginTop: 48 },
 });

@@ -517,3 +517,131 @@ describe('account isolation', () => {
     expect(r.patches.every((p) => 'declaration' in p)).toBe(true);
   });
 });
+
+// =====================================================================
+// Round-5 findings
+// =====================================================================
+describe('a server error is not proof that nothing was saved', () => {
+  it('keeps the save unconfirmed when the declaration answers 5xx', async () => {
+    mocked.findMineByCaptureClientId.mockResolvedValue(null);
+    mocked.declareCapture.mockRejectedValue(httpError(504));
+
+    const r = recorder(draft());
+    const outcome = await runSubmit(r.ctx);
+
+    expect(outcome.kind).toBe('error');
+    // A gateway can answer 504 after the backend committed the event. The
+    // draft must not claim the record does not exist.
+    expect(r.state.unconfirmed).toBe(true);
+  });
+
+  it('clears the uncertainty only when the server itself refused', async () => {
+    mocked.findMineByCaptureClientId.mockResolvedValue(null);
+    mocked.declareCapture.mockRejectedValue(httpError(422, 'job is completed'));
+
+    const r = recorder(draft());
+    await runSubmit(r.ctx);
+
+    expect(r.state.unconfirmed).toBe(false);
+  });
+});
+
+describe('the account can change while the draft is being written', () => {
+  it('does not declare after a sign-in that landed during the durable write', async () => {
+    mocked.findMineByCaptureClientId.mockResolvedValue(null);
+
+    const d = draft();
+    const patches: Partial<SiteLogDraft>[] = [];
+    const outcome = await runSubmit({
+      draft: d,
+      userId: USER,
+      sessionNonce: 0,
+      patch: async (p) => {
+        patches.push(p);
+        // The write to storage is awaited, and somebody signed in during it.
+        if ('unconfirmed' in p) useAuthStore.setState({ sessionNonce: 9 });
+      },
+    });
+
+    expect(outcome).toEqual({ kind: 'error', messageKey: 'siteLog.error.session_changed' });
+    expect(mocked.declareCapture).not.toHaveBeenCalled();
+  });
+});
+
+describe('an attachment from an older build', () => {
+  it('is copied into the app before it is uploaded', async () => {
+    // Drafts written before retention existed point straight at the OS
+    // cache. Resuming one must move the bytes somewhere safe rather than
+    // hoping the cache is still intact.
+    const legacyUri = 'file:///cache/legacy-photo.jpg';
+    memfs.reset();
+    memfs.put(legacyUri, 64);
+    const d = draft({
+      attachments: [attachment({ uri: legacyUri, retained: undefined, size: 64 })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    const r = recorder(d);
+    await runSubmit(r.ctx);
+
+    const sent = mocked.uploadAttachment.mock.calls[0]?.[2];
+    expect(sent?.uri).toContain(`/${USER}/${CAPTURE}/`);
+    expect(r.state.attachments[0].retained).toBe(true);
+    // Same id, same declared size: only where the bytes live has changed.
+    expect(r.state.attachments[0].attachment_client_id).toBe('att-1');
+    expect(r.state.attachments[0].size).toBe(64);
+  });
+
+  it('is reported missing when the cache file has already gone', async () => {
+    memfs.reset();
+    const d = draft({
+      attachments: [attachment({ uri: 'file:///cache/gone.jpg', retained: undefined })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')], 'partial_failed'),
+    );
+
+    const r = recorder(d);
+    await runSubmit(r.ctx);
+
+    expect(mocked.uploadAttachment).not.toHaveBeenCalled();
+    expect(r.state.attachments[0].status).toBe('missing');
+  });
+});
+
+describe('an account change part way through the uploads', () => {
+  it('stops before sending the next attachment', async () => {
+    const two = draft({
+      attachments: [attachment(), attachment({ attachment_client_id: 'att-2' })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    memfs.put(two.attachments[1].uri, 10);
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([
+        serverAttachment('att-1', 'awaiting_upload'),
+        serverAttachment('att-2', 'awaiting_upload'),
+      ]),
+    );
+    mocked.uploadAttachment.mockImplementation(async () => {
+      // Somebody signed in while the first attachment was going up.
+      useAuthStore.setState({ sessionNonce: 3 });
+      return serverAttachment('att-1', 'stored');
+    });
+
+    const outcome = await runSubmit(recorder(two).ctx);
+
+    expect(mocked.uploadAttachment).toHaveBeenCalledTimes(1);
+    expect(outcome).toEqual({ kind: 'error', messageKey: 'siteLog.error.session_changed' });
+  });
+});
