@@ -116,7 +116,10 @@ export default function ResumeSiteLogDraft() {
         .filter(Boolean)
         .join('\n\n'),
       okLabel: t('common.ok'),
-      onOk: () => router.replace(`/site-log/${outcome.event.site_log_event_id}` as never),
+      onOk: () => {
+        if (!mountedRef.current) return;
+        router.replace(`/site-log/${outcome.event.site_log_event_id}` as never);
+      },
     });
   }, [draft, qc, store, t, userId]);
 

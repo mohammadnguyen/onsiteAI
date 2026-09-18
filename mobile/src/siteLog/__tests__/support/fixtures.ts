@@ -14,11 +14,17 @@ export const EVENT_ID = 'event-1';
 export const INLINE_ID = 'inline-row-1';
 
 export function attachment(over: Partial<DraftAttachment> = {}): DraftAttachment {
+  const id = over.attachment_client_id ?? 'att-1';
+  const path = `site-log/${USER}/${CAPTURE}/${id}.jpg`;
   return {
-    attachment_client_id: 'att-1',
+    attachment_client_id: id,
     media_type: 'image',
-    uri: 'file:///documents/site-log/user-a/capture-1/att-1.jpg',
-    name: 'att-1.jpg',
+    // What this build writes: the absolute uri AND the path under the
+    // document directory it was resolved from. A test that wants a draft
+    // from the previous build passes `path: undefined` explicitly.
+    uri: `file:///documents/${path}`,
+    path,
+    name: `${id}.jpg`,
     mime: 'image/jpeg',
     size: 10,
     status: 'awaiting_upload',

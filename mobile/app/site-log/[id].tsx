@@ -161,10 +161,15 @@ export default function SiteLogRecordDetail() {
 
   const open = useCallback(
     async (att: AttachmentOut) => {
+      // The session this open belongs to. A download outlives the screen,
+      // and handing one account's attachment to the share sheet after
+      // another has signed in is exactly what must not happen.
+      const openedUnder = useAuthStore.getState().sessionNonce;
       setBusyId(att.attachment_client_id);
       setError(null);
       try {
         const file = await fetchToCache(att);
+        if (useAuthStore.getState().sessionNonce !== openedUnder) return;
         if (!file) {
           setError(t('siteLog.error.download'));
           return;

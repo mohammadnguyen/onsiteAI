@@ -72,6 +72,26 @@ export function retainedUri(relativePath: string): string | null {
   return root === null ? null : `${root}${relativePath}`;
 }
 
+/**
+ * The path under the document directory that an older absolute URI meant.
+ *
+ * Drafts written before the relative path existed hold a full
+ * `file:///.../Documents/site-log/...` URI. Two cases, both recoverable:
+ * the container has not moved, so the URI still starts with the current
+ * document directory; or it has, and the tail from our own folder onwards
+ * is still correct relative to wherever Documents is now.
+ *
+ * Returns null for anything that was never ours - a picker's cache path,
+ * for instance, which has to be copied in rather than adopted.
+ */
+export function pathUnderDocuments(uri: string): string | null {
+  const root = documentRoot();
+  if (root !== null && uri.startsWith(root)) return uri.slice(root.length);
+  const marker = 'site-log/';
+  const at = uri.lastIndexOf(marker);
+  return at >= 0 ? uri.slice(at) : null;
+}
+
 /** The path under the document directory, as stored in the draft. */
 export function retainedPath(
   userId: string,

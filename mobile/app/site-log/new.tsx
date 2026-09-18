@@ -420,7 +420,12 @@ export default function NewSiteLogEntry() {
         .filter(Boolean)
         .join('\n\n'),
       okLabel: t('common.ok'),
-      onOk: () => router.replace(`/site-log/${outcome.event.site_log_event_id}` as never),
+      onOk: () => {
+        // Checked again HERE: the dialog is dismissed whenever the user
+        // gets to it, which may be after they have moved on.
+        if (!mountedRef.current) return;
+        router.replace(`/site-log/${outcome.event.site_log_event_id}` as never);
+      },
     });
   }, [attachments, bodyText, captureClientId, drafts, jobId, qc, t, userId]);
 
@@ -434,7 +439,10 @@ export default function NewSiteLogEntry() {
           style={s.input}
           value={bodyText}
           onChangeText={setBodyText}
-          editable={!submitted}
+          // Not while the first write is in flight either: the submission
+          // already took a copy of these values, so an edit made now would
+          // be shown but never sent.
+          editable={!submitted && !busy}
           placeholder={t('siteLog.new.text_placeholder')}
           multiline
           accessibilityLabel={t('siteLog.new.text_placeholder')}
@@ -443,7 +451,7 @@ export default function NewSiteLogEntry() {
         <Pressable
           style={s.row}
           onPress={() => setJobPickerOpen(true)}
-          disabled={submitted}
+          disabled={submitted || busy}
         >
           <Text style={s.rowLabel}>{t('siteLog.new.job')}</Text>
           <Text style={s.rowValue}>{jobName ?? t('siteLog.new.job_unassigned')}</Text>

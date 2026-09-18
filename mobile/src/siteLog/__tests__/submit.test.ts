@@ -579,7 +579,7 @@ describe('an attachment from an older build', () => {
     memfs.reset();
     memfs.put(legacyUri, 64);
     const d = draft({
-      attachments: [attachment({ uri: legacyUri, retained: undefined, size: 64 })],
+      attachments: [attachment({ uri: legacyUri, retained: undefined, path: undefined, size: 64 })],
       server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
     });
     mocked.getEvent.mockResolvedValue(
@@ -604,7 +604,7 @@ describe('an attachment from an older build', () => {
   it('is reported missing when the cache file has already gone', async () => {
     memfs.reset();
     const d = draft({
-      attachments: [attachment({ uri: 'file:///cache/gone.jpg', retained: undefined })],
+      attachments: [attachment({ uri: 'file:///cache/gone.jpg', retained: undefined, path: undefined })],
       server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
     });
     mocked.getEvent.mockResolvedValue(
@@ -657,7 +657,7 @@ describe('rescuing an older draft with no network', () => {
     memfs.reset();
     memfs.put(legacyUri, 32);
     const d = draft({
-      attachments: [attachment({ uri: legacyUri, retained: undefined, size: 32 })],
+      attachments: [attachment({ uri: legacyUri, retained: undefined, path: undefined, size: 32 })],
     });
     mocked.findMineByCaptureClientId.mockRejectedValue(timeoutError());
 
@@ -677,7 +677,7 @@ describe('a 502 that carries the event', () => {
     memfs.reset();
     memfs.put(legacyUri, 16);
     const d = draft({
-      attachments: [attachment({ uri: legacyUri, retained: undefined, size: 16 })],
+      attachments: [attachment({ uri: legacyUri, retained: undefined, path: undefined, size: 16 })],
     });
     mocked.findMineByCaptureClientId.mockResolvedValue(null);
     mocked.declareCapture.mockRejectedValue(
@@ -791,5 +791,68 @@ describe('an attachment kept before the container moved', () => {
     await runSubmit(r.ctx);
 
     expect(r.state.attachments[0].status).not.toBe('missing');
+  });
+});
+
+describe('a draft kept by the PREVIOUS build, which recorded only a URI', () => {
+  it('adopts its file without copying, and records where it is', async () => {
+    const oldUri = 'file:///documents/site-log/user-a/capture-1/att-1.jpg';
+    memfs.reset();
+    memfs.put(oldUri, 10);
+    const d = draft({
+      // retained, but no `path`: exactly what the previous build wrote.
+      attachments: [attachment({ uri: oldUri, path: undefined, retained: true })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    const r = recorder(d);
+    await runSubmit(r.ctx);
+
+    expect(r.state.attachments[0].path).toBe('site-log/user-a/capture-1/att-1.jpg');
+    // Adopted, not duplicated.
+    expect([...memfs.files.keys()].filter((k) => k.includes('att-1.jpg'))).toHaveLength(1);
+    expect(mocked.uploadAttachment).toHaveBeenCalledWith(
+      EVENT_ID, 'att-1', expect.objectContaining({ uri: oldUri }),
+    );
+  });
+
+  it('finds it again after the container has already moved', async () => {
+    // The upgrade the device checklist covers: install the new build over
+    // the old one, on a phone whose container path has changed since.
+    const oldUri = 'file:///containers/OLD-UUID/Documents/site-log/user-a/capture-1/att-1.jpg';
+    const moved = 'file:///containers/NEW-UUID/Documents/';
+    memfs.reset();
+    memfs.put(`${moved}site-log/user-a/capture-1/att-1.jpg`, 10);
+    setDocumentDirectory(moved);
+
+    const d = draft({
+      attachments: [attachment({ uri: oldUri, path: undefined, retained: true })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    const r = recorder(d);
+    const outcome = await runSubmit(r.ctx);
+
+    expect(outcome.kind).toBe('complete');
+    expect(r.state.attachments[0].status).not.toBe('missing');
+    expect(mocked.uploadAttachment).toHaveBeenCalledWith(
+      EVENT_ID,
+      'att-1',
+      expect.objectContaining({ uri: `${moved}site-log/user-a/capture-1/att-1.jpg` }),
+    );
   });
 });

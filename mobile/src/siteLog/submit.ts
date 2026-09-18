@@ -10,7 +10,7 @@ import {
 import type { AttachmentOut, Declaration, SiteLogEventOut } from '../api/siteLog';
 import type { DraftAttachment, SiteLogDraft } from '../store/siteLogDrafts';
 import { useAuthStore } from '../store/auth';
-import { fileExists, retainAttachment, retainedUri } from './files';
+import { fileExists, pathUnderDocuments, retainAttachment, retainedUri } from './files';
 
 /**
  * Running one capture to the server, safely enough to retry.
@@ -252,7 +252,20 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   const local = new Map(draft.attachments.map((a) => [a.attachment_client_id, a]));
   const unkeepable = new Set<string>();
   for (const att of draft.attachments) {
-    if (att.retained === true) continue;
+    if (att.retained === true && att.path) continue;
+    if (att.retained === true) {
+      // Kept by a build that recorded only the absolute URI. The bytes are
+      // already ours; all that is missing is where they are RELATIVE to the
+      // document directory - which is what survives the container moving.
+      // Adopted rather than copied: copying would be pointless work and,
+      // if the old URI is stale, would fail and lose them.
+      const guess = pathUnderDocuments(att.uri);
+      const candidate = guess === null ? null : retainedUri(guess);
+      if (guess !== null && candidate !== null && (await fileExists(candidate))) {
+        local.set(att.attachment_client_id, { ...att, uri: candidate, path: guess });
+        continue;
+      }
+    }
     try {
       const kept = await retainAttachment({
         userId: ctx.userId,
