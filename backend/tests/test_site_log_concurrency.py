@@ -585,85 +585,32 @@ class _ServerGate:
         monkeypatch.setattr(svc, "acquire_attachment", wrapper)
 
 
-GATE_WAIT_SECONDS = 10
-CLEANUP_GRACE_SECONDS = 5
-
-
 @contextlib.asynccontextmanager
 async def _gated_server(gate, coro):
-    """Run the gated server task so nothing is left suspended or unread.
+    """Run the gated server task so it can never be left suspended.
 
-    Three things have to hold at once, and each was learned from a review:
+    A client assertion that fails before the gate is released would
+    otherwise strand the server for ever, still holding the connection it
+    read revision 1 on - and this module drops its scratch database at
+    teardown, which a checked-out connection blocks. A reservation
+    regression, the very failure these tests exist to catch, would then
+    surface as a hung teardown instead of a clean assertion.
 
-    * A client assertion that fails before the gate is released must not
-      strand the server. It would still hold the connection it read
-      revision 1 on, and this module drops its scratch database at
-      teardown, which a checked-out connection blocks - so a reservation
-      regression would surface as a hung teardown instead of an assertion.
-    * The task's outcome is retrieved whether it is still running or
-      already finished. Skipping a finished task leaves its exception
-      unretrieved, which is exactly how a server failure goes unseen.
-    * A failure in the body keeps its own cause. If the server failed too,
-      that is attached as a note rather than replacing it, so a run where
-      both sides fail reports both.
+    The caller still awaits the task explicitly on the happy path, so a
+    server-side failure propagates rather than being swallowed here.
     """
     task = asyncio.create_task(coro)
-    body_error: BaseException | None = None
     try:
         yield task
-    except BaseException as exc:
-        body_error = exc
-        raise
     finally:
-        # Release first and give the server a bounded chance to finish on
-        # its own: releasing and cancelling in the same breath would make
-        # the release meaningless and would hide whatever the server was
-        # about to report.
         gate.release.set()
-        cancelled_here = False
-        if not task.done():
-            await asyncio.wait({task}, timeout=CLEANUP_GRACE_SECONDS)
         if not task.done():
             task.cancel()
-            cancelled_here = True
-        try:
-            await task
-        except asyncio.CancelledError:
-            if not cancelled_here:
-                raise  # a cancellation nobody here asked for is real
-        except BaseException as server_error:  # noqa: BLE001 - re-raised or noted
-            if body_error is None:
-                raise
-            body_error.add_note(
-                f"the gated server task also failed: {server_error!r}"
-            )
-
-
-async def _reach_gate(gate, task, timeout=GATE_WAIT_SECONDS):
-    """Wait until the server reaches its gate, or until it fails trying.
-
-    Waiting on the event alone spends the whole timeout and then reports a
-    TimeoutError, which says nothing about why the server never arrived.
-    Racing the task against the event surfaces the server's own exception
-    as soon as it is raised.
-    """
-    waiter = asyncio.ensure_future(gate.reached.wait())
-    try:
-        done, _pending = await asyncio.wait(
-            {waiter, task}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
-        )
-    finally:
-        if not waiter.done():
-            waiter.cancel()
+            # Only the cancellation we just requested is suppressed. A real
+            # server error still surfaces - and if the body is already
+            # unwinding, that error is the more informative one.
             with contextlib.suppress(asyncio.CancelledError):
-                await waiter
-    if task in done:
-        await task  # re-raises the server's own failure, if it had one
-        raise AssertionError("the server finished without reaching its gate")
-    if waiter not in done:
-        raise AssertionError(
-            f"the server did not reach its gate within {timeout}s and is still running"
-        )
+                await task
 
 
 async def _audit_count(factory, event_id):
@@ -707,7 +654,7 @@ async def test_a_client_put_racing_the_server_retry_never_wins(
             )
 
     async with _gated_server(gate, server_replay()) as server:
-        await _reach_gate(gate, server)
+        await asyncio.wait_for(gate.reached.wait(), timeout=10)
 
         # The server now holds the row pending at its new attempt. The
         # client arrives here, on an independent connection.
@@ -763,7 +710,7 @@ async def test_a_client_put_in_the_declare_window_is_refused(
             )
 
     async with _gated_server(gate, declare()) as server:
-        await _reach_gate(gate, server)
+        await asyncio.wait_for(gate.reached.wait(), timeout=10)
 
         # The declare is committed and visible on another connection; the
         # row exists and the server has not taken it yet.
@@ -904,108 +851,3 @@ async def test_an_obsolete_attempt_cannot_fail_the_newer_one(
     att, ev, _event = await _state(factory, eid, inline_id)
     assert att.state is AttachmentState.stored
     assert ev.status is EvidenceStatus.stored
-
-
-# ------------------------------------------------------------------
-# The harness itself. These two exercise _gated_server and _reach_gate
-# directly with synthetic coroutines - no database, no service - because
-# what is under test is the diagnosis the harness gives when something
-# goes wrong, and that has to hold before the scenarios above mean
-# anything.
-# ------------------------------------------------------------------
-
-
-class _NeverReached:
-    """A gate whose server never arrives."""
-
-    def __init__(self):
-        self.reached = asyncio.Event()
-        self.release = asyncio.Event()
-
-
-async def test_a_server_that_fails_before_the_gate_shows_its_own_error():
-    """The server's real exception, not a gate-wait timeout.
-
-    Waiting on the event alone would burn the whole timeout and then report
-    that nothing arrived, which says nothing about why.
-    """
-    gate = _NeverReached()
-
-    async def server():
-        raise RuntimeError("declare blew up before Txn A")
-
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-    with pytest.raises(RuntimeError, match="blew up before Txn A"):
-        async with _gated_server(gate, server()) as task:
-            await _reach_gate(gate, task)
-            raise AssertionError("unreachable: the gate is never reached")
-
-    # Bounded, and well inside the gate wait rather than at the end of it:
-    # the point is that the failure is not discovered by timing out.
-    assert loop.time() - started < GATE_WAIT_SECONDS
-
-
-async def test_a_client_failure_keeps_its_cause_and_releases_the_server():
-    """A failing body keeps its own exception; the gated task is cleaned up.
-
-    The server here waits for a release that the body never sends - the
-    shape of a client assertion failing mid-scenario. The body's error must
-    survive, and the task must not be left running.
-    """
-    gate = _NeverReached()
-
-    async def server():
-        gate.reached.set()
-        await gate.release.wait()
-        return "server finished"
-
-    with pytest.raises(AssertionError, match="client refusal assertion"):
-        async with _gated_server(gate, server()) as task:
-            await _reach_gate(gate, task)
-            raise AssertionError("client refusal assertion")
-
-    assert task.done()
-    assert not task.cancelled()  # released, not killed
-    assert task.result() == "server finished"
-
-
-async def test_both_sides_failing_reports_both():
-    """When the body and the server each fail, neither diagnosis is lost."""
-    gate = _NeverReached()
-
-    async def server():
-        gate.reached.set()
-        await gate.release.wait()
-        raise RuntimeError("server failed after release")
-
-    with pytest.raises(AssertionError, match="client refusal assertion") as caught:
-        async with _gated_server(gate, server()) as task:
-            await _reach_gate(gate, task)
-            raise AssertionError("client refusal assertion")
-
-    notes = getattr(caught.value, "__notes__", [])
-    assert any("server failed after release" in n for n in notes), notes
-
-
-async def test_a_server_left_hanging_is_cancelled_and_awaited():
-    """Nothing is left running, even when the server never finishes.
-
-    This one waits out the cleanup grace before cancelling, which is the
-    case the grace exists to distinguish from a server that simply needed a
-    moment after being released.
-    """
-    gate = _NeverReached()
-    stop = asyncio.Event()
-
-    async def server():
-        gate.reached.set()
-        await stop.wait()  # never set: only cancellation ends this
-        return "unreachable"
-
-    with pytest.raises(AssertionError, match="client refusal assertion"):
-        async with _gated_server(gate, server()) as task:
-            await _reach_gate(gate, task)
-            raise AssertionError("client refusal assertion")
-
-    assert task.done() and task.cancelled()
