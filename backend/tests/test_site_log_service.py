@@ -41,6 +41,8 @@ from app.services.evidence_storage import (
     StoredObject,
     make_object_key,
 )
+from app.services.site_log import core as svc_core
+from app.services.site_log import upload as svc_upload
 
 SERVICES_DIR = Path(__file__).resolve().parent.parent / "app" / "services"
 MAX_BYTES = 1024 * 1024
@@ -388,7 +390,7 @@ async def test_obsolete_attempt_cannot_complete_after_newer_acquisition(
         attachment_client_id=cid, mime_type="audio/m4a",
     )
     row = await _att_row(db_session, eid, cid)
-    await svc._fail_attachment(
+    await svc_upload._fail_attachment(
         db_session, actor=seeded_admin, event_id=eid,
         attachment_id=row.attachment_id, attempt_no=n1, reason="storage_error",
     )
@@ -526,14 +528,14 @@ def _dbapi(sqlstate=None, invalidated=False):
 
 
 def test_retry_whitelist():
-    assert svc._is_retryable(_dbapi("40001"))
-    assert svc._is_retryable(_dbapi("40P01"))
-    assert svc._is_retryable(_dbapi("55P03"))
-    assert svc._is_retryable(_dbapi(None, invalidated=True))
-    assert not svc._is_retryable(_dbapi("23505"))
-    assert not svc._is_retryable(_dbapi("08006"))
-    assert not svc._is_retryable(IntegrityError("stmt", None, _FakeOrig("23505")))
-    assert not svc._is_retryable(RuntimeError("x"))
+    assert svc_core._is_retryable(_dbapi("40001"))
+    assert svc_core._is_retryable(_dbapi("40P01"))
+    assert svc_core._is_retryable(_dbapi("55P03"))
+    assert svc_core._is_retryable(_dbapi(None, invalidated=True))
+    assert not svc_core._is_retryable(_dbapi("23505"))
+    assert not svc_core._is_retryable(_dbapi("08006"))
+    assert not svc_core._is_retryable(IntegrityError("stmt", None, _FakeOrig("23505")))
+    assert not svc_core._is_retryable(RuntimeError("x"))
 
 
 async def test_txn_b_retries_on_fresh_session_then_succeeds(
@@ -590,7 +592,7 @@ async def test_txn_b_retries_on_fresh_session_then_succeeds(
     async def fake_sleep(secs):
         sleeps.append(secs)
 
-    monkeypatch.setattr(svc.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(svc_upload.asyncio, "sleep", fake_sleep)
     out = await svc.complete_attachment(
         factory, actor_id=seeded_admin.user_id, event_id=eid,
         attachment_id=row.attachment_id, attempt_no=n, stored=stored,
@@ -645,7 +647,7 @@ async def test_txn_b_exhausts_retries_then_raises(
     async def fake_sleep(secs):
         sleeps.append(secs)
 
-    monkeypatch.setattr(svc.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(svc_upload.asyncio, "sleep", fake_sleep)
     with pytest.raises(DBAPIError):
         await svc.complete_attachment(
             factory, actor_id=seeded_admin.user_id, event_id=eid,
@@ -690,7 +692,7 @@ async def test_txn_b_does_not_retry_non_whitelisted(
     async def fake_sleep(secs):
         sleeps.append(secs)
 
-    monkeypatch.setattr(svc.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(svc_upload.asyncio, "sleep", fake_sleep)
     with pytest.raises(DBAPIError):
         await svc.complete_attachment(
             lambda: _Broken(site_log_session_factory()),
@@ -1165,7 +1167,7 @@ async def test_negative_paths_never_commit_or_rollback_caller_session(
             svc.SiteLogNotFound,
             svc.reset_attachment(spy, admin=ad, event_id=missing,
                                  attachment_client_id=missing, reason="r", now=now)),
-        "fail superseded": lambda: svc._fail_attachment(
+        "fail superseded": lambda: svc_upload._fail_attachment(
             spy, actor=ad, event_id=eid, attachment_id=missing, attempt_no=1, reason="x"),
         # readable but forbidden
         "relink forbidden": lambda: expect(
