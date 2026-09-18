@@ -23,7 +23,15 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -60,6 +68,7 @@ def _out(view: svc.EventView) -> SiteLogEventOut:
     e = view.event
     return SiteLogEventOut(
         site_log_event_id=e.site_log_event_id,
+        capture_client_id=e.capture_client_id,
         author_user_id=e.author_user_id,
         job_id=e.job_id,
         job_state="unassigned" if e.job_id is None else "confirmed",
@@ -235,6 +244,26 @@ async def relink_job(
         ))
     except svc.SiteLogError as exc:
         raise _map(exc) from exc
+
+
+@router.get("/site-log-events/mine", response_model=list[SiteLogEventOut])
+async def list_mine(
+    limit: int = Query(svc.MINE_PAGE_DEFAULT, ge=1, le=svc.MINE_PAGE_MAX),
+    offset: int = Query(0, ge=0),
+    capture_client_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """The caller's own captures, newest first, one capped page at a time.
+
+    Declared before ``/{event_id}`` so the literal path wins, like
+    ``/unassigned``. ``capture_client_id`` narrows to the single record a
+    client already created, which is how it recovers from a lost response.
+    """
+    views = await svc.list_mine(
+        db, user, limit=limit, offset=offset, capture_client_id=capture_client_id
+    )
+    return [_out(v) for v in views]
 
 
 @router.get("/site-log-events/unassigned", response_model=list[SiteLogEventOut])

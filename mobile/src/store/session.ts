@@ -1,5 +1,6 @@
 import { queryClient } from '../api/queryClient';
 import { useFailuresStore } from './failures';
+import { useSiteLogDrafts } from './siteLogDrafts';
 import { useLabourEditTargetStore } from './labourEditTarget';
 import { useExpenseListFiltersStore } from './expenseListFilters';
 
@@ -47,4 +48,8 @@ export function resetSessionState(): void {
  */
 export function wipeFailures(): void {
   useFailuresStore.getState().clearFailures();
+  // Unsent site log drafts are user-scoped and hold the worker's own words
+  // and files. Same rule as the capture texts above: an involuntary logout
+  // keeps them, a deliberate device handoff does not.
+  useSiteLogDrafts.getState().clearAll();
 }

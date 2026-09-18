@@ -1598,3 +1598,60 @@ async def test_a_missing_revision_1_refuses_rather_than_using_the_request(
     assert att.state is AttachmentState.failed
     status, sha, _ = await _ev_cols(db_session, att.evidence_id)
     assert sha is None  # nothing was uploaded from the request body
+
+
+# ===================================================================
+# Site Log Capture first flow: the caller's own records.
+# ===================================================================
+
+
+async def test_list_mine_returns_newest_first(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """Ordering is by created_at descending, with the id as a stable tiebreak.
+
+    The timestamps are set explicitly: inside one transaction the database
+    clock does not advance, so declaring twice would otherwise leave the
+    order decided entirely by the tiebreaker.
+    """
+    brief = None  # unused; keeps the helper signature honest
+    older = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        body_text="older record",
+    )
+    newer = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        body_text="newer record",
+    )
+    assert brief is None
+
+    base = datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
+    await db_session.execute(
+        update(SiteLogEvent)
+        .where(SiteLogEvent.site_log_event_id == older.view.event.site_log_event_id)
+        .values(created_at=base)
+    )
+    await db_session.execute(
+        update(SiteLogEvent)
+        .where(SiteLogEvent.site_log_event_id == newer.view.event.site_log_event_id)
+        .values(created_at=base + timedelta(minutes=5))
+    )
+    await db_session.commit()
+
+    views = await svc.list_mine(db_session, seeded_admin)
+    ids = [v.event.site_log_event_id for v in views]
+    assert ids.index(newer.view.event.site_log_event_id) < ids.index(
+        older.view.event.site_log_event_id
+    )
+
+
+async def test_list_mine_clamps_an_oversized_limit(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """The service clamps rather than trusting its caller; the route also
+    refuses out-of-range values, so the cap holds from both directions."""
+    await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin, body_text="one"
+    )
+    views = await svc.list_mine(db_session, seeded_admin, limit=10_000)
+    assert len(views) <= svc.MINE_PAGE_MAX

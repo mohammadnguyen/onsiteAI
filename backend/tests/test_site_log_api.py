@@ -29,8 +29,8 @@ from app.services import site_log as svc
 pytestmark = pytest.mark.asyncio
 
 EVENT_KEYS = {
-    "site_log_event_id", "author_user_id", "job_id", "job_state",
-    "capture_status", "created_at", "revision", "attachments",
+    "site_log_event_id", "capture_client_id", "author_user_id", "job_id",
+    "job_state", "capture_status", "created_at", "revision", "attachments",
 }
 ATTACHMENT_KEYS = {
     "attachment_client_id", "declared_media_type", "declared_size_bytes",
@@ -702,3 +702,102 @@ async def test_ordinary_attachments_are_unaffected_over_http(
     )
     assert refused.status_code == 422
     assert "inline_text_reserved" in refused.json()["detail"]
+
+
+# -------------------------------------------------------------------
+# Site Log Capture first flow: the caller's own records.
+# -------------------------------------------------------------------
+
+
+async def test_mine_lists_the_callers_own_records_assigned_and_not(
+    client, db_session, seeded_admin, contributor_token, site_log_session_factory
+):
+    """`/unassigned` drops a capture the moment it is attributed, so it cannot
+    answer "what did I record". This one spans both."""
+    job = await _mk_job(db_session, seeded_admin)
+    await db_session.commit()
+
+    first = await _declare(client, contributor_token, body_text="unassigned one")
+    second = await _declare(
+        client, contributor_token, body_text="assigned one", job_id=str(job.job_id)
+    )
+    assert (first.status_code, second.status_code) == (201, 201)
+
+    mine = await client.get("/site-log-events/mine", headers=_auth(contributor_token))
+    assert mine.status_code == 200
+    ids = [e["site_log_event_id"] for e in mine.json()]
+    assert first.json()["site_log_event_id"] in ids
+    assert second.json()["site_log_event_id"] in ids
+    assert all(set(e) == EVENT_KEYS for e in mine.json())
+
+    # Stable: the same query returns the same order. Newest-first is asserted
+    # at service level instead, because this module's harness runs the whole
+    # test in one transaction, so `now()` - and therefore created_at - is
+    # identical for every record here and only the id tiebreaker separates
+    # them. That tie is deterministic but arbitrary, which is the property
+    # paging needs; it is not creation order.
+    again = await client.get("/site-log-events/mine", headers=_auth(contributor_token))
+    assert [e["site_log_event_id"] for e in again.json()] == ids
+
+
+async def test_mine_is_scoped_to_the_caller(
+    client, db_session, seeded_admin, contributor_token, other_token,
+    admin_token, site_log_session_factory,
+):
+    """It answers "what did I record", not "what exists" - for admins too."""
+    r = await _declare(client, contributor_token, body_text="contributor's own")
+    assert r.status_code == 201
+    eid = r.json()["site_log_event_id"]
+
+    for token in (other_token, admin_token):
+        listed = await client.get("/site-log-events/mine", headers=_auth(token))
+        assert listed.status_code == 200
+        assert eid not in [e["site_log_event_id"] for e in listed.json()]
+
+
+async def test_mine_finds_one_record_by_capture_client_id(
+    client, contributor_token, site_log_session_factory
+):
+    """The lost-response path: the client knows only the id it generated."""
+    cid = str(uuid.uuid4())
+    created = await _declare(client, contributor_token, capture_client_id=cid,
+                             body_text="lost response")
+    assert created.status_code == 201
+    await _declare(client, contributor_token, body_text="another record")
+
+    found = await client.get(
+        f"/site-log-events/mine?capture_client_id={cid}",
+        headers=_auth(contributor_token),
+    )
+    assert found.status_code == 200
+    assert len(found.json()) == 1
+    assert found.json()[0]["site_log_event_id"] == created.json()["site_log_event_id"]
+    assert found.json()[0]["capture_client_id"] == cid
+
+
+async def test_mine_is_capped_and_paged_stably(
+    client, contributor_token, site_log_session_factory
+):
+    """Bounded: the page size is clamped, and paging does not repeat or skip."""
+    made = []
+    for i in range(5):
+        r = await _declare(client, contributor_token, body_text=f"record {i}")
+        assert r.status_code == 201
+        made.append(r.json()["site_log_event_id"])
+
+    over_cap = await client.get(
+        "/site-log-events/mine?limit=500", headers=_auth(contributor_token)
+    )
+    assert over_cap.status_code == 422  # the route clamps by refusing, not silently
+
+    page1 = await client.get(
+        "/site-log-events/mine?limit=2&offset=0", headers=_auth(contributor_token)
+    )
+    page2 = await client.get(
+        "/site-log-events/mine?limit=2&offset=2", headers=_auth(contributor_token)
+    )
+    assert (page1.status_code, page2.status_code) == (200, 200)
+    ids1 = [e["site_log_event_id"] for e in page1.json()]
+    ids2 = [e["site_log_event_id"] for e in page2.json()]
+    assert len(ids1) == 2 and len(ids2) == 2
+    assert not set(ids1) & set(ids2)  # no overlap
