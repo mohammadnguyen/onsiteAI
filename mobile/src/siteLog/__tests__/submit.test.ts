@@ -20,7 +20,7 @@ import * as api from '../../api/siteLog';
 import { useAuthStore } from '../../store/auth';
 import type { SiteLogDraft } from '../../store/siteLogDrafts';
 import { runSubmit } from '../submit';
-import { memfs } from './support/memfs';
+import { memfs, setDocumentDirectory } from './support/memfs';
 import {
   CAPTURE,
   EVENT_ID,
@@ -726,5 +726,70 @@ describe('a server error while repairing the text', () => {
     expect(outcome.kind).toBe('unconfirmed');
     expect(r.state.last_message).toBe('siteLog.status.unconfirmed');
     expect(r.state.server?.site_log_event_id).toBe(EVENT_ID);
+  });
+});
+
+describe('an attachment kept before the container moved', () => {
+  it('is uploaded from where it is now, not from the path recorded then', async () => {
+    const path = `site-log/${USER}/${CAPTURE}/att-1.jpg`;
+    const moved = 'file:///containers/NEW-UUID/Documents/';
+    memfs.reset();
+    // Only the NEW location has the file; the old absolute URI is dead.
+    memfs.put(`${moved}${path}`, 10);
+    setDocumentDirectory(moved);
+
+    const d = draft({
+      attachments: [
+        attachment({
+          uri: 'file:///documents/site-log/user-a/capture-1/att-1.jpg',
+          path,
+          retained: true,
+        }),
+      ],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    const outcome = await runSubmit(recorder(d).ctx);
+
+    expect(outcome.kind).toBe('complete');
+    expect(mocked.uploadAttachment).toHaveBeenCalledWith(
+      EVENT_ID,
+      'att-1',
+      expect.objectContaining({ uri: `${moved}${path}` }),
+    );
+  });
+
+  it('is not reported missing just because the container moved', async () => {
+    const path = `site-log/${USER}/${CAPTURE}/att-1.jpg`;
+    const moved = 'file:///containers/ANOTHER-UUID/Documents/';
+    memfs.reset();
+    memfs.put(`${moved}${path}`, 10);
+    setDocumentDirectory(moved);
+
+    const d = draft({
+      attachments: [
+        attachment({ uri: 'file:///documents/site-log/user-a/capture-1/att-1.jpg', path, retained: true }),
+      ],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    const r = recorder(d);
+    await runSubmit(r.ctx);
+
+    expect(r.state.attachments[0].status).not.toBe('missing');
   });
 });

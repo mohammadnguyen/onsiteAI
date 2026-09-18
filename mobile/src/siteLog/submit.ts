@@ -10,7 +10,7 @@ import {
 import type { AttachmentOut, Declaration, SiteLogEventOut } from '../api/siteLog';
 import type { DraftAttachment, SiteLogDraft } from '../store/siteLogDrafts';
 import { useAuthStore } from '../store/auth';
-import { fileExists, retainAttachment } from './files';
+import { fileExists, retainAttachment, retainedUri } from './files';
 
 /**
  * Running one capture to the server, safely enough to retry.
@@ -131,6 +131,18 @@ function isUnconfirmed(err: unknown): boolean {
 }
 
 /**
+ * Where this attachment's bytes are NOW.
+ *
+ * A retained file is recorded by its path under the document directory,
+ * because iOS can move the container out from under an absolute URI. The
+ * `uri` remains the fallback for drafts written before that was stored.
+ */
+export function currentUri(att: DraftAttachment): string {
+  if (att.path) return retainedUri(att.path) ?? att.uri;
+  return att.uri;
+}
+
+/**
  * Verify the kept copy is still there.
  *
  * It normally is - the app's own document directory is not reclaimed the
@@ -246,11 +258,16 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
         userId: ctx.userId,
         captureClientId: draft.capture_client_id,
         attachmentId: att.attachment_client_id,
-        sourceUri: att.uri,
+        sourceUri: currentUri(att),
         name: att.name,
         expectedSize: att.size,
       });
-      local.set(att.attachment_client_id, { ...att, uri: kept.uri, retained: true });
+      local.set(att.attachment_client_id, {
+        ...att,
+        uri: kept.uri,
+        path: kept.path,
+        retained: true,
+      });
     } catch {
       // The cache file has gone, or it cannot be copied. Either way this
       // attachment cannot be sent from this phone; saying so beats failing
@@ -425,7 +442,8 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
       blocked.push(att.attachment_client_id);
       continue;
     }
-    if (!(await fileStillExists(att.uri))) {
+    const source = currentUri(att);
+    if (!(await fileStillExists(source))) {
       failed.push(att.attachment_client_id);
       missingLocally.add(att.attachment_client_id);
       continue;
@@ -436,7 +454,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
     if (sessionChanged()) return stale;
     try {
       await uploadAttachment(event.site_log_event_id, att.attachment_client_id, {
-        uri: att.uri,
+        uri: source,
         name: att.name,
         mime: att.mime,
       });

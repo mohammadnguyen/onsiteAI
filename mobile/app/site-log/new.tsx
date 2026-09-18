@@ -35,7 +35,7 @@ import {
 } from '../../src/siteLog/files';
 import { newCaptureId as newId } from '../../src/siteLog/ids';
 import { deriveMediaType } from '../../src/siteLog/media';
-import { runSubmit } from '../../src/siteLog/submit';
+import { currentUri, runSubmit } from '../../src/siteLog/submit';
 import { useAuthStore } from '../../src/store/auth';
 import { useSiteLogDrafts, type DraftAttachment } from '../../src/store/siteLogDrafts';
 import { PrimaryButton } from '../../src/ui/kit';
@@ -118,7 +118,13 @@ export default function NewSiteLogEntry() {
         });
         setAttachments((prev) => [
           ...prev,
-          { ...a, uri: kept.uri, size: a.size ?? kept.size, retained: true },
+          {
+            ...a,
+            uri: kept.uri,
+            path: kept.path,
+            size: a.size ?? kept.size,
+            retained: true,
+          },
         ]);
       } catch (err) {
         setBanner(
@@ -367,20 +373,27 @@ export default function NewSiteLogEntry() {
       setBusy(false);
     }
 
-    // Everything below decides what the USER sees next. The work is done
-    // and persisted either way; if they have moved on, leave them where
-    // they are.
-    if (!mountedRef.current) return;
-
+    // ---- Bookkeeping: always, whether or not the user is still here ----
     // The list screen stays mounted behind this one, so without this it
-    // would still show the state from before this capture existed.
+    // would still show the state from before this capture existed. And a
+    // capture the server confirmed must release its draft and its files
+    // even if the user walked away - otherwise it keeps a slot against the
+    // per-account limit and keeps files nothing will ever send.
     if (outcome.kind !== 'error') {
       qc.invalidateQueries({ queryKey: ['site-log', 'mine'] });
     }
+    if (outcome.kind === 'complete') {
+      await drafts.removeAndRelease(captureClientId);
+    }
+
+    // ---- Anything the user SEES: only while they are still here --------
+    // Re-checked here, after every await above. Checking before them left a
+    // window in which the user could leave, start another capture, and have
+    // this screen's `router.replace` throw that one away - taking its
+    // unsaved text and, through its unmount cleanup, its kept files.
+    if (!mountedRef.current) return;
 
     if (outcome.kind === 'complete') {
-      // Confirmed saved: the draft and the files it kept can go.
-      await drafts.removeAndRelease(captureClientId);
       router.replace(`/site-log/${outcome.event.site_log_event_id}` as never);
       return;
     }
@@ -474,7 +487,7 @@ export default function NewSiteLogEntry() {
                   prev.filter((x) => x.attachment_client_id !== a.attachment_client_id),
                 );
                 // Nothing references it any more: it was never in a draft.
-                void releaseAttachment(a.uri);
+                void releaseAttachment(currentUri(a));
               }}
             >
               <Text style={s.remove}>{t('common.remove')}</Text>

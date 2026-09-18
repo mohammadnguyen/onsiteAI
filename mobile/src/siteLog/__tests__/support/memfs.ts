@@ -43,14 +43,33 @@ export const memfs: MemFs = {
     memfs.failNextCopy = null;
     memfs.shortNextCopyTo = null;
     memfs.hideSizeOf = null;
+    state.documentDirectory = 'file:///documents/';
   },
   put(uri, size = 10) {
     memfs.files.set(uri, size);
   },
 };
 
-export const documentDirectory = 'file:///documents/';
+/**
+ * The app's container, which iOS is free to move across an update or a
+ * restore while its contents survive. Tests change it through
+ * `setDocumentDirectory` to reproduce exactly that.
+ */
+const state = { documentDirectory: 'file:///documents/' };
+
+export function setDocumentDirectory(next: string): void {
+  state.documentDirectory = next;
+}
+
 export const cacheDirectory = 'file:///cache/';
+
+// A getter, because production code reads FileSystem.documentDirectory at
+// the moment it needs it - which is the behaviour being tested.
+Object.defineProperty(exports, 'documentDirectory', {
+  enumerable: true,
+  get: () => state.documentDirectory,
+});
+export const documentDirectory: string = state.documentDirectory;
 
 export async function makeDirectoryAsync(
   uri: string,

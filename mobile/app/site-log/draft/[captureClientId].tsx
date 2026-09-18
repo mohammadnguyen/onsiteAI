@@ -82,14 +82,18 @@ export default function ResumeSiteLogDraft() {
       setBusy(false);
     }
 
-    if (!mountedRef.current) return;
-
+    // Bookkeeping first and unconditionally - see new.tsx for why.
     if (outcome.kind !== 'error') {
       qc.invalidateQueries({ queryKey: ['site-log', 'mine'] });
     }
-
     if (outcome.kind === 'complete') {
       await store.removeAndRelease(draft.capture_client_id);
+    }
+
+    // Only now, and only if this screen is still in front of the user.
+    if (!mountedRef.current) return;
+
+    if (outcome.kind === 'complete') {
       router.replace(`/site-log/${outcome.event.site_log_event_id}` as never);
       return;
     }

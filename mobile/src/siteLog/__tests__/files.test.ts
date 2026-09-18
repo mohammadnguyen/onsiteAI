@@ -2,13 +2,14 @@ jest.mock('expo-file-system/legacy', () =>
   require('./support/memfs'),
 );
 
-import { memfs } from './support/memfs';
+import { memfs, setDocumentDirectory } from './support/memfs';
 import {
   RetentionError,
   captureDir,
   releaseAttachment,
   releaseCapture,
   retainAttachment,
+  retainedUri,
 } from '../files';
 
 const USER_A = 'user-a';
@@ -178,5 +179,34 @@ describe('verifying the copy when the picker gave no size', () => {
         expectedSize: 40,
       }),
     ).rejects.toMatchObject({ name: 'RetentionError' });
+  });
+});
+
+describe('when iOS moves the app container', () => {
+  it('still finds the kept file, because the path is stored relative', async () => {
+    memfs.put('file:///cache/IMG_9.jpg', 120);
+    const kept = await retainAttachment({
+      userId: USER_A,
+      captureClientId: CAPTURE_1,
+      attachmentId: 'att-9',
+      sourceUri: 'file:///cache/IMG_9.jpg',
+      name: 'IMG_9.jpg',
+      expectedSize: 120,
+    });
+    expect(kept.path).toBe(`site-log/${USER_A}/${CAPTURE_1}/att-9.jpg`);
+
+    // An OS update or a restore from backup: Documents survives, its
+    // absolute path does not.
+    const moved = 'file:///containers/NEW-UUID/Documents/';
+    memfs.files.delete(kept.uri);
+    memfs.put(`${moved}${kept.path}`, 120);
+    setDocumentDirectory(moved);
+
+    const now = retainedUri(kept.path);
+    expect(now).toBe(`${moved}${kept.path}`);
+    expect(memfs.files.has(now as string)).toBe(true);
+    // The URI recorded before the move points at nothing, which is exactly
+    // why it is not what gets used.
+    expect(memfs.files.has(kept.uri)).toBe(false);
   });
 });

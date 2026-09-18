@@ -42,12 +42,25 @@ export type DraftAttachment = {
   attachment_client_id: string;
   /** Derived from the file's MIME exactly as the server derives it. */
   media_type: MediaType;
-  /** The app's own copy, not the picker's cache path - see `retained`. */
+  /**
+   * Where the file was when it was recorded. Kept for display and as the
+   * fallback for drafts written before `path` existed; anything that opens
+   * a retained file resolves `path` first.
+   */
   uri: string;
   /**
-   * True when `uri` is this app's own copy, made before the draft recorded
-   * the attachment. Optional only so a draft persisted by an earlier build
-   * still loads; absent means "not known to be kept".
+   * The kept copy's path UNDER the document directory, e.g.
+   * `site-log/<user>/<capture>/<attachment>.jpg`.
+   *
+   * Stored relative on purpose: iOS can change the app container's
+   * absolute path across an update or a restore while the files survive,
+   * and an absolute URI recorded before that points nowhere afterwards.
+   */
+  path?: string;
+  /**
+   * True when the file is this app's own copy, made before the draft
+   * recorded the attachment. Optional only so a draft persisted by an
+   * earlier build still loads; absent means "not known to be kept".
    */
   retained?: boolean;
   name: string;

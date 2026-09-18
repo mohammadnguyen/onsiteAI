@@ -24,6 +24,14 @@ import * as FileSystem from 'expo-file-system/legacy';
  * names the file, the declaration is not touched, and the copied size is
  * verified against the size the picker reported before the copy is
  * accepted.
+ *
+ * WHAT IS STORED IS THE RELATIVE PATH, not the absolute URI. On iOS the
+ * app container's absolute path can change - an OS update, a restore from
+ * backup - while the Documents contents survive underneath it. A draft
+ * that remembered the old absolute path would report a photo, or a
+ * recording that cannot be made again, as missing while the bytes sat
+ * there. Everything that uses a kept file resolves it through
+ * `retainedUri` against the CURRENT directory.
  */
 
 export type RetentionFailure = 'unavailable' | 'copy_failed' | 'size_mismatch';
@@ -58,6 +66,21 @@ export function captureDir(userId: string, captureClientId: string): string | nu
   return root === null ? null : `${root}${captureClientId}/`;
 }
 
+/** Where a kept file lives now, from the path that was recorded then. */
+export function retainedUri(relativePath: string): string | null {
+  const root = documentRoot();
+  return root === null ? null : `${root}${relativePath}`;
+}
+
+/** The path under the document directory, as stored in the draft. */
+export function retainedPath(
+  userId: string,
+  captureClientId: string,
+  fileName: string,
+): string {
+  return `site-log/${userId}/${captureClientId}/${fileName}`;
+}
+
 /** The extension of a picked file name, if it has a safe-looking one. */
 function extensionOf(name: string): string {
   const dot = name.lastIndexOf('.');
@@ -81,12 +104,14 @@ export async function retainAttachment(args: {
   name: string;
   /** What the picker said, when it said anything. Verified after the copy. */
   expectedSize: number | null;
-}): Promise<{ uri: string; size: number | null }> {
+}): Promise<{ uri: string; path: string; size: number | null }> {
   const dir = captureDir(args.userId, args.captureClientId);
   if (dir === null) {
     throw new RetentionError('unavailable', 'no document directory on this platform');
   }
-  const target = `${dir}${args.attachmentId}${extensionOf(args.name)}`;
+  const fileName = `${args.attachmentId}${extensionOf(args.name)}`;
+  const path = retainedPath(args.userId, args.captureClientId, fileName);
+  const target = `${dir}${fileName}`;
 
   // What the copy must come out at. The picker's number when it gave one,
   // otherwise the source file's own - a recording never reports a size in
@@ -126,7 +151,7 @@ export async function retainAttachment(args: {
       size === null ? 'the copy could not be measured' : `kept ${size} bytes of ${expected}`,
     );
   }
-  return { uri: target, size };
+  return { uri: target, path, size };
 }
 
 async function deleteQuietly(uri: string): Promise<void> {
