@@ -159,7 +159,9 @@
     "prefs": "Preferences",
     "team": "Team",
     "data": "Data",
-    "about": "About"
+    "about": "About",
+    "variant": "App",
+    "variant_test": "FOREY TEST — test data only"
   },
   "export": {
     "entry": "Export for accountant",

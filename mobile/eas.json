@@ -17,6 +17,12 @@
       "env": {
         "EXPO_PUBLIC_API_URL": "https://sitetracker-backend-staging.fly.dev"
       }
+    },
+    "test": {
+      "autoIncrement": true,
+      "env": {
+        "FOREY_VARIANT": "test"
+      }
     }
   },
   "submit": {

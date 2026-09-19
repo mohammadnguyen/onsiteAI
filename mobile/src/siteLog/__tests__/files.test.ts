@@ -8,6 +8,7 @@ import {
   captureDir,
   releaseAttachment,
   releaseCapture,
+  pathUnderDocuments,
   retainAttachment,
   retainedUri,
 } from '../files';
@@ -208,5 +209,46 @@ describe('when iOS moves the app container', () => {
     // The URI recorded before the move points at nothing, which is exactly
     // why it is not what gets used.
     expect(memfs.files.has(kept.uri)).toBe(false);
+  });
+});
+
+describe('adopting a path recorded by an older build', () => {
+  const owner = { userId: USER_A, captureClientId: CAPTURE_1 };
+
+  it('accepts the capture\'s own file, moved container or not', () => {
+    expect(
+      pathUnderDocuments(`file:///documents/site-log/${USER_A}/${CAPTURE_1}/att-1.jpg`, owner),
+    ).toBe(`site-log/${USER_A}/${CAPTURE_1}/att-1.jpg`);
+    expect(
+      pathUnderDocuments(
+        `file:///containers/OLD/Documents/site-log/${USER_A}/${CAPTURE_1}/att-1.jpg`,
+        owner,
+      ),
+    ).toBe(`site-log/${USER_A}/${CAPTURE_1}/att-1.jpg`);
+  });
+
+  it('refuses anything outside this account and this capture', () => {
+    // The stored string is old persisted state; the folder layout is the
+    // only thing keeping one account's files from another's.
+    expect(
+      pathUnderDocuments(`file:///documents/site-log/${USER_B}/${CAPTURE_1}/att-1.jpg`, owner),
+    ).toBeNull();
+    expect(
+      pathUnderDocuments(`file:///documents/site-log/${USER_A}/${CAPTURE_2}/att-1.jpg`, owner),
+    ).toBeNull();
+    expect(
+      pathUnderDocuments(
+        `file:///containers/OLD/Documents/site-log/${USER_B}/${CAPTURE_1}/att-1.jpg`,
+        owner,
+      ),
+    ).toBeNull();
+    // Never ours at all, and no traversal out of the folder.
+    expect(pathUnderDocuments('file:///cache/IMG_1.jpg', owner)).toBeNull();
+    expect(
+      pathUnderDocuments(`file:///documents/site-log/${USER_A}/${CAPTURE_1}/../x.jpg`, owner),
+    ).toBeNull();
+    expect(
+      pathUnderDocuments(`file:///documents/site-log/${USER_A}/${CAPTURE_1}/sub/x.jpg`, owner),
+    ).toBeNull();
   });
 });

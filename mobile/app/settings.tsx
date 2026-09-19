@@ -80,6 +80,11 @@ export default function SettingsScreen() {
   const buildCommit =
     (Constants.expoConfig?.extra as { buildCommit?: string } | undefined)
       ?.buildCommit ?? 'dev';
+  // Which app this is. 'default' is Forey; 'test' is the separate Forey
+  // Test build, which must never be mistaken for the real one.
+  const variant =
+    (Constants.expoConfig?.extra as { variant?: string } | undefined)?.variant ??
+    'default';
 
   return (
     <SafeAreaView style={s.safe} edges={['top', 'bottom', 'left', 'right']}>
@@ -238,6 +243,14 @@ export default function SettingsScreen() {
               {buildCommit}
             </Text>
           </View>
+          {variant === 'test' ? (
+            <View style={s.diagRow}>
+              <Text style={s.diagKey}>{t('settings.variant')}</Text>
+              <Text style={s.diagValue} testID="settings-variant">
+                {t('settings.variant_test')}
+              </Text>
+            </View>
+          ) : null}
           <View style={s.diagRow}>
             <Text style={s.diagKey}>{t('settings.api_host')}</Text>
             <Text

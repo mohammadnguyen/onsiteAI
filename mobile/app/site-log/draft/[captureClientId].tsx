@@ -14,6 +14,7 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { useMe } from '../../../src/api/hooks/useAuth';
 import { BackLink } from '../../../src/siteLog/BackLink';
+import { useScreenActive } from '../../../src/siteLog/useScreenActive';
 import { confirmDestructive, notify } from '../../../src/siteLog/dialogs';
 import { runSubmit } from '../../../src/siteLog/submit';
 import { useAuthStore } from '../../../src/store/auth';
@@ -50,12 +51,10 @@ export default function ResumeSiteLogDraft() {
   // submission it started is still running.
   const sending = store.submitting.includes(String(captureClientId));
   const [banner, setBanner] = useState<string | null>(null);
-  // A submission outlives this screen; navigating after the user has moved
-  // on would replace whatever they opened next.
-  const mountedRef = useRef(true);
-  useEffect(() => () => {
-    mountedRef.current = false;
-  }, []);
+  // A submission outlives this screen, and the router acts on the current
+  // route - so the question is whether this screen is ACTIVE, not whether
+  // it is still mounted underneath something else.
+  const activeRef = useScreenActive();
 
   const resume = useCallback(async () => {
     if (!draft || !userId) return;
@@ -90,8 +89,10 @@ export default function ResumeSiteLogDraft() {
       await store.removeAndRelease(draft.capture_client_id);
     }
 
-    // Only now, and only if this screen is still in front of the user.
-    if (!mountedRef.current) return;
+    // Only now, and only if this screen is in front of the user, under the
+    // same signed-in account the resume was started in.
+    if (!activeRef.current) return;
+    if (useAuthStore.getState().sessionNonce !== sessionNonce) return;
 
     if (outcome.kind === 'complete') {
       router.replace(`/site-log/${outcome.event.site_log_event_id}` as never);
@@ -117,11 +118,12 @@ export default function ResumeSiteLogDraft() {
         .join('\n\n'),
       okLabel: t('common.ok'),
       onOk: () => {
-        if (!mountedRef.current) return;
+        if (!activeRef.current) return;
+        if (useAuthStore.getState().sessionNonce !== sessionNonce) return;
         router.replace(`/site-log/${outcome.event.site_log_event_id}` as never);
       },
     });
-  }, [draft, qc, store, t, userId]);
+  }, [activeRef, draft, qc, store, t, userId]);
 
   const discard = useCallback(() => {
     if (!draft) return;

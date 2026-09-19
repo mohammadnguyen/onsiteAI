@@ -26,6 +26,7 @@ import { useMe } from '../../src/api/hooks/useAuth';
 import { useJobs } from '../../src/api/hooks/useJobs';
 import { JobPickerSheet } from '../../src/components/JobPickerSheet';
 import { BackLink } from '../../src/siteLog/BackLink';
+import { useScreenActive } from '../../src/siteLog/useScreenActive';
 import { notify } from '../../src/siteLog/dialogs';
 import {
   RetentionError,
@@ -259,19 +260,19 @@ export default function NewSiteLogEntry() {
   // than the ones captured when the effect first ran.
   const sentRef = useRef(false);
   /**
-   * Whether this screen is still the one the user is looking at.
+   * Whether this screen is the one in front of the user.
    *
-   * A submission outlives the screen that started it. Navigating with a
-   * global router from a screen that is gone would replace whatever the
-   * user opened next - and if that is another capture, its unmount cleanup
-   * takes its attachments with it.
+   * A submission outlives the screen that started it, and the router acts
+   * on the CURRENT route. Finishing while the user is on another screen -
+   * pushed on top of this one, or opened after leaving it - must not move
+   * them or answer them; if that other screen is a second capture, a
+   * `router.replace` would take its unsaved text and its files with it.
    */
-  const mountedRef = useRef(true);
+  const activeRef = useScreenActive();
   const userIdRef = useRef<string | null>(null);
   userIdRef.current = userId ?? null;
   useEffect(() => {
     return () => {
-      mountedRef.current = false;
       // Leaving this screen without sending discards the capture - the
       // attachments only ever existed in this screen's state - so the kept
       // copies go with it. A capture that WAS sent owns a draft now, and
@@ -387,11 +388,11 @@ export default function NewSiteLogEntry() {
     }
 
     // ---- Anything the user SEES: only while they are still here --------
-    // Re-checked here, after every await above. Checking before them left a
-    // window in which the user could leave, start another capture, and have
-    // this screen's `router.replace` throw that one away - taking its
-    // unsaved text and, through its unmount cleanup, its kept files.
-    if (!mountedRef.current) return;
+    // Re-checked here, after every await above, and against the screen
+    // being ACTIVE rather than merely mounted. Also against the session:
+    // the answer to one account's submission is not shown to the next.
+    if (!activeRef.current) return;
+    if (useAuthStore.getState().sessionNonce !== sessionNonce) return;
 
     if (outcome.kind === 'complete') {
       router.replace(`/site-log/${outcome.event.site_log_event_id}` as never);
@@ -422,12 +423,13 @@ export default function NewSiteLogEntry() {
       okLabel: t('common.ok'),
       onOk: () => {
         // Checked again HERE: the dialog is dismissed whenever the user
-        // gets to it, which may be after they have moved on.
-        if (!mountedRef.current) return;
+        // gets to it, which may be long after they have moved on.
+        if (!activeRef.current) return;
+        if (useAuthStore.getState().sessionNonce !== sessionNonce) return;
         router.replace(`/site-log/${outcome.event.site_log_event_id}` as never);
       },
     });
-  }, [attachments, bodyText, captureClientId, drafts, jobId, qc, t, userId]);
+  }, [activeRef, attachments, bodyText, captureClientId, drafts, jobId, qc, t, userId]);
 
   return (
     <SafeAreaView style={s.safe} edges={['top', 'bottom']}>

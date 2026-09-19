@@ -159,7 +159,9 @@
     "prefs": "偏好",
     "team": "团队",
     "data": "数据",
-    "about": "关于"
+    "about": "关于",
+    "variant": "应用",
+    "variant_test": "FOREY TEST — 仅测试数据"
   },
   "export": {
     "entry": "导出给会计",

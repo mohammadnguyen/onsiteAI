@@ -259,7 +259,10 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
       // document directory - which is what survives the container moving.
       // Adopted rather than copied: copying would be pointless work and,
       // if the old URI is stale, would fail and lose them.
-      const guess = pathUnderDocuments(att.uri);
+      const guess = pathUnderDocuments(att.uri, {
+        userId: ctx.userId,
+        captureClientId: draft.capture_client_id,
+      });
       const candidate = guess === null ? null : retainedUri(guess);
       if (guess !== null && candidate !== null && (await fileExists(candidate))) {
         local.set(att.attachment_client_id, { ...att, uri: candidate, path: guess });

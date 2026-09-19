@@ -81,15 +81,31 @@ export function retainedUri(relativePath: string): string | null {
  * document directory; or it has, and the tail from our own folder onwards
  * is still correct relative to wherever Documents is now.
  *
- * Returns null for anything that was never ours - a picker's cache path,
- * for instance, which has to be copied in rather than adopted.
+ * `owner` is REQUIRED and is the account and capture the draft belongs to.
+ * A recovered path that lands outside that folder is refused: adopting one
+ * is trusting a string in old persisted state, and the folder layout is
+ * the only thing keeping one account's - or one capture's - files apart
+ * from another's. Anything that was never ours, a picker's cache path for
+ * instance, is refused for the same reason and must be copied in instead.
  */
-export function pathUnderDocuments(uri: string): string | null {
+export function pathUnderDocuments(
+  uri: string,
+  owner: { userId: string; captureClientId: string },
+): string | null {
   const root = documentRoot();
-  if (root !== null && uri.startsWith(root)) return uri.slice(root.length);
-  const marker = 'site-log/';
-  const at = uri.lastIndexOf(marker);
-  return at >= 0 ? uri.slice(at) : null;
+  const prefix = `site-log/${owner.userId}/${owner.captureClientId}/`;
+  let candidate: string | null = null;
+  if (root !== null && uri.startsWith(root)) {
+    candidate = uri.slice(root.length);
+  } else {
+    const at = uri.lastIndexOf(prefix);
+    if (at >= 0) candidate = uri.slice(at);
+  }
+  if (candidate === null || !candidate.startsWith(prefix)) return null;
+  // One more segment and no traversal: the file itself, nothing above it.
+  const rest = candidate.slice(prefix.length);
+  if (rest.length === 0 || rest.includes('/') || rest.includes('..')) return null;
+  return candidate;
 }
 
 /** The path under the document directory, as stored in the draft. */
