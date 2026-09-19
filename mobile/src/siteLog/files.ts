@@ -108,6 +108,24 @@ export function pathUnderDocuments(
   return candidate;
 }
 
+/**
+ * Is this recorded path one this capture is allowed to read?
+ *
+ * Applied to EVERY retained attachment, not only to the ones being
+ * migrated: a stored path is persisted state, and persisted state is the
+ * thing that can be wrong. One file, directly inside this account's and
+ * this capture's own folder.
+ */
+export function isOwnRetainedPath(
+  path: string,
+  owner: { userId: string; captureClientId: string },
+): boolean {
+  const prefix = `site-log/${owner.userId}/${owner.captureClientId}/`;
+  if (!path.startsWith(prefix)) return false;
+  const rest = path.slice(prefix.length);
+  return rest.length > 0 && !rest.includes('/') && !rest.includes('..');
+}
+
 /** The path under the document directory, as stored in the draft. */
 export function retainedPath(
   userId: string,

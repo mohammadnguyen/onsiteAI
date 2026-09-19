@@ -885,3 +885,78 @@ describe("a legacy attachment pointing outside this capture", () => {
     expect(r.state.attachments[0].status).toBe('missing');
   });
 });
+
+describe('persisted attachment metadata that names somebody else', () => {
+  it('is refused even when it claims to be retained WITH a path', async () => {
+    const foreignPath = 'site-log/user-b/capture-b/att-1.jpg';
+    memfs.reset();
+    memfs.put(`file:///documents/${foreignPath}`, 10);
+    const d = draft({
+      attachments: [
+        attachment({ uri: `file:///documents/${foreignPath}`, path: foreignPath, retained: true }),
+      ],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')], 'partial_failed'),
+    );
+
+    const r = recorder(d);
+    await runSubmit(r.ctx);
+
+    expect(mocked.uploadAttachment).not.toHaveBeenCalled();
+    expect(r.state.attachments[0].status).toBe('missing');
+  });
+
+  it('is refused when it claims nothing but points inside another capture', async () => {
+    const foreign = 'file:///documents/site-log/user-b/capture-b/att-1.jpg';
+    memfs.reset();
+    memfs.put(foreign, 10);
+    const d = draft({
+      // No `retained` flag at all: the copy path, which is for a picker's
+      // cache file - not for a file already inside the app's own area.
+      attachments: [attachment({ uri: foreign, path: undefined, retained: undefined })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')], 'partial_failed'),
+    );
+
+    const r = recorder(d);
+    await runSubmit(r.ctx);
+
+    expect(mocked.uploadAttachment).not.toHaveBeenCalled();
+    // Not copied into this capture's folder either.
+    expect([...memfs.files.keys()]).toEqual([foreign]);
+    expect(r.state.attachments[0].status).toBe('missing');
+  });
+
+  it('still accepts an ordinary pick from the cache', async () => {
+    const picked = 'file:///cache/IMG_7.jpg';
+    memfs.reset();
+    memfs.put(picked, 10);
+    const d = draft({
+      attachments: [attachment({ uri: picked, path: undefined, retained: undefined })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    const r = recorder(d);
+    const outcome = await runSubmit(r.ctx);
+
+    expect(outcome.kind).toBe('complete');
+    expect(r.state.attachments[0].path).toBe(`site-log/${USER}/${CAPTURE}/att-1.jpg`);
+  });
+});
