@@ -71,6 +71,10 @@ class SiteLogEventOut(BaseModel):
     """Contributor shape. No eligibility, no attempt counters."""
 
     site_log_event_id: uuid.UUID
+    # Echoed back so a client that lost the response to its own declare can
+    # match a listed record to the id it generated locally, instead of
+    # guessing or creating a second record. It is the client's own value.
+    capture_client_id: uuid.UUID
     author_user_id: uuid.UUID
     job_id: uuid.UUID | None
     job_state: Literal["confirmed", "unassigned"]

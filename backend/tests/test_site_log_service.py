@@ -1598,3 +1598,92 @@ async def test_a_missing_revision_1_refuses_rather_than_using_the_request(
     assert att.state is AttachmentState.failed
     status, sha, _ = await _ev_cols(db_session, att.evidence_id)
     assert sha is None  # nothing was uploaded from the request body
+
+
+# ===================================================================
+# Site Log Capture first flow: the caller's own records.
+# ===================================================================
+
+
+async def test_list_mine_returns_newest_first(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """Ordering is by created_at descending, with the id as a stable tiebreak.
+
+    The timestamps are set explicitly: inside one transaction the database
+    clock does not advance, so declaring twice would otherwise leave the
+    order decided entirely by the tiebreaker.
+    """
+    brief = None  # unused; keeps the helper signature honest
+    older = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        body_text="older record",
+    )
+    newer = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        body_text="newer record",
+    )
+    assert brief is None
+
+    base = datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
+    await db_session.execute(
+        update(SiteLogEvent)
+        .where(SiteLogEvent.site_log_event_id == older.view.event.site_log_event_id)
+        .values(created_at=base)
+    )
+    await db_session.execute(
+        update(SiteLogEvent)
+        .where(SiteLogEvent.site_log_event_id == newer.view.event.site_log_event_id)
+        .values(created_at=base + timedelta(minutes=5))
+    )
+    await db_session.commit()
+
+    views = await svc.list_mine(db_session, seeded_admin)
+    ids = [v.event.site_log_event_id for v in views]
+    assert ids.index(newer.view.event.site_log_event_id) < ids.index(
+        older.view.event.site_log_event_id
+    )
+
+
+async def test_list_mine_clamps_an_oversized_limit(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """The service clamps rather than trusting its caller.
+
+    Proved against MORE records than the cap allows: asserting ``<= MAX``
+    over a handful of records is satisfied by any limit at all, so it would
+    have passed with no clamp in the code.
+    """
+    for i in range(svc.MINE_PAGE_MAX + 3):
+        await _declare(
+            db_session, storage, site_log_session_factory, seeded_admin,
+            body_text=f"record {i}",
+        )
+
+    clamped = await svc.list_mine(db_session, seeded_admin, limit=10_000)
+    assert len(clamped) == svc.MINE_PAGE_MAX
+
+    # And a limit inside the cap is honoured exactly, so the clamp is not
+    # simply overriding every request with the maximum.
+    assert len(await svc.list_mine(db_session, seeded_admin, limit=5)) == 5
+
+
+async def test_list_mine_pages_without_overlap_or_gaps(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """Stable order means consecutive pages partition the set."""
+    made = set()
+    for i in range(7):
+        res = await _declare(
+            db_session, storage, site_log_session_factory, seeded_admin,
+            body_text=f"page record {i}",
+        )
+        made.add(res.view.event.site_log_event_id)
+
+    seen: list = []
+    for offset in (0, 3, 6):
+        page = await svc.list_mine(db_session, seeded_admin, limit=3, offset=offset)
+        seen.extend(v.event.site_log_event_id for v in page)
+
+    assert len(seen) == len(set(seen)), "a record appeared on two pages"
+    assert made.issubset(set(seen)), "a record was skipped between pages"
