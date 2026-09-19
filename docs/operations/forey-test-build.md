@@ -119,41 +119,44 @@ whatever built most recently, which may be another profile's artefact.
 Neither is used here. Name the profile, and name the build.
 
 ```bash
-cd mobile
+# Run these from the REPOSITORY ROOT, not from mobile/.
 
-# 1. Find the build. --json gives the fields the human-readable output
-#    leaves out; take the id and the commit it was built from.
-npx eas-cli build:list --platform ios --profile test --limit 5 --json --non-interactive
+# 1. Find the build. --json prints the fields the human-readable output
+#    leaves out; take `id`, `gitCommitHash` and `buildProfile`.
+(cd mobile && npx eas-cli build:list --platform ios --profile test --limit 5 --json --non-interactive)
 ```
 
-From that output take **`id`** and **`gitCommitHash`**. The remaining two
-checks are made against that commit, because they are properties of the
-source the build came from, and the build listing does not print them:
+The other two checks are properties of the SOURCE that build came from, so
+they are read out of that commit - never out of the working tree, which may
+have moved on:
 
 ```bash
-# 2. The API url that commit would bake in.
-git show <gitCommitHash>:mobile/eas.json \
+SHA=<gitCommitHash from step 1>
+
+# 2. The API url that commit bakes into a test build.
+git show "$SHA:mobile/eas.json" \
   | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).build.test.env.EXPO_PUBLIC_API_URL"
 
-# 3. The identity that commit produces for the test profile.
-git stash list >/dev/null && git checkout <gitCommitHash> -- mobile/app.config.ts mobile/app.json
-FOREY_VARIANT=test \
-EXPO_PUBLIC_API_URL="$(node -p "require('./eas.json').build.test.env.EXPO_PUBLIC_API_URL")" \
-npx expo config --type public        # ios.bundleIdentifier, name, scheme
-git checkout HEAD -- app.config.ts app.json
+# 3. The identity that commit gives the test variant.
+git show "$SHA:mobile/app.config.ts" | grep -n "bundleIdentifier\|config.name\|config.scheme"
 ```
+
+Step 3 must show the test branch setting `com.forey.app.test`, `Forey Test`
+and `foreytest`. FT-1, run at the head you are building from, is what
+proves that block actually produces those values; step 3 proves the build
+came from a commit that contains it.
 
 Four things must match before you continue:
 
 | Check | Where it comes from | Expected |
 |---|---|---|
-| Git commit | `build:list --json` -> `gitCommitHash` | the SHA you intended to test |
-| Profile | `build:list --json` -> `buildProfile` | `test` |
-| `EXPO_PUBLIC_API_URL` | step 2, from that commit's eas.json | the test API, not the existing backend |
-| Bundle identifier | step 3, from that commit's config | `com.forey.app.test` — **not** `com.forey.app` |
+| Git commit | step 1, `gitCommitHash` | the SHA you intended to test |
+| Profile | step 1, `buildProfile` | `test` |
+| `EXPO_PUBLIC_API_URL` | step 2, from that commit | the test API, not the existing backend |
+| Bundle identifier | step 3, from that commit | `com.forey.app.test` — **not** `com.forey.app` |
 
-If step 2 prints the existing backend's address, or step 3 prints
-`com.forey.app`, that build is not a Forey Test build: stop.
+If step 2 prints the existing backend's address, or step 3 does not show
+the test identity, that build is not a Forey Test build: stop.
 
 ```bash
 # 3. Submit that exact build, to the test profile's target.
