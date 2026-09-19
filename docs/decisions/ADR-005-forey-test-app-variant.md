@@ -1,6 +1,9 @@
 # ADR-005 — Forey Test is a separate app, not a rebuilt Forey
 
-- Status: **PROPOSED** (prepared for the founder; not decided, not built)
+- Status: **ACCEPTED** — founder approved the direction on 2026-09-19.
+  Acceptance covers the ARCHITECTURE only. It is not authorisation to
+  create cloud resources, generate signing assets, build, submit or
+  publish; each of those remains a separate operator decision.
 - Date prepared: 2026-09-19
 - Supersedes nothing. Extends `docs/adr/0004-mobile-testflight-distribution.md`.
 

@@ -21,7 +21,8 @@
     "test": {
       "autoIncrement": true,
       "env": {
-        "FOREY_VARIANT": "test"
+        "FOREY_VARIANT": "test",
+        "EXPO_PUBLIC_API_URL": ""
       }
     }
   },
@@ -30,6 +31,12 @@
       "ios": {
         "appleTeamId": "W58T3X33VM",
         "ascAppId": "6799641228"
+      }
+    },
+    "test": {
+      "ios": {
+        "appleTeamId": "W58T3X33VM",
+        "ascAppId": "REPLACE_WITH_FOREY_TEST_ASC_APP_ID"
       }
     }
   }
