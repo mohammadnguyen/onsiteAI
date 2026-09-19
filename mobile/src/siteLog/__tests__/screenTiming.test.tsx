@@ -6,6 +6,10 @@
  * capture: submit, leave, then let the old submission finish. The screens
  * are the subject; nothing here tests a helper in isolation.
  *
+ * It lives under src/, NOT under app/: Expo Router turns every .tsx file
+ * in app/ into a route, so a test file there would be loaded - jest.mock
+ * calls and all - when the app starts.
+ *
  * "Left" is modelled as LOSING FOCUS, not unmounting, because that is the
  * case the app's own Stack produces: pushing a second capture on top keeps
  * this screen mounted underneath it, and `mockRouter.replace` acts on the
@@ -55,11 +59,11 @@ jest.mock('react-i18next', () => ({ useTranslation: () => ({ t: (k: string) => k
 const mockInvalidate = jest.fn();
 jest.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries: mockInvalidate }) }));
 
-jest.mock('../../../src/api/hooks/useAuth', () => ({
+jest.mock('../../api/hooks/useAuth', () => ({
   useMe: () => ({ data: { user_id: 'user-a' } }),
 }));
-jest.mock('../../../src/api/hooks/useJobs', () => ({ useJobs: () => ({ data: [] }) }));
-jest.mock('../../../src/components/JobPickerSheet', () => ({ JobPickerSheet: () => null }));
+jest.mock('../../api/hooks/useJobs', () => ({ useJobs: () => ({ data: [] }) }));
+jest.mock('../../components/JobPickerSheet', () => ({ JobPickerSheet: () => null }));
 
 jest.mock('expo-image-picker', () => ({
   requestMediaLibraryPermissionsAsync: jest.fn(),
@@ -72,10 +76,10 @@ jest.mock('expo-audio', () => ({
   requestRecordingPermissionsAsync: jest.fn(),
   setAudioModeAsync: jest.fn(),
 }));
-jest.mock('expo-file-system/legacy', () => require('../../../src/siteLog/__tests__/support/memfs'));
+jest.mock('expo-file-system/legacy', () => require('./support/memfs'));
 
 // The button, made pressable without a gesture layer.
-jest.mock('../../../src/ui/kit', () => {
+jest.mock('../../ui/kit', () => {
   const { Text } = require('react-native');
   return {
     PrimaryButton: ({ label, onPress, disabled }: { label: string; onPress: () => void; disabled?: boolean }) => {
@@ -94,7 +98,7 @@ jest.mock('../../../src/ui/kit', () => {
 // The dialog, captured so the test can dismiss it whenever it likes.
 const mockNotify = jest.fn();
 const mockConfirm = jest.fn();
-jest.mock('../../../src/siteLog/dialogs', () => ({
+jest.mock('../dialogs', () => ({
   notify: (args: unknown) => mockNotify(args),
   confirmDestructive: (args: unknown) => mockConfirm(args),
 }));
@@ -108,15 +112,15 @@ const mockRunSubmit = jest.fn(
       resolveSubmit = resolve;
     }),
 );
-jest.mock('../../../src/siteLog/submit', () => ({
+jest.mock('../submit', () => ({
   runSubmit: (...args: unknown[]) => mockRunSubmit(...(args as [])),
   currentUri: (a: { uri: string }) => a.uri,
 }));
 
-import { useSiteLogDrafts, type SiteLogDraft } from '../../../src/store/siteLogDrafts';
-import { useAuthStore } from '../../../src/store/auth';
-import NewSiteLogEntry from '../new';
-import ResumeSiteLogDraft from '../draft/[captureClientId]';
+import { useSiteLogDrafts, type SiteLogDraft } from '../../store/siteLogDrafts';
+import { useAuthStore } from '../../store/auth';
+import NewSiteLogEntry from '../../../app/site-log/new';
+import ResumeSiteLogDraft from '../../../app/site-log/draft/[captureClientId]';
 
 const EVENT = { site_log_event_id: 'event-1' };
 

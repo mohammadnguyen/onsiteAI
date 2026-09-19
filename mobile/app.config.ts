@@ -24,7 +24,11 @@ const easCommit = process.env.EAS_BUILD_GIT_COMMIT_HASH;
  */
 const VARIANT = process.env.FOREY_VARIANT ?? 'default';
 
-/** Hosts that belong to the operator's real, in-use environments. */
+/**
+ * Hosts that belong to the operator's real, in-use environments.
+ *
+ * Lower case: they are compared against a parsed, lower-cased hostname.
+ */
 const PROTECTED_HOSTS = ['sitetracker-backend-staging.fly.dev'];
 
 if (VARIANT === 'test') {
@@ -38,7 +42,15 @@ if (VARIANT === 'test') {
         'Refusing to build a test app with no backend of its own.',
     );
   }
-  const host = url.replace(/^https:\/\//, '').split('/')[0];
+  // Parsed, not string-sliced: `https://HOST:443/` and an upper-case
+  // spelling both reach the same machine, and both slipped past a raw
+  // comparison of everything between the scheme and the first slash.
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    throw new Error(`Forey Test needs a valid https API url, not ${url}`);
+  }
   if (PROTECTED_HOSTS.includes(host)) {
     throw new Error(
       `Forey Test must not point at ${host}: that backend carries real ` +

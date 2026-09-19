@@ -263,11 +263,22 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
         userId: ctx.userId,
         captureClientId: draft.capture_client_id,
       });
-      const candidate = guess === null ? null : retainedUri(guess);
-      if (guess !== null && candidate !== null && (await fileExists(candidate))) {
+      if (guess === null) {
+        // The recorded path is not inside this account's and this
+        // capture's folder. Copying from it anyway would import another
+        // account's file and then send it as this one's: the refusal has
+        // to END here, not fall through to the copy below.
+        unkeepable.add(att.attachment_client_id);
+        continue;
+      }
+      const candidate = retainedUri(guess);
+      if (candidate !== null && (await fileExists(candidate))) {
         local.set(att.attachment_client_id, { ...att, uri: candidate, path: guess });
         continue;
       }
+      // Claimed as kept, inside our own folder, but not there any more.
+      unkeepable.add(att.attachment_client_id);
+      continue;
     }
     try {
       const kept = await retainAttachment({

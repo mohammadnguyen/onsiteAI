@@ -856,3 +856,32 @@ describe('a draft kept by the PREVIOUS build, which recorded only a URI', () => 
     );
   });
 });
+
+describe("a legacy attachment pointing outside this capture", () => {
+  it('is refused, and its bytes are never imported as this capture\'s', async () => {
+    // An inconsistent record from an older build: retained, but the URI
+    // names another account's folder. Copying it in would send somebody
+    // else's file as this capture's attachment.
+    const foreign = 'file:///documents/site-log/user-b/capture-b/att-1.jpg';
+    memfs.reset();
+    memfs.put(foreign, 10);
+    const d = draft({
+      attachments: [attachment({ uri: foreign, path: undefined, retained: true })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')], 'partial_failed'),
+    );
+
+    const r = recorder(d);
+    await runSubmit(r.ctx);
+
+    // Not uploaded, not copied into this capture's folder, and reported.
+    expect(mocked.uploadAttachment).not.toHaveBeenCalled();
+    expect([...memfs.files.keys()]).toEqual([foreign]);
+    expect(r.state.attachments[0].status).toBe('missing');
+  });
+});
