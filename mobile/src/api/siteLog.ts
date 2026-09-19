@@ -76,6 +76,23 @@ export async function declareCapture(d: Declaration): Promise<SiteLogEventOut> {
 
 export type LocalFile = { uri: string; name: string; mime: string };
 
+/**
+ * How long one attachment upload may take.
+ *
+ * The shared client's 15 seconds is right for a JSON request and far too
+ * short for bytes: the backend accepts up to 25 MiB
+ * (`EVIDENCE_MAX_UPLOAD_BYTES`), and a 5 MB photo needs about 40 seconds
+ * on a 1 Mbit/s site connection - so every attempt, and every retry,
+ * would have timed out on a link that was working.
+ *
+ * 180 seconds carries a 3 MB photo down to ~0.14 Mbit/s and the 25 MiB
+ * worst case at ~1.2 Mbit/s. It is deliberately BOUNDED: an upload that
+ * really is dead has to surface as a timeout, which this flow reads as
+ * "we do not know whether it saved" and recovers from by asking the
+ * server - never as "it failed", and never as a second record.
+ */
+export const UPLOAD_TIMEOUT_MS = 180_000;
+
 export async function uploadAttachment(
   eventId: string,
   attachmentClientId: string,
@@ -92,7 +109,12 @@ export async function uploadAttachment(
   const r = await api.put<AttachmentOut>(
     `/site-log-events/${eventId}/attachments/${attachmentClientId}`,
     form,
-    { headers: { 'Content-Type': 'multipart/form-data' } },
+    {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      // Per request: the shared client's default is unchanged for
+      // everything else.
+      timeout: UPLOAD_TIMEOUT_MS,
+    },
   );
   return r.data;
 }

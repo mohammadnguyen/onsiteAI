@@ -111,20 +111,39 @@ that is Forey.
 
 Back-out: discard the build. Nothing reaches TestFlight until FT-4.
 
-### FT-4 — Submit to the RIGHT record (operator; stateful, provider)
+### FT-4 — Submit ONE named build to the RIGHT record (operator)
 
-`eas submit` with no profile defaults to `production`, whose `ascAppId` is
-**Forey's**. Submitting a test binary there would push it to the real app's
-TestFlight. Always name the profile:
+Two ways to send the wrong thing: `eas submit` with no profile defaults to
+`production`, whose `ascAppId` is **Forey's**; and `--latest` submits
+whatever built most recently, which may be another profile's artefact.
+Neither is used here. Name the profile, and name the build.
 
 ```bash
-npx eas-cli submit --platform ios --profile test --latest
+# 1. Find the build, and take its id.
+npx eas-cli build:list --platform ios --profile test --limit 5
+
+# 2. Read that build back and CHECK IT before sending anything.
+npx eas-cli build:view <build-id>
 ```
 
-Verify BEFORE confirming: the command prints the target App Store Connect
-app. It must be the `com.forey.app.test` record, not Forey. If
+Four things must match before you continue:
+
+| Check | Expected |
+|---|---|
+| Git commit | the SHA you intended to test |
+| Bundle identifier | `com.forey.app.test` — **not** `com.forey.app` |
+| `EXPO_PUBLIC_API_URL` in the build's env | the test API, not the existing backend |
+| Profile | `test` |
+
+```bash
+# 3. Submit that exact build, to the test profile's target.
+npx eas-cli submit --platform ios --profile test --id <build-id>
+```
+
+Verify before confirming: the command prints the target App Store Connect
+app. It must be the `com.forey.app.test` record. If
 `submit.test.ios.ascAppId` still reads `REPLACE_WITH_FOREY_TEST_ASC_APP_ID`
-the command fails - that is deliberate.
+the command fails - that is deliberate. If it prints Forey, stop.
 
 Back-out: the build can be removed from TestFlight; Forey's own record is a
 different app and is not modified by this.

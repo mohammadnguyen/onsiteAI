@@ -34,7 +34,11 @@ import * as FileSystem from 'expo-file-system/legacy';
  * `retainedUri` against the CURRENT directory.
  */
 
-export type RetentionFailure = 'unavailable' | 'copy_failed' | 'size_mismatch';
+export type RetentionFailure =
+  | 'unavailable'
+  | 'copy_failed'
+  | 'size_mismatch'
+  | 'self_copy';
 
 export class RetentionError extends Error {
   readonly cause: RetentionFailure;
@@ -73,39 +77,91 @@ export function retainedUri(relativePath: string): string | null {
 }
 
 /**
- * The path under the document directory that an older absolute URI meant.
+ * ONE canonical form for a file URI, or nothing.
  *
- * Drafts written before the relative path existed hold a full
- * `file:///.../Documents/site-log/...` URI. Two cases, both recoverable:
- * the container has not moved, so the URI still starts with the current
- * document directory; or it has, and the tail from our own folder onwards
- * is still correct relative to wherever Documents is now.
+ * Everything downstream - ownership, identity, adopt-or-copy - compares
+ * canonical forms. Comparing the strings as they arrive does not work:
+ * `.../capture-1/./a.jpg`, `.../capture-1/a.jpg` and a percent-encoded
+ * spelling are the same file, and `%2e%2e` is `..` once decoded. A rule
+ * built from string prefixes needs a new special case for each of those;
+ * one decode-and-normalise step needs none.
  *
- * `owner` is REQUIRED and is the account and capture the draft belongs to.
- * A recovered path that lands outside that folder is refused: adopting one
- * is trusting a string in old persisted state, and the folder layout is
- * the only thing keeping one account's - or one capture's - files apart
- * from another's. Anything that was never ours, a picker's cache path for
- * instance, is refused for the same reason and must be copied in instead.
+ * Returns null for anything that cannot be decided - a non-file scheme,
+ * malformed encoding, a path that climbs above the root. A caller that
+ * gets null must REFUSE: not copy, not upload, not delete.
+ */
+export function canonicalFileUri(uri: string): string | null {
+  if (typeof uri !== 'string') return null;
+  const trimmed = uri.trim();
+  if (!trimmed.toLowerCase().startsWith('file://')) return null;
+  let rest = trimmed.slice('file://'.length);
+  // file://localhost/path and file:///path both mean the local machine.
+  if (rest.toLowerCase().startsWith('localhost/')) rest = rest.slice('localhost'.length);
+  if (!rest.startsWith('/')) return null;
+  // Strip a query or fragment: neither names a different file, and both
+  // would otherwise hide the rest of the path from normalisation.
+  rest = rest.split('?')[0].split('#')[0];
+
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(rest);
+  } catch {
+    return null; // malformed encoding: undecidable
+  }
+  // A second pass changing anything means the input was double-encoded and
+  // somebody is trying to smuggle a separator past one decode.
+  try {
+    if (decodeURIComponent(decoded) !== decoded) return null;
+  } catch {
+    return null;
+  }
+  if (decoded.includes('\0') || decoded.includes('\\')) return null;
+
+  const out: string[] = [];
+  for (const segment of decoded.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') {
+      if (out.length === 0) return null; // climbs above the root
+      out.pop();
+      continue;
+    }
+    out.push(segment);
+  }
+  if (out.length === 0) return null;
+  return `file:///${out.join('/')}`;
+}
+
+/** Do these two URIs name the same file? */
+export function sameFile(a: string, b: string): boolean {
+  const ca = canonicalFileUri(a);
+  const cb = canonicalFileUri(b);
+  return ca !== null && cb !== null && ca === cb;
+}
+
+/**
+ * The path under the document directory this URI names, if it is a file
+ * this account and this capture own.
+ *
+ * One file, directly inside `site-log/<user>/<capture>/`, decided on the
+ * canonical form. Null for anything else, including anything undecidable.
+ * The container may have moved since the URI was recorded, so the match is
+ * made on the `site-log/...` tail rather than on the current absolute
+ * prefix - which is exactly why the segments have to be normalised first.
  */
 export function pathUnderDocuments(
   uri: string,
   owner: { userId: string; captureClientId: string },
 ): string | null {
-  const root = documentRoot();
-  const prefix = `site-log/${owner.userId}/${owner.captureClientId}/`;
-  let candidate: string | null = null;
-  if (root !== null && uri.startsWith(root)) {
-    candidate = uri.slice(root.length);
-  } else {
-    const at = uri.lastIndexOf(prefix);
-    if (at >= 0) candidate = uri.slice(at);
-  }
-  if (candidate === null || !candidate.startsWith(prefix)) return null;
-  // One more segment and no traversal: the file itself, nothing above it.
-  const rest = candidate.slice(prefix.length);
-  if (rest.length === 0 || rest.includes('/') || rest.includes('..')) return null;
-  return candidate;
+  const canonical = canonicalFileUri(uri);
+  if (canonical === null) return null;
+  const segments = canonical.slice('file:///'.length).split('/');
+  // Find OUR folder from the right: the tail below it is what survives a
+  // container move.
+  const at = segments.lastIndexOf('site-log');
+  if (at < 0) return null;
+  const tail = segments.slice(at);
+  const relative = tail.join('/');
+  return isOwnRetainedPath(relative, owner) ? relative : null;
 }
 
 /**
@@ -114,16 +170,91 @@ export function pathUnderDocuments(
  * Applied to EVERY retained attachment, not only to the ones being
  * migrated: a stored path is persisted state, and persisted state is the
  * thing that can be wrong. One file, directly inside this account's and
- * this capture's own folder.
+ * this capture's own folder, decided after normalisation.
  */
 export function isOwnRetainedPath(
   path: string,
   owner: { userId: string; captureClientId: string },
 ): boolean {
+  // Normalised through the same door as everything else: a relative path
+  // is checked as the URI it would resolve to.
+  const canonical = canonicalFileUri(`file:///${path}`);
+  if (canonical === null) return false;
+  const relative = canonical.slice('file:///'.length);
   const prefix = `site-log/${owner.userId}/${owner.captureClientId}/`;
-  if (!path.startsWith(prefix)) return false;
-  const rest = path.slice(prefix.length);
-  return rest.length > 0 && !rest.includes('/') && !rest.includes('..');
+  if (!relative.startsWith(prefix)) return false;
+  const rest = relative.slice(prefix.length);
+  return rest.length > 0 && !rest.includes('/');
+}
+
+/**
+ * What to do with one attachment's bytes: use them where they are, copy
+ * them in, or refuse.
+ *
+ * The three cases the flow actually has, decided in one place:
+ *
+ *  - ALREADY OURS. The source is a file inside this capture's own folder -
+ *    a draft this build wrote, or an older one whose absolute URI still
+ *    resolves there. Adopt it. Never copy: with the source and the target
+ *    naming the same file, the platform's copy deletes the destination
+ *    first and the only copy is gone.
+ *  - SOMEBODY ELSE'S. The source is inside the app's own area but belongs
+ *    to another account or another capture, or it cannot be decided at
+ *    all. Refuse. Copying it in would launder another capture's bytes into
+ *    this one.
+ *  - EXTERNAL. A picker's cache path, a recording's temporary file.
+ *    Copy it in; that is what retention is for.
+ */
+export type RetentionPlan =
+  | { action: 'adopt'; uri: string; path: string }
+  | { action: 'copy'; from: string; to: string; path: string }
+  | { action: 'refuse'; reason: 'undecidable' | 'not_ours' };
+
+export function planRetention(args: {
+  sourceUri: string;
+  owner: { userId: string; captureClientId: string };
+  attachmentId: string;
+  name: string;
+}): RetentionPlan {
+  const dir = captureDir(args.owner.userId, args.owner.captureClientId);
+  if (dir === null) return { action: 'refuse', reason: 'undecidable' };
+
+  const fileName = `${args.attachmentId}${extensionOf(args.name)}`;
+  const target = `${dir}${fileName}`;
+  const canonicalTarget = canonicalFileUri(target);
+  const canonicalSource = canonicalFileUri(args.sourceUri);
+  if (canonicalTarget === null || canonicalSource === null) {
+    return { action: 'refuse', reason: 'undecidable' };
+  }
+
+  // Already exactly where this attachment belongs.
+  if (canonicalSource === canonicalTarget) {
+    const path = retainedPath(args.owner.userId, args.owner.captureClientId, fileName);
+    return { action: 'adopt', uri: target, path };
+  }
+
+  // Ours, under a different file name - an older draft, or a rename.
+  const owned = pathUnderDocuments(args.sourceUri, args.owner);
+  if (owned !== null) {
+    const uri = retainedUri(owned);
+    return uri === null
+      ? { action: 'refuse', reason: 'undecidable' }
+      : { action: 'adopt', uri, path: owned };
+  }
+
+  // Inside the app's own site-log area but not ours: never copy it in.
+  const root = siteLogRoot();
+  const canonicalRoot = root === null ? null : canonicalFileUri(root);
+  if (canonicalRoot !== null && canonicalSource.startsWith(`${canonicalRoot}/`)) {
+    return { action: 'refuse', reason: 'not_ours' };
+  }
+
+  return {
+    action: 'copy',
+    from: canonicalSource,
+    to: target,
+    path: retainedPath(args.owner.userId, args.owner.captureClientId, fileName),
+  };
 }
 
 /** The path under the document directory, as stored in the draft. */
@@ -167,6 +298,14 @@ export async function retainAttachment(args: {
   const path = retainedPath(args.userId, args.captureClientId, fileName);
   const target = `${dir}${fileName}`;
 
+  // Never copy a file onto itself. The platform's copy removes the
+  // destination before writing, so a self-copy deletes the bytes and then
+  // fails with nothing left. Callers decide through planRetention(); this
+  // is the backstop for the one mistake that cannot be undone.
+  if (sameFile(args.sourceUri, target)) {
+    throw new RetentionError('self_copy', 'source and destination are the same file');
+  }
+
   // What the copy must come out at. The picker's number when it gave one,
   // otherwise the source file's own - a recording never reports a size in
   // advance, and it is exactly the file that cannot be picked again.
@@ -182,6 +321,8 @@ export async function retainAttachment(args: {
     await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
     await FileSystem.copyAsync({ from: args.sourceUri, to: target });
   } catch (err) {
+    // Only ever the half-written destination. `sameFile` above guarantees
+    // it is not the source, so cleanup cannot remove the only good copy.
     await deleteQuietly(target);
     throw new RetentionError('copy_failed', String(err));
   }

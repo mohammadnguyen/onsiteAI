@@ -5,12 +5,15 @@ jest.mock('expo-file-system/legacy', () =>
 import { memfs, setDocumentDirectory } from './support/memfs';
 import {
   RetentionError,
+  canonicalFileUri,
   captureDir,
   releaseAttachment,
   releaseCapture,
   pathUnderDocuments,
+  planRetention,
   retainAttachment,
   retainedUri,
+  sameFile,
 } from '../files';
 
 const USER_A = 'user-a';
@@ -250,5 +253,148 @@ describe('adopting a path recorded by an older build', () => {
     expect(
       pathUnderDocuments(`file:///documents/site-log/${USER_A}/${CAPTURE_1}/sub/x.jpg`, owner),
     ).toBeNull();
+  });
+});
+
+describe('what a file URI means', () => {
+  it('reduces equivalent spellings to one form', () => {
+    const plain = 'file:///documents/site-log/user-a/capture-1/att-1.jpg';
+    expect(canonicalFileUri(plain)).toBe(plain);
+    expect(canonicalFileUri('file:///documents/site-log/user-a/./capture-1/att-1.jpg')).toBe(plain);
+    expect(canonicalFileUri('file:///documents//site-log/user-a/capture-1/att-1.jpg')).toBe(plain);
+    expect(canonicalFileUri('file:///documents/site-log/user-a/capture-1/att%2D1.jpg')).toBe(plain);
+    expect(canonicalFileUri('file://localhost/documents/site-log/user-a/capture-1/att-1.jpg')).toBe(
+      plain,
+    );
+    expect(canonicalFileUri('file:///documents/x/../site-log/user-a/capture-1/att-1.jpg')).toBe(
+      plain,
+    );
+    expect(sameFile(plain, 'file:///documents/site-log/user-a/./capture-1/att-1.jpg')).toBe(true);
+  });
+
+  it('refuses what it cannot decide', () => {
+    // Undecidable is not "probably fine": every one of these must stop the
+    // caller from copying, uploading or deleting.
+    expect(canonicalFileUri('content://media/external/images/1')).toBeNull();
+    expect(canonicalFileUri('file:///%E0%A4%A')).toBeNull();      // malformed encoding
+    expect(canonicalFileUri('file:///..')).toBeNull();            // above the root
+    expect(canonicalFileUri('file:///documents/%252e%252e/x')).toBeNull(); // double-encoded
+    expect(canonicalFileUri('')).toBeNull();
+  });
+});
+
+describe('deciding what to do with one attachment', () => {
+  const owner = { userId: USER_A, captureClientId: CAPTURE_1 };
+  const target = `${captureDir(USER_A, CAPTURE_1)}att-1.jpg`;
+
+  it('adopts a file that is already exactly where it belongs', () => {
+    expect(
+      planRetention({ sourceUri: target, owner, attachmentId: 'att-1', name: 'att-1.jpg' }),
+    ).toEqual({ action: 'adopt', uri: target, path: `site-log/${USER_A}/${CAPTURE_1}/att-1.jpg` });
+  });
+
+  it('adopts it through an equivalent spelling, rather than copying it onto itself', () => {
+    const dotted = `file:///documents/site-log/${USER_A}/./${CAPTURE_1}/att-1.jpg`;
+    const encoded = `file:///documents/site-log/${USER_A}/${CAPTURE_1}/att%2D1.jpg`;
+    for (const spelling of [dotted, encoded]) {
+      expect(
+        planRetention({ sourceUri: spelling, owner, attachmentId: 'att-1', name: 'att-1.jpg' })
+          .action,
+      ).toBe('adopt');
+    }
+  });
+
+  it('copies a file that was never ours', () => {
+    const plan = planRetention({
+      sourceUri: 'file:///cache/IMG_1.jpg',
+      owner,
+      attachmentId: 'att-1',
+      name: 'IMG_1.jpg',
+    });
+    expect(plan).toMatchObject({ action: 'copy', from: 'file:///cache/IMG_1.jpg', to: target });
+  });
+
+  it('refuses another capture, however the path is spelled', () => {
+    const spellings = [
+      `file:///documents/site-log/${USER_B}/${CAPTURE_1}/att-1.jpg`,
+      `file:///documents/site-log/${USER_A}/${CAPTURE_2}/att-1.jpg`,
+      `file:///documents/site-log/${USER_A}/${CAPTURE_1}/../${CAPTURE_2}/att-1.jpg`,
+      `file:///documents/site-log/${USER_A}/${CAPTURE_1}/%2e%2e/${CAPTURE_2}/att-1.jpg`,
+      `file:///documents/./site-log/${USER_B}/./${CAPTURE_1}/att-1.jpg`,
+    ];
+    for (const spelling of spellings) {
+      expect(
+        planRetention({ sourceUri: spelling, owner, attachmentId: 'att-1', name: 'att-1.jpg' }),
+      ).toEqual({ action: 'refuse', reason: 'not_ours' });
+    }
+  });
+
+  it('refuses anything undecidable', () => {
+    expect(
+      planRetention({
+        sourceUri: 'content://media/external/images/1',
+        owner,
+        attachmentId: 'att-1',
+        name: 'a.jpg',
+      }),
+    ).toEqual({ action: 'refuse', reason: 'undecidable' });
+  });
+});
+
+describe('copying a file onto itself', () => {
+  it('is refused outright, because the platform would delete it first', async () => {
+    const target = `${captureDir(USER_A, CAPTURE_1)}att-1.jpg`;
+    memfs.put(target, 4096);
+
+    await expect(
+      retainAttachment({
+        userId: USER_A,
+        captureClientId: CAPTURE_1,
+        attachmentId: 'att-1',
+        sourceUri: target,
+        name: 'att-1.jpg',
+        expectedSize: 4096,
+      }),
+    ).rejects.toMatchObject({ name: 'RetentionError', cause: 'self_copy' });
+
+    // Still there. This is the assertion that matters: the mocked copy
+    // deletes its destination first, exactly as the native one does.
+    expect(memfs.files.get(target)).toBe(4096);
+  });
+
+  it('is refused through an equivalent spelling too', async () => {
+    const target = `${captureDir(USER_A, CAPTURE_1)}att-1.jpg`;
+    memfs.put(target, 4096);
+
+    await expect(
+      retainAttachment({
+        userId: USER_A,
+        captureClientId: CAPTURE_1,
+        attachmentId: 'att-1',
+        sourceUri: `file:///documents/site-log/${USER_A}/./${CAPTURE_1}/att-1.jpg`,
+        name: 'att-1.jpg',
+        expectedSize: 4096,
+      }),
+    ).rejects.toMatchObject({ cause: 'self_copy' });
+    expect(memfs.files.get(target)).toBe(4096);
+  });
+
+  it('cleans up after a failed copy without touching the source', async () => {
+    memfs.put('file:///cache/IMG_2.jpg', 2048);
+    memfs.failNextCopy = new Error('ENOSPC: no space left on device');
+
+    await expect(
+      retainAttachment({
+        userId: USER_A,
+        captureClientId: CAPTURE_1,
+        attachmentId: 'att-2',
+        sourceUri: 'file:///cache/IMG_2.jpg',
+        name: 'IMG_2.jpg',
+        expectedSize: 2048,
+      }),
+    ).rejects.toMatchObject({ cause: 'copy_failed' });
+
+    expect(memfs.files.get('file:///cache/IMG_2.jpg')).toBe(2048);
+    expect(memfs.files.has(`${captureDir(USER_A, CAPTURE_1)}att-2.jpg`)).toBe(false);
   });
 });

@@ -10,14 +10,7 @@ import {
 import type { AttachmentOut, Declaration, SiteLogEventOut } from '../api/siteLog';
 import type { DraftAttachment, SiteLogDraft } from '../store/siteLogDrafts';
 import { useAuthStore } from '../store/auth';
-import {
-  fileExists,
-  isOwnRetainedPath,
-  pathUnderDocuments,
-  retainAttachment,
-  retainedUri,
-  siteLogRoot,
-} from './files';
+import { fileExists, planRetention, retainAttachment, retainedUri } from './files';
 
 /**
  * Running one capture to the server, safely enough to retry.
@@ -260,57 +253,47 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
   const unkeepable = new Set<string>();
   const owner = { userId: ctx.userId, captureClientId: draft.capture_client_id };
   for (const att of draft.attachments) {
-    if (att.retained === true && att.path) {
-      // Checked every time, not only while migrating: the path is
-      // persisted state, and a path naming another account's or another
-      // capture's folder must never be read - let alone uploaded as this
-      // capture's attachment.
-      if (!isOwnRetainedPath(att.path, owner)) unkeepable.add(att.attachment_client_id);
-      continue;
-    }
-    if (att.retained === true) {
-      // Kept by a build that recorded only the absolute URI. The bytes are
-      // already ours; all that is missing is where they are RELATIVE to the
-      // document directory - which is what survives the container moving.
-      // Adopted rather than copied: copying would be pointless work and,
-      // if the old URI is stale, would fail and lose them.
-      const guess = pathUnderDocuments(att.uri, owner);
-      if (guess === null) {
-        // The recorded path is not inside this account's and this
-        // capture's folder. Copying from it anyway would import another
-        // account's file and then send it as this one's: the refusal has
-        // to END here, not fall through to the copy below.
-        unkeepable.add(att.attachment_client_id);
-        continue;
-      }
-      const candidate = retainedUri(guess);
-      if (candidate !== null && (await fileExists(candidate))) {
-        local.set(att.attachment_client_id, { ...att, uri: candidate, path: guess });
-        continue;
-      }
-      // Claimed as kept, inside our own folder, but not there any more.
+    // One decision for all three cases - a file already ours, an older
+    // draft's absolute URI, a picker's cache path - made on canonical
+    // forms rather than on string prefixes. See planRetention.
+    const plan = planRetention({
+      sourceUri: currentUri(att),
+      owner,
+      attachmentId: att.attachment_client_id,
+      name: att.name,
+    });
+
+    if (plan.action === 'refuse') {
+      // Undecidable, or somebody else's. Refusing means refusing
+      // everything: no copy, no upload, no delete.
       unkeepable.add(att.attachment_client_id);
       continue;
     }
-    // Copying in is for files that were never ours - a picker's cache path.
-    // A source INSIDE our own area that this capture does not own is not a
-    // pick; it is a reference to somebody else's file, and copying it would
-    // launder it into this capture.
-    const root = siteLogRoot();
-    const source = currentUri(att);
-    if (root !== null && source.startsWith(root)) {
-      const within = source.slice(root.length);
-      if (!isOwnRetainedPath(`site-log/${within}`, owner)) {
+
+    if (plan.action === 'adopt') {
+      // The bytes are already where they belong. Record where that is and
+      // touch nothing: a copy here would be a copy onto itself.
+      if (!(await fileExists(plan.uri))) {
         unkeepable.add(att.attachment_client_id);
         continue;
       }
+      if (att.uri !== plan.uri || att.path !== plan.path || att.retained !== true) {
+        local.set(att.attachment_client_id, {
+          ...att,
+          uri: plan.uri,
+          path: plan.path,
+          retained: true,
+        });
+      }
+      continue;
     }
+
     try {
       const kept = await retainAttachment({
         userId: ctx.userId,
         captureClientId: draft.capture_client_id,
         attachmentId: att.attachment_client_id,
-        sourceUri: source,
+        sourceUri: plan.from,
         name: att.name,
         expectedSize: att.size,
       });
@@ -321,7 +304,7 @@ export async function runSubmit(ctx: Ctx): Promise<SubmitOutcome> {
         retained: true,
       });
     } catch {
-      // The cache file has gone, or it cannot be copied. Either way this
+      // The source has gone, or it cannot be copied. Either way this
       // attachment cannot be sent from this phone; saying so beats failing
       // an upload later with something unexplainable.
       unkeepable.add(att.attachment_client_id);

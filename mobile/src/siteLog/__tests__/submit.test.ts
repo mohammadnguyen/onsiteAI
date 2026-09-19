@@ -960,3 +960,173 @@ describe('persisted attachment metadata that names somebody else', () => {
     expect(r.state.attachments[0].path).toBe(`site-log/${USER}/${CAPTURE}/att-1.jpg`);
   });
 });
+
+// =====================================================================
+// Round-16: the three retention cases, through the whole flow
+// =====================================================================
+describe('an attachment whose retained flag is missing but whose file is already ours', () => {
+  it('is adopted, not copied onto itself, and is uploaded from where it is', async () => {
+    // The shape that destroyed a recording: no flag, and a URI that names
+    // the very file retention would have written. The mocked copy deletes
+    // its destination first, as the native one does, so a copy here would
+    // lose the bytes and then fail.
+    const ours = `file:///documents/site-log/${USER}/${CAPTURE}/att-1.jpg`;
+    memfs.reset();
+    memfs.put(ours, 4096);
+    const d = draft({
+      attachments: [attachment({ uri: ours, path: undefined, retained: undefined, size: 4096 })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    const r = recorder(d);
+    const outcome = await runSubmit(r.ctx);
+
+    expect(memfs.files.get(ours)).toBe(4096);          // still there
+    expect(outcome.kind).toBe('complete');
+    expect(r.state.attachments[0].retained).toBe(true);
+    expect(r.state.attachments[0].path).toBe(`site-log/${USER}/${CAPTURE}/att-1.jpg`);
+    expect(mocked.uploadAttachment).toHaveBeenCalledWith(
+      EVENT_ID, 'att-1', expect.objectContaining({ uri: ours }),
+    );
+  });
+
+  it('is adopted through an equivalent spelling of the same path', async () => {
+    const ours = `file:///documents/site-log/${USER}/${CAPTURE}/att-1.jpg`;
+    const dotted = `file:///documents/site-log/${USER}/./${CAPTURE}/att-1.jpg`;
+    memfs.reset();
+    memfs.put(ours, 4096);
+    const d = draft({
+      attachments: [attachment({ uri: dotted, path: undefined, retained: undefined, size: 4096 })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    await runSubmit(recorder(d).ctx);
+
+    expect(memfs.files.get(ours)).toBe(4096);
+    expect(mocked.uploadAttachment).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a path that tries to reach another capture', () => {
+  it.each([
+    ['a dot segment', `file:///documents/site-log/${USER}/${CAPTURE}/../capture-b/att-1.jpg`],
+    ['an encoded dot segment', `file:///documents/site-log/${USER}/${CAPTURE}/%2e%2e/capture-b/att-1.jpg`],
+    ['another account outright', 'file:///documents/site-log/user-b/capture-b/att-1.jpg'],
+    ['a scheme we cannot decide', 'content://media/external/images/1'],
+  ])('is refused when it is %s', async (_label, uri) => {
+    memfs.reset();
+    memfs.put(`file:///documents/site-log/${USER}/capture-b/att-1.jpg`, 10);
+    memfs.put('file:///documents/site-log/user-b/capture-b/att-1.jpg', 10);
+    const before = [...memfs.files.keys()].sort();
+
+    const d = draft({
+      attachments: [attachment({ uri, path: undefined, retained: undefined })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')], 'partial_failed'),
+    );
+
+    const r = recorder(d);
+    await runSubmit(r.ctx);
+
+    expect(mocked.uploadAttachment).not.toHaveBeenCalled();
+    expect([...memfs.files.keys()].sort()).toEqual(before);  // nothing copied, nothing deleted
+    expect(r.state.attachments[0].status).toBe('missing');
+  });
+});
+
+describe('the ordinary cases still work', () => {
+  it.each([
+    ['a photo', 'file:///cache/IMG_1.jpg', 'IMG_1.jpg', 'image' as const],
+    ['a document', 'file:///cache/site-report.pdf', 'site-report.pdf', 'document' as const],
+    ['a recording', 'file:///cache/AV/recording-1.m4a', 'voice-1.m4a', 'audio' as const],
+  ])('keeps %s picked from outside the app', async (_label, source, name, media) => {
+    memfs.reset();
+    memfs.put(source, 2048);
+    const d = draft({
+      attachments: [
+        attachment({
+          uri: source, path: undefined, retained: undefined,
+          name, media_type: media, size: 2048,
+        }),
+      ],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    const r = recorder(d);
+    const outcome = await runSubmit(r.ctx);
+
+    expect(outcome.kind).toBe('complete');
+    expect(r.state.attachments[0].retained).toBe(true);
+    expect(r.state.attachments[0].path).toMatch(
+      new RegExp(`^site-log/${USER}/${CAPTURE}/att-1\\.`),
+    );
+    // The original is left where the picker put it.
+    expect(memfs.files.get(source)).toBe(2048);
+  });
+});
+
+describe('an upload that times out', () => {
+  it('keeps the attachment, reports the result as unknown, and makes no second record', async () => {
+    const ours = `file:///documents/site-log/${USER}/${CAPTURE}/att-1.jpg`;
+    memfs.reset();
+    memfs.put(ours, 4096);
+    const d = draft({
+      attachments: [attachment({ uri: ours, path: `site-log/${USER}/${CAPTURE}/att-1.jpg` })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockRejectedValue(timeoutError());
+
+    const r = recorder(d);
+    const first = await runSubmit(r.ctx);
+
+    // Unknown, not failed: the bytes may well have landed.
+    expect(first.kind).toBe('unconfirmed');
+    expect(r.state.unconfirmed).toBe(true);
+    expect(r.state.attachments[0].status).not.toBe('missing');
+    expect(memfs.files.get(ours)).toBe(4096);
+    expect(mocked.declareCapture).not.toHaveBeenCalled();
+
+    // The next attempt asks the server first. It had in fact stored it.
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+    const second = await runSubmit({ ...r.ctx, draft: { ...d, ...r.state } });
+
+    expect(second.kind).toBe('complete');
+    // Not sent twice, and no second record.
+    expect(mocked.uploadAttachment).toHaveBeenCalledTimes(1);
+    expect(mocked.declareCapture).not.toHaveBeenCalled();
+  });
+});

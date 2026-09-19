@@ -21,11 +21,12 @@ function load(handler: Handler) {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { useAuthStore } = require('../../store/auth') as typeof import('../../store/auth');
 
-  const sent: { url: string; auth?: string }[] = [];
+  const sent: { url: string; auth?: string; timeout?: number }[] = [];
   const adapter: AxiosAdapter = async (config) => {
     sent.push({
       url: String(config.url),
       auth: (config.headers as Record<string, string> | undefined)?.Authorization,
+      timeout: config.timeout,
     });
     const reply = handler(config as InternalAxiosRequestConfig);
     const response = {
@@ -137,5 +138,28 @@ describe('the session identity itself', () => {
 
     await useAuthStore.getState().clear();
     expect(useAuthStore.getState().sessionNonce).toBe(start + 2);
+  });
+});
+
+describe('how long an attachment upload may take', () => {
+  it('gets its own bounded timeout, and changes nothing else', async () => {
+    // A slow upload that would have died at the shared 15s default.
+    const { api, sent } = load(() => ({ status: 201, data: { state: 'stored' } }));
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const siteLog = require('../siteLog') as typeof import('../siteLog');
+
+    expect(siteLog.UPLOAD_TIMEOUT_MS).toBeGreaterThanOrEqual(120_000);
+    expect(siteLog.UPLOAD_TIMEOUT_MS).toBeLessThanOrEqual(600_000); // bounded, never infinite
+    expect(api.defaults.timeout).toBe(15000); // the shared default is untouched
+
+    await siteLog.uploadAttachment('event-1', 'att-1', {
+      uri: 'file:///documents/site-log/user-a/capture-1/att-1.jpg',
+      name: 'att-1.jpg',
+      mime: 'image/jpeg',
+    });
+
+    const upload = sent.find((r) => r.url.includes('/attachments/'));
+    expect(upload).toBeDefined();
+    expect(upload?.timeout).toBe(siteLog.UPLOAD_TIMEOUT_MS);
   });
 });

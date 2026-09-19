@@ -84,6 +84,12 @@ export async function copyAsync(args: { from: string; to: string }): Promise<voi
     memfs.failNextCopy = null;
     throw err;
   }
+  // DESTRUCTIVE, like the installed expo-file-system on iOS: the
+  // destination is removed before anything is written. A copy of a file
+  // onto itself therefore deletes it and then fails with nothing to read.
+  // Modelling this is the point - a mock where self-copy quietly succeeds
+  // hides the one failure that loses a recording for good.
+  memfs.files.delete(args.to);
   const source = memfs.files.get(args.from);
   if (source === undefined) throw new Error(`no such file: ${args.from}`);
   const written = memfs.shortNextCopyTo ?? source;
