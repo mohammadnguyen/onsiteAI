@@ -57,6 +57,30 @@ existing backend.
 
 ## Gates
 
+### FT-0 — Dependency integrity (read-only; the assistant may run this)
+
+Intent: catch what `tsc` and Jest structurally cannot. Neither resolves a
+native module, so a package tree that cannot produce a working binary
+passes both and fails only on a device - as a white screen, because the
+crash happens while the bundle is being evaluated and no error boundary
+exists yet.
+
+```bash
+cd mobile
+npm run doctor
+```
+
+Two failures are expected and are not blockers:
+
+| Reported | Why it is ignored |
+|---|---|
+| "app.json ... app.config.ts is not using the values from it" | False positive. `app.config.ts` does `import base from './app.json'`; the check cannot see through a dynamic config. Present on `main` too |
+| Patch version mismatches | `main` pins the same versions and its builds run on device |
+
+Anything else - a missing peer dependency, or a duplicate native module -
+**stops the build**. Duplicates are the dangerous class: autolinking
+compiles one native version while the JS resolves the other.
+
 ### FT-1 — Config verification (read-only; the assistant may run this)
 
 Intent: prove the test variant is separate, that it reads the same URL the
