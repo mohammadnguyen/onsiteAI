@@ -17,7 +17,7 @@ Decision of record: `docs/decisions/ADR-005-forey-test-app-variant.md`.
 | Region | **syd** | Same as staging; the phone testing it is in Australia |
 | App name | **`forey-test-api`** | Distinct from `sitetracker-backend-staging`; the name is in `backend/fly.test.toml`, so a deploy cannot reach the real app by accident |
 | Machine | **shared-cpu-1x, 512 MB**, `min_machines_running = 1`, `auto_stop_machines = off` | Mirrors staging's VM block. It must answer a phone on cellular with the laptop off, and one machine has to keep the evidence volume mounted |
-| Database | **`forey-test-db`** — a Fly **unmanaged** Postgres app: `shared-cpu-1x`, 256 MB, one 1 GB volume, region `syd` | One command, the same product the existing staging database was created with, and billed at machine + volume rates. See the limits below |
+| Database | **`forey-test-db`** — a Fly **unmanaged** Postgres app: `shared-cpu-1x`, **512 MB**, one 1 GB volume, region `syd` | One command, the same product the existing staging database was created with, and billed at machine + volume rates. 512 MB is a floor, not a preference — see below. Limits below |
 | Attachment storage | **local adapter on a 1 GB Fly volume** `forey_test_evidence` mounted at `/data/evidence` (`EVIDENCE_STORAGE_BACKEND=local`, `EVIDENCE_LOCAL_ROOT=/data/evidence`) | A machine's own disk is not persistent; a volume is. **Deliberately not Tigris** — see the note below |
 | `APP_ENV` | **`test`** | The loader treats `test` as a NON-development environment: a real JWT secret (>= 32 chars, no placeholders) and no wildcard CORS are enforced. It is also the only value that permits the local storage adapter — `staging` and `production` force `s3` (`backend/app/config.py`) |
 | `JWT_SECRET` | **generated fresh for this app** | Never the development placeholder, never a secret from the real environment |
@@ -47,6 +47,25 @@ published plan is an order of magnitude more expensive, its `attach` and
 few days of testing is a decision for the founder to make explicitly, not
 a fallback for a script to take.
 
+### Why 512 MB, and not 256 MB
+
+**256 MB does not work.** The environment was created at 256 MB, passed the
+full verification, and then died while idle: the machine stayed `started`,
+but Postgres inside it stopped answering on 5433 and never came back. All
+three Fly health checks went critical, `repmgrd` logged `connection to
+database failed` on a loop, and the API returned 500 on every request, with
+asyncpg raising `ConnectionDoesNotExistError` while *opening* a connection —
+not on a stale pooled one, so `pool_pre_ping` could not help.
+
+`flyio/postgres-flex` runs Postgres 18, `repmgr` and a metrics exporter in
+one machine. 256 MB is below what that image needs, and the failure appears
+only after the environment has been up a while, which is exactly when a
+device test is running and the diagnosis costs the most.
+
+`flyctl machine update <id> --vm-memory 512 --yes` recovers a machine that
+is already in this state; it came back 3/3 healthy and the full
+verification passed again immediately.
+
 ### Why not Tigris here
 
 Tigris is an unverified release gate. Running the device acceptance through
@@ -69,10 +88,10 @@ All figures in **USD**.
 |---|---|---|
 | App machine, shared-cpu-1x 512 MB, always on | ~$3.19 / mo | 3.19 |
 | Evidence volume, 1 GB | $0.15 / GB / mo | 0.15 |
-| Postgres machine, shared-cpu-1x 256 MB, always on | ~$1.94 / mo | 1.94 |
+| Postgres machine, shared-cpu-1x 512 MB, always on | ~$3.89 / mo | 3.89 |
 | Postgres volume, 1 GB | $0.15 / GB / mo | 0.15 |
 | Egress | first 100 GB included | ~0 |
-| **Total, left running** | | **~5.43 / month** |
+| **Total, left running** | | **~7.38 / month** |
 
 Basis: Fly.io published list pricing for shared-cpu-1x machines and volume
 storage, read 2026-09-19. **An estimate from list rates, not a reading of
@@ -104,8 +123,11 @@ flyctl volumes create forey_test_evidence --app forey-test-api --region syd --si
 
 # 2. The database, and attach it (this sets DATABASE_URL on the app).
 #    If this command does not exist in the installed CLI: STOP and report.
+#    512 MB, not the 256 MB default - see "Why 512 MB" above; 256 MB dies
+#    while idle and takes the whole environment down with it.
 flyctl postgres create --name forey-test-db --region syd \
-  --vm-size shared-cpu-1x --volume-size 1
+  --vm-size shared-cpu-1x --volume-size 1 --initial-cluster-size 1
+flyctl machine update <db-machine-id> --app forey-test-db --vm-memory 512 --yes
 flyctl postgres attach forey-test-db --app forey-test-api
 
 # 3. Secrets. Generate the JWT secret; do not reuse one from anywhere.
