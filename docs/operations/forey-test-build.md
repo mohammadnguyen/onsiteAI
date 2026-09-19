@@ -160,7 +160,9 @@ the test identity, that build is not a Forey Test build: stop.
 
 ```bash
 # 3. Submit that exact build, to the test profile's target.
-npx eas-cli submit --platform ios --profile test --id <build-id>
+# From mobile/: eas submit loads the project config and the submit profile
+# out of mobile/eas.json, which does not exist at the repository root.
+(cd mobile && npx eas-cli submit --platform ios --profile test --id <build-id>)
 ```
 
 Verify before confirming: the command prints the target App Store Connect
