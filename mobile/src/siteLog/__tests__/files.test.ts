@@ -398,3 +398,48 @@ describe('copying a file onto itself', () => {
     expect(memfs.files.has(`${captureDir(USER_A, CAPTURE_1)}att-2.jpg`)).toBe(false);
   });
 });
+
+describe('the same file under two absolute spellings', () => {
+  it('refuses another capture reached through an aliased root', () => {
+    // iOS: /var is a symlink to /private/var, so the same file has two
+    // absolute paths. A refusal that compares against the CURRENT document
+    // directory's prefix says "not inside our area" about the aliased
+    // spelling - and the copy path would then import another capture's
+    // bytes. The decision is structural instead.
+    setDocumentDirectory('file:///var/mobile/Containers/Data/Application/TEST/Documents/');
+    const owner = { userId: USER_A, captureClientId: CAPTURE_1 };
+
+    const aliased =
+      'file:///private/var/mobile/Containers/Data/Application/TEST/Documents/' +
+      `site-log/${USER_B}/${CAPTURE_2}/att-1.jpg`;
+
+    expect(
+      planRetention({ sourceUri: aliased, owner, attachmentId: 'att-1', name: 'att-1.jpg' }),
+    ).toEqual({ action: 'refuse', reason: 'not_ours' });
+  });
+
+  it('still adopts our own file through the aliased spelling', () => {
+    setDocumentDirectory('file:///var/mobile/Containers/Data/Application/TEST/Documents/');
+    const owner = { userId: USER_A, captureClientId: CAPTURE_1 };
+
+    const aliased =
+      'file:///private/var/mobile/Containers/Data/Application/TEST/Documents/' +
+      `site-log/${USER_A}/${CAPTURE_1}/att-1.jpg`;
+
+    expect(
+      planRetention({ sourceUri: aliased, owner, attachmentId: 'att-1', name: 'att-1.jpg' }),
+    ).toMatchObject({ action: 'adopt', path: `site-log/${USER_A}/${CAPTURE_1}/att-1.jpg` });
+  });
+
+  it('still copies an ordinary pick from outside', () => {
+    setDocumentDirectory('file:///var/mobile/Containers/Data/Application/TEST/Documents/');
+    expect(
+      planRetention({
+        sourceUri: 'file:///private/var/mobile/Containers/Data/Application/TEST/tmp/IMG_3.jpg',
+        owner: { userId: USER_A, captureClientId: CAPTURE_1 },
+        attachmentId: 'att-3',
+        name: 'IMG_3.jpg',
+      }).action,
+    ).toBe('copy');
+  });
+});

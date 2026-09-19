@@ -119,21 +119,41 @@ whatever built most recently, which may be another profile's artefact.
 Neither is used here. Name the profile, and name the build.
 
 ```bash
-# 1. Find the build, and take its id.
-npx eas-cli build:list --platform ios --profile test --limit 5
+cd mobile
 
-# 2. Read that build back and CHECK IT before sending anything.
-npx eas-cli build:view <build-id>
+# 1. Find the build. --json gives the fields the human-readable output
+#    leaves out; take the id and the commit it was built from.
+npx eas-cli build:list --platform ios --profile test --limit 5 --json --non-interactive
+```
+
+From that output take **`id`** and **`gitCommitHash`**. The remaining two
+checks are made against that commit, because they are properties of the
+source the build came from, and the build listing does not print them:
+
+```bash
+# 2. The API url that commit would bake in.
+git show <gitCommitHash>:mobile/eas.json \
+  | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).build.test.env.EXPO_PUBLIC_API_URL"
+
+# 3. The identity that commit produces for the test profile.
+git stash list >/dev/null && git checkout <gitCommitHash> -- mobile/app.config.ts mobile/app.json
+FOREY_VARIANT=test \
+EXPO_PUBLIC_API_URL="$(node -p "require('./eas.json').build.test.env.EXPO_PUBLIC_API_URL")" \
+npx expo config --type public        # ios.bundleIdentifier, name, scheme
+git checkout HEAD -- app.config.ts app.json
 ```
 
 Four things must match before you continue:
 
-| Check | Expected |
-|---|---|
-| Git commit | the SHA you intended to test |
-| Bundle identifier | `com.forey.app.test` — **not** `com.forey.app` |
-| `EXPO_PUBLIC_API_URL` in the build's env | the test API, not the existing backend |
-| Profile | `test` |
+| Check | Where it comes from | Expected |
+|---|---|---|
+| Git commit | `build:list --json` -> `gitCommitHash` | the SHA you intended to test |
+| Profile | `build:list --json` -> `buildProfile` | `test` |
+| `EXPO_PUBLIC_API_URL` | step 2, from that commit's eas.json | the test API, not the existing backend |
+| Bundle identifier | step 3, from that commit's config | `com.forey.app.test` — **not** `com.forey.app` |
+
+If step 2 prints the existing backend's address, or step 3 prints
+`com.forey.app`, that build is not a Forey Test build: stop.
 
 ```bash
 # 3. Submit that exact build, to the test profile's target.

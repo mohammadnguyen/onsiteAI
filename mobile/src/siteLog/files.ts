@@ -242,10 +242,17 @@ export function planRetention(args: {
       : { action: 'adopt', uri, path: owned };
   }
 
-  // Inside the app's own site-log area but not ours: never copy it in.
-  const root = siteLogRoot();
-  const canonicalRoot = root === null ? null : canonicalFileUri(root);
-  if (canonicalRoot !== null && canonicalSource.startsWith(`${canonicalRoot}/`)) {
+  // Inside a site-log area but not ours: never copy it in.
+  //
+  // Decided STRUCTURALLY, on the presence of our own folder name in the
+  // path, rather than by comparing against the current document
+  // directory's absolute prefix. iOS gives the same file two absolute
+  // spellings - `/var/...` is a symlink to `/private/var/...` - so a
+  // prefix comparison says "not inside our area" about a file that is,
+  // and the copy path would then import another capture's bytes. A
+  // segment named `site-log` is the one thing both spellings share.
+  const segments = canonicalSource.slice('file:///'.length).split('/');
+  if (segments.includes('site-log')) {
     return { action: 'refuse', reason: 'not_ours' };
   }
 
