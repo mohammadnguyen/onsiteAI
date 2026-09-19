@@ -17,13 +17,40 @@ Decision of record: `docs/decisions/ADR-005-forey-test-app-variant.md`.
 | Region | **syd** | Same as staging; the phone testing it is in Australia |
 | App name | **`forey-test-api`** | Distinct from `sitetracker-backend-staging`; the name is in `backend/fly.test.toml`, so a deploy cannot reach the real app by accident |
 | Machine | **shared-cpu-1x, 512 MB**, `min_machines_running = 1`, `auto_stop_machines = off` | Mirrors staging's VM block. It must answer a phone on cellular with the laptop off, and one machine has to keep the evidence volume mounted |
-| Database | **Fly Managed Postgres `forey-test-db`, shared-cpu-1x, 256 MB, 1 GB volume** | The smallest managed option; the test data is a handful of rows |
+| Database | **`forey-test-db`** — see "Which Postgres" below; one command decides it | Fly has two Postgres products at very different prices, and which one a given flyctl offers depends on its version |
 | Attachment storage | **local adapter on a 1 GB Fly volume** `forey_test_evidence` mounted at `/data/evidence` (`EVIDENCE_STORAGE_BACKEND=local`, `EVIDENCE_LOCAL_ROOT=/data/evidence`) | A machine's own disk is not persistent; a volume is. **Deliberately not Tigris** — see the note below |
 | `APP_ENV` | **`test`** | The loader treats `test` as a NON-development environment: a real JWT secret (>= 32 chars, no placeholders) and no wildcard CORS are enforced. It is also the only value that permits the local storage adapter — `staging` and `production` force `s3` (`backend/app/config.py`) |
 | `JWT_SECRET` | **generated fresh for this app** | Never the development placeholder, never a secret from the real environment |
 | `CORS_ALLOWED_ORIGINS` | `https://forey-test-api.fly.dev` | A wildcard is rejected outside development, and a native app needs no browser origin |
 | Code version | **the accepted PR #19 head** | `main` and staging do not have the Site Log API at all |
-| Accounts | two synthetic users seeded by `scripts.seed_admin`, one demoted to contributor | Permission isolation needs a non-admin; an admin may legitimately read another author's record |
+| Accounts | `admin@forey-test.example.com` and `worker@forey-test.example.com`, seeded by `scripts.seed_admin`, the second demoted to contributor | Permission isolation needs a non-admin. **Not a `.local` address**: `LoginRequest.email` is a Pydantic `EmailStr`, which rejects that reserved domain with 422 before authentication - verified against the repository's own schema |
+
+### Which Postgres
+
+Fly ships two Postgres products and the same `forey-test-db` name works for
+either. One command decides which this account's CLI offers, before
+anything is created:
+
+```bash
+flyctl postgres --help    # exit 0 -> the unmanaged product exists here
+```
+
+- **If it exists (preferred):** an unmanaged Postgres app -
+  `flyctl postgres create --name forey-test-db --region syd
+  --vm-size shared-cpu-1x --volume-size 1`. It is a Fly machine plus a
+  volume, billed at machine and volume rates, and it is what the existing
+  staging database was created with.
+- **If it does not (newer CLIs):** Fly Managed Postgres -
+  `flyctl mpg create --name forey-test-db --region syd`. Managed Postgres
+  is billed per plan, and its smallest published plan is an order of
+  magnitude more than an unmanaged machine; `mpg attach` and `mpg destroy`
+  also take the **cluster id** returned by `mpg create`, not the name, so
+  capture that id when it prints.
+
+Both figures are in the cost table. If only the managed product is
+available and the price is unwelcome, the environment is cheap to destroy
+the day the acceptance run finishes - that is the intended lifetime either
+way.
 
 ### Why not Tigris here
 
@@ -44,21 +71,30 @@ reading of the account — I have not logged in to it.
 | Item | Rate | Monthly |
 |---|---|---|
 | App machine, shared-cpu-1x 512 MB, always on | ~$3.19 / mo | $3.19 |
-| Postgres machine, shared-cpu-1x 256 MB, always on | ~$1.94 / mo | $1.94 |
-| Volumes, 2 GB total (1 GB evidence + 1 GB database) | $0.15 / GB / mo | $0.30 |
+| Evidence volume, 1 GB | $0.15 / GB / mo | $0.15 |
+| **Postgres, unmanaged** (machine shared-cpu-1x 256 MB + 1 GB volume) | ~$1.94 + $0.15 | $2.09 |
+| **Postgres, managed (MPG)** instead of the above | smallest published plan, tens of dollars per month before storage | see note |
 | Egress | first 100 GB free on the usage plan | ~$0 |
-| **Total, left running** | | **~$5.50 / month** |
+| **Total with unmanaged Postgres** | | **~$5.50 / month** |
+| **Total with Managed Postgres** | | **app+volume ~$3.34 plus the MPG plan** |
 
 Machines bill per second, so a three-day acceptance run that is then
-destroyed costs well under a dollar. Confirm the figures against the plan
-attached to the Fly account before approving; if that account is on a
-legacy plan the rates may differ.
+destroyed costs a fraction of a month either way.
+
+**These are published list rates read on 2026-09-19 and are an estimate,
+not a reading of the account** - I have not logged in to it, and Fly's
+prices and product names change. Confirm the two Postgres prices on the
+Fly dashboard before approving, and note that the choice above is made by
+the `flyctl postgres --help` check, not by preference.
 
 ## Cleanup
 
 ```bash
 flyctl apps destroy forey-test-api
-flyctl mpg destroy forey-test-db        # or: flyctl apps destroy forey-test-db
+# unmanaged Postgres is an app:
+flyctl apps destroy forey-test-db
+# managed Postgres takes the CLUSTER ID that `mpg create` printed:
+flyctl mpg destroy <cluster-id>
 flyctl volumes list --app forey-test-api   # expect: no volumes; they go with the app
 flyctl apps list                           # expect: sitetracker-backend-staging still present
 ```
@@ -76,8 +112,18 @@ flyctl apps create forey-test-api
 flyctl volumes create forey_test_evidence --app forey-test-api --region syd --size 1
 
 # 2. The database, and attach it (this sets DATABASE_URL on the app).
+#    Which pair of commands applies is decided by the check above.
+flyctl postgres --help >/dev/null 2>&1 && echo "unmanaged available" || echo "use mpg"
+
+#    (a) unmanaged - preferred when available:
+flyctl postgres create --name forey-test-db --region syd \
+  --vm-size shared-cpu-1x --volume-size 1
+flyctl postgres attach forey-test-db --app forey-test-api
+
+#    (b) managed - note the CLUSTER ID that `mpg create` prints; attach and
+#        destroy take that id, not the name:
 flyctl mpg create --name forey-test-db --region syd
-flyctl mpg attach forey-test-db --app forey-test-api
+flyctl mpg attach <cluster-id> --app forey-test-api
 
 # 3. Secrets. Generate the JWT secret; do not reuse one from anywhere.
 flyctl secrets set --app forey-test-api \
@@ -96,16 +142,16 @@ flyctl ssh console --app forey-test-api --command "alembic upgrade head"
 
 # 6. Two synthetic accounts. Passwords exist only in this environment.
 flyctl ssh console --app forey-test-api --command \
-  "python -m scripts.seed_admin --email admin@foreytest.local --password '<generated>' --name 'Test Admin'"
+  "python -m scripts.seed_admin --email admin@forey-test.example.com --password '<generated>' --name 'Test Admin'"
 flyctl ssh console --app forey-test-api --command \
-  "python -m scripts.seed_admin --email worker@foreytest.local --password '<generated>' --name 'Test Worker'"
+  "python -m scripts.seed_admin --email worker@forey-test.example.com --password '<generated>' --name 'Test Worker'"
 ```
 
 The second account must then be demoted to `contributor`; `seed_admin`
 only makes admins. One statement over the attached database:
 
 ```sql
-UPDATE users SET role = 'contributor' WHERE email = 'worker@foreytest.local';
+UPDATE users SET role = 'contributor' WHERE email = 'worker@forey-test.example.com';
 ```
 
 ## Verification — and what it does NOT prove
@@ -118,7 +164,9 @@ whether a capture actually works.
 API=https://forey-test-api.fly.dev
 
 # (a) preliminary
-curl -sI $API/healthz                                   # 200
+# GET, not HEAD: /healthz is registered for GET only, and `curl -I`
+# would send HEAD and get 405 from a perfectly healthy deployment.
+curl -sf $API/healthz                                   # {"status":"ok"}
 curl -s -o /dev/null -w "%{http_code}\n" $API/site-log-events/mine   # 401, NOT 404
 ```
 
@@ -128,7 +176,7 @@ the right version.
 ```bash
 # (b) the real check: a capture, end to end, with test data only
 TOKEN=$(curl -s -X POST $API/auth/login -H 'content-type: application/json' \
-  -d '{"email":"admin@foreytest.local","password":"<generated>"}' \
+  -d '{"email":"admin@forey-test.example.com","password":"<generated>"}' \
   | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
 CID=$(python -c "import uuid; print(uuid.uuid4())")

@@ -86,7 +86,8 @@ refusals. Back-out: read-only.
 
 Re-run section (a) and (b) of the verification in
 `docs/operations/forey-test-backend.md` against the address now committed
-in `eas.json`. A 404 on `/site-log-events/mine`, or a failure at the
+in `eas.json`. Note that the health check is a GET (`curl -sf .../healthz`):
+`curl -I` sends HEAD and returns 405 from a healthy deployment. A 404 on `/site-log-events/mine`, or a failure at the
 upload or finalize step, stops the build.
 
 ### FT-3 — Build (operator; stateful, provider)
