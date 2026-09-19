@@ -22,7 +22,7 @@
       "autoIncrement": true,
       "env": {
         "FOREY_VARIANT": "test",
-        "EXPO_PUBLIC_API_URL": ""
+        "EXPO_PUBLIC_API_URL": "https://forey-test-api.fly.dev"
       }
     }
   },
@@ -36,7 +36,7 @@
     "test": {
       "ios": {
         "appleTeamId": "W58T3X33VM",
-        "ascAppId": "REPLACE_WITH_FOREY_TEST_ASC_APP_ID"
+        "ascAppId": "6813764247"
       }
     }
   }

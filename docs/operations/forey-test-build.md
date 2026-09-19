@@ -28,12 +28,13 @@ of the build profile:
 
 `mobile/eas.json` -> `build.test.env.EXPO_PUBLIC_API_URL`.
 
-It ships **empty**, and the config throws on an empty, non-https or
-protected-host value, so a test build cannot be produced until the address
-is filled in, and can never silently fall back to the real backend. Fill it
-in once, commit it, and both the local check and the cloud build read that
-one value. Do not pass the URL as a shell variable for the build: it would
-work locally and be missing in the cloud.
+It shipped **empty** and now reads `https://forey-test-api.fly.dev`, the
+independent test backend. The config throws on an empty, non-https or
+protected-host value, so a test build cannot be produced without an address
+and can never silently fall back to the real backend. Both the local check
+and the cloud build read that one committed value. Do not pass the URL as a
+shell variable for the build: it would work locally and be missing in the
+cloud.
 
 `build.production` and `build.preview` are untouched and still point at the
 existing backend.
@@ -43,12 +44,15 @@ existing backend.
 - [ ] The test backend exists and **all five** verification steps in
       `docs/operations/forey-test-backend.md` pass - including the capture,
       the upload, the finalize and the read-back, not only `/healthz`.
-- [ ] `mobile/eas.json` -> `build.test.env.EXPO_PUBLIC_API_URL` is the test
-      API's https address, committed.
-- [ ] Apple Developer Program enrollment is active (team `W58T3X33VM`).
-- [ ] An App Store Connect app record exists for **`com.forey.app.test`**,
-      and its App ID is in `mobile/eas.json` -> `submit.test.ios.ascAppId`,
-      replacing `REPLACE_WITH_FOREY_TEST_ASC_APP_ID`.
+- [x] `mobile/eas.json` -> `build.test.env.EXPO_PUBLIC_API_URL` is the test
+      API's https address, committed: `https://forey-test-api.fly.dev`.
+- [ ] Apple Developer Program enrollment is active (team `W58T3X33VM`), and
+      the current Program License Agreement is accepted - an outdated one
+      blocks submitting a new app, and only the Account Holder can accept it.
+- [x] An App Store Connect app record exists for **`com.forey.app.test`**,
+      and its App ID is in `mobile/eas.json` -> `submit.test.ios.ascAppId`:
+      **6813764247**, created 2026-09-19. Forey's own record, 6799641228,
+      appears only under `submit.production`.
 - [ ] EAS access works from the operator's machine.
 
 ## Gates
@@ -166,9 +170,8 @@ the test identity, that build is not a Forey Test build: stop.
 ```
 
 Verify before confirming: the command prints the target App Store Connect
-app. It must be the `com.forey.app.test` record. If
-`submit.test.ios.ascAppId` still reads `REPLACE_WITH_FOREY_TEST_ASC_APP_ID`
-the command fails - that is deliberate. If it prints Forey, stop.
+app. It must be **Forey Test, App ID 6813764247**, the `com.forey.app.test`
+record. If it prints Forey or 6799641228, stop - that is the real app.
 
 Back-out: the build can be removed from TestFlight; Forey's own record is a
 different app and is not modified by this.
