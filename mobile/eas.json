@@ -9,12 +9,14 @@
         "simulator": false
       },
       "env": {
+        "FOREY_VARIANT": "default",
         "EXPO_PUBLIC_API_URL": "https://sitetracker-backend-staging.fly.dev"
       }
     },
     "production": {
       "autoIncrement": true,
       "env": {
+        "FOREY_VARIANT": "default",
         "EXPO_PUBLIC_API_URL": "https://sitetracker-backend-staging.fly.dev"
       }
     },

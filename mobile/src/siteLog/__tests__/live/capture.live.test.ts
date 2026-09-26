@@ -5,10 +5,21 @@
 /**
  * The capture flow against a REAL backend.
  *
- * Skipped unless SITE_LOG_LIVE_API is set, so the ordinary suite stays
- * hermetic. Run it with a local development API and its own database:
+ * THIS SUITE WRITES. It declares captures, uploads bytes and finalises
+ * records, so where it points matters more than what it asserts. The target
+ * is resolved by `resolveLiveTarget`, which takes an allow-list and refuses
+ * the founder's real backend twice over; read the note there. Credentials
+ * come from the environment, never from this file.
  *
- *   SITE_LOG_LIVE_API=1 npx jest live
+ *   SITE_LOG_LIVE_API=https://forey-test-api.fly.dev \
+ *   SITE_LOG_LIVE_ADMIN_EMAIL=... SITE_LOG_LIVE_ADMIN_PASSWORD=... \
+ *   SITE_LOG_LIVE_OTHER_EMAIL=... SITE_LOG_LIVE_OTHER_PASSWORD=... \
+ *   npx jest live
+ *
+ * Unset SITE_LOG_LIVE_API and the suite does not run, so the ordinary suite
+ * stays hermetic. Set it to anything unacceptable and the suite FAILS
+ * rather than skipping: a misconfigured run that quietly reports nothing is
+ * indistinguishable from a passing one.
  *
  * What this proves that a mocked test cannot: the request shapes this app
  * sends are the ones the server accepts, the two-phase protocol really does
@@ -22,6 +33,11 @@
  */
 import { api } from '../../../api/client';
 import {
+  liveRunRequested,
+  resolveLiveTarget,
+  type LiveTarget,
+} from './liveTarget';
+import {
   declareCapture,
   finalizeCapture,
   findMineByCaptureClientId,
@@ -31,14 +47,32 @@ import {
 } from '../../../api/siteLog';
 import { useAuthStore } from '../../../store/auth';
 
-const LIVE = Boolean(process.env.SITE_LOG_LIVE_API);
-const describeLive = LIVE ? describe : describe.skip;
+const REQUESTED = liveRunRequested(process.env);
 
-const ADMIN = { email: 'admin@example.com', password: 'admin1234' };
-// Deliberately NOT an admin: an admin may legitimately read another
-// author's record, so only an ordinary account tests the isolation the
-// listing is supposed to give.
-const OTHER = { email: 'worker@example.com', password: 'worker1234' };
+/**
+ * Resolved once, at load. A configuration error becomes a FAILING test
+ * below rather than a throw during collection, so the reason is reported
+ * instead of the whole file disappearing.
+ */
+let target: LiveTarget | null = null;
+let targetError: Error | null = null;
+if (REQUESTED) {
+  try {
+    target = resolveLiveTarget(process.env);
+  } catch (e) {
+    targetError = e as Error;
+  }
+}
+
+const describeLive = target !== null ? describe : describe.skip;
+
+// Point the shared client at the validated target. Without this it would
+// use whatever EXPO_PUBLIC_API_URL happens to hold, which is the loophole
+// the allow-list exists to close.
+if (target !== null) api.defaults.baseURL = target.baseUrl;
+
+const ADMIN = target?.admin ?? { email: '', password: '' };
+const OTHER = target?.other ?? { email: '', password: '' };
 
 // A one-pixel PNG: real bytes, real MIME, small enough to be uninteresting.
 const PNG = Buffer.from(
@@ -217,12 +251,24 @@ describeLive('against a live backend', () => {
 });
 
 describe('the live suite itself', () => {
+  it('refuses to run against an unacceptable target', () => {
+    // A live run was asked for and could not be pointed somewhere safe.
+    // This FAILS - it does not skip - because a misconfigured write suite
+    // that reports nothing reads exactly like one that passed.
+    if (REQUESTED && targetError !== null) {
+      throw targetError;
+    }
+    expect(targetError).toBeNull();
+  });
+
   it('says plainly when it did not run', () => {
-    if (!LIVE) {
+    if (!REQUESTED) {
       // Not a silent skip: an unrun check must never read as a passing one.
       // eslint-disable-next-line no-console
       console.log(
-        'live capture tests SKIPPED - set SITE_LOG_LIVE_API=1 with a dev API on :8000',
+        'live capture tests DID NOT RUN - no SITE_LOG_LIVE_API. These 8 ' +
+          'tests prove nothing about this commit unless they are run ' +
+          'against the Forey Test backend.',
       );
     }
     expect(true).toBe(true);

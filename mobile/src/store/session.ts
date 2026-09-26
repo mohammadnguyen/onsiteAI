@@ -20,9 +20,8 @@ import { useExpenseListFiltersStore } from './expenseListFilters';
  *  - persisted failed-capture texts (M0 failures store): an
  *    INVOLUNTARY logout (token death mid-shift) is almost certainly
  *    the same user, whose typed-but-unsent capture text must
- *    survive the re-login. Only the explicit Settings logout — a
- *    deliberate device handoff — wipes them (see wipeFailures
- *    there).
+ *    survive the re-login. Only the explicit Settings logout wipes
+ *    them (see wipeOnExplicitLogout below).
  *  - language + font-size preferences (device-level, not
  *    user-level) and the auth store (owns tokens).
  *
@@ -41,15 +40,25 @@ export function resetSessionState(): void {
 }
 
 /**
- * Explicit-logout extra: wipe the persisted failed-capture texts.
- * Split from resetSessionState() so an involuntary session death
- * never destroys the same worker's unsent capture text (see the
- * doc comment above). Settings' logout calls both.
+ * Explicit-logout extra: the cleanup an involuntary logout must NOT do.
+ *
+ * Split from resetSessionState() so a session dying mid-shift never
+ * destroys the same worker's unsent work (see the doc comment above).
+ * Settings' logout calls both.
+ *
+ * SCOPED TO THE ACCOUNT SIGNING OUT. This used to clear every account's
+ * site log drafts and delete the whole `site-log/` tree, so worker B
+ * logging out destroyed worker A's unsent photos, recordings and documents
+ * — files that exist nowhere else — silently. `userId` is the account
+ * leaving, and only its drafts and its directory go. Pass null only when
+ * there is no identifiable account, in which case no drafts are touched at
+ * all: deleting somebody's evidence is not the safe default.
+ *
+ * The caller must already have warned the user if that account has unsent
+ * captures; by the time this runs the decision has been made.
  */
-export function wipeFailures(): void {
+export async function wipeOnExplicitLogout(userId: string | null): Promise<void> {
   useFailuresStore.getState().clearFailures();
-  // Unsent site log drafts are user-scoped and hold the worker's own words
-  // and files. Same rule as the capture texts above: an involuntary logout
-  // keeps them, a deliberate device handoff does not.
-  useSiteLogDrafts.getState().clearAll();
+  if (userId === null) return;
+  await useSiteLogDrafts.getState().clearForUser(userId);
 }

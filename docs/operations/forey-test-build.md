@@ -39,20 +39,36 @@ cloud.
 `build.production` and `build.preview` are untouched and still point at the
 existing backend.
 
-## Preconditions (operator confirms; nothing below runs until all hold)
+## Preconditions
 
-- [ ] The test backend exists and **all five** verification steps in
-      `docs/operations/forey-test-backend.md` pass - including the capture,
-      the upload, the finalize and the read-back, not only `/healthz`.
-- [x] `mobile/eas.json` -> `build.test.env.EXPO_PUBLIC_API_URL` is the test
-      API's https address, committed: `https://forey-test-api.fly.dev`.
+Two kinds, kept apart on purpose: what is committed in this repository and
+can be read here, and what is true of an external account and has to be
+confirmed by the operator each time.
+
+**Already true in this repository** — verifiable by reading it, no tick
+required:
+
+- `mobile/eas.json` -> `build.test.env.EXPO_PUBLIC_API_URL` is
+  `https://forey-test-api.fly.dev`.
+- `mobile/eas.json` -> `submit.test.ios.ascAppId` is **6813764247**, the
+  App Store Connect record for `com.forey.app.test`, created 2026-09-19.
+  Forey's own record, 6799641228, appears only under `submit.production`.
+- Every build profile states `FOREY_VARIANT`, and a cloud build with it
+  missing or disagreeing with the profile fails rather than producing a
+  `com.forey.app` binary.
+
+**Operator confirms each run; nothing below starts until all hold:**
+
+- [ ] The test backend is up AND its database is answering — FT-2, not just
+      `/healthz`. It has died between sessions before.
+- [ ] All verification steps in `docs/operations/forey-test-backend.md`
+      pass, including the capture, the upload, the finalize and the
+      read-back.
 - [ ] Apple Developer Program enrollment is active (team `W58T3X33VM`), and
       the current Program License Agreement is accepted - an outdated one
       blocks submitting a new app, and only the Account Holder can accept it.
-- [x] An App Store Connect app record exists for **`com.forey.app.test`**,
-      and its App ID is in `mobile/eas.json` -> `submit.test.ios.ascAppId`:
-      **6813764247**, created 2026-09-19. Forey's own record, 6799641228,
-      appears only under `submit.production`.
+- [ ] The App Store Connect record is still the Forey Test one and nothing
+      in the account has been renamed or re-pointed since the last run.
 - [ ] EAS access works from the operator's machine.
 
 ## Gates
@@ -67,19 +83,32 @@ exists yet.
 
 ```bash
 cd mobile
+npm ci          # judge the lockfile the cloud builds from, not a local tree
 npm run doctor
 ```
 
-Two failures are expected and are not blockers:
+`npm ci` first, deliberately: the cloud installs from `package-lock.json`,
+and a gate run against whatever happens to be in `node_modules` can pass
+while the committed lockfile is broken. That is the exact shape of the
+defect this gate exists for.
 
-| Reported | Why it is ignored |
+`npm run doctor` (`mobile/scripts/check-deps.mjs`) does two things:
+
+| Step | Fails the gate? |
 |---|---|
-| "app.json ... app.config.ts is not using the values from it" | False positive. `app.config.ts` does `import base from './app.json'`; the check cannot see through a dynamic config. Present on `main` too |
-| Patch version mismatches | `main` pins the same versions and its builds run on device |
+| Every autolinked native module installed exactly once — decided by `expo-module.config.json`, the same file autolinking reads | **Yes.** This is the defect that reached a device |
+| `expo-doctor`, run as a second opinion | Only for its "required peer dependencies" and "no duplicate dependencies" checks. Its own exit code is ignored |
 
-Anything else - a missing peer dependency, or a duplicate native module -
-**stops the build**. Duplicates are the dangerous class: autolinking
-compiles one native version while the JS resolves the other.
+`expo-doctor`'s exit code is ignored because it cannot succeed here through
+no fault of this project: under npm 11 two of its checks abort on
+`npm explain` returning non-zero for a package that is simply absent. It
+also reports a false positive about `app.json` (the dynamic config does
+read it) and six patch-version mismatches that `main` shares and ships
+with. Its output is printed for a human; the two checks above are read by
+name.
+
+It is pinned as a devDependency, so this downloads nothing and behaves the
+same on any machine.
 
 ### FT-1 — Config verification (read-only; the assistant may run this)
 
@@ -105,18 +134,49 @@ FOREY_VARIANT=test EXPO_PUBLIC_API_URL=https://sitetracker-backend-staging.fly.d
   npx expo config --type public                                      # the real backend
 FOREY_VARIANT=test EXPO_PUBLIC_API_URL=https://sitetracker-backend-staging.fly.dev:443 \
   npx expo config --type public                                      # same host, port form
+FOREY_VARIANT=test EXPO_PUBLIC_API_URL=https://sitetracker-backend-staging.fly.dev. \
+  npx expo config --type public                                      # same host, trailing dot
+FOREY_VARIANT=sideways npx expo config --type public                 # unknown variant
+
+# Fail-closed on a cloud build, simulated locally. Both must throw:
+EAS_BUILD=true EAS_BUILD_PROFILE=test npx expo config --type public  # variant unstated
+EAS_BUILD=true EAS_BUILD_PROFILE=test FOREY_VARIANT=default \
+  npx expo config --type public                    # test profile, real app identity
 ```
 
-Verify: the default unchanged, the test variant correct, all three
-refusals. Back-out: read-only.
+Verify: the default unchanged, the test variant correct, and **every**
+refusal throwing. Back-out: read-only.
 
 ### FT-2 — Test API liveness (read-only)
 
-Re-run section (a) and (b) of the verification in
-`docs/operations/forey-test-backend.md` against the address now committed
-in `eas.json`. Note that the health check is a GET (`curl -sf .../healthz`):
-`curl -I` sends HEAD and returns 405 from a healthy deployment. A 404 on `/site-log-events/mine`, or a failure at the
-upload or finalize step, stops the build.
+**Run this at the start of every device session, not only when the
+environment is created.** The database that died had passed the full
+verification when it was fresh; it failed hours later, while idle, in the
+middle of a device test.
+
+`/healthz` does not touch the database, so it stays 200 while Postgres is
+dead. One extra request settles it:
+
+```bash
+API=https://forey-test-api.fly.dev
+
+curl -sf $API/healthz                                   # {"status":"ok"}
+
+# A real query, with a deliberately wrong password.
+#   401 = the database is answering.  500 = it is not.
+curl -s -o /dev/null -w "%{http_code}\n" -X POST $API/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"email":"nobody@forey-test.example.com","password":"wrong"}'
+```
+
+A 500 here means the environment is down: go to the Recovery section of
+`docs/operations/forey-test-backend.md` before doing anything else.
+
+Then re-run sections (a) and (b) of that document's verification against
+the address committed in `eas.json`. Note the health check is a GET;
+`curl -I` sends HEAD and returns 405 from a healthy deployment. A 404 on
+`/site-log-events/mine`, or a failure at the upload or finalize step, stops
+the build.
 
 ### FT-3 — Build (operator; stateful, provider)
 
@@ -174,7 +234,7 @@ and `foreytest`. FT-1, run at the head you are building from, is what
 proves that block actually produces those values; step 3 proves the build
 came from a commit that contains it.
 
-Four things must match before you continue:
+Five things must match before you continue:
 
 | Check | Where it comes from | Expected |
 |---|---|---|
@@ -182,12 +242,13 @@ Four things must match before you continue:
 | Profile | step 1, `buildProfile` | `test` |
 | `EXPO_PUBLIC_API_URL` | step 2, from that commit | the test API, not the existing backend |
 | Bundle identifier | step 3, from that commit | `com.forey.app.test` — **not** `com.forey.app` |
+| `ascAppId` | `git show "$SHA:mobile/eas.json"`, `submit.test.ios` | **6813764247** — **not** 6799641228 |
 
 If step 2 prints the existing backend's address, or step 3 does not show
 the test identity, that build is not a Forey Test build: stop.
 
 ```bash
-# 3. Submit that exact build, to the test profile's target.
+# 4. Submit that exact build, to the test profile's target.
 # From mobile/: eas submit loads the project config and the submit profile
 # out of mobile/eas.json, which does not exist at the repository root.
 (cd mobile && npx eas-cli submit --platform ios --profile test --id <build-id>)
@@ -202,7 +263,9 @@ different app and is not modified by this.
 
 ### FT-5 — Confirm the isolation before testing anything else
 
-- [ ] Both apps on the home screen: `Forey` and `Forey Test`.
+- [ ] Both apps on the home screen: `Forey` and `Forey Test`, and they no
+      longer look alike — Forey Test carries a red **TEST** band across its
+      icon. Telling them apart must not require opening either one.
 - [ ] Forey still opens signed in, with its own data.
 - [ ] Forey Test opens signed out.
 - [ ] Forey Test -> Settings -> Diagnostics shows `FOREY TEST — test data
@@ -228,3 +291,9 @@ different app and is not modified by this.
    next Forey Test build over the top. The draft and its attachments must
    still be there. Do not delete the app to test this - deleting removes
    the Documents directory and destroys the very thing under test.
+10. **Logout with unsent work**: with at least one unfinished capture,
+    Settings -> Log out must WARN, name how many captures will be lost, and
+    wait for an explicit confirmation. Cancel must leave you signed in with
+    the draft intact. Confirm must sign out and remove only that account's
+    drafts and files.
+11. **Logout with nothing unsent** must log straight out, with no dialog.

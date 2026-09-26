@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import type { AttachmentState, CaptureStatus, Declaration, MediaType } from '../api/siteLog';
-import { releaseAllRetained, releaseCapture } from '../siteLog/files';
+import { releaseCapture, releaseUser } from '../siteLog/files';
 
 /**
  * Local drafts for Site Log capture.
@@ -131,7 +131,15 @@ type State = {
   beginSubmit: (captureClientId: string) => void;
   endSubmit: (captureClientId: string) => void;
   get: (captureClientId: string) => SiteLogDraft | undefined;
-  clearAll: () => void;
+  /**
+   * Forget one account's drafts and delete the files kept for them.
+   *
+   * Scoped on purpose. The explicit logout used to clear the whole array
+   * and delete the whole `site-log/` tree, so signing out of one account
+   * destroyed every other account's unsent captures on that phone. Another
+   * worker's photos and recordings are not this account's to discard.
+   */
+  clearForUser: (userId: string) => Promise<void>;
 };
 
 const MAX_DRAFTS = 20;
@@ -194,12 +202,15 @@ export const useSiteLogDrafts = create<State>()(
       atCapacity: (userId) =>
         get().drafts.filter((d) => d.user_id === userId).length >= MAX_DRAFTS,
       get: (id) => get().drafts.find((d) => d.capture_client_id === id),
-      clearAll: () => {
-        set({ drafts: [] });
-        // The files belong to the drafts that were just discarded. Fire and
-        // forget: this is called from a synchronous session teardown, and a
-        // file that cannot be deleted must not block the logout.
-        void releaseAllRetained();
+      clearForUser: async (userId) => {
+        set((s) => ({ drafts: s.drafts.filter((d) => d.user_id !== userId) }));
+        // Awaited, unlike the fire-and-forget wipe this replaced: the
+        // caller has just warned the user that unsent evidence will be
+        // destroyed, so it should not return while that is still pending.
+        // The write is flushed first, so a crash mid-delete cannot leave a
+        // draft pointing at files that are already gone.
+        await flushDrafts();
+        await releaseUser(userId);
       },
     }),
     {

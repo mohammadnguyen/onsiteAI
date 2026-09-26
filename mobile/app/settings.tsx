@@ -13,7 +13,9 @@ import {
 import { useScaledStyles } from '../src/ui/type';
 import { api, apiUrl } from '../src/api/client';
 import { useMe } from '../src/api/hooks/useAuth';
-import { resetSessionState, wipeFailures } from '../src/store/session';
+import { resetSessionState, wipeOnExplicitLogout } from '../src/store/session';
+import { useSiteLogDrafts } from '../src/store/siteLogDrafts';
+import { confirmDestructive } from '../src/siteLog/dialogs';
 import { useOneShotBack } from '../src/util/navigation';
 import { tokens } from '../src/ui/tokens';
 
@@ -48,21 +50,49 @@ export default function SettingsScreen() {
     await setLanguage(next);
   };
 
-  const onLogout = async () => {
+  // Read BEFORE the tokens are cleared: `clear()` forgets who this was,
+  // and the cleanup below has to know whose files it may delete.
+  const userId = useAuthStore((st) => st.userId);
+  const unsentCount = useSiteLogDrafts((st) =>
+    userId === null ? 0 : st.drafts.filter((d) => d.user_id === userId).length,
+  );
+
+  const finishLogout = async () => {
     try {
       await api.post('/auth/logout');
     } catch {
       // logout is best-effort — clear local state regardless.
     }
     await clear();
-    // Audit B-02: explicit logout is a deliberate device handoff —
-    // wipe user-scoped caches AND the persisted failed-capture
-    // texts here, deterministically (the root layout's auth-redirect
-    // reset also fires, but is idempotent and deliberately preserves
-    // failures for INVOLUNTARY logouts).
+    // Audit B-02: explicit logout wipes user-scoped caches and the
+    // persisted failed-capture texts deterministically (the root layout's
+    // auth-redirect reset also fires, but is idempotent and deliberately
+    // preserves failures for INVOLUNTARY logouts).
     resetSessionState();
-    wipeFailures();
+    // Scoped to the account leaving. Other accounts' unsent captures on
+    // this phone are not this one's to destroy.
+    await wipeOnExplicitLogout(userId);
     router.replace('/(auth)/login');
+  };
+
+  const onLogout = () => {
+    // Nothing unsent: log out immediately, as before.
+    if (unsentCount === 0) {
+      void finishLogout();
+      return;
+    }
+    // Unsent captures exist. They hold photos, recordings and documents
+    // that exist nowhere else — a recording cannot be made again — so the
+    // user is told what logging out costs and has to say yes.
+    confirmDestructive({
+      title: t('settings.logout_unsent_title'),
+      body: t('settings.logout_unsent_body', { count: unsentCount }),
+      confirmLabel: t('settings.logout_unsent_confirm'),
+      cancelLabel: t('common.cancel'),
+      onConfirm: () => {
+        void finishLogout();
+      },
+    });
   };
 
   // M0 release/environment marker (Settings → Diagnostics). All values

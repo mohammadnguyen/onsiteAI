@@ -1,11 +1,27 @@
-# Forey Test backend — the configuration to create
+# Forey Test backend
 
-**Nothing here has been created, deployed or migrated.** This is the plan
-to approve. One configuration is specified; there is no choice left open.
+**THIS ENVIRONMENT EXISTS AND IS IN USE.** Created 2026-09-19 and running
+since: `forey-test-api` and `forey-test-db` in `syd`, with the device
+acceptance run going through them. It is not a plan any more.
+
+Read this before running anything:
+
+| If you are | Go to | Do NOT |
+|---|---|---|
+| Fixing the environment that exists | [Recovery](#recovery--the-environment-that-exists) | Run the creation sequence. It rotates `JWT_SECRET`, signing the test phone out mid-acceptance, and re-seeds the accounts, re-promoting the contributor the isolation test depends on |
+| Building a new one from nothing | [Creation from scratch](#creation-from-scratch) | Run it while the current one is alive unless you mean to replace it |
 
 The existing backend (`sitetracker-backend-staging.fly.dev`) carries the
 operator's real business data and is untouched by every step below. Nothing
 here reads it, writes to it, copies from it, or reuses any of its secrets.
+
+**Every flyctl command in this document names its `--app` explicitly.** A
+bare `flyctl` resolves the app from `fly.toml` in the working directory,
+and this runbook's own sequence starts with `cd backend`, where
+`backend/fly.toml` names **`sitetracker-backend-staging`**. A resize or a
+restart typed without `--app` in that directory is aimed at the real
+backend. If you find a command here without one, that is a defect in this
+document — fix it before running it.
 
 Decision of record: `docs/decisions/ADR-005-forey-test-app-variant.md`.
 
@@ -62,9 +78,9 @@ one machine. 256 MB is below what that image needs, and the failure appears
 only after the environment has been up a while, which is exactly when a
 device test is running and the diagnosis costs the most.
 
-`flyctl machine update <id> --vm-memory 512 --yes` recovers a machine that
-is already in this state; it came back 3/3 healthy and the full
-verification passed again immediately.
+A machine already in this state is recovered by the resize in
+[Recovery](#recovery--the-environment-that-exists) below; it came back
+3/3 healthy and the full verification passed again immediately.
 
 ### Why not Tigris here
 
@@ -88,10 +104,14 @@ All figures in **USD**.
 |---|---|---|
 | App machine, shared-cpu-1x 512 MB, always on | ~$3.19 / mo | 3.19 |
 | Evidence volume, 1 GB | $0.15 / GB / mo | 0.15 |
-| Postgres machine, shared-cpu-1x 512 MB, always on | ~$3.89 / mo | 3.89 |
+| Postgres machine, shared-cpu-1x 512 MB, always on | ~$3.19 / mo | 3.19 |
 | Postgres volume, 1 GB | $0.15 / GB / mo | 0.15 |
 | Egress | first 100 GB included | ~0 |
-| **Total, left running** | | **~7.38 / month** |
+| **Total, left running** | | **~6.68 / month** |
+
+Both machines are the same shape, so they are the same rate. An earlier
+version of this table priced them at $3.19 and $3.89 and totalled 7.38; the
+arithmetic was right and one of the line items was not.
 
 Basis: Fly.io published list pricing for shared-cpu-1x machines and volume
 storage, read 2026-09-19. **An estimate from list rates, not a reading of
@@ -103,16 +123,86 @@ approving.
 ## Cleanup
 
 ```bash
+# Look BEFORE destroying: after the app is gone this command has no app to
+# report on, so running it afterwards proves nothing.
+flyctl volumes list --app forey-test-api   # note what is there
+flyctl volumes list --app forey-test-db
+
 flyctl apps destroy forey-test-api
 flyctl apps destroy forey-test-db          # an unmanaged Postgres is an app
-flyctl volumes list --app forey-test-api   # expect: no volumes; they go with the app
-flyctl apps list                           # expect: sitetracker-backend-staging still present
+
+# Volumes go with the app they belong to. Confirm against the account:
+flyctl apps list                           # expect: neither forey-test app,
+                                           # and sitetracker-backend-staging
+                                           # STILL PRESENT
 ```
 
 Nothing needs migrating back: the database, the volume and the secrets exist
 only for this test.
 
-## Creation, in order (operator; every credential is the operator's)
+## Recovery — the environment that exists
+
+For an environment that is already running and has gone wrong. Nothing here
+creates, seeds or rotates anything, so none of it can cost you the accounts
+or the phone's session.
+
+Run these from anywhere. Every command names its app, so the working
+directory does not matter — which is the point, because `backend/fly.toml`
+names the real backend.
+
+```bash
+# 1. Is it actually up? /healthz does NOT touch the database, so it stays
+#    200 while Postgres is dead. This login probe does touch it:
+#    401 = database answering, 500 = database down.
+curl -sf https://forey-test-api.fly.dev/healthz
+curl -s -o /dev/null -w "%{http_code}\n" \
+  -X POST https://forey-test-api.fly.dev/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"email":"nobody@forey-test.example.com","password":"wrong"}'
+
+# 2. What the database machine thinks. Expect 3/3 passing.
+flyctl checks list --app forey-test-db
+```
+
+If the checks are critical and the login probe returns 500, the database
+machine is up but Postgres inside it is not — the 256 MB failure described
+above, or the same symptom from another cause.
+
+```bash
+# 3. Get the machine id. THIS is the safe form: it names the app, so it
+#    cannot list the real backend's machines. Never run a bare
+#    `flyctl machines list` while resolving a database incident.
+flyctl machines list --app forey-test-db
+
+# 4. Resize that machine. --app is what makes this safe; --yes skips the
+#    confirmation, so the id must be one you just read from step 3.
+flyctl machine update <db-machine-id> --app forey-test-db --vm-memory 512 --yes
+
+# 5. Confirm, then re-run the full verification below - not just /healthz.
+flyctl checks list --app forey-test-db
+```
+
+A restart, when the size is already right and Postgres is merely wedged:
+
+```bash
+flyctl machine restart <db-machine-id> --app forey-test-db
+flyctl machine restart <api-machine-id> --app forey-test-api
+```
+
+Recovery is finished when section (b) of
+[Verification](#verification--and-what-it-does-not-prove) passes, not when
+`/healthz` returns 200.
+
+## Creation from scratch
+
+**Only for building a NEW environment.** Running this against the live one
+rotates `JWT_SECRET` (which signs the test device out mid-acceptance) and
+re-runs `seed_admin`, which resets an existing user's role to admin —
+silently re-promoting the contributor account the permission-isolation test
+depends on. To fix a running environment, use
+[Recovery](#recovery--the-environment-that-exists) instead.
+
+Every credential is the operator's.
 
 ```bash
 cd backend
@@ -127,7 +217,17 @@ flyctl volumes create forey_test_evidence --app forey-test-api --region syd --si
 #    while idle and takes the whole environment down with it.
 flyctl postgres create --name forey-test-db --region syd \
   --vm-size shared-cpu-1x --volume-size 1 --initial-cluster-size 1
+
+#    Read the machine id back - naming the app, so this cannot list the
+#    real backend's machines - then resize before attaching anything.
+flyctl machines list --app forey-test-db
 flyctl machine update <db-machine-id> --app forey-test-db --vm-memory 512 --yes
+
+#    The database is briefly live at the default size between those two
+#    commands. That is tolerated only because nothing is using it yet;
+#    wait for 3/3 before going on.
+flyctl checks list --app forey-test-db
+
 flyctl postgres attach forey-test-db --app forey-test-api
 
 # 3. Secrets. Generate the JWT secret; do not reuse one from anywhere.

@@ -388,11 +388,24 @@ export async function releaseCapture(
   await deleteQuietly(dir);
 }
 
-/** Drop every kept file for every account on this device. */
-export async function releaseAllRetained(): Promise<void> {
-  const root = siteLogRoot();
-  if (root === null) return;
-  await deleteQuietly(root);
+/**
+ * Drop everything kept for ONE account.
+ *
+ * Deletes `site-log/<user_id>/` and nothing above it, so a second account's
+ * unsent captures on the same phone are untouched. That is the whole point
+ * of the per-account layer in the path.
+ *
+ * There is deliberately no "drop everything for every account" here any
+ * more. One existed, and the explicit logout called it: signing out of
+ * account B destroyed account A's unsent evidence - photos, recordings and
+ * documents that exist nowhere else - with no warning. Wiping the device
+ * for a genuine handoff is a separate, explicit action, and when it is
+ * built it should say what it is about to destroy.
+ */
+export async function releaseUser(userId: string): Promise<void> {
+  const dir = userRoot(userId);
+  if (dir === null) return;
+  await deleteQuietly(dir);
 }
 
 /** Is this file still where it was put? */
