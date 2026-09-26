@@ -18,6 +18,14 @@
  *     reads. Pure-JS build tooling may legitimately appear at several paths
  *     and is ignored, so this needs no allow-list to maintain.
  *
+ *  1b. EVERY NATIVE PEER DECLARED DIRECTLY, also ours and also fatal.
+ *     Autolinking links what the app itself depends on; a native peer left
+ *     to resolve transitively is fetched as the registry's latest, which
+ *     is precisely how the 57.0.18 copy arrived. This rule is owned here
+ *     rather than delegated, because expo-doctor's equivalent check
+ *     reports SUCCESS when it cannot load module metadata - a degraded run
+ *     and a clean one are indistinguishable from its output.
+ *
  *  2. expo-doctor, as a SECOND OPINION. Its own exit code is deliberately
  *     not the gate: under npm 11 two of its checks abort on `npm explain`
  *     returning non-zero for a package that is simply absent, so it can
@@ -82,6 +90,63 @@ function nativeModulesByName() {
   return byName
 }
 
+/**
+ * Every native module another native module declares as a peer must be a
+ * DIRECT dependency of this app.
+ *
+ * Autolinking links what the app itself depends on. A native peer left to
+ * be satisfied transitively is resolved by npm against the registry's
+ * latest, which is exactly how expo-asset 57.0.18 arrived in an SDK 54
+ * app. expo-doctor has a check for this, but its tick cannot be trusted as
+ * proof: on pinned 1.20.4 the check reports success when it could not load
+ * module metadata, so a degraded run and a clean one look identical from
+ * outside. This owns the rule instead of trusting that.
+ */
+function checkNativePeersAreDirect(native, appDeps) {
+  const problems = []
+
+  for (const [name, paths] of native) {
+    const pkgPath = join(projectRoot, paths[0].path, 'package.json')
+    if (!existsSync(pkgPath)) continue
+    let peers
+    try {
+      peers = JSON.parse(readFileSync(pkgPath, 'utf8')).peerDependencies ?? {}
+    } catch {
+      problems.push(`  ${name}: its package.json could not be read`)
+      continue
+    }
+    for (const [peer, range] of Object.entries(peers)) {
+      // Only native peers matter: a pure-JS peer is resolved by bundling,
+      // not by autolinking, so a transitive copy of one is harmless.
+      if (!native.has(peer)) continue
+      if (!Object.prototype.hasOwnProperty.call(appDeps, peer)) {
+        problems.push(
+          `  ${peer} is a native peer of ${name} (${range}) but is not a ` +
+            'direct dependency of this app',
+        )
+      }
+    }
+  }
+
+  if (problems.length > 0) {
+    fail([
+      '',
+      'NATIVE PEER DEPENDENCIES NOT DECLARED DIRECTLY.',
+      '',
+      'Autolinking links what this app depends on. A native peer satisfied',
+      'only transitively is resolved against the registry\'s latest, which',
+      'is how an SDK-incompatible version arrives without anyone asking.',
+      '',
+      ...problems,
+      '',
+      'Fix with `npx expo install <name>`, which picks the SDK-compatible',
+      'version and records it in package.json.',
+    ])
+  }
+
+  process.stdout.write('every native peer dependency declared directly - OK\n')
+}
+
 function checkSingleCopies() {
   const byName = nativeModulesByName()
   if (byName.size === 0) {
@@ -114,6 +179,7 @@ function checkSingleCopies() {
   process.stdout.write(
     `one copy of each of ${byName.size} autolinked native modules - OK\n`,
   )
+  return byName
 }
 
 function runExpoDoctor() {
@@ -174,6 +240,8 @@ function runExpoDoctor() {
   )
 }
 
-checkSingleCopies()
+const appPkg = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8'))
+const native = checkSingleCopies()
+checkNativePeersAreDirect(native, appPkg.dependencies ?? {})
 runExpoDoctor()
 process.stdout.write('\ndependency gate PASSED\n')
