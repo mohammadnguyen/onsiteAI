@@ -65,8 +65,14 @@ function draftFor(userId: string, capture: string): SiteLogDraft {
 /** Two accounts, each with one unsent capture and its kept file. */
 async function twoAccounts() {
   const mod = freshModules();
+  // The persist middleware rehydrates the freshly-required store from
+  // whatever the previous test left in storage, and it does so a turn
+  // later. Let that happen, THEN clear both the storage and the store, so
+  // each test starts from exactly two drafts and not two plus leftovers.
+  await new Promise((resolve) => setTimeout(resolve, 0));
   mod.memfs.reset();
   await mod.AsyncStorage.clear();
+  mod.store.setState({ drafts: [] });
 
   const a = draftFor('user-a', 'capture-a');
   const b = draftFor('user-b', 'capture-b');
@@ -80,11 +86,11 @@ async function twoAccounts() {
 
 const fileOf = (d: SiteLogDraft) => d.attachments[0].uri;
 
-describe('clearForUser', () => {
-  it("removes the leaving account's drafts and files, and nothing else", async () => {
+describe('clearCaptures', () => {
+  it("removes the leaving account's named captures, and nothing else", async () => {
     const { store, memfs, a, b } = await twoAccounts();
 
-    await store.getState().clearForUser('user-b');
+    await store.getState().clearCaptures('user-b', ['capture-b']);
 
     expect(store.getState().forUser('user-b')).toHaveLength(0);
     expect(memfs.files.has(fileOf(b))).toBe(false);
@@ -94,10 +100,10 @@ describe('clearForUser', () => {
     expect(memfs.files.has(fileOf(a))).toBe(true);
   });
 
-  it('deletes only that account\'s subtree, not the shared root', async () => {
+  it("deletes only that account's subtree, not the shared root", async () => {
     const { store, memfs } = await twoAccounts();
 
-    await store.getState().clearForUser('user-b');
+    await store.getState().clearCaptures('user-b', ['capture-b']);
 
     const remaining = [...memfs.files.keys()];
     expect(remaining.some((p) => p.includes('/site-log/user-a/'))).toBe(true);
@@ -107,7 +113,7 @@ describe('clearForUser', () => {
   it('has written the change before it returns, so a restart agrees', async () => {
     const { store, AsyncStorage } = await twoAccounts();
 
-    await store.getState().clearForUser('user-b');
+    await store.getState().clearCaptures('user-b', ['capture-b']);
 
     // Read the persisted copy, not the in-memory store.
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
@@ -121,11 +127,21 @@ describe('clearForUser', () => {
   it('is harmless for an account with nothing on this phone', async () => {
     const { store, memfs, a, b } = await twoAccounts();
 
-    await store.getState().clearForUser('user-c');
+    await store.getState().clearCaptures('user-c', ['capture-a', 'capture-b']);
 
     expect(memfs.files.has(fileOf(a))).toBe(true);
     expect(memfs.files.has(fileOf(b))).toBe(true);
     expect(store.getState().drafts).toHaveLength(2);
+  });
+
+  it("will not delete another account's capture even when handed its id", async () => {
+    const { store, memfs, a } = await twoAccounts();
+
+    // user-b asking for user-a's capture. The id is real; the owner is not.
+    await store.getState().clearCaptures('user-b', ['capture-a']);
+
+    expect(store.getState().forUser('user-a')).toHaveLength(1);
+    expect(memfs.files.has(fileOf(a))).toBe(true);
   });
 });
 
@@ -139,7 +155,7 @@ describe('wipeOnExplicitLogout', () => {
     });
     expect(useFailuresStore.getState().failures.length).toBeGreaterThan(0);
 
-    await session.wipeOnExplicitLogout('user-b');
+    await session.wipeOnExplicitLogout('user-b', ['capture-b']);
 
     // Failed-capture texts are device-level and still wiped on an explicit
     // logout - that behaviour is unchanged.
@@ -151,10 +167,10 @@ describe('wipeOnExplicitLogout', () => {
     expect(memfs.files.has(fileOf(b))).toBe(false);
   });
 
-  it('deletes nobody\'s captures when there is no identifiable account', async () => {
+  it("deletes nobody's captures when there is no identifiable account", async () => {
     const { session, store, memfs, a, b } = await twoAccounts();
 
-    await session.wipeOnExplicitLogout(null);
+    await session.wipeOnExplicitLogout(null, ['capture-a', 'capture-b']);
 
     // Refusing is the safe default: an unknown account is not a licence to
     // delete everyone's evidence.
@@ -163,7 +179,7 @@ describe('wipeOnExplicitLogout', () => {
     expect(memfs.files.has(fileOf(b))).toBe(true);
   });
 
-  it('REGRESSION: signing out of one account leaves the other\'s evidence intact', async () => {
+  it("REGRESSION: signing out of one account leaves the other's evidence intact", async () => {
     // The exact sequence from the review finding, end to end.
     const { session, store, memfs, a, b } = await twoAccounts();
 
@@ -171,11 +187,44 @@ describe('wipeOnExplicitLogout', () => {
     expect(store.getState().forUser('user-a')).toHaveLength(1);
 
     // Worker B signs in, works, and taps Log out.
-    await session.wipeOnExplicitLogout('user-b');
+    await session.wipeOnExplicitLogout('user-b', ['capture-b']);
 
     expect(store.getState().forUser('user-a')).toHaveLength(1);
     expect(memfs.files.has(fileOf(a))).toBe(true);
     expect(store.getState().forUser('user-b')).toHaveLength(0);
     expect(memfs.files.has(fileOf(b))).toBe(false);
+  });
+
+  it('REGRESSION: a capture saved DURING logout is not deleted by it', async () => {
+    // The race the closing review found. Logout awaits /auth/logout before
+    // cleaning up; the user can reach the capture screen during that wait.
+    // The confirmation named one capture, so only that one may go.
+    const { session, store, memfs, b } = await twoAccounts();
+    const confirmed = ['capture-b'];
+
+    // ... the network call is in flight, and the user saves another one.
+    const late = draftFor('user-b', 'capture-b-late');
+    memfs.put(fileOf(late), 10);
+    await store.getState().upsertDurable(late);
+
+    // ... then the logout completes and cleans up.
+    await session.wipeOnExplicitLogout('user-b', confirmed);
+
+    // The capture they agreed to lose is gone.
+    expect(memfs.files.has(fileOf(b))).toBe(false);
+    // The one saved afterwards, which no dialog ever mentioned, is not.
+    expect(store.getState().get('capture-b-late')).toBeDefined();
+    expect(memfs.files.has(fileOf(late))).toBe(true);
+  });
+
+  it('an ordinary logout with nothing unsent deletes nothing at all', async () => {
+    const { session, store, memfs, a, b } = await twoAccounts();
+
+    // The empty list is what the screen passes when it saw no drafts.
+    await session.wipeOnExplicitLogout('user-b', []);
+
+    expect(store.getState().drafts).toHaveLength(2);
+    expect(memfs.files.has(fileOf(a))).toBe(true);
+    expect(memfs.files.has(fileOf(b))).toBe(true);
   });
 });

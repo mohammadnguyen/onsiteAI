@@ -28,6 +28,14 @@
  *         "Check that no duplicate dependencies are installed"
  *     Everything else it reports is printed for a human and does not fail.
  *
+ *     REQUIRED TO PASS, NOT MERELY NOT-TO-FAIL. An earlier version looked
+ *     for the failure marker and treated its absence as success, so an
+ *     expo-doctor that aborted before running anything - an invalid
+ *     FOREY_VARIANT makes it die during config evaluation - printed
+ *     "PASSED". It is run with --verbose, which prints a tick per passing
+ *     check, and each mandatory check must be positively ticked. Silence
+ *     is a failure.
+ *
  * Offline and reproducible: it reads package-lock.json and the installed
  * tree. It downloads nothing - expo-doctor is a pinned devDependency, so
  * `npm ci && npm run doctor` behaves identically on any machine.
@@ -110,7 +118,9 @@ function checkSingleCopies() {
 
 function runExpoDoctor() {
   process.stdout.write('\nexpo-doctor (second opinion):\n')
-  const result = spawnSync('expo-doctor', [], {
+  // --verbose so passing checks are printed too. Without it a check that
+  // never ran is indistinguishable from one that passed.
+  const result = spawnSync('expo-doctor', ['--verbose'], {
     cwd: projectRoot,
     encoding: 'utf8',
     shell: process.platform === 'win32',
@@ -138,6 +148,23 @@ function runExpoDoctor() {
       ...failedFatal.map((c) => `  ✖ ${c}`),
       '',
       'These two are the checks that would have caught the expo-asset defect.',
+    ])
+  }
+
+  // Positive confirmation. A check that produced no verdict at all - because
+  // expo-doctor aborted, or because a future version renamed it - must not
+  // read as a pass.
+  const missing = FATAL_DOCTOR_CHECKS.filter(
+    (check) => !output.includes(`✔ ${check}`),
+  )
+  if (missing.length > 0) {
+    fail([
+      '',
+      'expo-doctor did not report a result for a check this gate requires:',
+      ...missing.map((c) => `  ? ${c}`),
+      '',
+      'It either aborted before running, or the check has been renamed.',
+      'Read its output above. This gate does not treat silence as success.',
     ])
   }
 

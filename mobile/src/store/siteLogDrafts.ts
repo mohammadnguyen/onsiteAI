@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import type { AttachmentState, CaptureStatus, Declaration, MediaType } from '../api/siteLog';
-import { releaseCapture, releaseUser } from '../siteLog/files';
+import { releaseCapture } from '../siteLog/files';
 
 /**
  * Local drafts for Site Log capture.
@@ -132,14 +132,24 @@ type State = {
   endSubmit: (captureClientId: string) => void;
   get: (captureClientId: string) => SiteLogDraft | undefined;
   /**
-   * Forget one account's drafts and delete the files kept for them.
+   * Forget exactly these captures of this account, and delete their files.
    *
-   * Scoped on purpose. The explicit logout used to clear the whole array
-   * and delete the whole `site-log/` tree, so signing out of one account
-   * destroyed every other account's unsent captures on that phone. Another
-   * worker's photos and recordings are not this account's to discard.
+   * Scoped twice, and both matter.
+   *
+   * By ACCOUNT: the explicit logout used to clear the whole array and
+   * delete the whole `site-log/` tree, so signing out of one account
+   * destroyed every other account's unsent captures on that phone.
+   *
+   * By CAPTURE ID: the caller passes the exact list the user was shown and
+   * agreed to lose. Logout awaits a network request before cleaning up,
+   * and during that wait the user can still reach the capture screen and
+   * save something new; a wipe computed from "everything this account has"
+   * would take that new capture too, silently, after a confirmation that
+   * never mentioned it. Anything not on the list survives.
+   *
+   * Ids belonging to another account are ignored rather than obeyed.
    */
-  clearForUser: (userId: string) => Promise<void>;
+  clearCaptures: (userId: string, captureClientIds: string[]) => Promise<void>;
 };
 
 const MAX_DRAFTS = 20;
@@ -202,15 +212,28 @@ export const useSiteLogDrafts = create<State>()(
       atCapacity: (userId) =>
         get().drafts.filter((d) => d.user_id === userId).length >= MAX_DRAFTS,
       get: (id) => get().drafts.find((d) => d.capture_client_id === id),
-      clearForUser: async (userId) => {
-        set((s) => ({ drafts: s.drafts.filter((d) => d.user_id !== userId) }));
+      clearCaptures: async (userId, captureClientIds) => {
+        // Resolved against the store, so an id from another account - or
+        // one that has already gone - can never select a file to delete.
+        const doomed = get()
+          .drafts.filter(
+            (d) => d.user_id === userId && captureClientIds.includes(d.capture_client_id),
+          )
+          .map((d) => d.capture_client_id);
+        if (doomed.length === 0) return;
+
+        set((s) => ({
+          drafts: s.drafts.filter(
+            (d) => !(d.user_id === userId && doomed.includes(d.capture_client_id)),
+          ),
+        }));
         // Awaited, unlike the fire-and-forget wipe this replaced: the
         // caller has just warned the user that unsent evidence will be
         // destroyed, so it should not return while that is still pending.
         // The write is flushed first, so a crash mid-delete cannot leave a
         // draft pointing at files that are already gone.
         await flushDrafts();
-        await releaseUser(userId);
+        for (const id of doomed) await releaseCapture(userId, id);
       },
     }),
     {

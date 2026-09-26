@@ -389,24 +389,20 @@ export async function releaseCapture(
 }
 
 /**
- * Drop everything kept for ONE account.
+ * There is deliberately NO "drop everything" function here.
  *
- * Deletes `site-log/<user_id>/` and nothing above it, so a second account's
- * unsent captures on the same phone are untouched. That is the whole point
- * of the per-account layer in the path.
+ * One existed - it deleted `site-log/` whole - and the explicit logout
+ * called it, so signing out of account B destroyed account A's unsent
+ * evidence: photos, recordings and documents that exist nowhere else, with
+ * no warning. Even an account-scoped version turned out to be too blunt,
+ * because logout awaits a network request and the user can save a new
+ * capture during that wait; see `clearCaptures` in the drafts store.
  *
- * There is deliberately no "drop everything for every account" here any
- * more. One existed, and the explicit logout called it: signing out of
- * account B destroyed account A's unsent evidence - photos, recordings and
- * documents that exist nowhere else - with no warning. Wiping the device
- * for a genuine handoff is a separate, explicit action, and when it is
- * built it should say what it is about to destroy.
+ * Everything that deletes goes through `releaseCapture` above, one named
+ * capture at a time. Wiping the device for a genuine handoff is a
+ * separate, explicit action, and when it is built it should say what it is
+ * about to destroy.
  */
-export async function releaseUser(userId: string): Promise<void> {
-  const dir = userRoot(userId);
-  if (dir === null) return;
-  await deleteQuietly(dir);
-}
 
 /** Is this file still where it was put? */
 export async function fileExists(uri: string): Promise<boolean> {

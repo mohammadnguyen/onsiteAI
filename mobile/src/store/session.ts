@@ -46,19 +46,28 @@ export function resetSessionState(): void {
  * destroys the same worker's unsent work (see the doc comment above).
  * Settings' logout calls both.
  *
- * SCOPED TO THE ACCOUNT SIGNING OUT. This used to clear every account's
- * site log drafts and delete the whole `site-log/` tree, so worker B
- * logging out destroyed worker A's unsent photos, recordings and documents
- * — files that exist nowhere else — silently. `userId` is the account
- * leaving, and only its drafts and its directory go. Pass null only when
- * there is no identifiable account, in which case no drafts are touched at
- * all: deleting somebody's evidence is not the safe default.
+ * SCOPED TO THE ACCOUNT SIGNING OUT, AND TO WHAT IT AGREED TO LOSE. This
+ * used to clear every account's site log drafts and delete the whole
+ * `site-log/` tree, so worker B logging out destroyed worker A's unsent
+ * photos, recordings and documents — files that exist nowhere else —
+ * silently.
  *
- * The caller must already have warned the user if that account has unsent
- * captures; by the time this runs the decision has been made.
+ * `confirmedCaptureIds` is the exact list the user was shown and accepted.
+ * It is not recomputed here on purpose: logout awaits `/auth/logout`
+ * first, and during that wait the user can still reach the capture screen
+ * and save something. A list computed at deletion time would take that new
+ * capture too, after a confirmation that never mentioned it. An empty list
+ * deletes nothing, which is what an ordinary logout with no unsent work
+ * should do.
+ *
+ * `userId` null means no identifiable account, and then nothing is
+ * touched: deleting somebody's evidence is not the safe default.
  */
-export async function wipeOnExplicitLogout(userId: string | null): Promise<void> {
+export async function wipeOnExplicitLogout(
+  userId: string | null,
+  confirmedCaptureIds: string[],
+): Promise<void> {
   useFailuresStore.getState().clearFailures();
-  if (userId === null) return;
-  await useSiteLogDrafts.getState().clearForUser(userId);
+  if (userId === null || confirmedCaptureIds.length === 0) return;
+  await useSiteLogDrafts.getState().clearCaptures(userId, confirmedCaptureIds);
 }

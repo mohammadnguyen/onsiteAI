@@ -53,11 +53,16 @@ export default function SettingsScreen() {
   // Read BEFORE the tokens are cleared: `clear()` forgets who this was,
   // and the cleanup below has to know whose files it may delete.
   const userId = useAuthStore((st) => st.userId);
-  const unsentCount = useSiteLogDrafts((st) =>
-    userId === null ? 0 : st.drafts.filter((d) => d.user_id === userId).length,
-  );
 
-  const finishLogout = async () => {
+  /**
+   * `confirmedCaptureIds` is the exact set the user agreed to lose, fixed
+   * at the moment they were asked. It is deliberately NOT recomputed after
+   * the await below: `/auth/logout` is a network request, and while it is
+   * outstanding the user can still navigate to the capture screen and save
+   * a new entry. Recomputing would delete that one too, without ever
+   * having warned about it.
+   */
+  const finishLogout = async (confirmedCaptureIds: string[]) => {
     try {
       await api.post('/auth/logout');
     } catch {
@@ -69,16 +74,28 @@ export default function SettingsScreen() {
     // auth-redirect reset also fires, but is idempotent and deliberately
     // preserves failures for INVOLUNTARY logouts).
     resetSessionState();
-    // Scoped to the account leaving. Other accounts' unsent captures on
-    // this phone are not this one's to destroy.
-    await wipeOnExplicitLogout(userId);
+    // Scoped to the account leaving, and to what it agreed to lose. Other
+    // accounts' unsent captures on this phone are not this one's to
+    // destroy, and neither is one saved after the question was answered.
+    await wipeOnExplicitLogout(userId, confirmedCaptureIds);
     router.replace('/(auth)/login');
   };
 
   const onLogout = () => {
-    // Nothing unsent: log out immediately, as before.
-    if (unsentCount === 0) {
-      void finishLogout();
+    // Read now, not from render state: this is the set the question below
+    // is about, and the set that may be deleted.
+    const unsent =
+      userId === null
+        ? []
+        : useSiteLogDrafts
+            .getState()
+            .forUser(userId)
+            .map((d) => d.capture_client_id);
+
+    // Nothing unsent: log out immediately, as before, and with an empty
+    // list nothing can be deleted afterwards either.
+    if (unsent.length === 0) {
+      void finishLogout([]);
       return;
     }
     // Unsent captures exist. They hold photos, recordings and documents
@@ -86,11 +103,11 @@ export default function SettingsScreen() {
     // user is told what logging out costs and has to say yes.
     confirmDestructive({
       title: t('settings.logout_unsent_title'),
-      body: t('settings.logout_unsent_body', { count: unsentCount }),
+      body: t('settings.logout_unsent_body', { count: unsent.length }),
       confirmLabel: t('settings.logout_unsent_confirm'),
       cancelLabel: t('common.cancel'),
       onConfirm: () => {
-        void finishLogout();
+        void finishLogout(unsent);
       },
     });
   };
