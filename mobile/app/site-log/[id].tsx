@@ -195,6 +195,12 @@ export default function SiteLogRecordDetail() {
   // Every file this visit promoted, cached or not, so leaving the screen
   // removes them all. A visit's files are its own: nothing else names them.
   const produced = useRef(new Set<string>());
+  // Files handed to the share sheet. Those are NOT removed when the screen
+  // goes: the sheet - and on Android the app the user picks - reads the
+  // file after `shareAsync` returns, and an auth failure can unmount this
+  // screen underneath an open sheet. They are left to the OS, which owns
+  // the cache directory; nothing in this app names them again.
+  const shared = useRef(new Set<string>());
   // Downloads in progress, so a second tap on the same attachment joins the
   // first download instead of starting another one onto the same files.
   // Joined only within the session that started it.
@@ -206,8 +212,10 @@ export default function SiteLogRecordDetail() {
     () => () => {
       mounted.current = false;
       // Best effort, unawaited: the screen is gone. A download still
-      // running sees `mounted` false and removes its own scratch.
+      // running sees `mounted` false and removes its own scratch. A file
+      // that was handed to the share sheet stays (see `shared`).
       for (const uri of produced.current) {
+        if (shared.current.has(uri)) continue;
         void FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined);
       }
       produced.current.clear();
@@ -450,7 +458,8 @@ export default function SiteLogRecordDetail() {
           return;
         }
         // The type goes with the file: without it the receiving app has
-        // only the name to go on.
+        // only the name to go on. From here the file belongs to the sheet.
+        shared.current.add(file.uri);
         await Sharing.shareAsync(file.uri, file.mime ? { mimeType: file.mime } : undefined);
       } catch {
         setError(t('siteLog.detail.share_failed'));

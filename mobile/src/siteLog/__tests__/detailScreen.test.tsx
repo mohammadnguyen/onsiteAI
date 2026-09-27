@@ -831,6 +831,42 @@ describe('a download that outlives its session or its screen', () => {
 });
 
 describe('share', () => {
+  it('does not delete a file the share sheet is still holding when the screen goes', async () => {
+    // An auth failure can redirect to login - unmounting this screen -
+    // while the share sheet is open over it. The sheet, and on Android the
+    // app the user picks, read the file AFTER that.
+    mockEvent = eventWith([att('doc', 'document'), att('img', 'image')]);
+    // Plans are consumed in press order: the photo is viewed first.
+    memfs.downloads.push(
+      { status: 200, headers: { 'content-type': 'image/jpeg' } },
+      { status: 200, headers: { 'content-type': 'application/pdf' } },
+    );
+    let releaseShare!: () => void;
+    mockShare.mockImplementation(() => new Promise<void>((r) => {
+      releaseShare = r;
+    }));
+    const tree = render();
+    // A viewed file, which the visit does own and should remove.
+    await act(async () => press(tree, 'view:img'));
+    await flush();
+    await act(async () => press(tree, 'viewer-close'));
+    // A shared file, held open by the sheet.
+    await act(async () => press(tree, 'share:doc'));
+    await flush();
+    expect(mockShare).toHaveBeenCalledTimes(1);
+    const sharedUri = mockShare.mock.calls[0][0] as string;
+    expect(sharedUri).toMatch(fileFor('ev-doc', 'pdf'));
+
+    act(() => tree.unmount());
+    await flush();
+    // The viewed file is gone; the shared one is still there for the sheet.
+    expect(cachedFiles()).toEqual([sharedUri]);
+
+    releaseShare();
+    await flush();
+    expect(memfs.files.has(sharedUri)).toBe(true);
+  });
+
   it('hands the file to the share sheet with its type, as a separate action', async () => {
     mockEvent = eventWith([att('doc', 'document')]);
     memfs.downloads.push({ status: 200, headers: { 'content-type': 'application/pdf' } });
