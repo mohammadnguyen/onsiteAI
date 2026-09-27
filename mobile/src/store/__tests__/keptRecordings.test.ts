@@ -236,10 +236,64 @@ describe('a kept recording survives everything except an explicit discard', () =
   it('is removed, file and entry, ONLY by an explicit discard', async () => {
     const { useKeptRecordings, memfs, kept } = await keptOne();
 
-    await useKeptRecordings.getState().discard('att-1');
+    await useKeptRecordings.getState().discard('user-a', 'att-1');
 
     expect(useKeptRecordings.getState().forUser('user-a')).toHaveLength(0);
     expect(memfs.files.has(kept.uri)).toBe(false);
+  });
+
+  it('REGRESSION: discarding does not reach another account that shares an id', async () => {
+    // No traversal and no session race needed: two accounts holding an
+    // entry under the same id made an id-only lookup select the other
+    // account's row, delete their file, and drop both entries.
+    const { files, useKeptRecordings, memfs } = await clean();
+
+    // user-b's recording, kept first.
+    memfs.put('file:///cache/b.m4a', 60 * 1024 * 1024);
+    const bKept = await files.keepOversizedRecording({
+      userId: 'user-b',
+      attachmentId: 'shared-id',
+      sourceUri: 'file:///cache/b.m4a',
+      name: 'b.m4a',
+      expectedSize: 60 * 1024 * 1024,
+    });
+    await useKeptRecordings.getState().add({
+      id: 'shared-id',
+      user_id: 'user-b',
+      name: 'b.m4a',
+      path: bKept.path,
+      size: bKept.size,
+      created_at: 1,
+      capture_client_id: 'cap-b',
+    });
+
+    // user-a's, added after, so an id-only `find` hits user-b's first.
+    memfs.put('file:///cache/a.m4a', 60 * 1024 * 1024);
+    const aKept = await files.keepOversizedRecording({
+      userId: 'user-a',
+      attachmentId: 'shared-id',
+      sourceUri: 'file:///cache/a.m4a',
+      name: 'a.m4a',
+      expectedSize: 60 * 1024 * 1024,
+    });
+    await useKeptRecordings.getState().add({
+      id: 'shared-id',
+      user_id: 'user-a',
+      name: 'a.m4a',
+      path: aKept.path,
+      size: aKept.size,
+      created_at: 2,
+      capture_client_id: 'cap-a',
+    });
+
+    await useKeptRecordings.getState().reconcile('user-a');
+    await useKeptRecordings.getState().discard('user-a', 'shared-id');
+
+    // A's went; B's file and row are untouched.
+    expect(useKeptRecordings.getState().forUser('user-a')).toHaveLength(0);
+    expect(memfs.files.has(aKept.uri)).toBe(false);
+    expect(useKeptRecordings.getState().forUser('user-b')).toHaveLength(1);
+    expect(memfs.files.has(bKept.uri)).toBe(true);
   });
 
   it('REGRESSION: a file preserved before the index was written is adopted', async () => {

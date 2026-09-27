@@ -139,6 +139,10 @@ export default function MySiteLogRecords() {
 
   const discardKept = useCallback(
     (id: string, name: string) => {
+      // The account doing this, read before the dialog: the confirm
+      // callback runs later, and the row is only ever this account's.
+      const startedAs = useAuthStore.getState().userId;
+      if (startedAs === null) return;
       // The ONLY thing that deletes a kept recording, and it asks first.
       confirmDestructive({
         title: t('siteLog.kept.discard_title'),
@@ -146,7 +150,7 @@ export default function MySiteLogRecords() {
         confirmLabel: t('siteLog.kept.discard'),
         cancelLabel: t('common.cancel'),
         onConfirm: () => {
-          void kept.discard(id);
+          void kept.discard(startedAs, id);
         },
       });
     },

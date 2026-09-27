@@ -53,8 +53,17 @@ export type KeptRecordingEntry = {
 type State = {
   items: KeptRecordingEntry[];
   add: (entry: KeptRecordingEntry) => Promise<void>;
-  /** Forget one AND delete its file. Only ever on an explicit discard. */
-  discard: (id: string) => Promise<void>;
+  /**
+   * Forget one of THIS account's recordings and delete its file.
+   *
+   * Scoped to the account, not just to the id. Ids are per-recording and
+   * never collide in practice, but this list is persisted state: two
+   * accounts holding an entry under the same id made an id-only lookup
+   * select the other account's row, delete their file, and drop both
+   * entries - with no traversal and no session race involved. The id
+   * alone is not an identity.
+   */
+  discard: (userId: string, id: string) => Promise<void>;
   forUser: (userId: string) => KeptRecordingEntry[];
   /**
    * Make the list agree with the directory, which is the truth.
@@ -81,24 +90,42 @@ export const useKeptRecordings = create<State>()(
     (set, get) => ({
       items: [],
       add: async (entry) => {
-        set((s) => ({ items: [entry, ...s.items.filter((x) => x.id !== entry.id)] }));
+        // Replace only this ACCOUNT's entry of that id. Filtering on the
+        // id alone silently dropped another account's row whenever the
+        // two ids matched - the same "an id is not an identity" mistake
+        // as the discard below, found by the regression written for it.
+        set((s) => ({
+          items: [
+            entry,
+            ...s.items.filter(
+              (x) => !(x.user_id === entry.user_id && x.id === entry.id),
+            ),
+          ],
+        }));
         // Awaited: the file is already on disk, and an index that has not
         // been written yet is how a kept recording becomes unreachable.
         await flush();
       },
-      discard: async (id) => {
-        const item = get().items.find((x) => x.id === id);
-        set((s) => ({ items: s.items.filter((x) => x.id !== id) }));
+      discard: async (userId, id) => {
+        // Selected by account AND id. Selecting by id alone reached
+        // another account's row when both held one under the same id.
+        const item = get().items.find((x) => x.user_id === userId && x.id === id);
+        if (!item) return;
+        // The same canonical ownership rule the screen uses, against the
+        // account doing the discarding - not against whatever owner the
+        // stored row claims. A stored path is persisted state: a
+        // traversal inside it would otherwise let a discard delete
+        // another account's recording, since the raw path still contains
+        // "/oversized/".
+        if (!isOwnKeptRecordingPath(item.path, userId)) return;
+
+        // Only this one row goes, never every row sharing its id.
+        set((s) => ({
+          items: s.items.filter((x) => !(x.user_id === userId && x.id === id)),
+        }));
         await flush();
-        if (item) {
-          // The same canonical ownership rule the screen uses. A stored
-          // path is persisted state: a traversal inside it would
-          // otherwise let a discard delete another account's recording,
-          // since the raw path still contains "/oversized/".
-          if (!isOwnKeptRecordingPath(item.path, item.user_id)) return;
-          const uri = retainedUri(item.path);
-          if (uri !== null) await releaseKeptRecording(uri);
-        }
+        const uri = retainedUri(item.path);
+        if (uri !== null) await releaseKeptRecording(uri);
       },
       forUser: (userId) => get().items.filter((x) => x.user_id === userId),
       reconcile: async (userId) => {
