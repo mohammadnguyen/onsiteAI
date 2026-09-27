@@ -34,7 +34,7 @@ EVENT_KEYS = {
 }
 ATTACHMENT_KEYS = {
     "attachment_client_id", "declared_media_type", "declared_size_bytes",
-    "state", "evidence_id",
+    "state", "evidence_id", "is_inline_text",
 }
 
 
@@ -95,6 +95,13 @@ async def test_declare_shapes_status_codes(client, contributor_token, site_log_s
     assert body["job_state"] == "unassigned" and body["capture_status"] == "pending_upload"
     assert body["attachments"] and all(set(a) == ATTACHMENT_KEYS for a in body["attachments"])
     assert "eligibility" not in r.text and "upload_attempt_no" not in r.text
+    # Exactly the server's own text row is marked, by identity - never by
+    # media type. The external attachment is not, whatever it is.
+    flagged = {a["attachment_client_id"]: a["is_inline_text"] for a in body["attachments"]}
+    assert flagged == {
+        str(svc.inline_attachment_id(uuid.UUID(cid))): True,
+        att["attachment_client_id"]: False,
+    }
     # identical replay → 200, same id
     r2 = await _declare(client, contributor_token, capture_client_id=cid,
                         body_text="fix leak", attachments=[att])

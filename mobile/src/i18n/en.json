@@ -690,12 +690,19 @@
       "draft_no_text": "(no text)",
       "no_text": "(no text)",
       "empty": "No site log records yet.",
-      "attachment_count_other": "{{count}} attachments",
       "new": "New entry",
       "drafts_section": "Unfinished captures",
       "draft_on_server": "Created on the server — status: {{status}}",
-      "attachment_count_one": "{{count}} attachment",
-      "load_failed": "We could not reach the server, so your saved records are not shown. Anything on this phone is still listed above."
+      "load_failed": "We could not reach the server, so your saved records are not shown. Anything on this phone is still listed above.",
+      "count_image_one": "{{count}} photo",
+      "count_image_other": "{{count}} photos",
+      "count_document_one": "{{count}} document",
+      "count_document_other": "{{count}} documents",
+      "count_audio_one": "{{count}} voice note",
+      "count_audio_other": "{{count}} voice notes",
+      "count_text_one": "{{count}} text file",
+      "count_text_other": "{{count}} text files",
+      "no_job": "No job"
     },
     "detail": {
       "title": "Site log record",
@@ -707,7 +714,17 @@
       "partial_note": "The record was created, but some attachments did not save.",
       "read_only": "This record is read-only. It cannot be edited from here.",
       "not_found": "That record could not be opened.",
-      "open_mobile_only": "Attachments can be opened in the mobile app."
+      "open_mobile_only": "Attachments can be opened in the mobile app.",
+      "share": "Share",
+      "pause": "Pause",
+      "close": "Close",
+      "audio_loading": "Loading…",
+      "audio_failed": "That recording could not be played. Use Share to open it in another app.",
+      "image_failed": "That photo could not be displayed. Use Share to open it in another app.",
+      "pdf_failed": "That PDF could not be displayed here. Use Share to open it in another app.",
+      "no_viewer": "This kind of file cannot be shown here. Use Share to open it in another app.",
+      "share_unavailable": "Sharing is not available on this device.",
+      "share_failed": "That file could not be shared."
     },
     "draft": {
       "title": "Unsent site log entry",

@@ -18,6 +18,13 @@ export type AttachmentOut = {
   declared_size_bytes: number | null;
   state: AttachmentState;
   evidence_id: string | null;
+  /**
+   * True for the one row the SERVER created to hold the body text as
+   * evidence. Optional because an older backend does not send it - and
+   * absent must mean "not known", never "guess from the media type": a
+   * .txt the user attached is `text` too and must stay listed.
+   */
+  is_inline_text?: boolean;
 };
 
 export type RevisionOut = {

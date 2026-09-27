@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -15,6 +15,7 @@ import * as Sharing from 'expo-sharing';
 import { useAudioPlayer } from 'expo-audio';
 
 import { useMe } from '../../src/api/hooks/useAuth';
+import { useJobs } from '../../src/api/hooks/useJobs';
 import { useAuthStore } from '../../src/store/auth';
 import { BackLink } from '../../src/siteLog/BackLink';
 import { MINE_PAGE_SIZE, listMine } from '../../src/api/siteLog';
@@ -28,6 +29,7 @@ import {
   retainedUri,
 } from '../../src/siteLog/files';
 import { formatBytes } from '../../src/siteLog/limits';
+import { describeMedia } from '../../src/siteLog/summary';
 import { StatusBadge } from '../../src/ui/kit';
 import { tokens } from '../../src/ui/tokens';
 
@@ -46,6 +48,15 @@ export default function MySiteLogRecords() {
   // reachable from here - see src/store/keptRecordings.ts.
   const kept = useKeptRecordings();
   const keptMine = userId ? kept.forUser(userId) : [];
+  // Job names for the rows. The record carries only the job id; the same
+  // list the capture screen's chips use gives the name. Unavailable (no
+  // network, not loaded yet) reads as "no job name", never as an error.
+  const jobs = useJobs();
+  const jobName = useMemo(() => {
+    const m = new Map<string, string>();
+    jobs.data?.forEach((j) => m.set(j.job_id, j.job_name));
+    return m;
+  }, [jobs.data]);
   const [keptError, setKeptError] = useState<string | null>(null);
   // The directory is the truth. A preservation interrupted between the
   // copy and the index would otherwise leave a file nothing lists, and an
@@ -299,25 +310,46 @@ export default function MySiteLogRecords() {
         ListFooterComponent={
           q.isFetchingNextPage ? <ActivityIndicator style={s.spinner} /> : null
         }
-        renderItem={({ item }) => (
-          <Pressable style={s.row} onPress={() => openRecord(item.site_log_event_id)}>
-            <View style={s.rowMain}>
-              <Text style={s.rowText} numberOfLines={2}>
-                {item.revision.body_text || t('siteLog.list.no_text')}
-              </Text>
-              <Text style={s.rowMeta}>
-                {new Date(item.created_at).toLocaleString()}
-                {item.attachments.length > 0
-                  ? ` · ${t('siteLog.list.attachment_count', { count: item.attachments.length })}`
-                  : ''}
-              </Text>
-            </View>
-            <StatusBadge
-              status={captureStatusBadgeKey(item.capture_status)}
-              label={t(`siteLog.status.${item.capture_status}`)}
-            />
-          </Pressable>
-        )}
+        renderItem={({ item }) => {
+          // What the row says about a record, so two records are never the
+          // same "(no text)": the text if there is any, otherwise what was
+          // attached ("1 photo · 1 document"); then when, which job, where.
+          const media = describeMedia(item.attachments, t);
+          const body = item.revision.body_text;
+          const job =
+            (item.job_id ? jobName.get(item.job_id) : undefined) ??
+            (item.job_id ? t('siteLog.detail.assigned') : t('siteLog.list.no_job'));
+          const meta = [
+            new Date(item.created_at).toLocaleString(),
+            job,
+            item.revision.internal_location || null,
+            // The media line is the title when there is no text; with text
+            // it still belongs on the row, as part of the meta.
+            body && media ? media : null,
+          ]
+            .filter((part): part is string => Boolean(part))
+            .join(' · ');
+          return (
+            <Pressable
+              style={s.row}
+              onPress={() => openRecord(item.site_log_event_id)}
+              testID={`record:${item.site_log_event_id}`}
+            >
+              <View style={s.rowMain}>
+                <Text style={s.rowText} numberOfLines={2} testID="record-title">
+                  {body || media || t('siteLog.list.no_text')}
+                </Text>
+                <Text style={s.rowMeta} testID="record-meta">
+                  {meta}
+                </Text>
+              </View>
+              <StatusBadge
+                status={captureStatusBadgeKey(item.capture_status)}
+                label={t(`siteLog.status.${item.capture_status}`)}
+              />
+            </Pressable>
+          );
+        }}
       />
     </SafeAreaView>
   );

@@ -14,8 +14,29 @@ export type MemFs = {
   shortNextCopyTo: number | null;
   /** getInfoAsync reports no size for this path, as some platforms do. */
   hideSizeOf: string | null;
+  /**
+   * What the next downloads do, one plan per call, in order. A call with
+   * no plan throws, as before, so tests that never download are unchanged.
+   */
+  downloads: DownloadPlan[];
+  /** Every downloadAsync call, as made: url, target and headers. */
+  downloadCalls: { url: string; target: string; headers?: Record<string, string> }[];
   reset(): void;
   put(uri: string, size?: number): void;
+};
+
+export type DownloadPlan = {
+  /** HTTP status the download reports. The body is written regardless, as
+   *  the real one does - which is why the screen checks the status. */
+  status: number;
+  headers?: Record<string, string>;
+  /** Bytes written to the target. */
+  size?: number;
+  /** Rejects instead of answering: a dropped connection. */
+  error?: Error;
+  /** Settled by the test, to hold the download open while it does
+   *  something else - sign out, leave the screen. */
+  hold?: Promise<void>;
 };
 
 /**
@@ -37,12 +58,16 @@ export const memfs: MemFs = {
   failNextCopy: null,
   shortNextCopyTo: null,
   hideSizeOf: null,
+  downloads: [],
+  downloadCalls: [],
   reset() {
     memfs.files.clear();
     memfs.dirs.clear();
     memfs.failNextCopy = null;
     memfs.shortNextCopyTo = null;
     memfs.hideSizeOf = null;
+    memfs.downloads = [];
+    memfs.downloadCalls = [];
     state.documentDirectory = 'file:///documents/';
   },
   put(uri, size = 10) {
@@ -117,11 +142,14 @@ export async function deleteAsync(
   memfs.files.delete(uri);
   memfs.dirs.delete(uri);
   // A directory delete takes everything under it, as the real one does.
+  // UNDER it: `a/b` is under `a/`, `a/b.part` is not under `a/b`. Deleting
+  // a file must not take its siblings that merely share a prefix.
+  const under = uri.endsWith('/') ? uri : `${uri}/`;
   for (const key of [...memfs.files.keys()]) {
-    if (key.startsWith(uri)) memfs.files.delete(key);
+    if (key.startsWith(under)) memfs.files.delete(key);
   }
   for (const key of [...memfs.dirs]) {
-    if (key.startsWith(uri)) memfs.dirs.delete(key);
+    if (key.startsWith(under)) memfs.dirs.delete(key);
   }
 }
 
@@ -140,8 +168,18 @@ export async function readDirectoryAsync(uri: string): Promise<string[]> {
   return [...names];
 }
 
-export async function downloadAsync(): Promise<never> {
-  throw new Error('not used by these tests');
+export async function downloadAsync(
+  url: string,
+  target: string,
+  options?: { headers?: Record<string, string> },
+): Promise<{ status: number; headers: Record<string, string>; uri: string }> {
+  const plan = memfs.downloads.shift();
+  if (!plan) throw new Error('not used by these tests');
+  memfs.downloadCalls.push({ url, target, headers: options?.headers });
+  if (plan.hold) await plan.hold;
+  if (plan.error) throw plan.error;
+  memfs.files.set(target, plan.size ?? 10);
+  return { status: plan.status, headers: plan.headers ?? {}, uri: target };
 }
 
 export async function moveAsync(args: { from: string; to: string }): Promise<void> {

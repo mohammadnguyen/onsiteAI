@@ -403,7 +403,13 @@ export default function NewSiteLogEntry() {
       // or on the detail screen straight afterwards. Failing to do so must
       // not cost the user the recording that was just made.
       try {
-        await setAudioModeAsync({ allowsRecording: false });
+        // playsInSilentMode is NOT carried over: on iOS setAudioModeAsync
+        // passes exactly this object through, with no merge against the
+        // previous mode. Handing back `{ allowsRecording: false }` alone
+        // left the session in the default category, which obeys the
+        // ringer switch - so on a site phone set to silent, the recording
+        // just made was inaudible from that moment on.
+        await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
       } catch {
         // Playback may be affected until the next session change; the
         // recording itself is on disk and already attached above.

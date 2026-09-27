@@ -297,3 +297,23 @@ different app and is not modified by this.
     the draft intact. Confirm must sign out and remove only that account's
     drafts and files.
 11. **Logout with nothing unsent** must log straight out, with no dialog.
+12. **One saved record, read in the app.** Open a saved record that has
+    text, a photo, a voice note and a PDF drawing:
+    - the text appears once, as the body - NOT again as a "Text" attachment
+      row (the server's own copy is hidden; a .txt you attached yourself
+      still shows);
+    - **View** on the photo shows it full screen; pinch to zoom; Close
+      returns to the record;
+    - **Play** on the voice note is AUDIBLE WITH THE RINGER SWITCH ON
+      SILENT, shows elapsed / total time and a progress bar; Pause pauses;
+      the label returns to Play when it ends;
+    - **View** on the PDF shows the drawing in the app: scroll between
+      pages, pinch to zoom, Close returns to the record;
+    - **Share** on any of them opens the share sheet - a second option,
+      not what View does.
+13. **List rows tell records apart.** In My site log, a record with no text
+    shows what it holds ("1 photo · 1 document"), when, and which job; two
+    records are never the same "(no text)".
+14. **Nothing survives a sign-out.** Start View on a large PDF and, while
+    it is still loading, sign out (or switch account). Nothing may open
+    afterwards, and no viewer or playing recording may remain.

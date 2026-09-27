@@ -1,0 +1,472 @@
+/**
+ * The saved-record screen: what it shows in the app, and what it refuses
+ * to show once the session or the screen it was opened on has gone.
+ *
+ * Renders the real screen with react-test-renderer. The download is the
+ * in-memory file system's, planned per call, so the test can hold one open
+ * while it signs the user out or moves them off the screen.
+ *
+ * Lives under src/ for the same reason screenTiming.test.tsx does: a file
+ * under app/ is a route.
+ */
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import React from 'react';
+
+// ---- focus, controlled by the test --------------------------------------
+const mockFocusCleanups: (() => void)[] = [];
+function blurEverything(): void {
+  while (mockFocusCleanups.length > 0) mockFocusCleanups.pop()?.();
+}
+
+jest.mock('expo-router', () => ({
+  router: { replace: jest.fn(), push: jest.fn(), back: jest.fn(), canGoBack: () => true },
+  useLocalSearchParams: () => ({ id: 'event-1' }),
+  useFocusEffect: (cb: () => undefined | (() => void)) => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const react = require('react') as typeof import('react');
+    react.useEffect(() => {
+      const cleanup = cb();
+      if (cleanup) mockFocusCleanups.push(cleanup);
+      return () => {
+        if (cleanup) {
+          const at = mockFocusCleanups.indexOf(cleanup);
+          if (at >= 0) mockFocusCleanups.splice(at, 1);
+          cleanup();
+        }
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+  },
+}));
+
+jest.mock('react-i18next', () => ({ useTranslation: () => ({ t: (k: string) => k }) }));
+
+// The record, read lazily so each test can shape it.
+let mockEvent: Record<string, unknown> | undefined;
+jest.mock('@tanstack/react-query', () => ({
+  useQuery: () => ({ isLoading: false, data: mockEvent }),
+}));
+
+const mockApiGet = jest.fn();
+jest.mock('../../api/client', () => ({
+  api: { defaults: { baseURL: 'https://api.example' }, get: (...a: unknown[]) => mockApiGet(...a) },
+}));
+
+jest.mock('../BackLink', () => ({ BackLink: () => null }));
+jest.mock('../../ui/kit', () => ({ StatusBadge: () => null }));
+jest.mock('expo-file-system/legacy', () => require('./support/memfs'));
+
+const mockShare = jest.fn();
+const mockShareAvailable = jest.fn(async () => true);
+jest.mock('expo-sharing', () => ({
+  isAvailableAsync: () => mockShareAvailable(),
+  shareAsync: (...a: unknown[]) => mockShare(...a),
+}));
+
+// One player instance, and a status the test sets.
+const mockPlayer = {
+  replace: jest.fn(),
+  play: jest.fn(),
+  pause: jest.fn(),
+  seekTo: jest.fn(async () => undefined),
+};
+let mockStatus = {
+  isLoaded: false,
+  playing: false,
+  currentTime: 0,
+  duration: 0,
+  didJustFinish: false,
+  isBuffering: false,
+};
+const mockSetAudioMode = jest.fn(async (..._a: unknown[]) => undefined);
+jest.mock('expo-audio', () => ({
+  useAudioPlayer: () => mockPlayer,
+  useAudioPlayerStatus: () => mockStatus,
+  setAudioModeAsync: (...a: unknown[]) => mockSetAudioMode(...a),
+}));
+
+// The web view, as a host element that keeps its props for inspection.
+jest.mock('react-native-webview', () => ({
+  WebView: (props: Record<string, unknown>) => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const react = require('react') as typeof import('react');
+    return react.createElement('WebView', props);
+  },
+}));
+
+import { memfs } from './support/memfs';
+import { useAuthStore } from '../../store/auth';
+import SiteLogRecordDetail from '../../../app/site-log/[id]';
+
+type Att = {
+  attachment_client_id: string;
+  declared_media_type: 'text' | 'audio' | 'image' | 'document';
+  declared_size_bytes: number | null;
+  state: 'awaiting_upload' | 'pending' | 'stored' | 'failed';
+  evidence_id: string | null;
+  is_inline_text?: boolean;
+};
+
+function att(
+  id: string,
+  type: Att['declared_media_type'],
+  extra: Partial<Att> = {},
+): Att {
+  return {
+    attachment_client_id: id,
+    declared_media_type: type,
+    declared_size_bytes: 1,
+    state: 'stored',
+    evidence_id: `ev-${id}`,
+    ...extra,
+  };
+}
+
+function eventWith(attachments: Att[], body: string | null = 'Body text'): Record<string, unknown> {
+  return {
+    site_log_event_id: 'event-1',
+    capture_client_id: 'cap-1',
+    author_user_id: 'user-a',
+    job_id: null,
+    job_state: 'unassigned',
+    capture_status: 'complete',
+    created_at: '2026-09-20T10:00:00Z',
+    revision: {
+      revision_no: 1,
+      body_text: body,
+      internal_location: null,
+      occurred_at: null,
+      withdrawn: false,
+      created_at: '2026-09-20T10:00:00Z',
+    },
+    attachments,
+  };
+}
+
+async function flush(): Promise<void> {
+  for (let i = 0; i < 8; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+}
+
+function press(tree: ReactTestRenderer, testID: string): void {
+  const node = tree.root.findByProps({ testID });
+  (node.props as { onPress: () => void }).onPress();
+}
+
+function has(tree: ReactTestRenderer, testID: string): boolean {
+  return tree.root.findAllByProps({ testID }).length > 0;
+}
+
+/** Host nodes only - a component and the host it renders both carry the
+ *  testID, so an unfiltered count is double. */
+function countHost(tree: ReactTestRenderer, testID: string): number {
+  return tree.root.findAll((n) => typeof n.type === 'string' && n.props.testID === testID)
+    .length;
+}
+
+function showsText(tree: ReactTestRenderer, text: string): boolean {
+  return tree.root.findAll((n) => n.props.children === text).length > 0;
+}
+
+function textOf(tree: ReactTestRenderer, testID: string): string {
+  const node = tree.root.findByProps({ testID });
+  const children = node.props.children;
+  return Array.isArray(children) ? children.join('') : String(children);
+}
+
+function render(): ReactTestRenderer {
+  let tree!: ReactTestRenderer;
+  act(() => {
+    tree = create(<SiteLogRecordDetail />);
+  });
+  return tree;
+}
+
+beforeEach(() => {
+  memfs.reset();
+  mockApiGet.mockReset();
+  mockShare.mockReset();
+  mockShareAvailable.mockClear();
+  mockSetAudioMode.mockClear();
+  mockPlayer.replace.mockClear();
+  mockPlayer.play.mockClear();
+  mockPlayer.pause.mockClear();
+  mockStatus = {
+    isLoaded: false,
+    playing: false,
+    currentTime: 0,
+    duration: 0,
+    didJustFinish: false,
+    isBuffering: false,
+  };
+  mockFocusCleanups.length = 0;
+  act(() => {
+    useAuthStore.setState({ accessToken: 'tok-a', userId: 'user-a', sessionNonce: 1 });
+  });
+});
+
+describe('what is listed', () => {
+  it('shows the body once: the server-marked inline copy is not a file', () => {
+    mockEvent = eventWith([
+      att('inline', 'text', { is_inline_text: true }),
+      att('img', 'image'),
+    ]);
+    const tree = render();
+    expect(textOf(tree, 'detail-body')).toBe('Body text');
+    expect(countHost(tree, 'attachment-row')).toBe(1);
+    expect(has(tree, 'view:img')).toBe(true);
+    expect(has(tree, 'share:inline')).toBe(false);
+  });
+
+  it('keeps a text file the user attached: only an explicit flag hides a row', () => {
+    mockEvent = eventWith([
+      att('notes', 'text'), // older backend: no flag at all
+      att('csv', 'text', { is_inline_text: false }),
+    ]);
+    const tree = render();
+    expect(countHost(tree, 'attachment-row')).toBe(2);
+    expect(has(tree, 'share:notes')).toBe(true);
+    expect(has(tree, 'share:csv')).toBe(true);
+  });
+
+  it('offers nothing to open for an attachment that is not stored', () => {
+    mockEvent = eventWith([att('img', 'image', { state: 'failed', evidence_id: null })]);
+    const tree = render();
+    expect(has(tree, 'view:img')).toBe(false);
+    expect(has(tree, 'share:img')).toBe(false);
+  });
+});
+
+describe('photo', () => {
+  it('is shown here, with a close control, from the downloaded file', async () => {
+    mockEvent = eventWith([att('img', 'image')]);
+    memfs.downloads.push({ status: 200, headers: { 'Content-Type': 'image/jpeg' } });
+    const tree = render();
+    expect(has(tree, 'viewer-image')).toBe(false);
+
+    await act(async () => press(tree, 'view:img'));
+    await flush();
+
+    expect(memfs.downloadCalls).toEqual([
+      expect.objectContaining({
+        url: 'https://api.example/evidence/ev-img/download',
+        headers: { Authorization: 'Bearer tok-a' },
+      }),
+    ]);
+    expect(has(tree, 'viewer-image')).toBe(true);
+    const image = tree.root.findByProps({ testID: 'viewer-image-body' });
+    expect(image.props.source).toEqual({ uri: 'file:///cache/sitelog-ev-img.jpg' });
+    // The scratch name is gone; only the promoted file remains.
+    expect(memfs.files.has('file:///cache/sitelog-ev-img.part')).toBe(false);
+
+    await act(async () => press(tree, 'viewer-close'));
+    expect(has(tree, 'viewer-image')).toBe(false);
+  });
+});
+
+describe('PDF', () => {
+  it('is read here, in a web view pointed at the local file, never at a service', async () => {
+    mockEvent = eventWith([att('doc', 'document')]);
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'application/pdf' } });
+    const tree = render();
+
+    await act(async () => press(tree, 'view:doc'));
+    await flush();
+
+    const web = tree.root.findByProps({ testID: 'viewer-pdf' });
+    expect(web.props.source).toEqual({ uri: 'file:///cache/sitelog-ev-doc.pdf' });
+    expect(web.props.allowingReadAccessToURL).toBe('file:///cache/');
+    expect(has(tree, 'viewer-failed')).toBe(false);
+
+    await act(async () => (web.props as { onError: () => void }).onError());
+    expect(has(tree, 'viewer-failed')).toBe(true);
+  });
+
+  it('says so, and leaves Share, for a document it cannot render', async () => {
+    mockEvent = eventWith([att('dwg', 'document')]);
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'application/acad' } });
+    const tree = render();
+
+    await act(async () => press(tree, 'view:dwg'));
+    await flush();
+
+    expect(has(tree, 'viewer-pdf')).toBe(false);
+    expect(has(tree, 'viewer-image')).toBe(false);
+    expect(showsText(tree, 'siteLog.detail.no_viewer')).toBe(true);
+    expect(has(tree, 'share:dwg')).toBe(true);
+  });
+});
+
+describe('recording', () => {
+  it('sets playback mode - audible on a silenced phone - before it plays', async () => {
+    mockEvent = eventWith([att('voice', 'audio')]);
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'audio/m4a' } });
+    const tree = render();
+
+    await act(async () => press(tree, 'audio-toggle:voice'));
+    await flush();
+
+    expect(mockSetAudioMode).toHaveBeenCalledWith(
+      expect.objectContaining({ playsInSilentMode: true, allowsRecording: false }),
+    );
+    expect(mockPlayer.replace).toHaveBeenCalledWith({ uri: 'file:///cache/sitelog-ev-voice.m4a' });
+    expect(mockPlayer.play).toHaveBeenCalledTimes(1);
+    // Mode first, then the source, then play.
+    const order = [
+      mockSetAudioMode.mock.invocationCallOrder[0],
+      mockPlayer.replace.mock.invocationCallOrder[0],
+      mockPlayer.play.mock.invocationCallOrder[0],
+    ];
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(has(tree, 'audio-player')).toBe(true);
+  });
+
+  it('shows elapsed and total time, and pauses on the second tap', async () => {
+    mockEvent = eventWith([att('voice', 'audio')]);
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'audio/m4a' } });
+    const tree = render();
+    await act(async () => press(tree, 'audio-toggle:voice'));
+    await flush();
+
+    mockStatus = { ...mockStatus, isLoaded: true, playing: true, currentTime: 5, duration: 65 };
+    await act(async () => {
+      tree.update(<SiteLogRecordDetail />);
+    });
+    expect(showsText(tree, '0:05 / 1:05')).toBe(true);
+
+    await act(async () => press(tree, 'audio-toggle:voice'));
+    expect(mockPlayer.pause).toHaveBeenCalledTimes(1);
+    expect(mockPlayer.replace).toHaveBeenCalledTimes(1); // not reloaded
+  });
+
+  it('says so when the recording cannot be fetched', async () => {
+    mockEvent = eventWith([att('voice', 'audio')]);
+    memfs.downloads.push({ status: 200, error: new Error('connection dropped') });
+    const tree = render();
+    await act(async () => press(tree, 'audio-toggle:voice'));
+    await flush();
+
+    expect(mockPlayer.replace).not.toHaveBeenCalled();
+    expect(has(tree, 'audio-failed')).toBe(true);
+    expect(textOf(tree, 'audio-failed')).toBe('siteLog.error.download');
+  });
+});
+
+describe('the download', () => {
+  it('refreshes once on 401 and retries with the new token', async () => {
+    mockEvent = eventWith([att('img', 'image')]);
+    memfs.downloads.push({ status: 401 }, { status: 200, headers: { 'content-type': 'image/png' } });
+    mockApiGet.mockImplementation(async () => {
+      useAuthStore.setState({ accessToken: 'tok-b' });
+      return { data: {} };
+    });
+    const tree = render();
+
+    await act(async () => press(tree, 'view:img'));
+    await flush();
+
+    expect(mockApiGet).toHaveBeenCalledWith('/auth/me');
+    expect(memfs.downloadCalls.map((c) => c.headers?.Authorization)).toEqual([
+      'Bearer tok-a',
+      'Bearer tok-b',
+    ]);
+    expect(has(tree, 'viewer-image')).toBe(true);
+  });
+
+  it('caches nothing from a non-200 answer', async () => {
+    mockEvent = eventWith([att('img', 'image')]);
+    memfs.downloads.push({ status: 500 });
+    const tree = render();
+
+    await act(async () => press(tree, 'view:img'));
+    await flush();
+
+    expect(has(tree, 'viewer-image')).toBe(false);
+    expect([...memfs.files.keys()].filter((k) => k.includes('sitelog-ev-img'))).toEqual([]);
+    expect(showsText(tree, 'siteLog.error.download')).toBe(true);
+  });
+});
+
+describe('a download that outlives its session or its screen', () => {
+  it('opens nothing after the account signed out or changed', async () => {
+    mockEvent = eventWith([att('img', 'image'), att('voice', 'audio')]);
+    let release!: () => void;
+    const hold = new Promise<void>((r) => {
+      release = r;
+    });
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'image/jpeg' }, hold });
+    const tree = render();
+
+    await act(async () => press(tree, 'view:img'));
+    // Signed out while the bytes are still coming.
+    act(() => useAuthStore.setState({ sessionNonce: 2 }));
+    release();
+    await flush();
+
+    expect(has(tree, 'viewer-image')).toBe(false);
+
+    // Same for a recording: the player never receives the file.
+    let release2!: () => void;
+    const hold2 = new Promise<void>((r) => {
+      release2 = r;
+    });
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'audio/m4a' }, hold: hold2 });
+    await act(async () => press(tree, 'audio-toggle:voice'));
+    act(() => useAuthStore.setState({ sessionNonce: 3 }));
+    release2();
+    await flush();
+    expect(mockPlayer.replace).not.toHaveBeenCalled();
+  });
+
+  it('opens nothing once the user has left the screen', async () => {
+    mockEvent = eventWith([att('doc', 'document')]);
+    let release!: () => void;
+    const hold = new Promise<void>((r) => {
+      release = r;
+    });
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'application/pdf' }, hold });
+    const tree = render();
+
+    await act(async () => press(tree, 'view:doc'));
+    blurEverything();
+    release();
+    await flush();
+
+    expect(has(tree, 'viewer-pdf')).toBe(false);
+  });
+
+  it('closes the viewer and stops the player when the session changes', async () => {
+    mockEvent = eventWith([att('img', 'image')]);
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'image/jpeg' } });
+    const tree = render();
+    await act(async () => press(tree, 'view:img'));
+    await flush();
+    expect(has(tree, 'viewer-image')).toBe(true);
+
+    await act(async () => {
+      useAuthStore.setState({ sessionNonce: 2 });
+    });
+    expect(has(tree, 'viewer-image')).toBe(false);
+    expect(mockPlayer.pause).toHaveBeenCalled();
+  });
+});
+
+describe('share', () => {
+  it('hands the file to the share sheet with its type, as a separate action', async () => {
+    mockEvent = eventWith([att('doc', 'document')]);
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'application/pdf' } });
+    const tree = render();
+
+    await act(async () => press(tree, 'share:doc'));
+    await flush();
+
+    expect(mockShare).toHaveBeenCalledWith('file:///cache/sitelog-ev-doc.pdf', {
+      mimeType: 'application/pdf',
+    });
+    expect(has(tree, 'viewer-pdf')).toBe(false);
+  });
+});

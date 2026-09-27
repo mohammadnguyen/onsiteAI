@@ -65,6 +65,13 @@ class AttachmentOut(BaseModel):
     declared_size_bytes: int | None
     state: AttachmentState
     evidence_id: uuid.UUID | None
+    # True for the ONE row the server creates itself to hold the body
+    # text as evidence (inline_attachment_id). The client shows body text
+    # as body text and must not list that row as if it were a file the
+    # user attached - but it must not GUESS either: a .txt the user really
+    # attached is also declared_media_type "text" and stays visible.
+    # Computed from identity, never stored; no database column.
+    is_inline_text: bool = False
 
 
 class SiteLogEventOut(BaseModel):

@@ -690,12 +690,19 @@
       "draft_no_text": "（无文字）",
       "no_text": "（无文字）",
       "empty": "暂无现场记录。",
-      "attachment_count_other": "{{count}} 个附件",
       "new": "新建",
       "drafts_section": "未完成的记录",
       "draft_on_server": "已在服务器创建 — 状态：{{status}}",
-      "attachment_count_one": "{{count}} 个附件",
-      "load_failed": "无法连接服务器，已保存的记录暂不显示。本机上的内容仍在上方列出。"
+      "load_failed": "无法连接服务器，已保存的记录暂不显示。本机上的内容仍在上方列出。",
+      "count_image_one": "{{count}} 张照片",
+      "count_image_other": "{{count}} 张照片",
+      "count_document_one": "{{count}} 个文档",
+      "count_document_other": "{{count}} 个文档",
+      "count_audio_one": "{{count}} 条语音",
+      "count_audio_other": "{{count}} 条语音",
+      "count_text_one": "{{count}} 个文本文件",
+      "count_text_other": "{{count}} 个文本文件",
+      "no_job": "未关联工程"
     },
     "detail": {
       "title": "现场记录",
@@ -707,7 +714,17 @@
       "partial_note": "记录已创建，但部分附件未保存成功。",
       "read_only": "此记录为只读，无法在此修改。",
       "not_found": "无法打开该记录。",
-      "open_mobile_only": "附件需在手机 App 中打开。"
+      "open_mobile_only": "附件需在手机 App 中打开。",
+      "share": "分享",
+      "pause": "暂停",
+      "close": "关闭",
+      "audio_loading": "加载中…",
+      "audio_failed": "该录音无法播放。可用“分享”在其他 App 中打开。",
+      "image_failed": "该照片无法显示。可用“分享”在其他 App 中打开。",
+      "pdf_failed": "该 PDF 无法在此显示。可用“分享”在其他 App 中打开。",
+      "no_viewer": "此类文件无法在此显示。可用“分享”在其他 App 中打开。",
+      "share_unavailable": "此设备不支持分享。",
+      "share_failed": "该文件无法分享。"
     },
     "draft": {
       "title": "未发送的现场记录",

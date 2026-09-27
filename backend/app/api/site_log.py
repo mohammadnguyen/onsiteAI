@@ -66,6 +66,11 @@ def get_session_factory():
 
 def _out(view: svc.EventView) -> SiteLogEventOut:
     e = view.event
+    # The server owns the inline text row, so the server says which one it
+    # is - by identity, the same uuid5 it minted the row with. The client
+    # must not infer it from the media type: a .txt the user attached is
+    # "text" too and must stay listed.
+    inline_id = svc.inline_attachment_id(e.capture_client_id)
     return SiteLogEventOut(
         site_log_event_id=e.site_log_event_id,
         capture_client_id=e.capture_client_id,
@@ -75,7 +80,12 @@ def _out(view: svc.EventView) -> SiteLogEventOut:
         capture_status=e.capture_status,
         created_at=e.created_at,
         revision=RevisionOut.model_validate(view.revision),
-        attachments=[AttachmentOut.model_validate(a) for a in view.attachments],
+        attachments=[
+            AttachmentOut.model_validate(a).model_copy(
+                update={"is_inline_text": a.attachment_client_id == inline_id}
+            )
+            for a in view.attachments
+        ],
     )
 
 
