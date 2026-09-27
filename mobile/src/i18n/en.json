@@ -762,7 +762,7 @@
       "attachment_not_kept": "That file could not be kept on this phone, so it was not added. Free up some space and try again.",
       "attachment_too_large": "That file is {{size}} and the limit for one attachment is {{limit}}, so it was not added. Nothing was saved or sent. Attach a smaller file, or split the drawing.",
       "recording_too_large": "That recording is {{size}} and the limit for one attachment is {{limit}}, so it was not attached to this entry. It has been KEPT: find it under \"Kept recordings\" on the site log screen, where you can play it, export it, or discard it. Record a shorter note for this entry.",
-      "recording_too_large_not_kept": "That recording is {{size}} and the limit for one attachment is {{limit}}, so it was not attached. This phone could not keep a copy either - free up some space. Nothing was deleted: the recording is still where the recorder left it until the system reclaims it. Export or re-record it now.",
+      "recording_too_large_not_kept": "That recording is {{size}} and the limit for one attachment is {{limit}}, so it was not attached. IT HAS NOT BEEN SAVED RELIABLY - this phone could not keep a copy, and the temporary file the recorder left may be removed by the system at any time. Nothing was deleted. Free up space and record it again.",
       "attachments_unavailable": "Attachments need the mobile app - this platform has no storage for them."
     },
     "kept": {

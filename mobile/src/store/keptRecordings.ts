@@ -15,6 +15,15 @@ import {
  * whole capture undeclarable - but the bytes are kept, and the founder's
  * rule is that they stay until the user explicitly discards them.
  *
+ * THE PROMISE COVERS WHAT WAS ACTUALLY PERSISTED, and nothing more. If
+ * the copy into the account's area does not complete - no space, a write
+ * error - the software does not claim the recording is safe: the user is
+ * told it has NOT been saved reliably and that the recorder's temporary
+ * file may be reclaimed. The source is never deleted, but a phone that
+ * cannot write cannot be promised absolute preservation. Offering
+ * playback or export of that temporary file is a recognised internal-test
+ * limitation, deliberately not built in this round.
+ *
  * This is the index that makes them reachable. Without it the files would
  * sit in a directory nobody can open, which is emergency preservation and
  * not a recovery path.

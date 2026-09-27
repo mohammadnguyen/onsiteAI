@@ -372,6 +372,14 @@ export async function releaseAttachment(uri: string): Promise<void> {
   await deleteQuietly(uri);
 }
 
+/**
+ * The suffix a kept file wears while it is still being written.
+ *
+ * Nothing under this name is ever listed as a kept recording, so an
+ * interrupted copy cannot be mistaken for a finished one.
+ */
+export const PARTIAL_SUFFIX = '.part';
+
 /** Where a file that outlived its capture is kept: `site-log/<user>/oversized/`. */
 export function oversizedDir(userId: string): string | null {
   const root = userRoot(userId);
@@ -432,23 +440,34 @@ export async function keepOversizedRecording(args: {
   const ext = extensionOf(args.name);
   const relative = `site-log/${args.userId}/oversized/${args.attachmentId}${ext}`;
   const target = `${dir}${args.attachmentId}${ext}`;
+  // WRITTEN UNDER A NAME THAT MEANS "NOT FINISHED", and renamed only
+  // after the bytes have been checked against the source.
+  //
+  // Copying straight to the final name made existence the only evidence
+  // of success, and existence is not evidence: a process death mid-copy
+  // leaves a fragment under the real name, and the directory scan then
+  // adopts that fragment as a kept recording. A rename within one
+  // directory is atomic - either the finished name is there or it is
+  // not - so nothing incomplete can ever be listed.
+  const partial = `${target}${PARTIAL_SUFFIX}`;
 
-  if (sameFile(args.sourceUri, target)) {
+  if (sameFile(args.sourceUri, target) || sameFile(args.sourceUri, partial)) {
     throw new RetentionError('self_copy', 'source is already the kept file');
   }
 
   await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+  await deleteQuietly(partial); // a fragment from an earlier attempt
   try {
-    await FileSystem.copyAsync({ from: args.sourceUri, to: target });
+    await FileSystem.copyAsync({ from: args.sourceUri, to: partial });
   } catch (err) {
     // The destination may be half-written; the SOURCE is untouched.
-    await deleteQuietly(target);
+    await deleteQuietly(partial);
     throw new RetentionError('copy_failed', String(err));
   }
 
-  const size = await fileSize(target);
+  const size = await fileSize(partial);
   if (size === null || size <= 0) {
-    await deleteQuietly(target);
+    await deleteQuietly(partial);
     throw new RetentionError('size_mismatch', 'kept copy could not be measured');
   }
   // AGAINST THE SOURCE, not merely "more than zero". A short copy is not
@@ -457,11 +476,18 @@ export async function keepOversizedRecording(args: {
   // announced it as kept. Once the recorder's temporary file is
   // reclaimed, the missing audio is gone for good.
   if (args.expectedSize !== null && size !== args.expectedSize) {
-    await deleteQuietly(target);
+    await deleteQuietly(partial);
     throw new RetentionError(
       'size_mismatch',
       `kept ${size} bytes of ${args.expectedSize}`,
     );
+  }
+
+  try {
+    await FileSystem.moveAsync({ from: partial, to: target });
+  } catch (err) {
+    await deleteQuietly(partial);
+    throw new RetentionError('copy_failed', `could not finish: ${String(err)}`);
   }
   return { path: relative, uri: target, size };
 }
@@ -489,6 +515,12 @@ export async function listKeptRecordingFiles(
   }
   const out: { path: string; uri: string; size: number }[] = [];
   for (const name of names) {
+    // A copy still in progress, or one a process death abandoned, is
+    // NOT a kept recording. It is named so that this scan can tell,
+    // because a file's existence says nothing about whether writing it
+    // finished - a 1 KiB fragment of a 60 MiB recording exists just as
+    // convincingly as the whole thing.
+    if (name.endsWith(PARTIAL_SUFFIX)) continue;
     const uri = `${dir}${name}`;
     const size = await fileSize(uri);
     if (size === null || size <= 0) continue;

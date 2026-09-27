@@ -57,54 +57,76 @@ export default function MySiteLogRecords() {
   // the player that is about to play. Same rule as the detail screen.
   const player = useAudioPlayer(null);
 
+  /**
+   * Who is doing this, and may they touch this file - decided BEFORE the
+   * first await.
+   *
+   * The previous version read the account AFTER `fileExists`, so a switch
+   * landing during that check made the NEW account look like the
+   * initiator: the ownership test then passed against the wrong identity
+   * and the share sheet opened on the previous worker's recording.
+   * Reading identity first is not a detail of style; it is the whole
+   * guarantee. Ownership is checked against the path, so an entry from
+   * another account cannot be acted on even if it reaches this screen.
+   */
+  const claim = useCallback((path: string) => {
+    const startedAs = useAuthStore.getState().userId;
+    const startedUnder = useAuthStore.getState().sessionNonce;
+    const owned =
+      startedAs !== null && path.startsWith(`site-log/${startedAs}/oversized/`);
+    return {
+      owned,
+      stillOurs: () =>
+        useAuthStore.getState().userId === startedAs &&
+        useAuthStore.getState().sessionNonce === startedUnder,
+    };
+  }, []);
+
   const playKept = useCallback(
     async (id: string, path: string) => {
+      const { owned, stillOurs } = claim(path);
       setKeptError(null);
+      if (!owned) return;
       const uri = retainedUri(path);
       if (uri === null || !(await fileExists(uri))) {
-        setKeptError(t('siteLog.kept.missing'));
+        if (stillOurs()) setKeptError(t('siteLog.kept.missing'));
         return;
       }
+      if (!stillOurs()) return;
       try {
         player.replace(uri);
         player.play();
       } catch {
-        setKeptError(t('siteLog.kept.play_failed'));
+        if (stillOurs()) setKeptError(t('siteLog.kept.play_failed'));
       }
     },
-    [player, t],
+    [claim, player, t],
   );
 
   const exportKept = useCallback(
     async (path: string, name: string) => {
+      const { owned, stillOurs } = claim(path);
       setKeptError(null);
+      if (!owned) return;
       const uri = retainedUri(path);
       if (uri === null || !(await fileExists(uri))) {
-        setKeptError(t('siteLog.kept.missing'));
+        if (stillOurs()) setKeptError(t('siteLog.kept.missing'));
         return;
       }
-      // Whose export this is, fixed before the awaits. Both checks below
-      // are slow enough for an account switch to land in between, and a
-      // share sheet that opens afterwards would hand one worker's
-      // recording to whoever is signed in by then. Filtering the rows on
-      // screen does not protect an operation already in flight.
-      const startedAs = useAuthStore.getState().userId;
-      const startedUnder = useAuthStore.getState().sessionNonce;
-      const stillOurs = () =>
-        useAuthStore.getState().userId === startedAs &&
-        useAuthStore.getState().sessionNonce === startedUnder;
       try {
         if (!(await Sharing.isAvailableAsync())) {
-          setKeptError(t('siteLog.kept.export_unavailable'));
+          if (stillOurs()) setKeptError(t('siteLog.kept.export_unavailable'));
           return;
         }
+        // Re-checked immediately before the sheet opens: everything above
+        // this line is an await the switch could have landed inside.
         if (!stillOurs()) return;
         await Sharing.shareAsync(uri, { mimeType: 'audio/m4a', dialogTitle: name });
       } catch {
         if (stillOurs()) setKeptError(t('siteLog.kept.export_failed'));
       }
     },
-    [t],
+    [claim, t],
   );
 
   const discardKept = useCallback(

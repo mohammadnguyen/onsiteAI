@@ -105,6 +105,65 @@ describe('keepOversizedRecording', () => {
     expect([...memfs.files.keys()].filter((p) => p.includes('/oversized/'))).toEqual([]);
   });
 
+  it('REGRESSION: a fragment left by an interrupted copy is never listed', async () => {
+    // A process death mid-copy used to leave a partial file under the
+    // FINAL name, and the directory scan adopted it as a kept recording.
+    // A file existing says nothing about whether writing it finished:
+    // 1 KiB of a 60 MiB recording exists just as convincingly.
+    const { files, useKeptRecordings, memfs } = await clean();
+    memfs.put(
+      `file:///documents/site-log/user-a/oversized/att-dead.m4a${files.PARTIAL_SUFFIX}`,
+      1024,
+    );
+
+    expect(await files.listKeptRecordingFiles('user-a')).toEqual([]);
+
+    await useKeptRecordings.getState().reconcile('user-a');
+    expect(useKeptRecordings.getState().forUser('user-a')).toEqual([]);
+  });
+
+  it('writes under a partial name and only renames once verified', async () => {
+    const { files, memfs } = await clean();
+    memfs.put(SOURCE, 60 * 1024 * 1024);
+
+    const kept = await files.keepOversizedRecording({
+      userId: 'user-a',
+      attachmentId: 'att-1',
+      sourceUri: SOURCE,
+      name: 'voice-1.m4a',
+      expectedSize: 60 * 1024 * 1024,
+    });
+
+    // The finished name exists; no fragment is left behind.
+    expect(memfs.files.has(kept.uri)).toBe(true);
+    expect(
+      [...memfs.files.keys()].filter((p) => p.endsWith(files.PARTIAL_SUFFIX)),
+    ).toEqual([]);
+  });
+
+  it('leaves no fragment under the final name when the copy is short', async () => {
+    const { files, memfs } = await clean();
+    memfs.put(SOURCE, 60 * 1024 * 1024);
+    memfs.shortNextCopyTo = 1024;
+
+    await expect(
+      files.keepOversizedRecording({
+        userId: 'user-a',
+        attachmentId: 'att-1',
+        sourceUri: SOURCE,
+        name: 'voice-1.m4a',
+        expectedSize: 60 * 1024 * 1024,
+      }),
+    ).rejects.toThrow();
+
+    // Neither the final name nor a fragment: nothing for the scan to
+    // find, and the source untouched.
+    expect(
+      [...memfs.files.keys()].filter((p) => p.includes('/oversized/')),
+    ).toEqual([]);
+    expect(memfs.files.has(SOURCE)).toBe(true);
+  });
+
   it('is not reachable outside the app area, and refuses a self-copy', async () => {
     const { files, memfs } = await clean();
     const target = 'file:///documents/site-log/user-a/oversized/att-1.m4a';
