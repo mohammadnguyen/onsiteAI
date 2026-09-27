@@ -91,6 +91,22 @@ async def declare_capture(
         seen.add(cid)
         if a.get("declared_size_bytes") is not None and a["declared_size_bytes"] < 0:
             raise SiteLogValidationError("declared_size_bytes must be >= 0")
+        # Refuse a declaration that already says it is too big.
+        #
+        # A 26.9 MiB drawing was accepted here, copied into app storage and
+        # left waiting; the refusal came only at upload, days later, as
+        # `size_cap` on an attachment the user had no reason to doubt. If
+        # the size is known at declare time, the answer is knowable at
+        # declare time, and nothing should be recorded as pending upload
+        # that can never be uploaded.
+        #
+        # This does NOT replace the cap on the upload path: a declared
+        # size is a client's claim, and `_capped` still counts the bytes
+        # actually received. This only closes the case where the client
+        # told the truth and was accepted anyway.
+        declared = a.get("declared_size_bytes")
+        if declared is not None and declared > max_bytes:
+            raise SiteLogTooLarge()
 
     fingerprint = declaration_fingerprint(
         body_text=body_text,

@@ -169,6 +169,91 @@ function press(tree: ReactTestRenderer, label: string): void {
   });
 }
 
+function pressId(tree: ReactTestRenderer, testID: string): void {
+  const el = tree.root.findByProps({ testID });
+  act(() => {
+    el.props.onPress();
+  });
+}
+
+describe('an attachment bigger than the limit', () => {
+  // The drawing that started this: picked, copied into app storage,
+  // declared, and refused only at upload days later with `size_cap`. The
+  // refusal has to happen here, before any of that.
+  const OVERSIZED = 60 * 1024 * 1024; // over even the raised 50 MiB cap
+
+  it('is refused before it is copied or recorded', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const DocumentPicker = require('expo-document-picker') as {
+      getDocumentAsync: jest.Mock;
+    };
+    DocumentPicker.getDocumentAsync.mockResolvedValue({
+      canceled: false,
+      assets: [
+        {
+          uri: 'file:///cache/huge.dwg',
+          name: 'huge.dwg',
+          mimeType: 'application/dwg',
+          size: OVERSIZED,
+        },
+      ],
+    });
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { memfs } = require('./support/memfs') as typeof import('./support/memfs');
+    memfs.reset();
+    memfs.put('file:///cache/huge.dwg', OVERSIZED);
+
+    let tree!: ReactTestRenderer;
+    await act(async () => {
+      tree = create(React.createElement(NewSiteLogEntry));
+    });
+
+    pressId(tree, 'attach-document');
+    await flush();
+
+    // Nothing copied into the app's own area...
+    const kept = [...memfs.files.keys()].filter((p) => p.includes('/site-log/'));
+    expect(kept).toEqual([]);
+    // ...and nothing recorded on the screen.
+    expect(tree.root.findAllByProps({ testID: 'attachment-row' })).toHaveLength(0);
+  });
+
+  it('lets a file inside the limit through', async () => {
+    // The same path, proving the refusal is not simply "never add
+    // anything".
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const DocumentPicker = require('expo-document-picker') as {
+      getDocumentAsync: jest.Mock;
+    };
+    DocumentPicker.getDocumentAsync.mockResolvedValue({
+      canceled: false,
+      assets: [
+        {
+          uri: 'file:///cache/small.dwg',
+          name: 'small.dwg',
+          mimeType: 'application/dwg',
+          size: 3_563_298, // the 3.4 MiB drawing that really did upload
+        },
+      ],
+    });
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { memfs } = require('./support/memfs') as typeof import('./support/memfs');
+    memfs.reset();
+    memfs.put('file:///cache/small.dwg', 3_563_298);
+
+    let tree!: ReactTestRenderer;
+    await act(async () => {
+      tree = create(React.createElement(NewSiteLogEntry));
+    });
+
+    pressId(tree, 'attach-document');
+    await flush();
+
+    const kept = [...memfs.files.keys()].filter((p) => p.includes('/site-log/'));
+    expect(kept).toHaveLength(1);
+  });
+});
+
 describe('the capture screen, when the user leaves mid-submission', () => {
   it('does not navigate away from whatever they opened next', async () => {
     let tree!: ReactTestRenderer;

@@ -148,8 +148,8 @@ describe('how long an attachment upload may take', () => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const siteLog = require('../siteLog') as typeof import('../siteLog');
 
-    expect(siteLog.UPLOAD_TIMEOUT_MS).toBeGreaterThanOrEqual(120_000);
-    expect(siteLog.UPLOAD_TIMEOUT_MS).toBeLessThanOrEqual(600_000); // bounded, never infinite
+    expect(siteLog.uploadTimeoutMs()).toBeGreaterThanOrEqual(120_000);
+    expect(siteLog.uploadTimeoutMs()).toBeLessThanOrEqual(600_000); // bounded, never infinite
     expect(api.defaults.timeout).toBe(15000); // the shared default is untouched
 
     await siteLog.uploadAttachment('event-1', 'att-1', {
@@ -160,6 +160,6 @@ describe('how long an attachment upload may take', () => {
 
     const upload = sent.find((r) => r.url.includes('/attachments/'));
     expect(upload).toBeDefined();
-    expect(upload?.timeout).toBe(siteLog.UPLOAD_TIMEOUT_MS);
+    expect(upload?.timeout).toBe(siteLog.uploadTimeoutMs());
   });
 });

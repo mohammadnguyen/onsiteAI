@@ -215,6 +215,72 @@ async def test_declare_shape4_and_blank_text_rejected(
     assert await _count(db_session, SiteLogEvent) == 0
 
 
+async def test_declare_refuses_an_attachment_already_over_the_cap(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """A declaration that already says it is too big is refused here.
+
+    The case this comes from: a 26.9 MiB drawing was declared against a
+    25 MiB cap, accepted, and left `awaiting_upload`. The refusal arrived
+    only at the upload attempt - days later, on a retry - as `size_cap`,
+    by which point the phone had copied the file and shown the capture as
+    saveable. Nothing should be recorded as pending upload that can never
+    be uploaded.
+    """
+    with pytest.raises(svc.SiteLogTooLarge):
+        await _declare(
+            db_session, storage, site_log_session_factory, seeded_admin,
+            attachments=[_att(size=MAX_BYTES + 1)],
+        )
+    # Refused before anything was written: no event, no manifest row.
+    assert await _count(db_session, SiteLogEvent) == 0
+
+    # Exactly the cap is allowed - the comparison is exclusive.
+    res = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        attachments=[_att(size=MAX_BYTES)],
+    )
+    assert res.view.event.capture_status is CaptureStatus.pending_upload
+
+    # And an unknown size still declares: a recording has none until it
+    # stops, and the upload path counts the bytes it actually receives.
+    res2 = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        attachments=[_att(size=None)],
+    )
+    assert res2.view.event.capture_status is CaptureStatus.pending_upload
+
+
+async def test_declared_size_is_a_claim_the_upload_still_checks(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """Declaring a small size does not buy a large upload.
+
+    The declare-time check is a courtesy to the client, not the
+    enforcement. A client that under-reports must still be refused on the
+    bytes actually received.
+    """
+    att = _att(media="audio", size=1)  # claims one byte
+    res = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        attachments=[att],
+    )
+    with pytest.raises(svc.SiteLogTooLarge):
+        await svc_upload.upload_attachment(
+            db_session, storage, site_log_session_factory,
+            user=seeded_admin,
+            event_id=res.view.event.site_log_event_id,
+            attachment_client_id=att["attachment_client_id"],
+            mime_type="audio/mp4",
+            chunks=_chunks(b"x" * (MAX_BYTES + 1)),
+            max_bytes=MAX_BYTES,
+        )
+    row = await _att_row(
+        db_session, res.view.event.site_log_event_id, att["attachment_client_id"]
+    )
+    assert row.state is AttachmentState.failed
+
+
 def test_inline_namespace_pinned_and_deterministic():
     """Changing this constant is a compatibility change, not a refactor."""
     assert uuid.UUID("3f2c1a4e-7b6d-4e0f-9a8c-5d1e2f3a4b6c") == svc.INLINE_TEXT_NAMESPACE

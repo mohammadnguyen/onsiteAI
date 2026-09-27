@@ -35,6 +35,7 @@ import {
   retainAttachment,
 } from '../../src/siteLog/files';
 import { newCaptureId as newId } from '../../src/siteLog/ids';
+import { exceedsLimit, formatBytes, uploadLimits } from '../../src/siteLog/limits';
 import { deriveMediaType } from '../../src/siteLog/media';
 import { currentUri, runSubmit } from '../../src/siteLog/submit';
 import { useAuthStore } from '../../src/store/auth';
@@ -107,6 +108,25 @@ export default function NewSiteLogEntry() {
   const add = useCallback(
     async (a: DraftAttachment, sourceUri: string): Promise<void> => {
       if (!userId) return;
+      // BEFORE the copy, before the draft records it, and long before it
+      // is declared. A 26.9 MiB drawing previously got all the way to an
+      // upload attempt days later and was refused there with `size_cap`,
+      // by which point the only signal was "Document Failed". The limit is
+      // known here, so it is said here, with both numbers.
+      //
+      // Only when the picker reported a size: a recording has none until
+      // it stops, and guessing would refuse a file that is actually fine.
+      // The server counts the bytes it receives either way.
+      const { maxUploadBytes } = uploadLimits();
+      if (exceedsLimit(a.size, maxUploadBytes)) {
+        setBanner(
+          t('siteLog.error.attachment_too_large', {
+            size: formatBytes(a.size as number),
+            limit: formatBytes(maxUploadBytes),
+          }),
+        );
+        return;
+      }
       setRetaining((n) => n + 1);
       try {
         const kept = await retainAttachment({
@@ -462,10 +482,20 @@ export default function NewSiteLogEntry() {
 
         {attachmentsSupported ? (
           <View style={s.actions}>
-            <Pressable style={s.action} onPress={pickPhoto} disabled={submitted || busy}>
+            <Pressable
+              style={s.action}
+              onPress={pickPhoto}
+              disabled={submitted || busy}
+              testID="attach-photo"
+            >
               <Text style={s.actionText}>{t('siteLog.new.add_photo')}</Text>
             </Pressable>
-            <Pressable style={s.action} onPress={pickDocument} disabled={submitted || busy}>
+            <Pressable
+              style={s.action}
+              onPress={pickDocument}
+              disabled={submitted || busy}
+              testID="attach-document"
+            >
               <Text style={s.actionText}>{t('siteLog.new.add_document')}</Text>
             </Pressable>
             <Pressable

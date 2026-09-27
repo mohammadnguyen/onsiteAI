@@ -35,6 +35,29 @@ export type Variant = (typeof VARIANTS)[number];
 /** The build profile whose identity is Forey Test, and only that one. */
 export const TEST_PROFILE = 'test';
 
+/**
+ * Upload limits, per variant, in BYTES.
+ *
+ * They travel with the variant because the two apps talk to different
+ * backends, and a phone that allows what its server refuses is the defect
+ * this pair exists to close: a 26.9 MiB drawing was picked, copied,
+ * declared and only refused at upload, days later, with `size_cap`.
+ *
+ * `test` matches the Forey Test backend's configured
+ * EVIDENCE_MAX_UPLOAD_BYTES exactly - one number, both sides, no MB/MiB
+ * round trip. `default` is the real Forey's unchanged 25 MiB, so the app
+ * in daily use is untouched by this.
+ *
+ * The timeout moves with the cap because they bound the same upload. Note
+ * what 300 s does NOT promise: 50 MiB needs roughly 1.4 Mbit/s sustained
+ * to finish inside it, and about seven minutes at 1 Mbit/s. This is a
+ * workable starting pair, not a weak-network solution.
+ */
+export const UPLOAD_LIMITS = {
+  default: { maxUploadBytes: 26_214_400, uploadTimeoutMs: 180_000 },
+  test: { maxUploadBytes: 52_428_800, uploadTimeoutMs: 300_000 },
+} as const;
+
 export type BuildEnvironment = {
   /** EAS sets EAS_BUILD=true on its builders; nothing else does. */
   onEasBuild: boolean;
@@ -192,6 +215,7 @@ if (VARIANT === 'test') {
 config.extra = {
   ...(config.extra ?? {}),
   apiUrl: process.env.EXPO_PUBLIC_API_URL ?? 'http://127.0.0.1:8000',
+  uploadLimits: UPLOAD_LIMITS[VARIANT],
   buildCommit: easCommit ? easCommit.slice(0, 7) : 'dev',
   // Surfaced on Settings -> Diagnostics, so which app and which backend is
   // in front of you is answerable without guessing.
