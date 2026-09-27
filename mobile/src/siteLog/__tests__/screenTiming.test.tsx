@@ -311,26 +311,44 @@ describe('an attachment bigger than the limit', () => {
     expect(kept[0]).toContain('/oversized/');
     expect(kept[0]).not.toMatch(/\/site-log\/[^/]+\/[0-9a-f-]{36}\//);
 
-    // Codex's point: the earlier version stopped here and missed the
-    // loss. Leaving the screen releases the capture directory.
+    // Codex's point: the earlier version stopped before cleanup and
+    // missed the loss entirely. Both cleanup paths are now exercised
+    // UNCONDITIONALLY - an earlier attempt guarded them on a captureId
+    // that was always undefined, so neither actually ran.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const files = require('../files') as typeof import('../files');
-    const captureId = useSiteLogDrafts.getState().drafts[0]?.capture_client_id;
+    const preservedPath = kept[0];
+
+    // 1. Leaving the screen: releaseCapture on a real capture directory
+    //    that also holds a file, so the call is proved to do something.
+    const capture = 'cap-cleanup-1';
+    memfs.put(`file:///documents/site-log/user-a/${capture}/att.jpg`, 10);
     await act(async () => {
       tree.unmount();
-      if (captureId) await files.releaseCapture('user-a', captureId);
+      await files.releaseCapture('user-a', capture);
     });
-    expect([...memfs.files.keys()].filter((p) => p.includes('/site-log/'))).toHaveLength(1);
+    expect(memfs.files.has(`file:///documents/site-log/user-a/${capture}/att.jpg`)).toBe(
+      false,
+    );
+    expect(memfs.files.has(preservedPath)).toBe(true);
 
-    // And a successful save of the rest of the capture removes the draft
-    // and its directory too.
-    if (captureId) {
-      await act(async () => {
-        await useSiteLogDrafts.getState().removeAndRelease(captureId);
+    // 2. A successful save: removeAndRelease, with a draft that really
+    //    exists so the call cannot be a no-op.
+    const saved = 'cap-cleanup-2';
+    memfs.put(`file:///documents/site-log/user-a/${saved}/att.jpg`, 10);
+    await act(async () => {
+      await useSiteLogDrafts.getState().upsertDurable({
+        ...draftFor(saved),
+        user_id: 'user-a',
       });
-    }
+      await useSiteLogDrafts.getState().removeAndRelease(saved);
+    });
+    expect(useSiteLogDrafts.getState().get(saved)).toBeUndefined();
+    expect(memfs.files.has(`file:///documents/site-log/user-a/${saved}/att.jpg`)).toBe(false);
+
+    // The preserved recording outlived both.
     const survivors = [...memfs.files.keys()].filter((p) => p.includes('/site-log/'));
-    expect(survivors).toHaveLength(1);
+    expect(survivors).toEqual([preservedPath]);
     expect(survivors[0]).toContain('/oversized/');
 
     (globalThis as { __recorderUri?: string | null }).__recorderUri = null;
