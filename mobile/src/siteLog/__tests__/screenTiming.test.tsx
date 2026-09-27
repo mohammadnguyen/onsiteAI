@@ -218,6 +218,46 @@ describe('an attachment bigger than the limit', () => {
     expect(tree.root.findAllByProps({ testID: 'attachment-row' })).toHaveLength(0);
   });
 
+  it('is refused after the copy too, when the picker reported no size', async () => {
+    // The gap the founder found by reading the code: the pick-time check
+    // can only run on a size the picker gave, and a recording has none
+    // until it stops - the very attachment most likely to grow past the
+    // limit unnoticed. The copy measures it, so the answer exists by
+    // then, and the copy must not survive the refusal.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const DocumentPicker = require('expo-document-picker') as {
+      getDocumentAsync: jest.Mock;
+    };
+    DocumentPicker.getDocumentAsync.mockResolvedValue({
+      canceled: false,
+      assets: [
+        {
+          uri: 'file:///cache/unknown.m4a',
+          name: 'unknown.m4a',
+          mimeType: 'audio/mp4',
+          size: undefined, // the picker does not know
+        },
+      ],
+    });
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { memfs } = require('./support/memfs') as typeof import('./support/memfs');
+    memfs.reset();
+    memfs.put('file:///cache/unknown.m4a', OVERSIZED);
+
+    let tree!: ReactTestRenderer;
+    await act(async () => {
+      tree = create(React.createElement(NewSiteLogEntry));
+    });
+
+    pressId(tree, 'attach-document');
+    await flush();
+
+    // Copied, measured, refused - and the copy cleaned up behind it.
+    const kept = [...memfs.files.keys()].filter((p) => p.includes('/site-log/'));
+    expect(kept).toEqual([]);
+    expect(tree.root.findAllByProps({ testID: 'attachment-row' })).toHaveLength(0);
+  });
+
   it('lets a file inside the limit through', async () => {
     // The same path, proving the refusal is not simply "never add
     // anything".

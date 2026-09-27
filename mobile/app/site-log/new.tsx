@@ -137,13 +137,36 @@ export default function NewSiteLogEntry() {
           name: a.name,
           expectedSize: a.size,
         });
+        // SECOND CHECK, on the size that is now known.
+        //
+        // The check above can only run when the picker reported a size,
+        // and a recording has none until it stops - which is exactly the
+        // attachment most likely to grow past the limit unnoticed. The
+        // copy measures the file, so the answer exists here even when it
+        // did not exist there. Without this, "an oversized attachment is
+        // refused before it is declared" is simply untrue for recordings
+        // and for any picker that returns no size.
+        //
+        // The copy is released again, so a refusal leaves nothing behind
+        // in the app's own area.
+        const finalSize = a.size ?? kept.size;
+        if (exceedsLimit(finalSize, maxUploadBytes)) {
+          await releaseAttachment(kept.uri);
+          setBanner(
+            t('siteLog.error.attachment_too_large', {
+              size: formatBytes(finalSize as number),
+              limit: formatBytes(maxUploadBytes),
+            }),
+          );
+          return;
+        }
         setAttachments((prev) => [
           ...prev,
           {
             ...a,
             uri: kept.uri,
             path: kept.path,
-            size: a.size ?? kept.size,
+            size: finalSize,
             retained: true,
           },
         ]);
