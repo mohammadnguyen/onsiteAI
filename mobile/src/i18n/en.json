@@ -761,6 +761,7 @@
       "draft_capacity": "This phone is already holding the most unfinished site log entries it can. Finish or discard one before starting another.",
       "attachment_not_kept": "That file could not be kept on this phone, so it was not added. Free up some space and try again.",
       "attachment_too_large": "That file is {{size}} and the limit for one attachment is {{limit}}, so it was not added. Nothing was saved or sent. Attach a smaller file, or split the drawing.",
+      "recording_too_large": "That recording is {{size}} and the limit for one attachment is {{limit}}, so it was not attached. The recording has NOT been deleted - it is still on this phone. Record a shorter note for this entry.",
       "attachments_unavailable": "Attachments need the mobile app - this platform has no storage for them."
     }
   }

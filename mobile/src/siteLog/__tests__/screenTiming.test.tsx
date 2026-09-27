@@ -72,7 +72,16 @@ jest.mock('expo-image-picker', () => ({
 jest.mock('expo-document-picker', () => ({ getDocumentAsync: jest.fn() }));
 jest.mock('expo-audio', () => ({
   RecordingPresets: { HIGH_QUALITY: {} },
-  useAudioRecorder: () => ({ prepareToRecordAsync: jest.fn(), record: jest.fn(), stop: jest.fn(), uri: null }),
+  // `uri` is read through a holder so a test can make the recorder hand
+  // back a real temp file; null keeps the previous behaviour by default.
+  useAudioRecorder: () => ({
+    prepareToRecordAsync: jest.fn(),
+    record: jest.fn(),
+    stop: jest.fn(),
+    get uri() {
+      return (globalThis as { __recorderUri?: string | null }).__recorderUri ?? null;
+    },
+  }),
   requestRecordingPermissionsAsync: jest.fn(),
   setAudioModeAsync: jest.fn(),
 }));
@@ -256,6 +265,48 @@ describe('an attachment bigger than the limit', () => {
     const kept = [...memfs.files.keys()].filter((p) => p.includes('/site-log/'));
     expect(kept).toEqual([]);
     expect(tree.root.findAllByProps({ testID: 'attachment-row' })).toHaveLength(0);
+  });
+
+  it('REGRESSION: an oversized RECORDING keeps its bytes', async () => {
+    // A recording cannot be made again. The refusal introduced with the
+    // size limit deleted the kept copy, which for a recording is the only
+    // durable one - the recorder's own file is temporary and the OS may
+    // reclaim it. Refusing must never cost the evidence.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const audio = require('expo-audio') as {
+      requestRecordingPermissionsAsync: jest.Mock;
+      setAudioModeAsync: jest.Mock;
+    };
+    audio.requestRecordingPermissionsAsync.mockResolvedValue({ granted: true });
+    audio.setAudioModeAsync.mockResolvedValue(undefined);
+
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { memfs } = require('./support/memfs') as typeof import('./support/memfs');
+    memfs.reset();
+    memfs.put('file:///cache/rec.m4a', OVERSIZED);
+    (globalThis as { __recorderUri?: string | null }).__recorderUri =
+      'file:///cache/rec.m4a';
+
+    let tree!: ReactTestRenderer;
+    await act(async () => {
+      tree = create(React.createElement(NewSiteLogEntry));
+    });
+
+    // Start, then stop - the mocked recorder hands back the temp file.
+    pressId(tree, 'record-voice');
+    await flush();
+    pressId(tree, 'record-voice');
+    await flush();
+
+    // Not attached, because an over-cap attachment would make the whole
+    // capture undeclarable...
+    expect(tree.root.findAllByProps({ testID: 'attachment-row' })).toHaveLength(0);
+    // ...but the durable copy is STILL THERE. This is the assertion that
+    // fails if the release is ever made unconditional again.
+    const kept = [...memfs.files.keys()].filter((p) => p.includes('/site-log/'));
+    expect(kept).toHaveLength(1);
+
+    (globalThis as { __recorderUri?: string | null }).__recorderUri = null;
   });
 
   it('lets a file inside the limit through', async () => {

@@ -251,6 +251,38 @@ async def test_declare_refuses_an_attachment_already_over_the_cap(
     assert res2.view.event.capture_status is CaptureStatus.pending_upload
 
 
+async def test_replaying_an_already_accepted_oversized_declaration_still_works(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """The cap applies to NEW declarations, never to a replay.
+
+    A replay is how a client that lost the answer - or whose inline text
+    failed to store - gets back to its own record, and it reads a 4xx
+    there as unrecoverable. Two real records already exist declaring
+    28,163,249 bytes against a cap that was 26,214,400 at the time. If
+    this check refused replays, raising the cap would be the only way to
+    ever reach them again, and lowering it would strand them for good.
+    """
+    cid = uuid.uuid4()
+    att = _att(size=MAX_BYTES)  # accepted under today's cap
+
+    first = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        capture_client_id=cid, attachments=[att],
+    )
+
+    # The cap is now LOWER than what this capture declared - a rollback,
+    # or simply a stricter environment than the one it was created in.
+    again = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        capture_client_id=cid, attachments=[att], max_bytes=MAX_BYTES // 2,
+    )
+
+    # Same record, not a 413 and not a second event.
+    assert again.view.event.site_log_event_id == first.view.event.site_log_event_id
+    assert await _count(db_session, SiteLogEvent) == 1
+
+
 async def test_declared_size_is_a_claim_the_upload_still_checks(
     db_session, seeded_admin, storage, site_log_session_factory
 ):

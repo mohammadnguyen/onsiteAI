@@ -106,7 +106,21 @@ export default function NewSiteLogEntry() {
    * nothing is added, rather than a draft being quietly left incomplete.
    */
   const add = useCallback(
-    async (a: DraftAttachment, sourceUri: string): Promise<void> => {
+    async (
+      a: DraftAttachment,
+      sourceUri: string,
+      /**
+       * Whether the user could simply choose this file again.
+       *
+       * A photo or a document sits in the library or in Files, so a
+       * refusal can clean up our copy and cost nothing. A RECORDING does
+       * not: the recorder writes a temporary file the OS may reclaim, and
+       * our copy is the only durable one. Deleting that on a refusal
+       * destroys evidence that cannot be made again, which is a worse
+       * outcome than the oversized upload it was avoiding.
+       */
+      origin: 'pickable' | 'recording' = 'pickable',
+    ): Promise<void> => {
       if (!userId) return;
       // BEFORE the copy, before the draft records it, and long before it
       // is declared. A 26.9 MiB drawing previously got all the way to an
@@ -151,12 +165,23 @@ export default function NewSiteLogEntry() {
         // in the app's own area.
         const finalSize = a.size ?? kept.size;
         if (exceedsLimit(finalSize, maxUploadBytes)) {
-          await releaseAttachment(kept.uri);
+          // The copy is removed only when the original still exists
+          // somewhere the user can reach. For a recording it does not -
+          // see `origin` above - so the bytes stay where they are and the
+          // message says so. It is not attached either way: an attachment
+          // over the cap would make the whole capture undeclarable, text
+          // and other files included.
+          if (origin === 'pickable') await releaseAttachment(kept.uri);
           setBanner(
-            t('siteLog.error.attachment_too_large', {
-              size: formatBytes(finalSize as number),
-              limit: formatBytes(maxUploadBytes),
-            }),
+            t(
+              origin === 'recording'
+                ? 'siteLog.error.recording_too_large'
+                : 'siteLog.error.attachment_too_large',
+              {
+                size: formatBytes(finalSize as number),
+                limit: formatBytes(maxUploadBytes),
+              },
+            ),
           );
           return;
         }
@@ -282,6 +307,7 @@ export default function NewSiteLogEntry() {
             status: 'awaiting_upload',
           },
           uri,
+          'recording',
         );
       }
       setRecording(false);
@@ -528,6 +554,7 @@ export default function NewSiteLogEntry() {
               // `submitted` still false, and a recording started in that
               // window could never reach the declaration being pinned.
               disabled={submitted || audioBusy || busy}
+              testID="record-voice"
             >
               <Text style={s.actionText}>
                 {recording ? t('siteLog.new.stop_recording') : t('siteLog.new.record_voice')}

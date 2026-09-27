@@ -91,22 +91,6 @@ async def declare_capture(
         seen.add(cid)
         if a.get("declared_size_bytes") is not None and a["declared_size_bytes"] < 0:
             raise SiteLogValidationError("declared_size_bytes must be >= 0")
-        # Refuse a declaration that already says it is too big.
-        #
-        # A 26.9 MiB drawing was accepted here, copied into app storage and
-        # left waiting; the refusal came only at upload, days later, as
-        # `size_cap` on an attachment the user had no reason to doubt. If
-        # the size is known at declare time, the answer is knowable at
-        # declare time, and nothing should be recorded as pending upload
-        # that can never be uploaded.
-        #
-        # This does NOT replace the cap on the upload path: a declared
-        # size is a client's claim, and `_capped` still counts the bytes
-        # actually received. This only closes the case where the client
-        # told the truth and was accepted anyway.
-        declared = a.get("declared_size_bytes")
-        if declared is not None and declared > max_bytes:
-            raise SiteLogTooLarge()
 
     fingerprint = declaration_fingerprint(
         body_text=body_text,
@@ -118,6 +102,45 @@ async def declare_capture(
 
     if job_id is not None:
         await _target_job(db, job_id, user)
+
+    # Refuse a NEW declaration that already says it is too big.
+    #
+    # A 26.9 MiB drawing was accepted here, copied into app storage and
+    # left waiting; the refusal came only at upload, days later, as
+    # `size_cap` on an attachment the user had no reason to doubt. If the
+    # size is known at declare time, the answer is knowable at declare
+    # time, and nothing should be recorded as pending upload that can
+    # never be uploaded.
+    #
+    # ONLY FOR A DECLARATION THAT DOES NOT EXIST YET. Applying it to every
+    # call would close the recovery path for captures already accepted
+    # under a larger cap - or before this check existed. A replay is how a
+    # client that lost the answer, or whose inline text failed to store,
+    # gets back to its own record; the client reads a 4xx there as
+    # unrecoverable, so refusing a replay would strand exactly the records
+    # this change exists to protect. The existing-event branch below runs
+    # untouched.
+    #
+    # Still before any insert: an over-cap declaration writes nothing.
+    #
+    # This does NOT replace the cap on the upload path: a declared size is
+    # a client's claim, and `_capped` still counts the bytes actually
+    # received. This only closes the case where the client told the truth
+    # and was accepted anyway.
+    existing = (
+        await db.execute(
+            select(SiteLogEvent.site_log_event_id).where(
+                SiteLogEvent.tenant_id == TENANT_ID,
+                SiteLogEvent.author_user_id == user.user_id,
+                SiteLogEvent.capture_client_id == capture_client_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        for a in attachments:
+            declared = a.get("declared_size_bytes")
+            if declared is not None and declared > max_bytes:
+                raise SiteLogTooLarge()
 
     event = SiteLogEvent(
         site_log_event_id=uuid.uuid4(),
