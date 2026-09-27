@@ -22,6 +22,7 @@ import { WebView } from 'react-native-webview';
 import { api } from '../../src/api/client';
 import { BackLink } from '../../src/siteLog/BackLink';
 import { getEvent, type AttachmentOut } from '../../src/api/siteLog';
+import { isSameLocalFile } from '../../src/siteLog/localDocument';
 import { captureStatusBadgeKey } from '../../src/siteLog/status';
 import { useScreenActive } from '../../src/siteLog/useScreenActive';
 import { useAuthStore } from '../../src/store/auth';
@@ -67,33 +68,13 @@ function headerValue(
   return key ? headers[key] : undefined;
 }
 
-/** The file name at the end of a URI, decoded; query and fragment dropped. */
-function lastSegment(uri: string): string {
-  const path = uri.split(/[?#]/)[0];
-  const seg = path.slice(path.lastIndexOf('/') + 1);
-  try {
-    return decodeURIComponent(seg);
-  } catch {
-    return seg;
-  }
-}
-
-/**
- * May the web view load this? Only the document that was opened: the file
- * scheme, and the same file name. Compared by name rather than whole URI
- * because iOS may report the same file under `/private/var` or with
- * different percent-encoding; a link inside the PDF to anything else -
- * https, another local file - is refused here, and never reaches the OS.
- */
-function isSelectedDocument(requested: string, selected: string): boolean {
-  if (!requested.startsWith('file://')) return false;
-  return lastSegment(requested) === lastSegment(selected);
-}
-
 /**
  * How long a recording may sit "Loading…" before it is called failed.
- * iOS reports a failed decode as a status; Android reports nothing, so
- * the clock is the only signal there.
+ *
+ * The clock is the signal to rely on. expo-audio's iOS player emits a
+ * status update when an item becomes ready, not when it fails; a `failed`
+ * playbackState is honoured IF it arrives on some other update, but it
+ * may never arrive. Android reports no failure state at all.
  */
 const AUDIO_LOAD_TIMEOUT_MS = 20_000;
 
@@ -142,7 +123,18 @@ async function refreshSession(): Promise<boolean> {
 export default function SiteLogRecordDetail() {
   const { t } = useTranslation();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const [busyId, setBusyId] = useState<string | null>(null);
+  // Per row, not one for the screen: tapping a second row must not make
+  // the first row look idle while its download is still running.
+  const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set());
+  const setBusy = useCallback((attId: string, on: boolean) => {
+    setBusyIds((prev) => {
+      if (prev.has(attId) === on) return prev;
+      const next = new Set(prev);
+      if (on) next.add(attId);
+      else next.delete(attId);
+      return next;
+    });
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [viewer, setViewer] = useState<Viewer | null>(null);
   const [viewerFailed, setViewerFailed] = useState(false);
@@ -172,6 +164,13 @@ export default function SiteLogRecordDetail() {
   // cached under a previous sign-in is never reused, and a failed download
   // leaves nothing behind to be served later.
   const cached = useRef(new Map<string, CachedFile>());
+  // Downloads in progress, so a second tap on the same attachment joins the
+  // first download instead of starting another one onto the same files.
+  // Joined only within the session that started it.
+  const inflight = useRef(new Map<string, { nonce: number; promise: Promise<CachedFile | null> }>());
+  // Scratch names are unique per attempt: two attempts never share a
+  // `.part`, whatever else goes wrong.
+  const attempts = useRef(0);
   // Opening an attachment downloads it with expo-file-system, which has no
   // web implementation. Offering a button that cannot work is worse than
   // saying where it does work.
@@ -199,8 +198,10 @@ export default function SiteLogRecordDetail() {
     sessionOpenedUnder.current = sessionNonce;
     setViewer(null);
     setAudioAttId(null);
-    // Files fetched under the old account are not this account's to see.
+    // Files fetched under the old account are not this account's to see,
+    // and a download the old account started is not one to join.
     cached.current.clear();
+    inflight.current.clear();
     try {
       player.pause();
     } catch {
@@ -222,21 +223,23 @@ export default function SiteLogRecordDetail() {
   );
 
   /**
-   * Evidence bytes come from an authenticated stream, so they are downloaded
-   * to a cache file first and then handed to the platform. Nothing is written
-   * back to the record.
+   * One download of one attachment's bytes, to a cache file. Nothing is
+   * written back to the record.
+   *
+   * `openedUnder` is the session this download was started for. A download
+   * that finishes after that session has ended is NOT cached: the map was
+   * cleared for the new account, and putting the old account's file back
+   * into it would hand that file to the next tap.
    */
-  const fetchToCache = useCallback(async (att: AttachmentOut): Promise<CachedFile | null> => {
+  const download = useCallback(async (att: AttachmentOut, openedUnder: number): Promise<CachedFile | null> => {
     if (!att.evidence_id) return null;
-    const hit = cached.current.get(att.evidence_id);
-    if (hit) return hit;
-
     const base = api.defaults.baseURL ?? '';
     const url = `${base}/evidence/${att.evidence_id}/download`;
     // Downloaded to a temporary name first. downloadAsync writes the
     // response body whatever the status, so promoting on existence alone
     // would cache a 401 page and then keep serving it as the attachment.
-    const scratch = `${FileSystem.cacheDirectory}sitelog-${att.evidence_id}.part`;
+    attempts.current += 1;
+    const scratch = `${FileSystem.cacheDirectory}sitelog-${att.evidence_id}-${attempts.current}.part`;
     const attempt = () => {
       // Read at each attempt, never closed over: after a refresh the stored
       // token is a different one.
@@ -272,9 +275,39 @@ export default function SiteLogRecordDetail() {
     await FileSystem.moveAsync({ from: scratch, to: target });
 
     const entry: CachedFile = { uri: target, mime: mime || undefined };
-    cached.current.set(att.evidence_id, entry);
+    // Cached only for the session it was fetched for. The file itself is
+    // left where it is - the next download of this attachment overwrites
+    // it, and it may already BE the new session's own copy.
+    if (useAuthStore.getState().sessionNonce === openedUnder) {
+      cached.current.set(att.evidence_id, entry);
+    }
     return entry;
   }, []);
+
+  /**
+   * The cached file for an attachment, downloading it once if needed.
+   *
+   * A second request for the same attachment while the first download is
+   * still running JOINS it - within the same session - rather than
+   * starting another download onto the same paths, whose promotion would
+   * race the first one's.
+   */
+  const fetchToCache = useCallback(
+    (att: AttachmentOut, openedUnder: number): Promise<CachedFile | null> => {
+      if (!att.evidence_id) return Promise.resolve(null);
+      const hit = cached.current.get(att.evidence_id);
+      if (hit) return Promise.resolve(hit);
+      const running = inflight.current.get(att.evidence_id);
+      if (running && running.nonce === openedUnder) return running.promise;
+      const key = att.evidence_id;
+      const promise = download(att, openedUnder).finally(() => {
+        if (inflight.current.get(key)?.promise === promise) inflight.current.delete(key);
+      });
+      inflight.current.set(key, { nonce: openedUnder, promise });
+      return promise;
+    },
+    [download],
+  );
 
   /**
    * The two checks every awaited result must pass before it is acted on:
@@ -294,7 +327,7 @@ export default function SiteLogRecordDetail() {
   /** Download for one attachment, guarded as above. */
   const fetchGuarded = useCallback(
     async (att: AttachmentOut, openedUnder: number): Promise<CachedFile | null | 'stale'> => {
-      const file = await fetchToCache(att);
+      const file = await fetchToCache(att, openedUnder);
       return stillHere(openedUnder) ? file : 'stale';
     },
     [fetchToCache, stillHere],
@@ -317,7 +350,7 @@ export default function SiteLogRecordDetail() {
   const view = useCallback(
     async (att: AttachmentOut) => {
       const openedUnder = useAuthStore.getState().sessionNonce;
-      setBusyId(att.attachment_client_id);
+      setBusy(att.attachment_client_id, true);
       setError(null);
       try {
         const file = await fetchGuarded(att, openedUnder);
@@ -343,17 +376,17 @@ export default function SiteLogRecordDetail() {
       } catch {
         setError(t('siteLog.error.download'));
       } finally {
-        setBusyId(null);
+        setBusy(att.attachment_client_id, false);
       }
     },
-    [canRenderPdf, fetchGuarded, mediaLabel, t],
+    [canRenderPdf, fetchGuarded, mediaLabel, setBusy, t],
   );
 
   /** Hand a stored file to another app. Explicit, never what "view" means. */
   const share = useCallback(
     async (att: AttachmentOut) => {
       const openedUnder = useAuthStore.getState().sessionNonce;
-      setBusyId(att.attachment_client_id);
+      setBusy(att.attachment_client_id, true);
       setError(null);
       try {
         const file = await fetchGuarded(att, openedUnder);
@@ -375,10 +408,10 @@ export default function SiteLogRecordDetail() {
       } catch {
         setError(t('siteLog.detail.share_failed'));
       } finally {
-        setBusyId(null);
+        setBusy(att.attachment_client_id, false);
       }
     },
-    [fetchGuarded, stillHere, t],
+    [fetchGuarded, setBusy, stillHere, t],
   );
 
   /**
@@ -408,7 +441,7 @@ export default function SiteLogRecordDetail() {
         }
         return;
       }
-      setBusyId(id);
+      setBusy(id, true);
       setError(null);
       try {
         const file = await fetchGuarded(att, openedUnder);
@@ -442,18 +475,18 @@ export default function SiteLogRecordDetail() {
         setAudioAttId(null);
         failed(t('siteLog.detail.audio_failed'));
       } finally {
-        setBusyId(null);
+        setBusy(id, false);
       }
     },
-    [audio.isLoaded, audio.playing, audioAttId, fetchGuarded, player, stillHere, t],
+    [audio.isLoaded, audio.playing, audioAttId, fetchGuarded, player, setBusy, stillHere, t],
   );
 
   // A recording that downloaded fine can still fail in the native player -
   // corrupt, or a codec this phone lacks - AFTER replace/play have returned.
-  // Nothing above catches that. iOS reports it as a status; on either
-  // platform a recording that never becomes loaded is failed after a bound,
-  // instead of "Loading…" for ever. Either way the row says so and Share
-  // stays available.
+  // Nothing above catches that. A `failed` status ends the attempt when one
+  // arrives; a recording that never becomes loaded is failed after a bound
+  // whether or not any status arrives, instead of "Loading…" for ever.
+  // Either way the row says so and Share stays available.
   useEffect(() => {
     if (!audioAttId) return;
     const giveUp = () => {
@@ -541,7 +574,7 @@ export default function SiteLogRecordDetail() {
 
         {files.map((a) => {
           const stored = a.state === 'stored' && Boolean(a.evidence_id) && canOpenAttachments;
-          const busy = busyId === a.attachment_client_id;
+          const busy = busyIds.has(a.attachment_client_id);
           const isThisAudio = a.declared_media_type === 'audio' && audioAttId === a.attachment_client_id;
           return (
             <View key={a.attachment_client_id} style={s.att} testID="attachment-row">
@@ -659,10 +692,28 @@ export default function SiteLogRecordDetail() {
           ) : null}
           {viewer?.kind === 'pdf' ? (
             // WKWebView renders a local PDF natively on iOS: pages, scroll,
-            // pinch zoom. `allowingReadAccessToURL` is what lets it read a
-            // file:// under the cache directory. Only the opened document
-            // may load: a link inside a drawing goes nowhere - not to
-            // Safari, not to a converter. Nothing leaves the phone.
+            // pinch zoom. Two fences, both on the ONE opened document:
+            //
+            //  - `allowingReadAccessToURL` is the document itself, not the
+            //    cache directory. WKWebView grants read access to exactly
+            //    the file named when it is a file (a directory would grant
+            //    its whole tree). Nothing else this app cached is readable
+            //    from inside the web view.
+            //  - every navigation request is checked against the opened
+            //    document by full canonical path (src/siteLog/localDocument):
+            //    a TAP on a link inside a drawing - https, another local
+            //    file, a same-named file elsewhere - navigates nowhere. Not
+            //    to Safari, not to a converter.
+            //  - link previews are off. With them on, a LONG-PRESS on a link
+            //    is WebKit's own UI, not a navigation: it fetches the remote
+            //    page to draw a preview and opens Safari on commit, and none
+            //    of that consults the callback.
+            //
+            // What remains, and is not closable from here: with previews
+            // off, a long-press still shows WebKit's link sheet, whose
+            // "Open" is policed by the callback but whose Copy / Share /
+            // Reading List act on the link's ADDRESS (text) directly. No
+            // file, no credential, no navigation leaves the web view.
             //
             // The whitelist is '*' ON PURPOSE. react-native-webview hands
             // any URL that fails the whitelist to Linking.openURL - the
@@ -673,8 +724,9 @@ export default function SiteLogRecordDetail() {
             <WebView
               source={{ uri: viewer.uri }}
               originWhitelist={['*']}
-              onShouldStartLoadWithRequest={(req) => isSelectedDocument(req.url, viewer.uri)}
-              allowingReadAccessToURL={FileSystem.cacheDirectory ?? undefined}
+              onShouldStartLoadWithRequest={(req) => isSameLocalFile(req.url, viewer.uri)}
+              allowingReadAccessToURL={viewer.uri}
+              allowsLinkPreview={false}
               style={s.viewerBody}
               onLoadEnd={() => setViewerLoading(false)}
               onError={() => {

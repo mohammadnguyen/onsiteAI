@@ -272,8 +272,8 @@ describe('photo', () => {
     expect(has(tree, 'viewer-image')).toBe(true);
     const image = tree.root.findByProps({ testID: 'viewer-image-body' });
     expect(image.props.source).toEqual({ uri: 'file:///cache/sitelog-ev-img.jpg' });
-    // The scratch name is gone; only the promoted file remains.
-    expect(memfs.files.has('file:///cache/sitelog-ev-img.part')).toBe(false);
+    // The scratch file is gone; only the promoted file remains.
+    expect([...memfs.files.keys()].filter((k) => k.endsWith('.part'))).toEqual([]);
 
     await act(async () => press(tree, 'viewer-close'));
     expect(has(tree, 'viewer-image')).toBe(false);
@@ -291,7 +291,8 @@ describe('PDF', () => {
 
     const web = tree.root.findByProps({ testID: 'viewer-pdf' });
     expect(web.props.source).toEqual({ uri: 'file:///cache/sitelog-ev-doc.pdf' });
-    expect(web.props.allowingReadAccessToURL).toBe('file:///cache/');
+    // Read access is the document itself, not the cache directory.
+    expect(web.props.allowingReadAccessToURL).toBe('file:///cache/sitelog-ev-doc.pdf');
     expect(has(tree, 'viewer-failed')).toBe(false);
 
     await act(async () => (web.props as { onError: () => void }).onError());
@@ -310,15 +311,51 @@ describe('PDF', () => {
     // browser by the library WITHOUT asking the callback. Everything must
     // reach the callback, which then refuses.
     expect(web.props.originWhitelist).toEqual(['*']);
+    // Link previews off: a long-press preview fetches the remote page and
+    // opens Safari on commit, and none of that is a navigation the callback
+    // sees.
+    expect(web.props.allowsLinkPreview).toBe(false);
     const may = web.props.onShouldStartLoadWithRequest as (r: { url: string }) => boolean;
     expect(may({ url: 'file:///cache/sitelog-ev-doc.pdf' })).toBe(true);
-    // iOS may report the same file under /private or percent-encoded.
-    expect(may({ url: 'file:///private/cache/sitelog-ev-doc.pdf' })).toBe(true);
+    // The same file, percent-encoded or with a fragment, is the same file.
     expect(may({ url: 'file:///cache/sitelog-ev-doc%2Epdf' })).toBe(true);
+    expect(may({ url: 'file:///cache/sitelog-ev-doc.pdf#page=2' })).toBe(true);
+    // Everything else is refused - including a same-named file in another
+    // directory, which is a different file.
     expect(may({ url: 'https://example.com/drawing.pdf' })).toBe(false);
     expect(may({ url: 'http://converter.example/upload' })).toBe(false);
     expect(may({ url: 'file:///cache/sitelog-ev-other.pdf' })).toBe(false);
+    expect(may({ url: 'file:///cache/other/sitelog-ev-doc.pdf' })).toBe(false);
+    expect(may({ url: 'file:///private/cache/sitelog-ev-doc.pdf' })).toBe(false);
+    expect(may({ url: 'file:///cache/../cache/sitelog-ev-doc.pdf' })).toBe(false);
     expect(may({ url: 'file:///documents/site-log/user-a/x/recording.m4a' })).toBe(false);
+    // The full policy, including the iOS /private/var alias, is tested on
+    // its own in localDocument.test.ts.
+  });
+
+  it('fences the document that is open NOW, not the one opened before', async () => {
+    mockEvent = eventWith([att('a', 'document'), att('b', 'document')]);
+    memfs.downloads.push(
+      { status: 200, headers: { 'content-type': 'application/pdf' } },
+      { status: 200, headers: { 'content-type': 'application/pdf' } },
+    );
+    const tree = render();
+    await act(async () => press(tree, 'view:a'));
+    await flush();
+    let web = tree.root.findByProps({ testID: 'viewer-pdf' });
+    let may = web.props.onShouldStartLoadWithRequest as (r: { url: string }) => boolean;
+    expect(may({ url: 'file:///cache/sitelog-ev-a.pdf' })).toBe(true);
+    expect(may({ url: 'file:///cache/sitelog-ev-b.pdf' })).toBe(false);
+    await act(async () => press(tree, 'viewer-close'));
+
+    await act(async () => press(tree, 'view:b'));
+    await flush();
+    web = tree.root.findByProps({ testID: 'viewer-pdf' });
+    may = web.props.onShouldStartLoadWithRequest as (r: { url: string }) => boolean;
+    expect(web.props.source).toEqual({ uri: 'file:///cache/sitelog-ev-b.pdf' });
+    expect(web.props.allowingReadAccessToURL).toBe('file:///cache/sitelog-ev-b.pdf');
+    expect(may({ url: 'file:///cache/sitelog-ev-b.pdf' })).toBe(true);
+    expect(may({ url: 'file:///cache/sitelog-ev-a.pdf' })).toBe(false);
   });
 
   it('is not offered as an in-app view on Android, where the web view cannot render it', async () => {
@@ -533,6 +570,41 @@ describe('the download', () => {
     expect(has(tree, 'viewer-image')).toBe(true);
   });
 
+  it('runs one download per attachment however many taps arrive while it is in flight', async () => {
+    // View A, then View B, then View A again before A has finished: the
+    // second A joins the first download. One download, one promotion, no
+    // spurious error, and row A stays busy until its own download ends.
+    mockEvent = eventWith([att('a', 'document'), att('b', 'image')]);
+    let releaseA!: () => void;
+    const holdA = new Promise<void>((r) => {
+      releaseA = r;
+    });
+    memfs.downloads.push(
+      { status: 200, headers: { 'content-type': 'application/pdf' }, hold: holdA },
+      { status: 200, headers: { 'content-type': 'image/jpeg' } },
+    );
+    const tree = render();
+
+    await act(async () => press(tree, 'view:a'));
+    await act(async () => press(tree, 'view:b'));
+    await flush();
+    // B opened; A is still downloading and still shows as busy.
+    expect(has(tree, 'viewer-image')).toBe(true);
+    await act(async () => press(tree, 'viewer-close'));
+    expect(tree.root.findByProps({ testID: 'view:a' }).props.disabled).toBe(true);
+    await act(async () => press(tree, 'view:a'));
+    await flush();
+
+    releaseA();
+    await flush();
+
+    expect(memfs.downloadCalls.filter((c) => c.url.endsWith('/ev-a/download'))).toHaveLength(1);
+    expect(has(tree, 'viewer-pdf')).toBe(true);
+    expect(showsText(tree, 'siteLog.error.download')).toBe(false);
+    expect(memfs.files.has('file:///cache/sitelog-ev-a.pdf')).toBe(true);
+    expect([...memfs.files.keys()].filter((k) => k.endsWith('.part'))).toEqual([]);
+  });
+
   it('caches nothing from a non-200 answer', async () => {
     mockEvent = eventWith([att('img', 'image')]);
     memfs.downloads.push({ status: 500 });
@@ -559,11 +631,24 @@ describe('a download that outlives its session or its screen', () => {
 
     await act(async () => press(tree, 'view:img'));
     // Signed out while the bytes are still coming.
-    act(() => useAuthStore.setState({ sessionNonce: 2 }));
+    act(() => useAuthStore.setState({ sessionNonce: 2, accessToken: 'tok-b' }));
     release();
     await flush();
 
     expect(has(tree, 'viewer-image')).toBe(false);
+
+    // And the file that download produced is NOT what the next tap gets:
+    // under the new session the attachment is fetched again, with the new
+    // token.
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'image/jpeg' } });
+    await act(async () => press(tree, 'view:img'));
+    await flush();
+    expect(memfs.downloadCalls.map((c) => c.headers?.Authorization)).toEqual([
+      'Bearer tok-a',
+      'Bearer tok-b',
+    ]);
+    expect(has(tree, 'viewer-image')).toBe(true);
+    await act(async () => press(tree, 'viewer-close'));
 
     // Same for a recording: the player never receives the file.
     let release2!: () => void;
@@ -572,7 +657,7 @@ describe('a download that outlives its session or its screen', () => {
     });
     memfs.downloads.push({ status: 200, headers: { 'content-type': 'audio/m4a' }, hold: hold2 });
     await act(async () => press(tree, 'audio-toggle:voice'));
-    act(() => useAuthStore.setState({ sessionNonce: 3 }));
+    act(() => useAuthStore.setState({ sessionNonce: 3, accessToken: 'tok-c' }));
     release2();
     await flush();
     expect(mockPlayer.replace).not.toHaveBeenCalled();

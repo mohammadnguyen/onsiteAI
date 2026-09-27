@@ -314,6 +314,40 @@ different app and is not modified by this.
 13. **List rows tell records apart.** In My site log, a record with no text
     shows what it holds ("1 photo · 1 document"), when, and which job; two
     records are never the same "(no text)".
-14. **Nothing survives a sign-out.** Start View on a large PDF and, while
-    it is still loading, sign out (or switch account). Nothing may open
-    afterwards, and no viewer or playing recording may remain.
+14. **Nothing survives leaving the screen.** Start View on a large PDF and,
+    while its row still shows the spinner, go back to the list. Nothing may
+    open on the list, and no viewer or playing recording may appear when
+    you return. What this exercises on a phone is the "screen still in
+    front" check; the "same account" check cannot be reached this way
+    (getting to Sign out means leaving the screen first) and is covered by
+    the unit tests instead - session change during each await.
+15. **A link inside a PDF goes nowhere.** Preparation, with a positive
+    control: in **Pages** (not Notes - Notes prints links as plain text),
+    type a web address so it becomes a link, export as PDF, save it to
+    Files, then open it from **Files** and tap the link there: Safari must
+    open. If it does not, the PDF has no live link and proves nothing -
+    make another. Then attach that PDF to a site log entry, save, open it
+    with View, and:
+    - **tap** the link: the drawing stays exactly where it is - no Safari,
+      no new page inside the viewer, no prompt; Close still works;
+    - **long-press** the link: no page preview may appear and Safari must
+      not open. A plain sheet offering Open / Copy / Share may appear -
+      that is WebKit's own and is accepted; if you choose **Open** on it,
+      nothing may happen either.
+16. **A recording the phone cannot decode.** Preparation: save any
+    screenshot to Files ("On My iPhone"), rename it there to `broken.m4a`
+    and confirm "Use .m4a". Then in ONE new site log entry: **record a real
+    voice note**, and attach `broken.m4a` as a document (its type declares
+    it audio; the server trusts the declared type - if Play is not offered
+    on it after saving, this scenario is no longer producible this way and
+    that is a note, not a defect). Save, open the record:
+    - Play on `broken.m4a`: PASS = the failure text appears within about
+      20 seconds and Share is still offered. FAIL = "Loading…" beyond
+      about 20 seconds, or nothing at all.
+    - then Play the real voice note in the same record. Its tap clears the
+      broken row's message (expected). PASS = it plays, OR it shows the
+      failure text within about 20 seconds (Apple's player, once failed,
+      may stay failed for the visit - a known, accepted limit). FAIL =
+      "Loading…" beyond about 20 seconds.
+    - go back to the list and reopen the record: the real voice note MUST
+      now play. If it does not, that is a defect.
