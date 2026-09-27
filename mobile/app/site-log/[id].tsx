@@ -67,6 +67,36 @@ function headerValue(
   return key ? headers[key] : undefined;
 }
 
+/** The file name at the end of a URI, decoded; query and fragment dropped. */
+function lastSegment(uri: string): string {
+  const path = uri.split(/[?#]/)[0];
+  const seg = path.slice(path.lastIndexOf('/') + 1);
+  try {
+    return decodeURIComponent(seg);
+  } catch {
+    return seg;
+  }
+}
+
+/**
+ * May the web view load this? Only the document that was opened: the file
+ * scheme, and the same file name. Compared by name rather than whole URI
+ * because iOS may report the same file under `/private/var` or with
+ * different percent-encoding; a link inside the PDF to anything else -
+ * https, another local file - is refused here, and never reaches the OS.
+ */
+function isSelectedDocument(requested: string, selected: string): boolean {
+  if (!requested.startsWith('file://')) return false;
+  return lastSegment(requested) === lastSegment(selected);
+}
+
+/**
+ * How long a recording may sit "Loading…" before it is called failed.
+ * iOS reports a failed decode as a status; Android reports nothing, so
+ * the clock is the only signal there.
+ */
+const AUDIO_LOAD_TIMEOUT_MS = 20_000;
+
 /** m:ss for a duration in seconds; "--:--" when not known yet. */
 function clock(seconds: number | undefined): string {
   if (seconds === undefined || !Number.isFinite(seconds) || seconds < 0) return '--:--';
@@ -138,6 +168,10 @@ export default function SiteLogRecordDetail() {
   // web implementation. Offering a button that cannot work is worse than
   // saying where it does work.
   const canOpenAttachments = Platform.OS !== 'web';
+  // The PDF viewer is WKWebView's own renderer. Android's WebView has no
+  // PDF renderer, so there a PDF gets the honest message and Share, not an
+  // empty page.
+  const canRenderPdf = Platform.OS === 'ios';
 
   const q = useQuery({
     queryKey: ['site-log', 'event', id],
@@ -235,22 +269,36 @@ export default function SiteLogRecordDetail() {
   }, []);
 
   /**
-   * Download for one attachment, with the two checks every result must
-   * pass before it is acted on: the session that started it is still the
-   * session, and this screen is still the one in front of the user. A
-   * download outlives both, and acting on it afterwards is how one
-   * account's file reaches another account's screen.
+   * The two checks every awaited result must pass before it is acted on:
+   * the session that started the action is still the session, and this
+   * screen is still the one in front of the user. Applied after EVERY
+   * await, not only the download - the session can change during the
+   * audio-mode call or the share-availability call just as well, and a
+   * result acted on afterwards is how one account's file reaches another
+   * account's screen.
    */
-  const fetchGuarded = useCallback(
-    async (att: AttachmentOut): Promise<CachedFile | null | 'stale'> => {
-      const openedUnder = useAuthStore.getState().sessionNonce;
-      const file = await fetchToCache(att);
-      if (useAuthStore.getState().sessionNonce !== openedUnder) return 'stale';
-      if (!activeRef.current) return 'stale';
-      return file;
-    },
-    [activeRef, fetchToCache],
+  const stillHere = useCallback(
+    (openedUnder: number) =>
+      useAuthStore.getState().sessionNonce === openedUnder && activeRef.current,
+    [activeRef],
   );
+
+  /** Download for one attachment, guarded as above. */
+  const fetchGuarded = useCallback(
+    async (att: AttachmentOut, openedUnder: number): Promise<CachedFile | null | 'stale'> => {
+      const file = await fetchToCache(att);
+      return stillHere(openedUnder) ? file : 'stale';
+    },
+    [fetchToCache, stillHere],
+  );
+
+  /** Close the full-screen viewer and forget its loading and failure state,
+   *  so the next one - of either kind - starts clean. */
+  const closeViewer = useCallback(() => {
+    setViewer(null);
+    setViewerLoading(false);
+    setViewerFailed(false);
+  }, []);
 
   const mediaLabel = useCallback(
     (a: AttachmentOut) => t(`siteLog.media.${a.declared_media_type}`),
@@ -260,10 +308,11 @@ export default function SiteLogRecordDetail() {
   /** Show a photo or a PDF here, in the app. */
   const view = useCallback(
     async (att: AttachmentOut) => {
+      const openedUnder = useAuthStore.getState().sessionNonce;
       setBusyId(att.attachment_client_id);
       setError(null);
       try {
-        const file = await fetchGuarded(att);
+        const file = await fetchGuarded(att, openedUnder);
         if (file === 'stale') return;
         if (!file) {
           setError(t('siteLog.error.download'));
@@ -272,8 +321,9 @@ export default function SiteLogRecordDetail() {
         const isPdf = file.mime === 'application/pdf' || file.uri.endsWith('.pdf');
         if (att.declared_media_type === 'image') {
           setViewerFailed(false);
+          setViewerLoading(false);
           setViewer({ kind: 'image', uri: file.uri, title: mediaLabel(att) });
-        } else if (isPdf) {
+        } else if (isPdf && canRenderPdf) {
           setViewerFailed(false);
           setViewerLoading(true);
           setViewer({ kind: 'pdf', uri: file.uri, title: mediaLabel(att) });
@@ -288,27 +338,29 @@ export default function SiteLogRecordDetail() {
         setBusyId(null);
       }
     },
-    [fetchGuarded, mediaLabel, t],
+    [canRenderPdf, fetchGuarded, mediaLabel, t],
   );
 
   /** Hand a stored file to another app. Explicit, never what "view" means. */
   const share = useCallback(
     async (att: AttachmentOut) => {
+      const openedUnder = useAuthStore.getState().sessionNonce;
       setBusyId(att.attachment_client_id);
       setError(null);
       try {
-        const file = await fetchGuarded(att);
+        const file = await fetchGuarded(att, openedUnder);
         if (file === 'stale') return;
         if (!file) {
           setError(t('siteLog.error.download'));
           return;
         }
-        if (!(await Sharing.isAvailableAsync())) {
+        const available = await Sharing.isAvailableAsync();
+        // Another await has passed: same two checks again.
+        if (!stillHere(openedUnder)) return;
+        if (!available) {
           setError(t('siteLog.detail.share_unavailable'));
           return;
         }
-        // Re-checked after the availability await, for the same reason.
-        if (!activeRef.current) return;
         // The type goes with the file: without it the receiving app has
         // only the name to go on.
         await Sharing.shareAsync(file.uri, file.mime ? { mimeType: file.mime } : undefined);
@@ -318,7 +370,7 @@ export default function SiteLogRecordDetail() {
         setBusyId(null);
       }
     },
-    [activeRef, fetchGuarded, t],
+    [fetchGuarded, stillHere, t],
   );
 
   /**
@@ -335,6 +387,7 @@ export default function SiteLogRecordDetail() {
   const toggleAudio = useCallback(
     async (att: AttachmentOut) => {
       const id = att.attachment_client_id;
+      const openedUnder = useAuthStore.getState().sessionNonce;
       const failed = (message: string) => setAudioFailed({ id, message });
       setAudioFailed(null);
       // Already loaded here: just toggle.
@@ -350,7 +403,7 @@ export default function SiteLogRecordDetail() {
       setBusyId(id);
       setError(null);
       try {
-        const file = await fetchGuarded(att);
+        const file = await fetchGuarded(att, openedUnder);
         if (file === 'stale') return;
         if (!file) {
           failed(t('siteLog.error.download'));
@@ -367,7 +420,9 @@ export default function SiteLogRecordDetail() {
           // Playback may still work; if it does not, the failure below
           // says so.
         }
-        if (!activeRef.current) return;
+        // The mode call is an await like any other: the session may have
+        // changed underneath it. Focus alone says nothing about the account.
+        if (!stillHere(openedUnder)) return;
         // Imperative, on the instance this screen keeps: replace the
         // source, then play it.
         player.replace({ uri: file.uri });
@@ -380,8 +435,34 @@ export default function SiteLogRecordDetail() {
         setBusyId(null);
       }
     },
-    [activeRef, audio.isLoaded, audio.playing, audioAttId, fetchGuarded, player, t],
+    [audio.isLoaded, audio.playing, audioAttId, fetchGuarded, player, stillHere, t],
   );
+
+  // A recording that downloaded fine can still fail in the native player -
+  // corrupt, or a codec this phone lacks - AFTER replace/play have returned.
+  // Nothing above catches that. iOS reports it as a status; on either
+  // platform a recording that never becomes loaded is failed after a bound,
+  // instead of "Loading…" for ever. Either way the row says so and Share
+  // stays available.
+  useEffect(() => {
+    if (!audioAttId) return;
+    const giveUp = () => {
+      setAudioFailed({ id: audioAttId, message: t('siteLog.detail.audio_failed') });
+      setAudioAttId(null);
+      try {
+        player.pause();
+      } catch {
+        // nothing loaded
+      }
+    };
+    if (audio.playbackState === 'failed') {
+      giveUp();
+      return;
+    }
+    if (audio.isLoaded) return;
+    const timer = setTimeout(giveUp, AUDIO_LOAD_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [audio.isLoaded, audio.playbackState, audioAttId, player, t]);
 
   // A recording that reaches its end shows as ready to play again, not as
   // stuck at the last second.
@@ -530,7 +611,7 @@ export default function SiteLogRecordDetail() {
       <Modal
         visible={viewer !== null}
         animationType="fade"
-        onRequestClose={() => setViewer(null)}
+        onRequestClose={closeViewer}
         presentationStyle="fullScreen"
       >
         <SafeAreaView style={s.viewerSafe} edges={['top', 'bottom']}>
@@ -538,7 +619,7 @@ export default function SiteLogRecordDetail() {
             <Text style={s.viewerTitle} numberOfLines={1}>
               {viewer?.title ?? ''}
             </Text>
-            <Pressable onPress={() => setViewer(null)} hitSlop={12} testID="viewer-close">
+            <Pressable onPress={closeViewer} hitSlop={12} testID="viewer-close">
               <Text style={s.viewerClose}>{t('siteLog.detail.close')}</Text>
             </Pressable>
           </View>
@@ -565,17 +646,21 @@ export default function SiteLogRecordDetail() {
           {viewer?.kind === 'pdf' ? (
             // WKWebView renders a local PDF natively on iOS: pages, scroll,
             // pinch zoom. `allowingReadAccessToURL` is what lets it read a
-            // file:// under the cache directory. Only the file scheme may
-            // load: a link inside a drawing goes nowhere, not to Safari and
-            // not to a converter. Nothing leaves the phone - no preview
-            // service, no credentials.
+            // file:// under the cache directory. Only the opened document
+            // may load: a link inside a drawing goes nowhere - not to
+            // Safari, not to a converter. Nothing leaves the phone.
+            //
+            // The whitelist is '*' ON PURPOSE. react-native-webview hands
+            // any URL that fails the whitelist to Linking.openURL - the
+            // system browser - WITHOUT consulting the callback below. So a
+            // narrower whitelist is exactly what would open links outside
+            // the app. Letting everything reach the callback, and refusing
+            // there, is the only configuration that blocks.
             <WebView
               source={{ uri: viewer.uri }}
-              originWhitelist={['file://*']}
-              onShouldStartLoadWithRequest={(req) => req.url.startsWith('file://')}
+              originWhitelist={['*']}
+              onShouldStartLoadWithRequest={(req) => isSelectedDocument(req.url, viewer.uri)}
               allowingReadAccessToURL={FileSystem.cacheDirectory ?? undefined}
-              allowFileAccess
-              allowFileAccessFromFileURLs
               style={s.viewerBody}
               onLoadEnd={() => setViewerLoading(false)}
               onError={() => {
@@ -589,7 +674,9 @@ export default function SiteLogRecordDetail() {
               testID="viewer-pdf"
             />
           ) : null}
-          {viewerLoading ? <ActivityIndicator style={s.viewerSpinner} color="#ffffff" /> : null}
+          {viewerLoading ? (
+            <ActivityIndicator style={s.viewerSpinner} color="#ffffff" testID="viewer-spinner" />
+          ) : null}
           {viewerFailed ? (
             <Text style={s.viewerFailed} testID="viewer-failed">
               {viewer?.kind === 'pdf'

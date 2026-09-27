@@ -139,6 +139,9 @@ describeLive('against a live backend', () => {
     expect(inline).toHaveLength(1);
     expect(inline[0].declared_media_type).toBe('text');
     expect(inline[0].state).toBe('stored');
+    // And says so: the detail screen hides exactly this row on the flag,
+    // never on the media type.
+    expect(inline[0].is_inline_text).toBe(true);
 
     const finalized = await finalizeCapture(event.site_log_event_id);
     expect(finalized.capture_status).toBe('complete');
@@ -164,8 +167,12 @@ describeLive('against a live backend', () => {
 
     const reopened = await getEvent(event.site_log_event_id);
     expect(reopened.attachments.every((a) => a.state === 'stored')).toBe(true);
-    expect(reopened.attachments.find((a) => a.attachment_client_id === attachmentId)?.evidence_id)
-      .toBeTruthy();
+    const photo = reopened.attachments.find((a) => a.attachment_client_id === attachmentId);
+    expect(photo?.evidence_id).toBeTruthy();
+    // The user's photo is not the server's text row, and the server says
+    // which is which.
+    expect(photo?.is_inline_text).toBe(false);
+    expect(reopened.attachments.filter((a) => a.is_inline_text === true)).toHaveLength(1);
   });
 
   it('a replayed declaration returns the same record, not a second one', async () => {

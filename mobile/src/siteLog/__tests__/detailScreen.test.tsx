@@ -57,7 +57,11 @@ jest.mock('../../ui/kit', () => ({ StatusBadge: () => null }));
 jest.mock('expo-file-system/legacy', () => require('./support/memfs'));
 
 const mockShare = jest.fn();
-const mockShareAvailable = jest.fn(async () => true);
+let mockShareHold: Promise<void> | null = null;
+const mockShareAvailable = jest.fn(async () => {
+  if (mockShareHold) await mockShareHold;
+  return true;
+});
 jest.mock('expo-sharing', () => ({
   isAvailableAsync: () => mockShareAvailable(),
   shareAsync: (...a: unknown[]) => mockShare(...a),
@@ -77,8 +81,13 @@ let mockStatus = {
   duration: 0,
   didJustFinish: false,
   isBuffering: false,
+  playbackState: 'unknown',
 };
-const mockSetAudioMode = jest.fn(async (..._a: unknown[]) => undefined);
+// Holdable, so a test can change the session while the mode call is pending.
+let mockAudioModeHold: Promise<void> | null = null;
+const mockSetAudioMode = jest.fn(async (..._a: unknown[]) => {
+  if (mockAudioModeHold) await mockAudioModeHold;
+});
 jest.mock('expo-audio', () => ({
   useAudioPlayer: () => mockPlayer,
   useAudioPlayerStatus: () => mockStatus,
@@ -202,7 +211,10 @@ beforeEach(() => {
     duration: 0,
     didJustFinish: false,
     isBuffering: false,
+    playbackState: 'unknown',
   };
+  mockAudioModeHold = null;
+  mockShareHold = null;
   mockFocusCleanups.length = 0;
   act(() => {
     useAuthStore.setState({ accessToken: 'tok-a', userId: 'user-a', sessionNonce: 1 });
@@ -286,6 +298,67 @@ describe('PDF', () => {
     expect(has(tree, 'viewer-failed')).toBe(true);
   });
 
+  it('lets only the opened document load: a link inside the PDF goes nowhere', async () => {
+    mockEvent = eventWith([att('doc', 'document')]);
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'application/pdf' } });
+    const tree = render();
+    await act(async () => press(tree, 'view:doc'));
+    await flush();
+
+    const web = tree.root.findByProps({ testID: 'viewer-pdf' });
+    // '*' on purpose: anything outside the whitelist is handed to the OS
+    // browser by the library WITHOUT asking the callback. Everything must
+    // reach the callback, which then refuses.
+    expect(web.props.originWhitelist).toEqual(['*']);
+    const may = web.props.onShouldStartLoadWithRequest as (r: { url: string }) => boolean;
+    expect(may({ url: 'file:///cache/sitelog-ev-doc.pdf' })).toBe(true);
+    // iOS may report the same file under /private or percent-encoded.
+    expect(may({ url: 'file:///private/cache/sitelog-ev-doc.pdf' })).toBe(true);
+    expect(may({ url: 'file:///cache/sitelog-ev-doc%2Epdf' })).toBe(true);
+    expect(may({ url: 'https://example.com/drawing.pdf' })).toBe(false);
+    expect(may({ url: 'http://converter.example/upload' })).toBe(false);
+    expect(may({ url: 'file:///cache/sitelog-ev-other.pdf' })).toBe(false);
+    expect(may({ url: 'file:///documents/site-log/user-a/x/recording.m4a' })).toBe(false);
+  });
+
+  it('is not offered as an in-app view on Android, where the web view cannot render it', async () => {
+    const { Platform } = require('react-native');
+    const was = Platform.OS;
+    Platform.OS = 'android';
+    try {
+      mockEvent = eventWith([att('doc', 'document')]);
+      memfs.downloads.push({ status: 200, headers: { 'content-type': 'application/pdf' } });
+      const tree = render();
+      await act(async () => press(tree, 'view:doc'));
+      await flush();
+
+      expect(has(tree, 'viewer-pdf')).toBe(false);
+      expect(showsText(tree, 'siteLog.detail.no_viewer')).toBe(true);
+      expect(has(tree, 'share:doc')).toBe(true);
+    } finally {
+      Platform.OS = was;
+    }
+  });
+
+  it('does not leave its spinner over the next photo when closed before it loaded', async () => {
+    mockEvent = eventWith([att('doc', 'document'), att('img', 'image')]);
+    memfs.downloads.push(
+      { status: 200, headers: { 'content-type': 'application/pdf' } },
+      { status: 200, headers: { 'content-type': 'image/jpeg' } },
+    );
+    const tree = render();
+    await act(async () => press(tree, 'view:doc'));
+    await flush();
+    expect(has(tree, 'viewer-spinner')).toBe(true);
+    // Closed before onLoadEnd ever fired.
+    await act(async () => press(tree, 'viewer-close'));
+
+    await act(async () => press(tree, 'view:img'));
+    await flush();
+    expect(has(tree, 'viewer-image')).toBe(true);
+    expect(has(tree, 'viewer-spinner')).toBe(false);
+  });
+
   it('says so, and leaves Share, for a document it cannot render', async () => {
     mockEvent = eventWith([att('dwg', 'document')]);
     memfs.downloads.push({ status: 200, headers: { 'content-type': 'application/acad' } });
@@ -341,6 +414,51 @@ describe('recording', () => {
     await act(async () => press(tree, 'audio-toggle:voice'));
     expect(mockPlayer.pause).toHaveBeenCalledTimes(1);
     expect(mockPlayer.replace).toHaveBeenCalledTimes(1); // not reloaded
+  });
+
+  it('reports a recording the native player rejects after it was handed over', async () => {
+    mockEvent = eventWith([att('voice', 'audio')]);
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'audio/m4a' } });
+    const tree = render();
+    await act(async () => press(tree, 'audio-toggle:voice'));
+    await flush();
+    expect(mockPlayer.play).toHaveBeenCalledTimes(1);
+
+    // Corrupt file: decoding fails after replace/play returned.
+    mockStatus = { ...mockStatus, playbackState: 'failed' };
+    await act(async () => {
+      tree.update(<SiteLogRecordDetail />);
+    });
+    expect(has(tree, 'audio-failed')).toBe(true);
+    expect(textOf(tree, 'audio-failed')).toBe('siteLog.detail.audio_failed');
+    expect(has(tree, 'audio-player')).toBe(false);
+    expect(mockPlayer.pause).toHaveBeenCalled();
+    expect(has(tree, 'share:voice')).toBe(true);
+  });
+
+  it('gives up on a recording that never loads, instead of "Loading…" for ever', async () => {
+    jest.useFakeTimers();
+    try {
+      mockEvent = eventWith([att('voice', 'audio')]);
+      memfs.downloads.push({ status: 200, headers: { 'content-type': 'audio/m4a' } });
+      const tree = render();
+      await act(async () => press(tree, 'audio-toggle:voice'));
+      await flush();
+      expect(has(tree, 'audio-player')).toBe(true);
+      expect(has(tree, 'audio-failed')).toBe(false);
+
+      await act(async () => {
+        jest.advanceTimersByTime(19_000);
+      });
+      expect(has(tree, 'audio-failed')).toBe(false);
+      await act(async () => {
+        jest.advanceTimersByTime(2_000);
+      });
+      expect(has(tree, 'audio-failed')).toBe(true);
+      expect(has(tree, 'audio-player')).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('says so when the recording cannot be fetched', async () => {
@@ -420,6 +538,48 @@ describe('a download that outlives its session or its screen', () => {
     release2();
     await flush();
     expect(mockPlayer.replace).not.toHaveBeenCalled();
+  });
+
+  it('does not play when the session changed during the audio-mode call', async () => {
+    // The download passed its check; the session changes while the mode
+    // call - the NEXT await - is pending, and the screen stays focused.
+    mockEvent = eventWith([att('voice', 'audio')]);
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'audio/m4a' } });
+    let release!: () => void;
+    mockAudioModeHold = new Promise<void>((r) => {
+      release = r;
+    });
+    const tree = render();
+
+    await act(async () => press(tree, 'audio-toggle:voice'));
+    await flush();
+    expect(mockSetAudioMode).toHaveBeenCalled();
+    act(() => useAuthStore.setState({ sessionNonce: 2 }));
+    release();
+    await flush();
+
+    expect(mockPlayer.replace).not.toHaveBeenCalled();
+    expect(mockPlayer.play).not.toHaveBeenCalled();
+    expect(has(tree, 'audio-player')).toBe(false);
+  });
+
+  it('does not share when the session changed during the availability call', async () => {
+    mockEvent = eventWith([att('doc', 'document')]);
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'application/pdf' } });
+    let release!: () => void;
+    mockShareHold = new Promise<void>((r) => {
+      release = r;
+    });
+    const tree = render();
+
+    await act(async () => press(tree, 'share:doc'));
+    await flush();
+    expect(mockShareAvailable).toHaveBeenCalled();
+    act(() => useAuthStore.setState({ sessionNonce: 2 }));
+    release();
+    await flush();
+
+    expect(mockShare).not.toHaveBeenCalled();
   });
 
   it('opens nothing once the user has left the screen', async () => {
