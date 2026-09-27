@@ -125,6 +125,21 @@ export async function deleteAsync(
   }
 }
 
+export async function readDirectoryAsync(uri: string): Promise<string[]> {
+  const prefix = uri.endsWith('/') ? uri : `${uri}/`;
+  if (!memfs.dirs.has(prefix) && ![...memfs.files.keys()].some((k) => k.startsWith(prefix))) {
+    throw new Error(`no such directory: ${uri}`);
+  }
+  const names = new Set<string>();
+  for (const key of memfs.files.keys()) {
+    if (!key.startsWith(prefix)) continue;
+    const rest = key.slice(prefix.length);
+    if (rest === '' || rest.includes('/')) continue; // this level only
+    names.add(rest);
+  }
+  return [...names];
+}
+
 export async function downloadAsync(): Promise<never> {
   throw new Error('not used by these tests');
 }

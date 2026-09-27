@@ -50,6 +50,7 @@ describe('keepOversizedRecording', () => {
       attachmentId: 'att-1',
       sourceUri: SOURCE,
       name: 'voice-1.m4a',
+      expectedSize: 60 * 1024 * 1024,
     });
 
     expect(kept.path).toBe('site-log/user-a/oversized/att-1.m4a');
@@ -71,11 +72,36 @@ describe('keepOversizedRecording', () => {
         attachmentId: 'att-1',
         sourceUri: SOURCE,
         name: 'voice-1.m4a',
+        expectedSize: 60 * 1024 * 1024,
       }),
     ).rejects.toThrow();
 
     // THE point of this test: a failure costs nothing.
     expect(memfs.files.has(SOURCE)).toBe(true);
+    expect([...memfs.files.keys()].filter((p) => p.includes('/oversized/'))).toEqual([]);
+  });
+
+  it('REGRESSION: refuses a copy that arrived short, without deleting the source', async () => {
+    // A short copy does not throw - it returns having written fewer
+    // bytes. Checking only "more than zero" accepted 1 KiB of a 60 MiB
+    // recording and announced it as kept; once the recorder's temporary
+    // file is reclaimed the rest is gone for good.
+    const { files, memfs } = await clean();
+    memfs.put(SOURCE, 60 * 1024 * 1024);
+    memfs.shortNextCopyTo = 1024;
+
+    await expect(
+      files.keepOversizedRecording({
+        userId: 'user-a',
+        attachmentId: 'att-1',
+        sourceUri: SOURCE,
+        name: 'voice-1.m4a',
+        expectedSize: 60 * 1024 * 1024,
+      }),
+    ).rejects.toThrow(/kept 1024 bytes of 62914560/);
+
+    expect(memfs.files.has(SOURCE)).toBe(true);
+    // The truncated destination is not left behind to be adopted later.
     expect([...memfs.files.keys()].filter((p) => p.includes('/oversized/'))).toEqual([]);
   });
 
@@ -89,6 +115,7 @@ describe('keepOversizedRecording', () => {
         attachmentId: 'att-1',
         sourceUri: target,
         name: 'voice-1.m4a',
+        expectedSize: 10,
       }),
     ).rejects.toThrow();
     expect(memfs.files.has(target)).toBe(true);
@@ -104,6 +131,7 @@ describe('a kept recording survives everything except an explicit discard', () =
       attachmentId: 'att-1',
       sourceUri: SOURCE,
       name: 'voice-1.m4a',
+      expectedSize: 60 * 1024 * 1024,
     });
     await mod.useKeptRecordings.getState().add({
       id: 'att-1',
@@ -153,6 +181,62 @@ describe('a kept recording survives everything except an explicit discard', () =
 
     expect(useKeptRecordings.getState().forUser('user-a')).toHaveLength(0);
     expect(memfs.files.has(kept.uri)).toBe(false);
+  });
+
+  it('REGRESSION: a file preserved before the index was written is adopted', async () => {
+    // The copy happens before the entry. A process death between the two
+    // used to leave a preserved recording that nothing listed - which is
+    // the one outcome this feature exists to prevent.
+    const { files, useKeptRecordings, memfs } = await clean();
+    memfs.put(SOURCE, 60 * 1024 * 1024);
+    const kept = await files.keepOversizedRecording({
+      userId: 'user-a',
+      attachmentId: 'att-orphan',
+      sourceUri: SOURCE,
+      name: 'voice-1.m4a',
+      expectedSize: 60 * 1024 * 1024,
+    });
+    // ...and the app dies here, before `add`.
+    expect(useKeptRecordings.getState().forUser('user-a')).toHaveLength(0);
+
+    await useKeptRecordings.getState().reconcile('user-a');
+
+    const found = useKeptRecordings.getState().forUser('user-a');
+    expect(found).toHaveLength(1);
+    expect(found[0].path).toBe(kept.path);
+    expect(found[0].size).toBe(60 * 1024 * 1024);
+  });
+
+  it('REGRESSION: an entry whose file has gone is dropped', async () => {
+    // The opposite drift: the screen must never offer a recording that
+    // is not there.
+    const { useKeptRecordings } = await keptOne();
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { memfs } = require('../../siteLog/__tests__/support/memfs') as typeof import('../../siteLog/__tests__/support/memfs');
+    memfs.files.clear();
+
+    await useKeptRecordings.getState().reconcile('user-a');
+
+    expect(useKeptRecordings.getState().forUser('user-a')).toHaveLength(0);
+  });
+
+  it('reconciling leaves another account alone', async () => {
+    const { useKeptRecordings } = await keptOne();
+    await useKeptRecordings.getState().add({
+      id: 'att-b',
+      user_id: 'user-b',
+      name: 'other.m4a',
+      path: 'site-log/user-b/oversized/att-b.m4a',
+      size: 5,
+      created_at: 2,
+      capture_client_id: 'cap-b',
+    });
+
+    await useKeptRecordings.getState().reconcile('user-a');
+
+    // user-b has no files on disk here, but reconciling user-a must not
+    // touch their list.
+    expect(useKeptRecordings.getState().forUser('user-b')).toHaveLength(1);
   });
 
   it('shows each account only its own', async () => {

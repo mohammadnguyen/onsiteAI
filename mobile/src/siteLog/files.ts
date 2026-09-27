@@ -423,6 +423,8 @@ export async function keepOversizedRecording(args: {
   attachmentId: string;
   sourceUri: string;
   name: string;
+  /** The source's measured size. The copy must match it exactly. */
+  expectedSize: number | null;
 }): Promise<KeptRecording> {
   const dir = oversizedDir(args.userId);
   if (dir === null) throw new RetentionError('unavailable', 'no document directory');
@@ -449,7 +451,50 @@ export async function keepOversizedRecording(args: {
     await deleteQuietly(target);
     throw new RetentionError('size_mismatch', 'kept copy could not be measured');
   }
+  // AGAINST THE SOURCE, not merely "more than zero". A short copy is not
+  // a crash: it returns successfully with fewer bytes, and checking only
+  // that something arrived accepted 1 KiB of a 60 MiB recording and then
+  // announced it as kept. Once the recorder's temporary file is
+  // reclaimed, the missing audio is gone for good.
+  if (args.expectedSize !== null && size !== args.expectedSize) {
+    await deleteQuietly(target);
+    throw new RetentionError(
+      'size_mismatch',
+      `kept ${size} bytes of ${args.expectedSize}`,
+    );
+  }
   return { path: relative, uri: target, size };
+}
+
+/**
+ * What is actually in this account's kept-recordings directory.
+ *
+ * The directory is the truth, not the index. The bytes are copied before
+ * any entry is written, so a process death between the two would leave a
+ * file nothing lists - preserved and unreachable, which is the failure
+ * this whole feature exists to avoid. Reading the directory back means an
+ * entry can be rebuilt for anything found there, and an entry whose file
+ * has gone can be dropped.
+ */
+export async function listKeptRecordingFiles(
+  userId: string,
+): Promise<{ path: string; uri: string; size: number }[]> {
+  const dir = oversizedDir(userId);
+  if (dir === null) return [];
+  let names: string[];
+  try {
+    names = await FileSystem.readDirectoryAsync(dir);
+  } catch {
+    return []; // no directory yet is not an error
+  }
+  const out: { path: string; uri: string; size: number }[] = [];
+  for (const name of names) {
+    const uri = `${dir}${name}`;
+    const size = await fileSize(uri);
+    if (size === null || size <= 0) continue;
+    out.push({ path: `site-log/${userId}/oversized/${name}`, uri, size });
+  }
+  return out;
 }
 
 /** Remove one kept recording - only ever on an explicit discard. */

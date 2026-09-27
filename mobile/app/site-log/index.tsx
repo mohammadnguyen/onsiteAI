@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -43,6 +43,15 @@ export default function MySiteLogRecords() {
   const kept = useKeptRecordings();
   const keptMine = userId ? kept.forUser(userId) : [];
   const [keptError, setKeptError] = useState<string | null>(null);
+  // The directory is the truth. A preservation interrupted between the
+  // copy and the index would otherwise leave a file nothing lists, and an
+  // entry whose file has gone would offer a recording that is not there.
+  useEffect(() => {
+    if (userId) void kept.reconcile(userId);
+    // `kept` is the store object and is stable; re-running on every
+    // render would read the directory continuously.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
   // Created ONCE with no source: useAudioPlayer rebuilds and releases the
   // player whenever its source changes, so driving it from state releases
   // the player that is about to play. Same rule as the detail screen.
@@ -74,14 +83,25 @@ export default function MySiteLogRecords() {
         setKeptError(t('siteLog.kept.missing'));
         return;
       }
+      // Whose export this is, fixed before the awaits. Both checks below
+      // are slow enough for an account switch to land in between, and a
+      // share sheet that opens afterwards would hand one worker's
+      // recording to whoever is signed in by then. Filtering the rows on
+      // screen does not protect an operation already in flight.
+      const startedAs = useAuthStore.getState().userId;
+      const startedUnder = useAuthStore.getState().sessionNonce;
+      const stillOurs = () =>
+        useAuthStore.getState().userId === startedAs &&
+        useAuthStore.getState().sessionNonce === startedUnder;
       try {
         if (!(await Sharing.isAvailableAsync())) {
           setKeptError(t('siteLog.kept.export_unavailable'));
           return;
         }
+        if (!stillOurs()) return;
         await Sharing.shareAsync(uri, { mimeType: 'audio/m4a', dialogTitle: name });
       } catch {
-        setKeptError(t('siteLog.kept.export_failed'));
+        if (stillOurs()) setKeptError(t('siteLog.kept.export_failed'));
       }
     },
     [t],

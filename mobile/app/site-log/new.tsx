@@ -169,12 +169,54 @@ export default function NewSiteLogEntry() {
         const finalSize = a.size ?? kept.size;
         if (exceedsLimit(finalSize, maxUploadBytes)) {
           // A picked file still exists in the library or in Files, so
-          // dropping our copy costs nothing. A RECORDING is measured
-          // before it gets here and never reaches this branch as one -
-          // unless its size could not be read at all, and then the copy
-          // is LEFT ALONE rather than deleted. Nothing irreplaceable is
-          // removed to enforce a limit.
-          if (origin === 'pickable') await releaseAttachment(kept.uri);
+          // dropping our copy costs nothing.
+          //
+          // A RECORDING reaches this branch only when its source size
+          // could not be read, so the copy in the capture directory is
+          // the first measurement anyone has - and leaving it there is
+          // not preservation: unmount calls releaseCapture and it goes.
+          // It is preserved at account level and indexed, exactly as the
+          // measured path does. If THAT fails the copy is left where it
+          // is rather than deleted: still at risk from cleanup, but
+          // never destroyed by this code.
+          if (origin === 'pickable') {
+            await releaseAttachment(kept.uri);
+          } else {
+            try {
+              const saved = await keepOversizedRecording({
+                userId,
+                attachmentId: a.attachment_client_id,
+                sourceUri: kept.uri,
+                name: a.name,
+                expectedSize: finalSize,
+              });
+              await useKeptRecordings.getState().add({
+                id: a.attachment_client_id,
+                user_id: userId,
+                name: a.name,
+                path: saved.path,
+                size: saved.size,
+                created_at: Date.now(),
+                capture_client_id: captureClientId,
+              });
+              await releaseAttachment(kept.uri);
+              setBanner(
+                t('siteLog.error.recording_too_large', {
+                  size: formatBytes(saved.size),
+                  limit: formatBytes(maxUploadBytes),
+                }),
+              );
+              return;
+            } catch {
+              setBanner(
+                t('siteLog.error.recording_too_large_not_kept', {
+                  size: formatBytes(finalSize as number),
+                  limit: formatBytes(maxUploadBytes),
+                }),
+              );
+              return;
+            }
+          }
           // Not attached either way: an attachment over the cap would make
           // the whole capture undeclarable, text and other files included.
           setBanner(
@@ -311,6 +353,7 @@ export default function NewSiteLogEntry() {
               attachmentId,
               sourceUri: uri,
               name,
+              expectedSize: recordedSize,
             });
             await useKeptRecordings.getState().add({
               id: attachmentId,
