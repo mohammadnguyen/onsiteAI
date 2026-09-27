@@ -67,9 +67,31 @@ function fail(lines) {
 }
 
 /**
- * Every installed path that carries expo-module.config.json, grouped by
- * package name. The lockfile gives the paths and versions; the file on disk
- * decides which of them autolinking will actually try to build.
+ * Is this installed package one that autolinking will try to BUILD?
+ *
+ * Two families, because this project has both:
+ *  - Expo modules, marked by expo-module.config.json, the file Expo's
+ *    autolinking reads.
+ *  - React Native community modules, which have no such file. They are
+ *    recognised the way the RN CLI does in practice: a package that ships
+ *    BOTH an android/ and an ios/ directory has native source to compile.
+ *    react-native-screens and react-native-safe-area-context are both of
+ *    these, both are native peers of expo-router, and an inventory built
+ *    only from Expo manifests silently skipped them.
+ *
+ * Requiring both directories rather than either keeps out packages that
+ * merely ship an example app for one platform.
+ */
+function isNativePackage(installedPath) {
+  const dir = join(projectRoot, installedPath)
+  if (existsSync(join(dir, 'expo-module.config.json'))) return true
+  return existsSync(join(dir, 'android')) && existsSync(join(dir, 'ios'))
+}
+
+/**
+ * Every installed path holding a native module, grouped by package name.
+ * The lockfile gives the paths and versions; the files on disk decide
+ * which of them autolinking will actually try to build.
  */
 function nativeModulesByName() {
   const lockPath = join(projectRoot, 'package-lock.json')
@@ -83,7 +105,7 @@ function nativeModulesByName() {
     if (path === '' || !path.startsWith('node_modules/')) continue
     if (entry.link) continue
     const name = path.slice(path.lastIndexOf('node_modules/') + 'node_modules/'.length)
-    if (!existsSync(join(projectRoot, path, 'expo-module.config.json'))) continue
+    if (!isNativePackage(path)) continue
     if (!byName.has(name)) byName.set(name, [])
     byName.get(name).push({ path, version: entry.version ?? '?' })
   }
@@ -190,6 +212,11 @@ function runExpoDoctor() {
     cwd: projectRoot,
     encoding: 'utf8',
     shell: process.platform === 'win32',
+    // Colour off. With FORCE_COLOR set, expo-doctor colours the tick
+    // separately from the text and leaves an ANSI reset between them, so
+    // matching "✔ <title>" fails on output that actually passed - the gate
+    // would then reject a perfectly good tree.
+    env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
   })
 
   if (result.error) {
@@ -201,8 +228,13 @@ function runExpoDoctor() {
     ])
   }
 
-  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
-  process.stdout.write(output.endsWith('\n') ? output : `${output}\n`)
+  const raw = `${result.stdout ?? ''}${result.stderr ?? ''}`
+  process.stdout.write(raw.endsWith('\n') ? raw : `${raw}\n`)
+  // Belt and braces with NO_COLOR above: strip any escape sequence that
+  // survives, so the matching below sees plain text whatever the terminal
+  // or CI has set.
+  // eslint-disable-next-line no-control-regex
+  const output = raw.replace(/\u001B\[[0-9;]*m/g, '')
 
   const failedFatal = FATAL_DOCTOR_CHECKS.filter((check) =>
     output.includes(`✖ ${check}`),

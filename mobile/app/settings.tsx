@@ -77,8 +77,16 @@ export default function SettingsScreen() {
     // Scoped to the account leaving, and to what it agreed to lose. Other
     // accounts' unsent captures on this phone are not this one's to
     // destroy, and neither is one saved after the question was answered.
+    //
+    // Nothing navigates here. `clear()` above already dropped the tokens,
+    // and the root layout's auth effect - the single choke point every
+    // logout path crosses - has taken the user to login by the time this
+    // line runs. Replacing the route again from a callback that has been
+    // awaiting storage writes and file deletions is a stale navigation:
+    // if the wait is long enough for someone to sign in again, it would
+    // throw the NEW session back to login and unmount whatever they had
+    // open.
     await wipeOnExplicitLogout(userId, confirmedCaptureIds);
-    router.replace('/(auth)/login');
   };
 
   const onLogout = () => {
