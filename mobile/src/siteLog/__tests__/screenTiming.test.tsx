@@ -513,6 +513,55 @@ describe('the capture screen, when the user leaves mid-submission', () => {
   });
 });
 
+describe('discarding a draft, answered after the session ended', () => {
+  beforeEach(() => {
+    mockSearchParams = { captureClientId: 'capture-9' };
+    useSiteLogDrafts.setState({ drafts: [draftFor('capture-9')], submitting: [] });
+  });
+
+  it('REGRESSION: a confirmation answered after a logout keeps the draft', async () => {
+    // A native alert outlives a session. An INVOLUNTARY logout keeps
+    // drafts on purpose - so a discard confirmed after one was deleting
+    // the previous session's work and its attachment directory.
+    let tree!: ReactTestRenderer;
+    await act(async () => {
+      tree = create(React.createElement(ResumeSiteLogDraft));
+    });
+
+    pressId(tree, 'draft-discard');
+    expect(mockConfirm).toHaveBeenCalledTimes(1);
+    const { onConfirm } = mockConfirm.mock.calls[0][0] as { onConfirm: () => void };
+
+    // ...the session dies while the alert is still up...
+    act(() => {
+      useAuthStore.setState({ accessToken: null, userId: null, sessionNonce: 2 });
+    });
+    await act(async () => {
+      onConfirm();
+      await flush();
+    });
+
+    expect(useSiteLogDrafts.getState().get('capture-9')).toBeDefined();
+  });
+
+  it('still discards when the session is unchanged', async () => {
+    // So the guard is not simply "never".
+    let tree!: ReactTestRenderer;
+    await act(async () => {
+      tree = create(React.createElement(ResumeSiteLogDraft));
+    });
+
+    pressId(tree, 'draft-discard');
+    const { onConfirm } = mockConfirm.mock.calls[0][0] as { onConfirm: () => void };
+    await act(async () => {
+      onConfirm();
+      await flush();
+    });
+
+    expect(useSiteLogDrafts.getState().get('capture-9')).toBeUndefined();
+  });
+});
+
 describe('the resume screen, when the user leaves mid-submission', () => {
   beforeEach(() => {
     mockSearchParams = { captureClientId: 'capture-9' };

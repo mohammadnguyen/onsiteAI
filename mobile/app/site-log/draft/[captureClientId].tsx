@@ -130,18 +130,29 @@ export default function ResumeSiteLogDraft() {
     // Checked again here, not only through the disabled button: the store
     // is the only thing that knows about a submission started elsewhere.
     if (store.submitting.includes(draft.capture_client_id)) return;
+    // WHO IS ASKING, fixed before the dialog opens. A native alert
+    // outlives a session: a terminal 401 can end it while the alert is
+    // still on screen, and an involuntary logout deliberately KEEPS
+    // drafts - so a confirmation answered afterwards was deleting the
+    // previous session's draft and its attachment directory. Same rule
+    // the submit outcome above already applies.
+    const startedAs = useAuthStore.getState().userId;
+    const startedUnder = useAuthStore.getState().sessionNonce;
     confirmDestructive({
       title: t('siteLog.draft.discard_title'),
       body: t('siteLog.draft.discard_body'),
       confirmLabel: t('siteLog.draft.discard_confirm'),
       cancelLabel: t('common.cancel'),
       onConfirm: () => {
+        const now = useAuthStore.getState();
+        if (now.userId !== startedAs || now.sessionNonce !== startedUnder) return;
         // Explicitly discarded by the user: the kept files go with it.
         void store.removeAndRelease(draft.capture_client_id);
-        router.back();
+        // Only if this screen is still the one in front of them.
+        if (activeRef.current) router.back();
       },
     });
-  }, [draft, store, t]);
+  }, [activeRef, draft, store, t]);
 
   if (!draft) {
     return (
@@ -214,7 +225,12 @@ export default function ResumeSiteLogDraft() {
         {/* Not while a submission is running: discarding would delete the
             recovery information and the files it is still using, without
             stopping it. */}
-        <Pressable onPress={discard} style={s.discard} disabled={busy || sending}>
+        <Pressable
+          onPress={discard}
+          style={s.discard}
+          disabled={busy || sending}
+          testID="draft-discard"
+        >
           <Text style={busy || sending ? s.discardDisabled : s.discardText}>
             {t('siteLog.draft.discard')}
           </Text>
