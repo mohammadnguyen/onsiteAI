@@ -195,6 +195,15 @@ function render(): ReactTestRenderer {
   return tree;
 }
 
+/** Files carry the visit number, so they are matched by shape, not spelled out. */
+function fileFor(evidence: string, ext: string): RegExp {
+  return new RegExp(`^file:///cache/sitelog-v\\d+-${evidence}\\.${ext}$`);
+}
+
+function cachedFiles(): string[] {
+  return [...memfs.files.keys()].filter((k) => k.startsWith('file:///cache/'));
+}
+
 beforeEach(() => {
   memfs.reset();
   mockApiGet.mockReset();
@@ -271,12 +280,51 @@ describe('photo', () => {
     ]);
     expect(has(tree, 'viewer-image')).toBe(true);
     const image = tree.root.findByProps({ testID: 'viewer-image-body' });
-    expect(image.props.source).toEqual({ uri: 'file:///cache/sitelog-ev-img.jpg' });
+    expect(image.props.source.uri).toMatch(fileFor('ev-img', 'jpg'));
     // The scratch file is gone; only the promoted file remains.
-    expect([...memfs.files.keys()].filter((k) => k.endsWith('.part'))).toEqual([]);
+    expect(cachedFiles()).toEqual([image.props.source.uri]);
 
     await act(async () => press(tree, 'viewer-close'));
     expect(has(tree, 'viewer-image')).toBe(false);
+
+    // Leaving the screen removes what this visit downloaded.
+    act(() => tree.unmount());
+    await flush();
+    expect(cachedFiles()).toEqual([]);
+  });
+
+  it('is never deleted by a download that a PREVIOUS visit started and finished late', async () => {
+    // Visit 1 starts a download and the user leaves before it finishes.
+    // Visit 2 (same record) downloads and shows the same attachment. Then
+    // visit 1's download completes: it must not touch visit 2's file.
+    mockEvent = eventWith([att('img', 'image')]);
+    let releaseOld!: () => void;
+    const holdOld = new Promise<void>((r) => {
+      releaseOld = r;
+    });
+    memfs.downloads.push(
+      { status: 200, headers: { 'content-type': 'image/jpeg' }, hold: holdOld },
+      { status: 200, headers: { 'content-type': 'image/jpeg' } },
+    );
+    const visit1 = render();
+    await act(async () => press(visit1, 'view:img'));
+    act(() => visit1.unmount());
+
+    const visit2 = render();
+    await act(async () => press(visit2, 'view:img'));
+    await flush();
+    const shown = visit2.root.findByProps({ testID: 'viewer-image-body' }).props.source.uri as string;
+    expect(shown).toMatch(fileFor('ev-img', 'jpg'));
+    expect(memfs.files.has(shown)).toBe(true);
+
+    releaseOld();
+    await flush();
+
+    // Visit 2's file is intact and still the only cached file; visit 1's
+    // late bytes left nothing behind.
+    expect(memfs.files.has(shown)).toBe(true);
+    expect(cachedFiles()).toEqual([shown]);
+    expect(has(visit2, 'viewer-image')).toBe(true);
   });
 });
 
@@ -290,9 +338,9 @@ describe('PDF', () => {
     await flush();
 
     const web = tree.root.findByProps({ testID: 'viewer-pdf' });
-    expect(web.props.source).toEqual({ uri: 'file:///cache/sitelog-ev-doc.pdf' });
+    expect(web.props.source.uri).toMatch(fileFor('ev-doc', 'pdf'));
     // Read access is the document itself, not the cache directory.
-    expect(web.props.allowingReadAccessToURL).toBe('file:///cache/sitelog-ev-doc.pdf');
+    expect(web.props.allowingReadAccessToURL).toBe(web.props.source.uri);
     expect(has(tree, 'viewer-failed')).toBe(false);
 
     await act(async () => (web.props as { onError: () => void }).onError());
@@ -316,18 +364,20 @@ describe('PDF', () => {
     // sees.
     expect(web.props.allowsLinkPreview).toBe(false);
     const may = web.props.onShouldStartLoadWithRequest as (r: { url: string }) => boolean;
-    expect(may({ url: 'file:///cache/sitelog-ev-doc.pdf' })).toBe(true);
+    const uri = web.props.source.uri as string;
+    const name = uri.slice(uri.lastIndexOf('/') + 1);
+    expect(may({ url: uri })).toBe(true);
     // The same file, percent-encoded or with a fragment, is the same file.
-    expect(may({ url: 'file:///cache/sitelog-ev-doc%2Epdf' })).toBe(true);
-    expect(may({ url: 'file:///cache/sitelog-ev-doc.pdf#page=2' })).toBe(true);
+    expect(may({ url: uri.replace('.pdf', '%2Epdf') })).toBe(true);
+    expect(may({ url: `${uri}#page=2` })).toBe(true);
     // Everything else is refused - including a same-named file in another
     // directory, which is a different file.
     expect(may({ url: 'https://example.com/drawing.pdf' })).toBe(false);
     expect(may({ url: 'http://converter.example/upload' })).toBe(false);
-    expect(may({ url: 'file:///cache/sitelog-ev-other.pdf' })).toBe(false);
-    expect(may({ url: 'file:///cache/other/sitelog-ev-doc.pdf' })).toBe(false);
-    expect(may({ url: 'file:///private/cache/sitelog-ev-doc.pdf' })).toBe(false);
-    expect(may({ url: 'file:///cache/../cache/sitelog-ev-doc.pdf' })).toBe(false);
+    expect(may({ url: uri.replace('ev-doc', 'ev-other') })).toBe(false);
+    expect(may({ url: `file:///cache/other/${name}` })).toBe(false);
+    expect(may({ url: uri.replace('file:///cache/', 'file:///private/cache/') })).toBe(false);
+    expect(may({ url: uri.replace('file:///cache/', 'file:///cache/../cache/') })).toBe(false);
     expect(may({ url: 'file:///documents/site-log/user-a/x/recording.m4a' })).toBe(false);
     // The full policy, including the iOS /private/var alias, is tested on
     // its own in localDocument.test.ts.
@@ -344,18 +394,21 @@ describe('PDF', () => {
     await flush();
     let web = tree.root.findByProps({ testID: 'viewer-pdf' });
     let may = web.props.onShouldStartLoadWithRequest as (r: { url: string }) => boolean;
-    expect(may({ url: 'file:///cache/sitelog-ev-a.pdf' })).toBe(true);
-    expect(may({ url: 'file:///cache/sitelog-ev-b.pdf' })).toBe(false);
+    const uriA = web.props.source.uri as string;
+    expect(uriA).toMatch(fileFor('ev-a', 'pdf'));
+    expect(may({ url: uriA })).toBe(true);
+    expect(may({ url: uriA.replace('ev-a', 'ev-b') })).toBe(false);
     await act(async () => press(tree, 'viewer-close'));
 
     await act(async () => press(tree, 'view:b'));
     await flush();
     web = tree.root.findByProps({ testID: 'viewer-pdf' });
     may = web.props.onShouldStartLoadWithRequest as (r: { url: string }) => boolean;
-    expect(web.props.source).toEqual({ uri: 'file:///cache/sitelog-ev-b.pdf' });
-    expect(web.props.allowingReadAccessToURL).toBe('file:///cache/sitelog-ev-b.pdf');
-    expect(may({ url: 'file:///cache/sitelog-ev-b.pdf' })).toBe(true);
-    expect(may({ url: 'file:///cache/sitelog-ev-a.pdf' })).toBe(false);
+    const uriB = web.props.source.uri as string;
+    expect(uriB).toMatch(fileFor('ev-b', 'pdf'));
+    expect(web.props.allowingReadAccessToURL).toBe(uriB);
+    expect(may({ url: uriB })).toBe(true);
+    expect(may({ url: uriA })).toBe(false);
   });
 
   it('is not offered as an in-app view on Android, where the web view cannot render it', async () => {
@@ -423,7 +476,9 @@ describe('recording', () => {
     expect(mockSetAudioMode).toHaveBeenCalledWith(
       expect.objectContaining({ playsInSilentMode: true, allowsRecording: false }),
     );
-    expect(mockPlayer.replace).toHaveBeenCalledWith({ uri: 'file:///cache/sitelog-ev-voice.m4a' });
+    expect(mockPlayer.replace).toHaveBeenCalledWith({
+      uri: expect.stringMatching(fileFor('ev-voice', 'm4a')),
+    });
     expect(mockPlayer.play).toHaveBeenCalledTimes(1);
     // Mode first, then the source, then play.
     const order = [
@@ -496,7 +551,9 @@ describe('recording', () => {
     await act(async () => press(tree, 'audio-toggle:b'));
     await flush();
 
-    expect(mockPlayer.replace).toHaveBeenLastCalledWith({ uri: 'file:///cache/sitelog-ev-b.m4a' });
+    expect(mockPlayer.replace).toHaveBeenLastCalledWith({
+      uri: expect.stringMatching(fileFor('ev-b', 'm4a')),
+    });
     expect(mockPlayer.play).toHaveBeenCalledTimes(2);
     expect(mockPlayer.pause.mock.calls.length).toBe(pausesAfterA);
     expect(has(tree, 'audio-player')).toBe(true);
@@ -509,6 +566,41 @@ describe('recording', () => {
     });
     expect(has(tree, 'audio-failed')).toBe(true);
     expect(has(tree, 'audio-player')).toBe(false);
+  });
+
+  it('does not read Android\'s "loaded but idle" as ready: the clock still runs, and it fails', async () => {
+    // expo-audio on Android derives isLoaded from "no longer loading" -
+    // which is also what a decode failure looks like, with the player idle.
+    jest.useFakeTimers();
+    try {
+      mockEvent = eventWith([att('voice', 'audio')]);
+      memfs.downloads.push({ status: 200, headers: { 'content-type': 'audio/m4a' } });
+      const tree = render();
+      await act(async () => press(tree, 'audio-toggle:voice'));
+      await flush();
+
+      mockStatus = { ...mockStatus, isLoaded: true, playbackState: 'idle' };
+      await act(async () => {
+        tree.update(<SiteLogRecordDetail />);
+      });
+      // Not shown as playable; a second tap does not take the "already
+      // loaded, just toggle" path - it prepares the player again.
+      expect(showsText(tree, 'siteLog.detail.audio_loading')).toBe(true);
+      await act(async () => press(tree, 'audio-toggle:voice'));
+      await flush();
+      expect(mockPlayer.replace).toHaveBeenCalledTimes(2);
+      expect(mockPlayer.play).toHaveBeenCalledTimes(2);
+      expect(mockPlayer.pause).not.toHaveBeenCalled();
+
+      await act(async () => {
+        jest.advanceTimersByTime(21_000);
+      });
+      expect(has(tree, 'audio-failed')).toBe(true);
+      expect(has(tree, 'audio-player')).toBe(false);
+      expect(has(tree, 'share:voice')).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('gives up on a recording that never loads, instead of "Loading…" for ever', async () => {
@@ -601,8 +693,8 @@ describe('the download', () => {
     expect(memfs.downloadCalls.filter((c) => c.url.endsWith('/ev-a/download'))).toHaveLength(1);
     expect(has(tree, 'viewer-pdf')).toBe(true);
     expect(showsText(tree, 'siteLog.error.download')).toBe(false);
-    expect(memfs.files.has('file:///cache/sitelog-ev-a.pdf')).toBe(true);
-    expect([...memfs.files.keys()].filter((k) => k.endsWith('.part'))).toEqual([]);
+    expect(cachedFiles().filter((k) => fileFor('ev-a', 'pdf').test(k))).toHaveLength(1);
+    expect(cachedFiles().filter((k) => k.endsWith('.part'))).toEqual([]);
   });
 
   it('caches nothing from a non-200 answer', async () => {
@@ -614,7 +706,7 @@ describe('the download', () => {
     await flush();
 
     expect(has(tree, 'viewer-image')).toBe(false);
-    expect([...memfs.files.keys()].filter((k) => k.includes('sitelog-ev-img'))).toEqual([]);
+    expect(cachedFiles()).toEqual([]);
     expect(showsText(tree, 'siteLog.error.download')).toBe(true);
   });
 });
@@ -747,7 +839,7 @@ describe('share', () => {
     await act(async () => press(tree, 'share:doc'));
     await flush();
 
-    expect(mockShare).toHaveBeenCalledWith('file:///cache/sitelog-ev-doc.pdf', {
+    expect(mockShare).toHaveBeenCalledWith(expect.stringMatching(fileFor('ev-doc', 'pdf')), {
       mimeType: 'application/pdf',
     });
     expect(has(tree, 'viewer-pdf')).toBe(false);

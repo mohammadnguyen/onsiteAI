@@ -78,6 +78,26 @@ function headerValue(
  */
 const AUDIO_LOAD_TIMEOUT_MS = 20_000;
 
+/**
+ * Is this status a recording that is really ready to play?
+ *
+ * `isLoaded` alone is not that. On Android expo-audio derives it from
+ * "no longer loading", which is also what a decode FAILURE looks like:
+ * ExoPlayer stops loading and sits in `idle`. Reading that as loaded would
+ * cancel the failure clock and offer a Play that does nothing.
+ */
+function isReady(status: { isLoaded: boolean; playbackState: string }): boolean {
+  return status.isLoaded && status.playbackState !== 'idle';
+}
+
+/**
+ * Every mount of this screen is a visit, numbered once per process. The
+ * files a visit downloads carry its number, so a download that finishes
+ * AFTER the user left and came back can never touch - let alone delete -
+ * the file the new visit is showing.
+ */
+let visits = 0;
+
 /** m:ss for a duration in seconds; "--:--" when not known yet. */
 function clock(seconds: number | undefined): string {
   if (seconds === undefined || !Number.isFinite(seconds) || seconds < 0) return '--:--';
@@ -160,10 +180,21 @@ export default function SiteLogRecordDetail() {
   // Is this screen the one in front of the user? Read inside async work
   // that outlives the render it started in.
   const activeRef = useScreenActive();
+  // This visit's number (see `visits`), fixed at first render.
+  const visitId = useRef<string | null>(null);
+  if (visitId.current === null) {
+    visits += 1;
+    visitId.current = String(visits);
+  }
+  // Is this visit still mounted? Read by downloads that outlive it.
+  const mounted = useRef(true);
   // What this screen has already downloaded. Deliberately per visit: a file
   // cached under a previous sign-in is never reused, and a failed download
   // leaves nothing behind to be served later.
   const cached = useRef(new Map<string, CachedFile>());
+  // Every file this visit promoted, cached or not, so leaving the screen
+  // removes them all. A visit's files are its own: nothing else names them.
+  const produced = useRef(new Set<string>());
   // Downloads in progress, so a second tap on the same attachment joins the
   // first download instead of starting another one onto the same files.
   // Joined only within the session that started it.
@@ -171,6 +202,20 @@ export default function SiteLogRecordDetail() {
   // Scratch names are unique per attempt: two attempts never share a
   // `.part`, whatever else goes wrong.
   const attempts = useRef(0);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+      // Best effort, unawaited: the screen is gone. A download still
+      // running sees `mounted` false and removes its own scratch.
+      for (const uri of produced.current) {
+        void FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined);
+      }
+      produced.current.clear();
+      cached.current.clear();
+      inflight.current.clear();
+    },
+    [],
+  );
   // Opening an attachment downloads it with expo-file-system, which has no
   // web implementation. Offering a button that cannot work is worse than
   // saying where it does work.
@@ -239,7 +284,8 @@ export default function SiteLogRecordDetail() {
     // response body whatever the status, so promoting on existence alone
     // would cache a 401 page and then keep serving it as the attachment.
     attempts.current += 1;
-    const scratch = `${FileSystem.cacheDirectory}sitelog-${att.evidence_id}-${attempts.current}.part`;
+    const stem = `${FileSystem.cacheDirectory}sitelog-v${visitId.current}-${att.evidence_id}`;
+    const scratch = `${stem}-${attempts.current}.part`;
     const attempt = () => {
       // Read at each attempt, never closed over: after a refresh the stored
       // token is a different one.
@@ -262,17 +308,18 @@ export default function SiteLogRecordDetail() {
       await FileSystem.deleteAsync(scratch, { idempotent: true });
       return null;
     }
-    if (res.status !== 200) {
+    if (res.status !== 200 || !mounted.current) {
+      // Not a file to keep: a bad answer, or a visit that has ended while
+      // the bytes were still coming.
       await FileSystem.deleteAsync(scratch, { idempotent: true });
       return null;
     }
 
     const mime = (headerValue(res.headers, 'content-type') ?? '').split(';')[0].trim();
-    const target =
-      `${FileSystem.cacheDirectory}sitelog-${att.evidence_id}` +
-      (EXTENSION_BY_MIME[mime] ?? '');
+    const target = stem + (EXTENSION_BY_MIME[mime] ?? '');
     await FileSystem.deleteAsync(target, { idempotent: true });
     await FileSystem.moveAsync({ from: scratch, to: target });
+    produced.current.add(target);
 
     const entry: CachedFile = { uri: target, mime: mime || undefined };
     // Cached only for the session it was fetched for. The file itself is
@@ -432,7 +479,7 @@ export default function SiteLogRecordDetail() {
       const failed = (message: string) => setAudioFailed({ id, message });
       setAudioFailed(null);
       // Already loaded here: just toggle.
-      if (audioAttId === id && audio.isLoaded) {
+      if (audioAttId === id && isReady(audio)) {
         try {
           if (audio.playing) player.pause();
           else player.play();
@@ -478,7 +525,7 @@ export default function SiteLogRecordDetail() {
         setBusy(id, false);
       }
     },
-    [audio.isLoaded, audio.playing, audioAttId, fetchGuarded, player, setBusy, stillHere, t],
+    [audio, audioAttId, fetchGuarded, player, setBusy, stillHere, t],
   );
 
   // A recording that downloaded fine can still fail in the native player -
@@ -506,7 +553,9 @@ export default function SiteLogRecordDetail() {
       giveUp();
       return;
     }
-    if (fresh && audio.isLoaded) return;
+    // Ready, by a fresh status: the clock stops. "Loaded" in an idle player
+    // is Android's failure shape and does not count.
+    if (fresh && isReady(audio)) return;
     const timer = setTimeout(giveUp, AUDIO_LOAD_TIMEOUT_MS);
     return () => clearTimeout(timer);
   }, [audio, audioAttId, player, t]);
@@ -541,8 +590,9 @@ export default function SiteLogRecordDetail() {
   // that does not send the flag hides nothing, and a .txt the user really
   // attached is `text` too and stays.
   const files = e.attachments.filter((a) => a.is_inline_text !== true);
+  const audioReady = isReady(audio);
   const progress =
-    audio.isLoaded && audio.duration > 0
+    audioReady && audio.duration > 0
       ? Math.min(1, Math.max(0, audio.currentTime / audio.duration))
       : 0;
 
@@ -627,7 +677,7 @@ export default function SiteLogRecordDetail() {
                     <View style={[s.trackFill, { width: `${Math.round(progress * 100)}%` }]} />
                   </View>
                   <Text style={s.clock}>
-                    {audio.isLoaded
+                    {audioReady
                       ? `${clock(audio.currentTime)} / ${clock(audio.duration)}`
                       : t('siteLog.detail.audio_loading')}
                   </Text>
