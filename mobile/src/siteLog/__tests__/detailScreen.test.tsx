@@ -9,7 +9,7 @@
  * Lives under src/ for the same reason screenTiming.test.tsx does: a file
  * under app/ is a route.
  */
-import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import React from 'react';
 
 // ---- focus, controlled by the test --------------------------------------
@@ -40,6 +40,18 @@ jest.mock('expo-router', () => ({
 }));
 
 jest.mock('react-i18next', () => ({ useTranslation: () => ({ t: (k: string) => k }) }));
+
+// The insets a provider reports on a phone with a Dynamic Island. The
+// viewer must pad by these - from the provider it renders INSIDE the
+// Modal - not by a SafeAreaView of its own. That provider is a pass-through
+// here (its native measurement never happens in jest); the test asserts it
+// is in place, the library's own source says what it does.
+let mockInsets = { top: 59, bottom: 34, left: 0, right: 0 };
+jest.mock('react-native-safe-area-context', () => {
+  const actual = jest.requireActual('react-native-safe-area-context');
+  const MockProvider = ({ children }: { children: unknown }) => children;
+  return { ...actual, useSafeAreaInsets: () => mockInsets, SafeAreaProvider: MockProvider };
+});
 
 // The record, read lazily so each test can shape it.
 let mockEvent: Record<string, unknown> | undefined;
@@ -161,9 +173,34 @@ async function flush(): Promise<void> {
   }
 }
 
+/** Press a control the way a finger would get to: it must be a Pressable,
+ *  enabled, with no ancestor refusing pointer events. Calling onPress on a
+ *  bare View would "pass" here and do nothing on a phone. */
 function press(tree: ReactTestRenderer, testID: string): void {
   const node = tree.root.findByProps({ testID });
+  // Pressable is exported wrapped in React.memo; the renderer reports the
+  // inner component as the instance type.
+  const P = require('react-native').Pressable as { type?: unknown };
+  expect([P, P.type]).toContain(node.type);
+  expect(node.props.disabled).toBeFalsy();
+  for (const ancestor of ancestorsOf(tree, node)) {
+    expect(ancestor.props.pointerEvents).not.toBe('none');
+  }
   (node.props as { onPress: () => void }).onPress();
+}
+
+/** Every instance from the root down to (excluding) `node`. */
+function ancestorsOf(tree: ReactTestRenderer, node: ReactTestInstance): ReactTestInstance[] {
+  const path: ReactTestInstance[] = [];
+  const walk = (n: ReactTestInstance, trail: ReactTestInstance[]): boolean => {
+    if (n === node) {
+      path.push(...trail);
+      return true;
+    }
+    return n.children.some((c) => typeof c !== 'string' && walk(c, [...trail, n]));
+  };
+  walk(tree.root, []);
+  return path;
 }
 
 function has(tree: ReactTestRenderer, testID: string): boolean {
@@ -225,6 +262,7 @@ beforeEach(() => {
   };
   mockAudioModeHold = null;
   mockShareHold = null;
+  mockInsets = { top: 59, bottom: 34, left: 0, right: 0 };
   mockFocusCleanups.length = 0;
   act(() => {
     useAuthStore.setState({ accessToken: 'tok-a', userId: 'user-a', sessionNonce: 1 });
@@ -294,6 +332,83 @@ describe('photo', () => {
     expect(cachedFiles()).toEqual([]);
   });
 
+  it('keeps its controls inside the safe area, from the root provider, and closes from either end', async () => {
+    mockEvent = eventWith([att('img', 'image')]);
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'image/jpeg' } });
+    const tree = render();
+    await act(async () => press(tree, 'view:img'));
+    await flush();
+
+    // Padded by the insets of the provider rendered inside the Modal - not
+    // a SafeAreaView, which inside a Modal reads nothing.
+    const RN = require('react-native');
+    const SAC = require('react-native-safe-area-context');
+    const modal = tree.root.findByType(RN.Modal);
+    // The Modal's first child is its own provider; nothing pads between
+    // the Modal and viewer-root; no SafeAreaView anywhere inside the Modal.
+    expect(modal.findAllByType(SAC.SafeAreaView)).toHaveLength(0);
+    expect(modal.findAllByType(SAC.SafeAreaProvider)).toHaveLength(1);
+    // Host nodes in document order: the Modal's own host element, then -
+    // with nothing padding in between - viewer-root.
+    const hosts = modal.findAll((n) => typeof n.type === 'string');
+    const firstHost = hosts[1];
+    expect(firstHost.props.testID).toBe('viewer-root');
+    const root = tree.root.findByProps({ testID: 'viewer-root' });
+    const style = Object.assign({}, ...[root.props.style].flat(Infinity).filter(Boolean));
+    expect(style.paddingTop).toBe(59);
+    expect(style.paddingBottom).toBe(34);
+    expect(root.props.pointerEvents).not.toBe('none');
+    // The bottom Close is viewer-root's LAST child, outside the zoomable
+    // body, and nothing else in the frame is absolutely positioned over it.
+    const kids = firstHost.children.filter((c): c is ReactTestInstance => typeof c !== 'string');
+    expect(kids[kids.length - 1].props.testID).toBe('viewer-close-bottom');
+    expect(tree.root.findByProps({ testID: 'viewer-image' }).findAllByProps({ testID: 'viewer-close-bottom' })).toHaveLength(0);
+    const absolute = kids
+      .filter((k) => Object.assign({}, ...[k.props.style].flat(Infinity).filter(Boolean)).position === 'absolute')
+      .map((k) => k.props.testID);
+    expect(absolute).toEqual([]);
+
+    // Insets follow the provider: an in-call status bar on an older phone
+    // grows the top inset, and the bar moves with it.
+    mockInsets = { top: 79, bottom: 34, left: 0, right: 0 };
+    await act(async () => {
+      tree.update(<SiteLogRecordDetail />);
+    });
+    const restyled = Object.assign(
+      {},
+      ...[tree.root.findByProps({ testID: 'viewer-root' }).props.style].flat(Infinity).filter(Boolean),
+    );
+    expect(restyled.paddingTop).toBe(79);
+
+    // Bottom Close closes.
+    expect(has(tree, 'viewer-close-bottom')).toBe(true);
+    await act(async () => press(tree, 'viewer-close-bottom'));
+    expect(has(tree, 'viewer-image')).toBe(false);
+    expect(has(tree, 'viewer-root')).toBe(false);
+
+    // Top Close closes too.
+    await act(async () => press(tree, 'view:img'));
+    await flush();
+    expect(has(tree, 'viewer-image')).toBe(true);
+    await act(async () => press(tree, 'viewer-close'));
+    expect(has(tree, 'viewer-image')).toBe(false);
+  });
+
+  it('can be left while a photo has failed to display', async () => {
+    mockEvent = eventWith([att('img', 'image')]);
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'image/jpeg' } });
+    const tree = render();
+    await act(async () => press(tree, 'view:img'));
+    await flush();
+    const image = tree.root.findByProps({ testID: 'viewer-image-body' });
+    await act(async () => (image.props as { onError: () => void }).onError());
+    expect(has(tree, 'viewer-failed')).toBe(true);
+    expect(has(tree, 'viewer-close')).toBe(true);
+    await act(async () => press(tree, 'viewer-close-bottom'));
+    expect(has(tree, 'viewer-root')).toBe(false);
+    expect(has(tree, 'viewer-failed')).toBe(false);
+  });
+
   it('is never deleted by a download that a PREVIOUS visit started and finished late', async () => {
     // Visit 1 starts a download and the user leaves before it finishes.
     // Visit 2 (same record) downloads and shows the same attachment. Then
@@ -344,8 +459,42 @@ describe('PDF', () => {
     expect(web.props.allowingReadAccessToURL).toBe(web.props.source.uri);
     expect(has(tree, 'viewer-failed')).toBe(false);
 
-    await act(async () => (web.props as { onError: () => void }).onError());
+    // Still loading (no onLoadEnd yet): both Close controls are there, the
+    // bottom one is not inside the web view, the spinner is the only
+    // absolutely positioned element, and the bottom one leaves.
+    expect(has(tree, 'viewer-spinner')).toBe(true);
+    expect(has(tree, 'viewer-close')).toBe(true);
+    expect(web.findAllByProps({ testID: 'viewer-close-bottom' })).toHaveLength(0);
+    const frame = tree.root.findAll((n) => typeof n.type === 'string' && n.props.testID === 'viewer-root')[0];
+    const absolute = frame.children
+      .filter((c): c is ReactTestInstance => typeof c !== 'string')
+      .filter((k) => Object.assign({}, ...[k.props.style].flat(Infinity).filter(Boolean)).position === 'absolute')
+      .map((k) => k.props.testID);
+    expect(absolute).toEqual(['viewer-spinner']);
+    await act(async () => press(tree, 'viewer-close-bottom'));
+    expect(has(tree, 'viewer-root')).toBe(false);
+
+    // The platform's own request to close (Android back) leaves too, in
+    // the state the device got stuck in.
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'application/pdf' } });
+    await act(async () => press(tree, 'view:doc'));
+    await flush();
+    expect(has(tree, 'viewer-spinner')).toBe(true);
+    const modal = tree.root.findByType(require('react-native').Modal);
+    await act(async () => (modal.props as { onRequestClose: () => void }).onRequestClose());
+    expect(has(tree, 'viewer-root')).toBe(false);
+
+    // Failed: both Close controls are there and the top one leaves.
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'application/pdf' } });
+    await act(async () => press(tree, 'view:doc'));
+    await flush();
+    const web2 = tree.root.findByProps({ testID: 'viewer-pdf' });
+    await act(async () => (web2.props as { onError: () => void }).onError());
     expect(has(tree, 'viewer-failed')).toBe(true);
+    expect(has(tree, 'viewer-close-bottom')).toBe(true);
+    await act(async () => press(tree, 'viewer-close'));
+    expect(has(tree, 'viewer-root')).toBe(false);
+    expect(has(tree, 'viewer-failed')).toBe(false);
   });
 
   it('lets only the opened document load: a link inside the PDF goes nowhere', async () => {
@@ -663,10 +812,11 @@ describe('the download', () => {
     expect(has(tree, 'viewer-image')).toBe(true);
   });
 
-  it('runs one download per attachment however many taps arrive while it is in flight', async () => {
-    // View A, then View B, then View A again before A has finished: the
-    // second A joins the first download. One download, one promotion, no
-    // spurious error, and row A stays busy until its own download ends.
+  it('keeps a row busy until its OWN download ends, whatever else is tapped', async () => {
+    // View A, then View B before A has finished. Row A must stay disabled
+    // (so a second tap cannot start a second download onto the same files)
+    // while B opens and closes; when A's bytes arrive, one download, one
+    // promotion, no spurious error.
     mockEvent = eventWith([att('a', 'document'), att('b', 'image')]);
     let releaseA!: () => void;
     const holdA = new Promise<void>((r) => {
@@ -681,12 +831,13 @@ describe('the download', () => {
     await act(async () => press(tree, 'view:a'));
     await act(async () => press(tree, 'view:b'));
     await flush();
-    // B opened; A is still downloading and still shows as busy.
+    // B opened; A is still downloading and still shows as busy - both of
+    // its controls refuse a tap.
     expect(has(tree, 'viewer-image')).toBe(true);
     await act(async () => press(tree, 'viewer-close'));
     expect(tree.root.findByProps({ testID: 'view:a' }).props.disabled).toBe(true);
-    await act(async () => press(tree, 'view:a'));
-    await flush();
+    expect(tree.root.findByProps({ testID: 'share:a' }).props.disabled).toBe(true);
+    expect(tree.root.findByProps({ testID: 'view:b' }).props.disabled).toBeFalsy();
 
     releaseA();
     await flush();

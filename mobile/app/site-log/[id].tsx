@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -10,7 +10,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
@@ -88,6 +88,36 @@ const AUDIO_LOAD_TIMEOUT_MS = 20_000;
  */
 function isReady(status: { isLoaded: boolean; playbackState: string }): boolean {
   return status.isLoaded && status.playbackState !== 'idle';
+}
+
+/**
+ * The full-screen viewer's frame: a plain View padded by the safe area of
+ * the Modal's OWN provider (rendered as the Modal's first child).
+ *
+ * Why not a SafeAreaView: inside an RN Modal the native SafeAreaView finds
+ * no provider above it, falls back to itself, reads its insets once -
+ * before the presented view has any - and never re-reads. That put the
+ * viewer's Close under the status bar on a real phone, untappable. Why not
+ * the ROOT provider's insets: under a fullScreen presentation UIKit stops
+ * updating the presenting hierarchy, so they are a snapshot taken when the
+ * viewer opened - wrong if the status bar grows (a call arriving on a
+ * home-button iPhone) while it is up. A provider INSIDE the Modal is in the
+ * presented window, starts from the root's values (no zero flash) and
+ * re-measures on every safe-area change.
+ *
+ * Padding is applied here and nowhere else: no SafeAreaView, no second
+ * padded wrapper, between the Modal and this View.
+ */
+function ViewerFrame({ children }: { children: ReactNode }) {
+  const insets = useSafeAreaInsets();
+  return (
+    <View
+      style={[s.viewerSafe, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
+      testID="viewer-root"
+    >
+      {children}
+    </View>
+  );
 }
 
 /**
@@ -713,20 +743,33 @@ export default function SiteLogRecordDetail() {
       </ScrollView>
 
       {/* Full-screen viewer for a photo or a PDF. One modal, two bodies:
-          the close control, the title and the failure text are shared, so
-          both kinds behave the same way. */}
+          the close controls, the title and the failure text are shared, so
+          both kinds behave the same way - and every state of either
+          (loading, shown, failed) can be left.
+
+          Two Close controls, one handler: the top one beside the title,
+          and a full-width one at the bottom within one-handed reach. The
+          top bar alone was the first device finding on this viewer: it
+          rendered under the status bar and could not be tapped. */}
       <Modal
         visible={viewer !== null}
         animationType="fade"
         onRequestClose={closeViewer}
         presentationStyle="fullScreen"
       >
-        <SafeAreaView style={s.viewerSafe} edges={['top', 'bottom']}>
+        {/* The Modal's own safe-area provider - see ViewerFrame. */}
+        <SafeAreaProvider style={s.viewerProvider}>
+          <ViewerFrame>
           <View style={s.viewerBar}>
             <Text style={s.viewerTitle} numberOfLines={1}>
               {viewer?.title ?? ''}
             </Text>
-            <Pressable onPress={closeViewer} hitSlop={12} testID="viewer-close">
+            <Pressable
+              onPress={closeViewer}
+              hitSlop={12}
+              testID="viewer-close"
+              accessibilityRole="button"
+            >
               <Text style={s.viewerClose}>{t('siteLog.detail.close')}</Text>
             </Pressable>
           </View>
@@ -810,7 +853,16 @@ export default function SiteLogRecordDetail() {
                 : t('siteLog.detail.image_failed')}
             </Text>
           ) : null}
-        </SafeAreaView>
+          <Pressable
+            onPress={closeViewer}
+            style={s.viewerBottomClose}
+            testID="viewer-close-bottom"
+            accessibilityRole="button"
+          >
+            <Text style={s.viewerBottomCloseText}>{t('siteLog.detail.close')}</Text>
+          </Pressable>
+          </ViewerFrame>
+        </SafeAreaProvider>
       </Modal>
     </SafeAreaView>
   );
@@ -846,6 +898,7 @@ const s = StyleSheet.create({
   readOnly: { color: tokens.muted, fontSize: 12, marginTop: 16 },
   empty: { color: tokens.muted, marginTop: 16 },
   spinner: { marginTop: 48 },
+  viewerProvider: { flex: 1 },
   viewerSafe: { flex: 1, backgroundColor: '#000000' },
   viewerBar: {
     flexDirection: 'row',
@@ -861,4 +914,14 @@ const s = StyleSheet.create({
   viewerImage: { width: '100%', height: '100%' },
   viewerSpinner: { position: 'absolute', top: '50%', left: '50%' },
   viewerFailed: { color: '#ffffff', textAlign: 'center', padding: 16 },
+  viewerBottomClose: {
+    marginHorizontal: 16,
+    marginVertical: 8,
+    minHeight: 48,
+    borderRadius: 12,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewerBottomCloseText: { color: '#000000', fontWeight: '700', fontSize: 16 },
 });

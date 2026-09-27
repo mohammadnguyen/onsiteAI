@@ -309,6 +309,17 @@ different app and is not modified by this.
       the label returns to Play when it ends;
     - **View** on the PDF shows the drawing in the app: scroll between
       pages, pinch to zoom, Close returns to the record;
+    - **Close is reachable, both ends, every state.** The viewer has a
+      Close at the top beside the title AND a full-width Close at the
+      bottom. Check on the phone that reported it, in BOTH orderings:
+      (a) a call already active (green in-call indicator showing) when
+      View is tapped; (b) the viewer open first, then a call arriving.
+      In each: the top bar must sit BELOW the status bar / Dynamic Island,
+      and both Close controls must be visible and must close the viewer -
+      for a photo, for a PDF, while a PDF is still loading, and after a
+      failed load. Record which ordering was checked on which phone. If
+      the only way out is force-quitting the app, that is the Build 6
+      defect and a FAIL;
     - **Share** on any of them opens the share sheet - a second option,
       not what View does.
 13. **List rows tell records apart.** In My site log, a record with no text

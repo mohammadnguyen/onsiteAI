@@ -13,8 +13,11 @@ declare module 'react-test-renderer' {
     /** A string for a host node ('View', 'Text'); the component otherwise. */
     type: unknown;
     props: Record<string, any>;
+    /** Rendered children: instances, or the strings of text nodes. */
+    children: Array<ReactTestInstance | string>;
     findByProps(props: Record<string, unknown>): ReactTestInstance;
     findAllByProps(props: Record<string, unknown>): ReactTestInstance[];
+    findByType(type: unknown): ReactTestInstance;
     findAllByType(type: unknown): ReactTestInstance[];
     findAll(predicate: (node: ReactTestInstance) => boolean): ReactTestInstance[];
   }
