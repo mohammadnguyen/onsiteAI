@@ -141,7 +141,15 @@ export default function MySiteLogRecords() {
     (id: string, name: string) => {
       // The account doing this, read before the dialog: the confirm
       // callback runs later, and the row is only ever this account's.
+      //
+      // The NONCE as well as the id. A native alert outlives a session:
+      // a terminal 401 can clear the tokens, or someone can sign in as
+      // themselves again, while the dialog is still on screen. Capturing
+      // only the account left the stale confirmation with destructive
+      // access to that account's recording, because the ownership check
+      // was handed the captured identity and agreed with itself.
       const startedAs = useAuthStore.getState().userId;
+      const startedUnder = useAuthStore.getState().sessionNonce;
       if (startedAs === null) return;
       // The ONLY thing that deletes a kept recording, and it asks first.
       confirmDestructive({
@@ -150,6 +158,9 @@ export default function MySiteLogRecords() {
         confirmLabel: t('siteLog.kept.discard'),
         cancelLabel: t('common.cancel'),
         onConfirm: () => {
+          // Answered by whoever is signed in NOW, or not acted on.
+          const now = useAuthStore.getState();
+          if (now.userId !== startedAs || now.sessionNonce !== startedUnder) return;
           void kept.discard(startedAs, id);
         },
       });

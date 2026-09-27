@@ -114,6 +114,38 @@ describe('a kept-recording export belongs to the account that started it', () =>
     expect(isOwnKeptRecordingPath(`site-log/${A}/oversized/att-1.m4a`, A)).toBe(true);
   });
 
+  it('REGRESSION: a confirmation answered after a logout does not delete', () => {
+    // A native alert outlives a session. The confirm callback runs
+    // later, so capturing only the account left the stale dialog with
+    // destructive access: the ownership check was handed the CAPTURED
+    // identity and agreed with itself.
+    let s: Session = { userId: A, sessionNonce: 1 };
+    let deleted: string | null = null;
+
+    // The screen's discardKept, in the shape it actually has.
+    const startedAs = s.userId;
+    const startedUnder = s.sessionNonce;
+    const onConfirm = () => {
+      if (s.userId !== startedAs || s.sessionNonce !== startedUnder) return;
+      deleted = 'att-1';
+    };
+
+    // ...dialog open, terminal 401 clears the session...
+    s = { userId: null, sessionNonce: 2 };
+    onConfirm();
+    expect(deleted).toBeNull();
+
+    // ...and the same person signing in again is a NEW session too.
+    s = { userId: A, sessionNonce: 3 };
+    onConfirm();
+    expect(deleted).toBeNull();
+
+    // Unchanged session: it still works, so the guard is not "never".
+    s = { userId: A, sessionNonce: 1 };
+    onConfirm();
+    expect(deleted).toBe('att-1');
+  });
+
   it('the real auth store supplies both fields this relies on', async () => {
     // If either field disappeared, the guard above would silently become
     // a no-op in the screen that uses it.
