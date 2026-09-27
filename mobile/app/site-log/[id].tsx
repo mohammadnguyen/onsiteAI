@@ -518,8 +518,9 @@ export default function SiteLogRecordDetail() {
       const openedUnder = useAuthStore.getState().sessionNonce;
       const failed = (message: string) => setAudioFailed({ id, message });
       setAudioFailed(null);
-      // Already loaded here: just toggle.
-      if (audioAttId === id && isReady(audio)) {
+      // Already loaded here - by a status that is THIS attempt's, not the
+      // previous recording's still sitting in the hook: just toggle.
+      if (audioAttId === id && audio !== statusAtStart.current && isReady(audio)) {
         try {
           if (audio.playing) player.pause();
           else player.play();
@@ -630,7 +631,11 @@ export default function SiteLogRecordDetail() {
   // that does not send the flag hides nothing, and a .txt the user really
   // attached is `text` too and stays.
   const files = e.attachments.filter((a) => a.is_inline_text !== true);
-  const audioReady = isReady(audio);
+  // What the row shows is this attempt's status or nothing: until the first
+  // native event for the new source arrives, the hook still holds the
+  // previous recording's clock, progress and "playing" - none of it true
+  // of the row that was just tapped.
+  const audioReady = audio !== statusAtStart.current && isReady(audio);
   const progress =
     audioReady && audio.duration > 0
       ? Math.min(1, Math.max(0, audio.currentTime / audio.duration))
@@ -683,7 +688,7 @@ export default function SiteLogRecordDetail() {
                         hitSlop={8}
                       >
                         <Text style={s.openLink}>
-                          {isThisAudio && audio.playing
+                          {isThisAudio && audioReady && audio.playing
                             ? t('siteLog.detail.pause')
                             : t('siteLog.detail.play')}
                         </Text>

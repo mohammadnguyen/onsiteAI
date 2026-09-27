@@ -678,6 +678,46 @@ describe('recording', () => {
     expect(has(tree, 'share:voice')).toBe(true);
   });
 
+  it('does not show the previous recording\'s clock, progress or Pause on the next one', async () => {
+    // A is loaded and playing. Tap B: until B's first native status
+    // arrives, the hook still holds A's status. B's row must say Loading…,
+    // not A's elapsed time, and its label must be Play, not Pause.
+    mockEvent = eventWith([att('a', 'audio'), att('b', 'audio')]);
+    memfs.downloads.push(
+      { status: 200, headers: { 'content-type': 'audio/m4a' } },
+      { status: 200, headers: { 'content-type': 'audio/m4a' } },
+    );
+    const tree = render();
+    await act(async () => press(tree, 'audio-toggle:a'));
+    await flush();
+    mockStatus = { ...mockStatus, isLoaded: true, playing: true, currentTime: 42, duration: 90, playbackState: 'readyToPlay' };
+    await act(async () => {
+      tree.update(<SiteLogRecordDetail />);
+    });
+    expect(showsText(tree, '0:42 / 1:30')).toBe(true);
+    expect(showsText(tree, 'siteLog.detail.pause')).toBe(true);
+
+    // No new native status yet: the hook still returns A's object.
+    await act(async () => press(tree, 'audio-toggle:b'));
+    await flush();
+    expect(mockPlayer.replace).toHaveBeenCalledTimes(2);
+    expect(showsText(tree, '0:42 / 1:30')).toBe(false);
+    expect(showsText(tree, 'siteLog.detail.audio_loading')).toBe(true);
+    expect(showsText(tree, 'siteLog.detail.pause')).toBe(false);
+    // And a tap on B now does not take the toggle path on A's status.
+    await act(async () => press(tree, 'audio-toggle:b'));
+    await flush();
+    expect(mockPlayer.pause).not.toHaveBeenCalled();
+
+    // B's own status arrives: B's clock.
+    mockStatus = { ...mockStatus, isLoaded: true, playing: true, currentTime: 3, duration: 20, playbackState: 'readyToPlay' };
+    await act(async () => {
+      tree.update(<SiteLogRecordDetail />);
+    });
+    expect(showsText(tree, '0:03 / 0:20')).toBe(true);
+    expect(showsText(tree, 'siteLog.detail.pause')).toBe(true);
+  });
+
   it('does not read the previous recording\'s failure as the next one\'s', async () => {
     // The status hook keeps the last native status until a new event
     // arrives. After recording A fails, tapping recording B must not see
