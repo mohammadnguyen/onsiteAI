@@ -32,11 +32,13 @@ from fastapi import (
     UploadFile,
     status,
 )
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db, get_sessionmaker
 from app.deps import get_current_user
+from app.models.site_log import SiteLogEvent, SiteLogEventAttachment
 from app.models.user import User
 from app.schemas.site_log import (
     AssignJobIn,
@@ -64,13 +66,25 @@ def get_session_factory():
     return get_sessionmaker()
 
 
+def _attachment_out(
+    att: SiteLogEventAttachment, capture_client_id: uuid.UUID
+) -> AttachmentOut:
+    """One attachment row, with the server saying whether it is the row the
+    server itself owns.
+
+    By identity - the same uuid5 the row was minted with - never by media
+    type: a .txt the user attached is "text" too and must stay listed. Every
+    route that returns an ``AttachmentOut`` goes through here, so the flag
+    cannot differ between a fetch and a reset of the same row.
+    """
+    inline_id = svc.inline_attachment_id(capture_client_id)
+    return AttachmentOut.model_validate(att).model_copy(
+        update={"is_inline_text": att.attachment_client_id == inline_id}
+    )
+
+
 def _out(view: svc.EventView) -> SiteLogEventOut:
     e = view.event
-    # The server owns the inline text row, so the server says which one it
-    # is - by identity, the same uuid5 it minted the row with. The client
-    # must not infer it from the media type: a .txt the user attached is
-    # "text" too and must stay listed.
-    inline_id = svc.inline_attachment_id(e.capture_client_id)
     return SiteLogEventOut(
         site_log_event_id=e.site_log_event_id,
         capture_client_id=e.capture_client_id,
@@ -80,12 +94,7 @@ def _out(view: svc.EventView) -> SiteLogEventOut:
         capture_status=e.capture_status,
         created_at=e.created_at,
         revision=RevisionOut.model_validate(view.revision),
-        attachments=[
-            AttachmentOut.model_validate(a).model_copy(
-                update={"is_inline_text": a.attachment_client_id == inline_id}
-            )
-            for a in view.attachments
-        ],
+        attachments=[_attachment_out(a, e.capture_client_id) for a in view.attachments],
     )
 
 
@@ -213,7 +222,15 @@ async def reset_attachment(
         )
     except svc.SiteLogError as exc:
         raise _map(exc) from exc
-    return AttachmentOut.model_validate(att)
+    # The service returns the row alone; its event's capture_client_id is
+    # what identifies the inline row. One column, read after the commit -
+    # ``att.event`` is lazy and must not be touched from async code.
+    capture_client_id = await db.scalar(
+        select(SiteLogEvent.capture_client_id).where(
+            SiteLogEvent.site_log_event_id == event_id
+        )
+    )
+    return _attachment_out(att, capture_client_id)
 
 
 @router.post("/site-log-events/{event_id}/finalize", response_model=SiteLogEventOut)

@@ -436,6 +436,44 @@ describe('recording', () => {
     expect(has(tree, 'share:voice')).toBe(true);
   });
 
+  it('does not read the previous recording\'s failure as the next one\'s', async () => {
+    // The status hook keeps the last native status until a new event
+    // arrives. After recording A fails, tapping recording B must not see
+    // A's "failed" and stop B.
+    mockEvent = eventWith([att('a', 'audio'), att('b', 'audio')]);
+    memfs.downloads.push(
+      { status: 200, headers: { 'content-type': 'audio/m4a' } },
+      { status: 200, headers: { 'content-type': 'audio/m4a' } },
+    );
+    const tree = render();
+    await act(async () => press(tree, 'audio-toggle:a'));
+    await flush();
+    mockStatus = { ...mockStatus, playbackState: 'failed' };
+    await act(async () => {
+      tree.update(<SiteLogRecordDetail />);
+    });
+    expect(has(tree, 'audio-failed')).toBe(true);
+    const pausesAfterA = mockPlayer.pause.mock.calls.length;
+
+    // No new native event yet: the status is still A's failure.
+    await act(async () => press(tree, 'audio-toggle:b'));
+    await flush();
+
+    expect(mockPlayer.replace).toHaveBeenLastCalledWith({ uri: 'file:///cache/sitelog-ev-b.m4a' });
+    expect(mockPlayer.play).toHaveBeenCalledTimes(2);
+    expect(mockPlayer.pause.mock.calls.length).toBe(pausesAfterA);
+    expect(has(tree, 'audio-player')).toBe(true);
+    expect(has(tree, 'audio-failed')).toBe(false);
+
+    // B then genuinely fails: a NEW status says so, and that one counts.
+    mockStatus = { ...mockStatus, playbackState: 'failed' };
+    await act(async () => {
+      tree.update(<SiteLogRecordDetail />);
+    });
+    expect(has(tree, 'audio-failed')).toBe(true);
+    expect(has(tree, 'audio-player')).toBe(false);
+  });
+
   it('gives up on a recording that never loads, instead of "Loading…" for ever', async () => {
     jest.useFakeTimers();
     try {

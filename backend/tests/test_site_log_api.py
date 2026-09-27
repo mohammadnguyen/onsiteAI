@@ -237,6 +237,9 @@ async def test_upload_too_large_413_and_pending_409(
     ok = await client.post(reset_url, json={"reason": "stuck after crash"},
                            headers=_auth(admin_token))
     assert ok.status_code == 200 and ok.json()["state"] == "failed"
+    # The reset answer carries the same ownership flag a fetch does: this
+    # is the user's row.
+    assert ok.json()["is_inline_text"] is False
     assert (await client.post(reset_url, json={"reason": "again"},
                               headers=_auth(admin_token))).status_code == 409  # nothing pending
     fixed = await client.put(url, files=_file(), headers=_auth(contributor_token))
@@ -610,7 +613,7 @@ async def test_inline_replay_edge_cases_over_http(
 
 
 async def test_inline_row_is_reserved_over_http(
-    client, contributor_token, other_token, admin_token
+    client, db_session, contributor_token, other_token, admin_token
 ):
     """A client PUT to the server-owned inline row is refused with 422 and a
     named code, and the denial ORDER is preserved: a caller who cannot see
@@ -676,6 +679,31 @@ async def test_inline_row_is_reserved_over_http(
             headers=_auth(other_token),
         )
     ).status_code == 404
+
+    # An admin CAN reset the server-owned row when it is stuck pending, and
+    # the answer says whose row it is - the same flag a fetch returns, so a
+    # client never sees the same row as "inline" on one route and "yours"
+    # on another.
+    await db_session.execute(
+        update(SiteLogEventAttachment)
+        .where(
+            SiteLogEventAttachment.attachment_client_id
+            == svc.inline_attachment_id(uuid.UUID(cid))
+        )
+        .values(
+            state="pending",
+            updated_at=func.now() - func.make_interval(0, 0, 0, 0, 0, 16),
+        )
+    )
+    reset = await client.post(
+        f"{url}/reset", json={"reason": "stuck"}, headers=_auth(admin_token)
+    )
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["state"] == "failed"
+    assert reset.json()["is_inline_text"] is True
+    fetched = await client.get(f"/site-log-events/{eid}", headers=_auth(contributor_token))
+    flags = {a["attachment_client_id"]: a["is_inline_text"] for a in fetched.json()["attachments"]}
+    assert flags == {str(svc.inline_attachment_id(uuid.UUID(cid))): True}
 
 
 async def test_ordinary_attachments_are_unaffected_over_http(

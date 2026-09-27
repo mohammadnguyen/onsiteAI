@@ -157,6 +157,14 @@ export default function SiteLogRecordDetail() {
   // state meant every tap released the player that was about to play.
   const player = useAudioPlayer(null);
   const audio = useAudioPlayerStatus(player);
+  // The status hook keeps the LAST native status until the next event
+  // arrives, so right after `replace` it still describes the previous
+  // recording - including a previous recording's failure. Each attempt
+  // remembers the status object it started with; that object is stale by
+  // definition and is never read as this attempt's outcome.
+  const latestStatus = useRef(audio);
+  latestStatus.current = audio;
+  const statusAtStart = useRef(audio);
   // Is this screen the one in front of the user? Read inside async work
   // that outlives the render it started in.
   const activeRef = useScreenActive();
@@ -424,7 +432,9 @@ export default function SiteLogRecordDetail() {
         // changed underneath it. Focus alone says nothing about the account.
         if (!stillHere(openedUnder)) return;
         // Imperative, on the instance this screen keeps: replace the
-        // source, then play it.
+        // source, then play it. Whatever status is current right now
+        // belongs to the recording before this one.
+        statusAtStart.current = latestStatus.current;
         player.replace({ uri: file.uri });
         player.play();
         setAudioAttId(id);
@@ -455,14 +465,18 @@ export default function SiteLogRecordDetail() {
         // nothing loaded
       }
     };
-    if (audio.playbackState === 'failed') {
+    // A status this attempt started with is the PREVIOUS recording's. Its
+    // failure is not this one's, and its "loaded" is not this one's either:
+    // until a fresh status arrives, this recording is loading.
+    const fresh = audio !== statusAtStart.current;
+    if (fresh && audio.playbackState === 'failed') {
       giveUp();
       return;
     }
-    if (audio.isLoaded) return;
+    if (fresh && audio.isLoaded) return;
     const timer = setTimeout(giveUp, AUDIO_LOAD_TIMEOUT_MS);
     return () => clearTimeout(timer);
-  }, [audio.isLoaded, audio.playbackState, audioAttId, player, t]);
+  }, [audio, audioAttId, player, t]);
 
   // A recording that reaches its end shows as ready to play again, not as
   // stuck at the last second.
