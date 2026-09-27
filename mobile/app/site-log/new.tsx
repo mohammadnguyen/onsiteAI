@@ -30,6 +30,7 @@ import { useScreenActive } from '../../src/siteLog/useScreenActive';
 import { notify } from '../../src/siteLog/dialogs';
 import {
   RetentionError,
+  preserveOversized,
   releaseAttachment,
   releaseCapture,
   retainAttachment,
@@ -165,16 +166,26 @@ export default function NewSiteLogEntry() {
         // in the app's own area.
         const finalSize = a.size ?? kept.size;
         if (exceedsLimit(finalSize, maxUploadBytes)) {
-          // The copy is removed only when the original still exists
-          // somewhere the user can reach. For a recording it does not -
-          // see `origin` above - so the bytes stay where they are and the
-          // message says so. It is not attached either way: an attachment
-          // over the cap would make the whole capture undeclarable, text
-          // and other files included.
-          if (origin === 'pickable') await releaseAttachment(kept.uri);
+          // A picked file still exists in the library or in Files, so the
+          // copy is simply dropped. A RECORDING cannot be obtained again,
+          // and leaving it in place is not keeping it: every cleanup path
+          // - leaving the screen, saving, discarding - deletes the whole
+          // capture directory. It is moved out to the account's own area
+          // instead, and the user is only told it was kept if that
+          // actually worked.
+          let preserved = false;
+          if (origin === 'recording') {
+            preserved =
+              (await preserveOversized(userId, kept.uri, a.name)) !== null;
+            if (!preserved) await releaseAttachment(kept.uri);
+          } else {
+            await releaseAttachment(kept.uri);
+          }
+          // Not attached either way: an attachment over the cap would make
+          // the whole capture undeclarable, text and other files included.
           setBanner(
             t(
-              origin === 'recording'
+              preserved
                 ? 'siteLog.error.recording_too_large'
                 : 'siteLog.error.attachment_too_large',
               {

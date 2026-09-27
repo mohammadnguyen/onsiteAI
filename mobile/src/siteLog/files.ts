@@ -372,6 +372,51 @@ export async function releaseAttachment(uri: string): Promise<void> {
   await deleteQuietly(uri);
 }
 
+/** Where a file that outlived its capture is kept: `site-log/<user>/oversized/`. */
+export function oversizedDir(userId: string): string | null {
+  const root = userRoot(userId);
+  return root === null ? null : `${root}oversized/`;
+}
+
+/**
+ * Move a recording out of the capture that refused it.
+ *
+ * A recording is the one attachment that cannot be obtained again: the
+ * recorder's own file is temporary, so our copy is the only durable one.
+ * When it is too large to attach, deleting it destroys evidence - but
+ * merely LEAVING it where it is destroys it too, a moment later and less
+ * visibly, because every cleanup path (`releaseCapture` on leaving the
+ * screen, `removeAndRelease` on a successful save or a discard) removes
+ * the whole capture directory.
+ *
+ * So it moves one level up, into a directory that belongs to the account
+ * rather than to any capture, and that nothing in the capture lifecycle
+ * touches. Returns the new location, or null if it could not be moved -
+ * in which case the caller must NOT tell the user the file was kept.
+ *
+ * KNOWN GAP, deliberately not closed here: no screen offers these files
+ * back. Keeping unreachable bytes is better than deleting irreplaceable
+ * ones, but a retrieval or export path is a product decision, not
+ * something to invent inside a size-limit fix.
+ */
+export async function preserveOversized(
+  userId: string,
+  keptUri: string,
+  filename: string,
+): Promise<string | null> {
+  const root = siteLogRoot();
+  const dir = oversizedDir(userId);
+  if (root === null || dir === null || !keptUri.startsWith(root)) return null;
+  const target = `${dir}${filename}`;
+  try {
+    await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+    await FileSystem.moveAsync({ from: keptUri, to: target });
+    return target;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Drop everything kept for one capture.
  *

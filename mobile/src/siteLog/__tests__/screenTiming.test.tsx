@@ -303,8 +303,35 @@ describe('an attachment bigger than the limit', () => {
     expect(tree.root.findAllByProps({ testID: 'attachment-row' })).toHaveLength(0);
     // ...but the durable copy is STILL THERE. This is the assertion that
     // fails if the release is ever made unconditional again.
+    // Kept - and OUTSIDE the capture's own directory, which is the only
+    // way "kept" means anything: every cleanup path deletes that
+    // directory whole.
     const kept = [...memfs.files.keys()].filter((p) => p.includes('/site-log/'));
     expect(kept).toHaveLength(1);
+    expect(kept[0]).toContain('/oversized/');
+    expect(kept[0]).not.toMatch(/\/site-log\/[^/]+\/[0-9a-f-]{36}\//);
+
+    // Codex's point: the earlier version stopped here and missed the
+    // loss. Leaving the screen releases the capture directory.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const files = require('../files') as typeof import('../files');
+    const captureId = useSiteLogDrafts.getState().drafts[0]?.capture_client_id;
+    await act(async () => {
+      tree.unmount();
+      if (captureId) await files.releaseCapture('user-a', captureId);
+    });
+    expect([...memfs.files.keys()].filter((p) => p.includes('/site-log/'))).toHaveLength(1);
+
+    // And a successful save of the rest of the capture removes the draft
+    // and its directory too.
+    if (captureId) {
+      await act(async () => {
+        await useSiteLogDrafts.getState().removeAndRelease(captureId);
+      });
+    }
+    const survivors = [...memfs.files.keys()].filter((p) => p.includes('/site-log/'));
+    expect(survivors).toHaveLength(1);
+    expect(survivors[0]).toContain('/oversized/');
 
     (globalThis as { __recorderUri?: string | null }).__recorderUri = null;
   });
