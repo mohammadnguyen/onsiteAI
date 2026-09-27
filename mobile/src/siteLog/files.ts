@@ -493,6 +493,34 @@ export async function keepOversizedRecording(args: {
 }
 
 /**
+ * Is this recorded path one kept recording of this account's?
+ *
+ * The same rule as `isOwnRetainedPath`, and for the same reason: a stored
+ * path is persisted state, and persisted state is the thing that can be
+ * wrong. A raw prefix test is not enough -
+ * `site-log/<me>/oversized/../../<them>/oversized/x.m4a` starts with my
+ * prefix and resolves to somebody else's file - so the path is
+ * normalised first and must then be ONE file directly inside this
+ * account's own oversized directory.
+ *
+ * A user id that is empty or carries a separator or a dot segment is
+ * refused outright: it could not have been produced by this app, and it
+ * is what makes a prefix comparison meaningless.
+ */
+export function isOwnKeptRecordingPath(path: string, userId: string): boolean {
+  if (userId === '' || /[\\/]/.test(userId) || userId === '.' || userId === '..') {
+    return false;
+  }
+  const canonical = canonicalFileUri(`file:///${path}`);
+  if (canonical === null) return false;
+  const relative = canonical.slice('file:///'.length);
+  const prefix = `site-log/${userId}/oversized/`;
+  if (!relative.startsWith(prefix)) return false;
+  const rest = relative.slice(prefix.length);
+  return rest.length > 0 && !rest.includes('/') && !rest.endsWith(PARTIAL_SUFFIX);
+}
+
+/**
  * What is actually in this account's kept-recordings directory.
  *
  * The directory is the truth, not the index. The bytes are copied before

@@ -22,7 +22,11 @@ import { captureStatusBadgeKey } from '../../src/siteLog/status';
 import { useSiteLogDrafts } from '../../src/store/siteLogDrafts';
 import { useKeptRecordings } from '../../src/store/keptRecordings';
 import { confirmDestructive } from '../../src/siteLog/dialogs';
-import { fileExists, retainedUri } from '../../src/siteLog/files';
+import {
+  fileExists,
+  isOwnKeptRecordingPath,
+  retainedUri,
+} from '../../src/siteLog/files';
 import { formatBytes } from '../../src/siteLog/limits';
 import { StatusBadge } from '../../src/ui/kit';
 import { tokens } from '../../src/ui/tokens';
@@ -72,8 +76,12 @@ export default function MySiteLogRecords() {
   const claim = useCallback((path: string) => {
     const startedAs = useAuthStore.getState().userId;
     const startedUnder = useAuthStore.getState().sessionNonce;
+    // Canonical, not a prefix test: `site-log/<me>/oversized/../../
+    // <them>/oversized/x.m4a` starts with my prefix and resolves to
+    // somebody else's recording. The stored path is persisted state, and
+    // persisted state is the thing that can be wrong.
     const owned =
-      startedAs !== null && path.startsWith(`site-log/${startedAs}/oversized/`);
+      startedAs !== null && isOwnKeptRecordingPath(path, startedAs);
     return {
       owned,
       stillOurs: () =>

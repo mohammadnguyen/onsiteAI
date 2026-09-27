@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import {
+  isOwnKeptRecordingPath,
   listKeptRecordingFiles,
   releaseKeptRecording,
   retainedUri,
@@ -90,6 +91,11 @@ export const useKeptRecordings = create<State>()(
         set((s) => ({ items: s.items.filter((x) => x.id !== id) }));
         await flush();
         if (item) {
+          // The same canonical ownership rule the screen uses. A stored
+          // path is persisted state: a traversal inside it would
+          // otherwise let a discard delete another account's recording,
+          // since the raw path still contains "/oversized/".
+          if (!isOwnKeptRecordingPath(item.path, item.user_id)) return;
           const uri = retainedUri(item.path);
           if (uri !== null) await releaseKeptRecording(uri);
         }

@@ -12,6 +12,7 @@
  * app/site-log/index.tsx - `claim` before any await, ownership from the
  * path, re-check before the side effect.
  */
+import { isOwnKeptRecordingPath } from '../files';
 import { useAuthStore } from '../../store/auth';
 
 type Session = { userId: string | null; sessionNonce: number };
@@ -19,8 +20,7 @@ type Session = { userId: string | null; sessionNonce: number };
 function claim(path: string, read: () => Session) {
   const started = read();
   const owned =
-    started.userId !== null &&
-    path.startsWith(`site-log/${started.userId}/oversized/`);
+    started.userId !== null && isOwnKeptRecordingPath(path, started.userId);
   return {
     owned,
     stillOurs: () => {
@@ -87,6 +87,31 @@ describe('a kept-recording export belongs to the account that started it', () =>
       },
     });
     expect(result).toBe('abandoned');
+  });
+
+  it('REGRESSION: a traversal out of my own folder is not mine', async () => {
+    // A raw prefix test passes this - it starts with my directory - and
+    // it resolves to somebody else's recording. Persisted state is the
+    // thing that can be wrong, so the path is canonicalised first.
+    let s: Session = { userId: A, sessionNonce: 1 };
+    const escaped = `site-log/${A}/oversized/../../${B}/oversized/att.m4a`;
+    await expect(exportKept(escaped, () => s)).resolves.toBe('not-owned');
+  });
+
+  it('refuses the shapes a real path never has', () => {
+    for (const [path, user] of [
+      [`site-log/${A}/oversized/../att.m4a`, A],
+      [`site-log/${A}/oversized/sub/att.m4a`, A],
+      [`site-log/${A}/oversized/`, A],
+      [`site-log/${A}/oversized/att.m4a.part`, A], // still being written
+      [`site-log/${A}/captures/att.m4a`, A],
+      [`site-log/${A}/oversized/att.m4a`, ''],
+      [`site-log/../${B}/oversized/att.m4a`, '..'],
+    ] as [string, string][]) {
+      expect(isOwnKeptRecordingPath(path, user)).toBe(false);
+    }
+    // ...and accepts the one shape it does produce.
+    expect(isOwnKeptRecordingPath(`site-log/${A}/oversized/att-1.m4a`, A)).toBe(true);
   });
 
   it('the real auth store supplies both fields this relies on', async () => {
