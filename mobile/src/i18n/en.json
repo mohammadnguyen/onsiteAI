@@ -761,8 +761,22 @@
       "draft_capacity": "This phone is already holding the most unfinished site log entries it can. Finish or discard one before starting another.",
       "attachment_not_kept": "That file could not be kept on this phone, so it was not added. Free up some space and try again.",
       "attachment_too_large": "That file is {{size}} and the limit for one attachment is {{limit}}, so it was not added. Nothing was saved or sent. Attach a smaller file, or split the drawing.",
-      "recording_too_large": "That recording is {{size}} and the limit for one attachment is {{limit}}, so it was not attached to this entry. The recording has NOT been deleted - it has been moved to this phone's kept-recordings folder and survives saving or discarding this entry. There is no screen for it yet, so ask for it if you need it. Record a shorter note for this entry.",
+      "recording_too_large": "That recording is {{size}} and the limit for one attachment is {{limit}}, so it was not attached to this entry. It has been KEPT: find it under \"Kept recordings\" on the site log screen, where you can play it, export it, or discard it. Record a shorter note for this entry.",
+      "recording_too_large_not_kept": "That recording is {{size}} and the limit for one attachment is {{limit}}, so it was not attached. This phone could not keep a copy either - free up some space. Nothing was deleted: the recording is still where the recorder left it until the system reclaims it. Export or re-record it now.",
       "attachments_unavailable": "Attachments need the mobile app - this platform has no storage for them."
+    },
+    "kept": {
+      "section": "Kept recordings",
+      "hint": "{{size}} - too large to attach. Kept on this phone until you discard it.",
+      "play": "Play",
+      "export": "Export",
+      "discard": "Discard",
+      "discard_title": "Discard this recording?",
+      "discard_body": "{{name}} will be deleted from this phone. This cannot be undone, and the recording cannot be made again.",
+      "missing": "That recording is no longer on this phone.",
+      "play_failed": "That recording could not be played.",
+      "export_failed": "That recording could not be exported.",
+      "export_unavailable": "Sharing is not available on this device."
     }
   }
 }

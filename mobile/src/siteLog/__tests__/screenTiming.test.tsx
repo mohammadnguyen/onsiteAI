@@ -301,6 +301,12 @@ describe('an attachment bigger than the limit', () => {
     // Not attached, because an over-cap attachment would make the whole
     // capture undeclarable...
     expect(tree.root.findAllByProps({ testID: 'attachment-row' })).toHaveLength(0);
+    // ...but findable: an index entry is what turns preservation into a
+    // recovery path rather than bytes in a directory nobody can open.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { useKeptRecordings } =
+      require('../../store/keptRecordings') as typeof import('../../store/keptRecordings');
+    expect(useKeptRecordings.getState().forUser('user-a')).toHaveLength(1);
     // ...but the durable copy is STILL THERE. This is the assertion that
     // fails if the release is ever made unconditional again.
     // Kept - and OUTSIDE the capture's own directory, which is the only

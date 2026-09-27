@@ -378,43 +378,85 @@ export function oversizedDir(userId: string): string | null {
   return root === null ? null : `${root}oversized/`;
 }
 
-/**
- * Move a recording out of the capture that refused it.
- *
- * A recording is the one attachment that cannot be obtained again: the
- * recorder's own file is temporary, so our copy is the only durable one.
- * When it is too large to attach, deleting it destroys evidence - but
- * merely LEAVING it where it is destroys it too, a moment later and less
- * visibly, because every cleanup path (`releaseCapture` on leaving the
- * screen, `removeAndRelease` on a successful save or a discard) removes
- * the whole capture directory.
- *
- * So it moves one level up, into a directory that belongs to the account
- * rather than to any capture, and that nothing in the capture lifecycle
- * touches. Returns the new location, or null if it could not be moved -
- * in which case the caller must NOT tell the user the file was kept.
- *
- * KNOWN GAP, deliberately not closed here: no screen offers these files
- * back. Keeping unreachable bytes is better than deleting irreplaceable
- * ones, but a retrieval or export path is a product decision, not
- * something to invent inside a size-limit fix.
- */
-export async function preserveOversized(
-  userId: string,
-  keptUri: string,
-  filename: string,
-): Promise<string | null> {
-  const root = siteLogRoot();
-  const dir = oversizedDir(userId);
-  if (root === null || dir === null || !keptUri.startsWith(root)) return null;
-  const target = `${dir}${filename}`;
+/** The size of a file, or null when it cannot be measured. */
+export async function fileSize(uri: string): Promise<number | null> {
   try {
-    await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
-    await FileSystem.moveAsync({ from: keptUri, to: target });
-    return target;
+    const info = await FileSystem.getInfoAsync(uri);
+    if (!info.exists) return null;
+    const size = (info as { size?: number }).size;
+    return typeof size === 'number' ? size : null;
   } catch {
     return null;
   }
+}
+
+export type KeptRecording = {
+  /** Path under the document directory, resolved through `retainedUri`. */
+  path: string;
+  uri: string;
+  size: number;
+};
+
+/**
+ * Keep a recording that is too large to attach.
+ *
+ * A recording is the one attachment that cannot be obtained again: the
+ * recorder writes a temporary file the OS may reclaim, so a copy of ours
+ * is the only durable one. It is refused as an ATTACHMENT - an over-cap
+ * attachment would make the whole capture undeclarable - but refusing it
+ * must never cost the bytes.
+ *
+ * It is copied straight into `site-log/<user>/oversized/`, which belongs
+ * to the account rather than to any capture, so nothing in the capture
+ * lifecycle (`releaseCapture` on leaving the screen, `removeAndRelease`
+ * on a save or a discard, `clearCaptures` on logout) can reach it. Only
+ * an explicit discard by the user removes it.
+ *
+ * A COPY, never a move, and nothing is deleted here. An earlier version
+ * moved the file and deleted the source when the move failed, which meant
+ * the one path where preservation did not work was also the path that
+ * destroyed the recording. Copy-and-verify can fail without costing
+ * anything: the source is still wherever it was.
+ */
+export async function keepOversizedRecording(args: {
+  userId: string;
+  attachmentId: string;
+  sourceUri: string;
+  name: string;
+}): Promise<KeptRecording> {
+  const dir = oversizedDir(args.userId);
+  if (dir === null) throw new RetentionError('unavailable', 'no document directory');
+
+  const ext = extensionOf(args.name);
+  const relative = `site-log/${args.userId}/oversized/${args.attachmentId}${ext}`;
+  const target = `${dir}${args.attachmentId}${ext}`;
+
+  if (sameFile(args.sourceUri, target)) {
+    throw new RetentionError('self_copy', 'source is already the kept file');
+  }
+
+  await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+  try {
+    await FileSystem.copyAsync({ from: args.sourceUri, to: target });
+  } catch (err) {
+    // The destination may be half-written; the SOURCE is untouched.
+    await deleteQuietly(target);
+    throw new RetentionError('copy_failed', String(err));
+  }
+
+  const size = await fileSize(target);
+  if (size === null || size <= 0) {
+    await deleteQuietly(target);
+    throw new RetentionError('size_mismatch', 'kept copy could not be measured');
+  }
+  return { path: relative, uri: target, size };
+}
+
+/** Remove one kept recording - only ever on an explicit discard. */
+export async function releaseKeptRecording(uri: string): Promise<void> {
+  const root = siteLogRoot();
+  if (root === null || !uri.startsWith(root) || !uri.includes('/oversized/')) return;
+  await deleteQuietly(uri);
 }
 
 /**

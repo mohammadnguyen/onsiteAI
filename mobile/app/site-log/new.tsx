@@ -30,11 +30,13 @@ import { useScreenActive } from '../../src/siteLog/useScreenActive';
 import { notify } from '../../src/siteLog/dialogs';
 import {
   RetentionError,
-  preserveOversized,
+  fileSize,
+  keepOversizedRecording,
   releaseAttachment,
   releaseCapture,
   retainAttachment,
 } from '../../src/siteLog/files';
+import { useKeptRecordings } from '../../src/store/keptRecordings';
 import { newCaptureId as newId } from '../../src/siteLog/ids';
 import { exceedsLimit, formatBytes, uploadLimits } from '../../src/siteLog/limits';
 import { deriveMediaType } from '../../src/siteLog/media';
@@ -166,33 +168,20 @@ export default function NewSiteLogEntry() {
         // in the app's own area.
         const finalSize = a.size ?? kept.size;
         if (exceedsLimit(finalSize, maxUploadBytes)) {
-          // A picked file still exists in the library or in Files, so the
-          // copy is simply dropped. A RECORDING cannot be obtained again,
-          // and leaving it in place is not keeping it: every cleanup path
-          // - leaving the screen, saving, discarding - deletes the whole
-          // capture directory. It is moved out to the account's own area
-          // instead, and the user is only told it was kept if that
-          // actually worked.
-          let preserved = false;
-          if (origin === 'recording') {
-            preserved =
-              (await preserveOversized(userId, kept.uri, a.name)) !== null;
-            if (!preserved) await releaseAttachment(kept.uri);
-          } else {
-            await releaseAttachment(kept.uri);
-          }
+          // A picked file still exists in the library or in Files, so
+          // dropping our copy costs nothing. A RECORDING is measured
+          // before it gets here and never reaches this branch as one -
+          // unless its size could not be read at all, and then the copy
+          // is LEFT ALONE rather than deleted. Nothing irreplaceable is
+          // removed to enforce a limit.
+          if (origin === 'pickable') await releaseAttachment(kept.uri);
           // Not attached either way: an attachment over the cap would make
           // the whole capture undeclarable, text and other files included.
           setBanner(
-            t(
-              preserved
-                ? 'siteLog.error.recording_too_large'
-                : 'siteLog.error.attachment_too_large',
-              {
-                size: formatBytes(finalSize as number),
-                limit: formatBytes(maxUploadBytes),
-              },
-            ),
+            t('siteLog.error.attachment_too_large', {
+              size: formatBytes(finalSize as number),
+              limit: formatBytes(maxUploadBytes),
+            }),
           );
           return;
         }
@@ -305,21 +294,66 @@ export default function NewSiteLogEntry() {
       // capture.
       const uri = recorder.uri;
       if (uri) {
-        // A recording lives in a temporary file by definition, so this copy
-        // is the only thing that makes it survive.
-        await add(
-          {
-            attachment_client_id: newId(),
-            media_type: 'audio',
+        const attachmentId = newId();
+        const name = `voice-${Date.now()}.m4a`;
+        // MEASURED BEFORE IT IS FILED. The recorder reports no size, and
+        // a recording is the one attachment that cannot be made again, so
+        // the decision of WHERE to put it is taken before anything is
+        // copied - not by copying it into the capture and moving it out
+        // again, which is a step that can fail after the bytes are
+        // already somewhere they will be cleaned up.
+        const recordedSize = await fileSize(uri);
+        const { maxUploadBytes } = uploadLimits();
+        if (exceedsLimit(recordedSize, maxUploadBytes)) {
+          try {
+            const kept = await keepOversizedRecording({
+              userId: userId ?? '',
+              attachmentId,
+              sourceUri: uri,
+              name,
+            });
+            await useKeptRecordings.getState().add({
+              id: attachmentId,
+              user_id: userId ?? '',
+              name,
+              path: kept.path,
+              size: kept.size,
+              created_at: Date.now(),
+              capture_client_id: captureClientId,
+            });
+            setBanner(
+              t('siteLog.error.recording_too_large', {
+                size: formatBytes(kept.size),
+                limit: formatBytes(maxUploadBytes),
+              }),
+            );
+          } catch {
+            // Nothing was deleted: the recorder's own file is still
+            // wherever it was. Say only what is true.
+            setBanner(
+              t('siteLog.error.recording_too_large_not_kept', {
+                size: formatBytes(recordedSize as number),
+                limit: formatBytes(maxUploadBytes),
+              }),
+            );
+          }
+        } else {
+          // A recording lives in a temporary file by definition, so this
+          // copy is the only thing that makes it survive.
+          await add(
+            {
+              attachment_client_id: attachmentId,
+              media_type: 'audio',
+              uri,
+              name,
+              mime: 'audio/m4a',
+              size: recordedSize,
+              status: 'awaiting_upload',
+            },
             uri,
-            name: `voice-${Date.now()}.m4a`,
-            mime: 'audio/m4a',
-            size: null,
-            status: 'awaiting_upload',
-          },
-          uri,
-          'recording',
-        );
+            'recording',
+          );
+        }
       }
       setRecording(false);
       // Hand the session back to playback so a recording can be played here
