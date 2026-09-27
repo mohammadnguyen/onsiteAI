@@ -91,12 +91,16 @@ function isReady(status: { isLoaded: boolean; playbackState: string }): boolean 
 }
 
 /**
- * Every mount of this screen is a visit, numbered once per process. The
- * files a visit downloads carry its number, so a download that finishes
- * AFTER the user left and came back can never touch - let alone delete -
- * the file the new visit is showing.
+ * Every mount of this screen is a visit with its own id. The files a visit
+ * downloads carry that id, so a download that finishes AFTER the user left
+ * and came back can never touch - let alone delete - the file the new
+ * visit is showing, and a file left for the share sheet (see `shared`) is
+ * never named again by a later visit - not even after the app restarts,
+ * which is why this is not a counter.
  */
-let visits = 0;
+function newVisitId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 /** m:ss for a duration in seconds; "--:--" when not known yet. */
 function clock(seconds: number | undefined): string {
@@ -180,12 +184,9 @@ export default function SiteLogRecordDetail() {
   // Is this screen the one in front of the user? Read inside async work
   // that outlives the render it started in.
   const activeRef = useScreenActive();
-  // This visit's number (see `visits`), fixed at first render.
+  // This visit's id (see `newVisitId`), fixed at first render.
   const visitId = useRef<string | null>(null);
-  if (visitId.current === null) {
-    visits += 1;
-    visitId.current = String(visits);
-  }
+  if (visitId.current === null) visitId.current = newVisitId();
   // Is this visit still mounted? Read by downloads that outlive it.
   const mounted = useRef(true);
   // What this screen has already downloaded. Deliberately per visit: a file

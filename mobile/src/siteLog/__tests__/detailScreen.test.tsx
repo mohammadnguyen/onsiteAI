@@ -195,9 +195,10 @@ function render(): ReactTestRenderer {
   return tree;
 }
 
-/** Files carry the visit number, so they are matched by shape, not spelled out. */
+/** Files carry the visit id (time + random, base 36), so they are matched by
+ *  shape, not spelled out. */
 function fileFor(evidence: string, ext: string): RegExp {
-  return new RegExp(`^file:///cache/sitelog-v\\d+-${evidence}\\.${ext}$`);
+  return new RegExp(`^file:///cache/sitelog-v[a-z0-9]+-[a-z0-9]+-${evidence}\\.${ext}$`);
 }
 
 function cachedFiles(): string[] {
@@ -879,5 +880,61 @@ describe('share', () => {
       mimeType: 'application/pdf',
     });
     expect(has(tree, 'viewer-pdf')).toBe(false);
+  });
+
+  // LAST in the file on purpose: it resets the module registry, and every
+  // test after it would render the old screen against a new React.
+  it('is never named again by a visit in a later process: the visit id is not a counter', async () => {
+    // Process 1: share, leave. The file stays for the sheet.
+    mockEvent = eventWith([att('doc', 'document')]);
+    memfs.downloads.push({ status: 200, headers: { 'content-type': 'application/pdf' } });
+    const tree = render();
+    await act(async () => press(tree, 'share:doc'));
+    await flush();
+    const sharedUri = mockShare.mock.calls[0][0] as string;
+    act(() => tree.unmount());
+    await flush();
+    expect(memfs.files.has(sharedUri)).toBe(true);
+
+    // "Restart": a fresh module registry over the SAME file system (memfs
+    // keeps its files on globalThis for exactly this). A counter would start
+    // again at 1 and name the same file.
+    jest.resetModules();
+    /* eslint-disable @typescript-eslint/no-var-requires */
+    const R2 = require('react') as typeof import('react');
+    const RTR2 = require('react-test-renderer') as typeof import('react-test-renderer');
+    const Screen2 = require('../../../app/site-log/[id]').default as typeof SiteLogRecordDetail;
+    const auth2 = (require('../../store/auth') as typeof import('../../store/auth')).useAuthStore;
+    const memfs2 = (require('./support/memfs') as typeof import('./support/memfs')).memfs;
+    /* eslint-enable @typescript-eslint/no-var-requires */
+    const flush2 = async () => {
+      for (let i = 0; i < 8; i += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        await RTR2.act(async () => {
+          await Promise.resolve();
+        });
+      }
+    };
+    RTR2.act(() => {
+      auth2.setState({ accessToken: 'tok-a', userId: 'user-a', sessionNonce: 1 });
+    });
+    memfs2.downloads.push({ status: 200, headers: { 'content-type': 'application/pdf' } });
+    let tree2!: ReactTestRenderer;
+    RTR2.act(() => {
+      tree2 = RTR2.create(R2.createElement(Screen2));
+    });
+    await RTR2.act(async () => {
+      (tree2.root.findByProps({ testID: 'view:doc' }).props as { onPress: () => void }).onPress();
+    });
+    await flush2();
+    const shown = tree2.root.findByProps({ testID: 'viewer-pdf' }).props.source.uri as string;
+    expect(shown).toMatch(fileFor('ev-doc', 'pdf'));
+    expect(shown).not.toBe(sharedUri);
+
+    RTR2.act(() => tree2.unmount());
+    await flush2();
+    // The new visit removed its own file and left the shared one alone.
+    expect(memfs.files.has(shown)).toBe(false);
+    expect(memfs.files.has(sharedUri)).toBe(true);
   });
 });
