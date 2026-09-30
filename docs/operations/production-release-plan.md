@@ -153,7 +153,7 @@ inspection, and this document says so.
 
 | Step | Action | Proven by | Stop if |
 |---|---|---|---|
-| **S-1 (approval)** | Production has **never** written to S3: no client at `6036491` reaches the writer, and its adapter hid HEAD errors. Gate 1's HEAD probe proves only the precondition. Choose one: a write-then-delete probe on a key outside `evidence/`; a watched first real capture; or explicit acceptance that write rights are unproven. Re-read the multipart count afterwards. | Write, get, staging delete succeed; multipart count unchanged | Any 403/5xx, or staging residue left. Keep the new app unbuilt; the backend can stay (Build 4 never touches storage) |
+| **S-1 (approval)** | Production has **never** written to S3: no client at `6036491` reaches the writer, and its adapter hid HEAD errors. Gate 1's HEAD probe proves only the precondition. The write evidence must cover **the `evidence/` namespace the real uploads use** — a probe elsewhere can pass under a prefix-scoped policy that denies `evidence/`. Choose one: a watched first real capture (exercises exactly the real path); a write-then-delete probe at a fresh `evidence/<uuid4>/…` key (same scope, but it writes and deletes inside the evidence namespace — weigh against DEC-EVIDENCE-001); or an off-prefix probe **plus** a read of the key's policy showing `evidence/` has the same rights. Explicit acceptance that write rights are unproven is also a choice. Re-read the multipart count afterwards. | Write, get, staging delete succeed in `evidence/`; multipart count unchanged | Any 403/5xx, or staging residue left. Keep the new app unbuilt; the backend can stay (Build 4 never touches storage) |
 
 ### New app — last
 
@@ -267,10 +267,15 @@ multipart evidence, or an explicit founder acceptance of residue.
   app's own configured client — the credentials never leave the VM.
 - **Never through `exists()`:** at `6036491` it returns False for *any*
   exception, so a 403 would read as "absent" — a false pass.
-- **Calls:** `head_bucket` on the configured bucket, then `head_object` on
-  `release-probe/head-404/<random uuid4 hex>`. Every adapter key starts with
-  `evidence/`, so the probe key cannot collide with evidence. Both are HTTP
-  HEAD requests; nothing is written.
+- **Calls:** `head_bucket` on the configured bucket, then `head_object` on a
+  key of **the exact shape the new code HEADs before every copy**:
+  `evidence/<fresh uuid4>/<16 hex>.a1` (`make_object_key` with an attempt
+  number). The probe must sit in the `evidence/` namespace: Tigris supports
+  prefix-scoped policies, so a key elsewhere could answer 404 while
+  `evidence/` answers 403 — a false pass. A fresh uuid4 is not any existing
+  evidence id (those are uuid4s the app minted; a collision is negligible, and
+  a 200 is treated as "stop", below). Both are HTTP HEAD requests; nothing is
+  written.
 - **Prints:** the HTTP status and error code of each call, the client's region
   name, and two booleans (configured bucket equals the Tigris-attached bucket;
   configured endpoint equals the Tigris endpoint). No credentials, bucket name,
@@ -279,7 +284,10 @@ multipart evidence, or an explicit founder acceptance of residue.
   (a HEAD cannot tell a missing bucket from a missing key without it) — fail.
   403 on either = no list rights or bad signing — fail; with `bcc3964` every
   upload would then fail. 301/400 = misconfigured — fail. 5xx or timeout =
-  inconclusive. 200 on the probe key = impossible by construction — stop.
+  inconclusive. 200 on the probe key = an object exists at a freshly random
+  evidence key — stop and investigate.
+- **What it does not prove:** write, copy or delete rights in `evidence/`
+  (S-1), and GET rights for downloads.
 - **Side effects:** a short-lived SSH certificate; one extra Python process on
   a 512 MB machine (check `free -m` first); two billed HEAD requests.
 
@@ -386,8 +394,9 @@ database's history and data.
    the evidence and Site Log routes (Build 4 is unaffected, but the order is no
    longer evidence-safe).
 2. **Approve the read-only production checks** P-2, P-3, P-4, P-5, P-6.
-3. **S-1:** write-then-delete probe outside `evidence/`, a watched first real
-   capture, or accept that write rights are unproven.
+3. **S-1:** a watched first real capture; a write-then-delete probe at a
+   fresh key inside `evidence/`; an off-prefix probe plus a policy read showing
+   `evidence/` has the same rights; or accept that write rights are unproven.
 4. **Gate 2:** add an `AbortIncompleteMultipartUpload` lifecycle rule (a Tigris
    configuration change), or formally accept residue with no cleanup tool.
 5. **P-8 rehearsal:** spend a disposable-cluster restore (billable; copies
