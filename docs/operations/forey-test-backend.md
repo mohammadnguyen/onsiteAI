@@ -35,10 +35,11 @@ Decision of record: `docs/decisions/ADR-005-forey-test-app-variant.md`.
 | Machine | **shared-cpu-1x, 512 MB**, `min_machines_running = 1`, `auto_stop_machines = off` | Mirrors staging's VM block. It must answer a phone on cellular with the laptop off, and one machine has to keep the evidence volume mounted |
 | Database | **`forey-test-db`** — a Fly **unmanaged** Postgres app: `shared-cpu-1x`, **512 MB**, one 1 GB volume, region `syd` | One command, the same product the existing staging database was created with, and billed at machine + volume rates. 512 MB is a floor, not a preference — see below. Limits below |
 | Attachment storage | **local adapter on a 1 GB Fly volume** `forey_test_evidence` mounted at `/data/evidence` (`EVIDENCE_STORAGE_BACKEND=local`, `EVIDENCE_LOCAL_ROOT=/data/evidence`) | A machine's own disk is not persistent; a volume is. **Deliberately not Tigris** — see the note below |
+| Upload cap | **`EVIDENCE_MAX_UPLOAD_BYTES=52428800`** (50 MiB), a Fly secret on `forey-test-api` only | Matches the test variant's client limit (`mobile/app.config.ts` `UPLOAD_LIMITS.test`). Without it the server falls back to 26,214,400 (25 MiB) under a 50 MiB client. **The real Forey stays at 26,214,400 on both sides** — never copy this value to its backend, and never read a Forey Test upload result as proof about the real app |
 | `APP_ENV` | **`test`** | The loader treats `test` as a NON-development environment: a real JWT secret (>= 32 chars, no placeholders) and no wildcard CORS are enforced. It is also the only value that permits the local storage adapter — `staging` and `production` force `s3` (`backend/app/config.py`) |
 | `JWT_SECRET` | **generated fresh for this app** | Never the development placeholder, never a secret from the real environment |
 | `CORS_ALLOWED_ORIGINS` | `https://forey-test-api.fly.dev` | A wildcard is rejected outside development, and a native app needs no browser origin |
-| Code version | **the accepted PR #19 head** | `main` and staging do not have the Site Log API at all |
+| Code version | **`main`** (PR #19 merged as `bcc3964` on 2026-10-01; accepted on the device at `d52cf02`, tree-identical) | The real backend runs `6036491` (measured 2026-10-01), which has the Site Log tables but no Site Log API — see `docs/operations/production-release-plan.md` |
 | Accounts | `admin@forey-test.example.com` and `worker@forey-test.example.com`, seeded by `scripts.seed_admin`, the second demoted to contributor | Permission isolation needs a non-admin. **Not a `.local` address**: `LoginRequest.email` is a Pydantic `EmailStr`, which rejects that reserved domain with 422 before authentication - verified against the repository's own schema |
 
 ### The database, and its limits
@@ -162,6 +163,18 @@ curl -s -o /dev/null -w "%{http_code}\n" \
 
 # 2. What the database machine thinks. Expect 3/3 passing.
 flyctl checks list --app forey-test-db
+
+# 2b. The upload cap is a secret, so a rebuilt or restored environment can
+#     lose it silently. The NAME must be listed (the value is never shown):
+flyctl secrets list --app forey-test-api
+```
+
+If `EVIDENCE_MAX_UPLOAD_BYTES` is missing, the server is refusing uploads
+above 25 MiB that the Forey Test app offers up to 50 MiB. Setting it restarts
+the machine and touches nothing else (not `JWT_SECRET`, not the accounts):
+
+```bash
+flyctl secrets set --app forey-test-api EVIDENCE_MAX_UPLOAD_BYTES=52428800
 ```
 
 If the checks are critical and the login probe returns 500, the database
@@ -236,9 +249,10 @@ flyctl secrets set --app forey-test-api \
   JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" \
   CORS_ALLOWED_ORIGINS=https://forey-test-api.fly.dev \
   EVIDENCE_STORAGE_BACKEND=local \
-  EVIDENCE_LOCAL_ROOT=/data/evidence
+  EVIDENCE_LOCAL_ROOT=/data/evidence \
+  EVIDENCE_MAX_UPLOAD_BYTES=52428800
 
-# 4. Deploy the accepted PR #19 head, with the TEST config file.
+# 4. Deploy the accepted head, with the TEST config file.
 git checkout <accepted-sha>
 flyctl deploy --config fly.test.toml --app forey-test-api
 

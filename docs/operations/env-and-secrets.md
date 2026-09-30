@@ -77,7 +77,7 @@ alone.
 | `EVIDENCE_STORAGE_BACKEND` | yes (`s3` forced in staging/production) | `app.config.Settings`, `app.services.evidence_storage` | `local` is development/test only. |
 | `EVIDENCE_LOCAL_ROOT` | when `local` | `app.services.evidence_storage` | Filesystem root for the local adapter. |
 | `EVIDENCE_S3_ENDPOINT_URL`, `EVIDENCE_S3_BUCKET` | when `s3` | `app.services.evidence_storage` | Tigris endpoint + bucket; credentials come from the standard `AWS_*` secrets. |
-| `EVIDENCE_MAX_UPLOAD_BYTES` | no (default 25 MiB) | `app.config.Settings` | Per-upload byte cap. |
+| `EVIDENCE_MAX_UPLOAD_BYTES` | no (default 26,214,400 = 25 MiB) | `app.config.Settings` | Per-upload byte cap. **Two environments, two values, on purpose:** the real Forey backend does not set it (default 25 MiB, matching `UPLOAD_LIMITS.default` in `mobile/app.config.ts`); the Forey Test backend sets 52,428,800 (50 MiB, matching `UPLOAD_LIMITS.test`). Never copy one to the other: a file that uploads on Forey Test (e.g. 28,163,249 bytes) is refused at pick time by the real app. Changing the real cap is a separate decision. |
 
 Evidence storage precondition (WP-S-core, 2026-09-14): the S3 adapter now
 classifies storage errors instead of swallowing them. Before a `put` copies

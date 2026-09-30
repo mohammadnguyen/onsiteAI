@@ -1,5 +1,17 @@
 # Staging deploy runbook
 
+> **This runbook CREATES an environment. The environment it created now
+> exists and carries the operator's real business data** (Fly app
+> `sitetracker-backend-staging` - the production backend in practice).
+> To UPGRADE it, follow `production-release-plan.md`, which reuses only
+> D-6 (deploy), D-7 (migrate) and D-9 (smoke), with two overrides: build
+> from a clean worktree at the target SHA, and run Alembic from the
+> image's own virtualenv - never `uv run`, which re-syncs packages inside
+> the production container. **Never re-run D-1 to D-5 or D-8 against the
+> live environment:** they create or attach resources, set or rotate
+> secrets (`JWT_SECRET` rotation signs every user out), and `seed_admin`
+> resets an existing admin's password, name and role.
+
 Procedural reference for the first deploy of the SiteTracker backend
 to a staging environment on Fly.io.
 
