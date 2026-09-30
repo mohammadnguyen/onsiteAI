@@ -215,6 +215,104 @@ async def test_declare_shape4_and_blank_text_rejected(
     assert await _count(db_session, SiteLogEvent) == 0
 
 
+async def test_declare_refuses_an_attachment_already_over_the_cap(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """A declaration that already says it is too big is refused here.
+
+    The case this comes from: a 26.9 MiB drawing was declared against a
+    25 MiB cap, accepted, and left `awaiting_upload`. The refusal arrived
+    only at the upload attempt - days later, on a retry - as `size_cap`,
+    by which point the phone had copied the file and shown the capture as
+    saveable. Nothing should be recorded as pending upload that can never
+    be uploaded.
+    """
+    with pytest.raises(svc.SiteLogTooLarge):
+        await _declare(
+            db_session, storage, site_log_session_factory, seeded_admin,
+            attachments=[_att(size=MAX_BYTES + 1)],
+        )
+    # Refused before anything was written: no event, no manifest row.
+    assert await _count(db_session, SiteLogEvent) == 0
+
+    # Exactly the cap is allowed - the comparison is exclusive.
+    res = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        attachments=[_att(size=MAX_BYTES)],
+    )
+    assert res.view.event.capture_status is CaptureStatus.pending_upload
+
+    # And an unknown size still declares: a recording has none until it
+    # stops, and the upload path counts the bytes it actually receives.
+    res2 = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        attachments=[_att(size=None)],
+    )
+    assert res2.view.event.capture_status is CaptureStatus.pending_upload
+
+
+async def test_replaying_an_already_accepted_oversized_declaration_still_works(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """The cap applies to NEW declarations, never to a replay.
+
+    A replay is how a client that lost the answer - or whose inline text
+    failed to store - gets back to its own record, and it reads a 4xx
+    there as unrecoverable. Two real records already exist declaring
+    28,163,249 bytes against a cap that was 26,214,400 at the time. If
+    this check refused replays, raising the cap would be the only way to
+    ever reach them again, and lowering it would strand them for good.
+    """
+    cid = uuid.uuid4()
+    att = _att(size=MAX_BYTES)  # accepted under today's cap
+
+    first = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        capture_client_id=cid, attachments=[att],
+    )
+
+    # The cap is now LOWER than what this capture declared - a rollback,
+    # or simply a stricter environment than the one it was created in.
+    again = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        capture_client_id=cid, attachments=[att], max_bytes=MAX_BYTES // 2,
+    )
+
+    # Same record, not a 413 and not a second event.
+    assert again.view.event.site_log_event_id == first.view.event.site_log_event_id
+    assert await _count(db_session, SiteLogEvent) == 1
+
+
+async def test_declared_size_is_a_claim_the_upload_still_checks(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """Declaring a small size does not buy a large upload.
+
+    The declare-time check is a courtesy to the client, not the
+    enforcement. A client that under-reports must still be refused on the
+    bytes actually received.
+    """
+    att = _att(media="audio", size=1)  # claims one byte
+    res = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        attachments=[att],
+    )
+    with pytest.raises(svc.SiteLogTooLarge):
+        await svc_upload.upload_attachment(
+            db_session, storage, site_log_session_factory,
+            user=seeded_admin,
+            event_id=res.view.event.site_log_event_id,
+            attachment_client_id=att["attachment_client_id"],
+            mime_type="audio/mp4",
+            chunks=_chunks(b"x" * (MAX_BYTES + 1)),
+            max_bytes=MAX_BYTES,
+        )
+    row = await _att_row(
+        db_session, res.view.event.site_log_event_id, att["attachment_client_id"]
+    )
+    assert row.state is AttachmentState.failed
+
+
 def test_inline_namespace_pinned_and_deterministic():
     """Changing this constant is a compatibility change, not a refactor."""
     assert uuid.UUID("3f2c1a4e-7b6d-4e0f-9a8c-5d1e2f3a4b6c") == svc.INLINE_TEXT_NAMESPACE
@@ -1598,3 +1696,92 @@ async def test_a_missing_revision_1_refuses_rather_than_using_the_request(
     assert att.state is AttachmentState.failed
     status, sha, _ = await _ev_cols(db_session, att.evidence_id)
     assert sha is None  # nothing was uploaded from the request body
+
+
+# ===================================================================
+# Site Log Capture first flow: the caller's own records.
+# ===================================================================
+
+
+async def test_list_mine_returns_newest_first(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """Ordering is by created_at descending, with the id as a stable tiebreak.
+
+    The timestamps are set explicitly: inside one transaction the database
+    clock does not advance, so declaring twice would otherwise leave the
+    order decided entirely by the tiebreaker.
+    """
+    brief = None  # unused; keeps the helper signature honest
+    older = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        body_text="older record",
+    )
+    newer = await _declare(
+        db_session, storage, site_log_session_factory, seeded_admin,
+        body_text="newer record",
+    )
+    assert brief is None
+
+    base = datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
+    await db_session.execute(
+        update(SiteLogEvent)
+        .where(SiteLogEvent.site_log_event_id == older.view.event.site_log_event_id)
+        .values(created_at=base)
+    )
+    await db_session.execute(
+        update(SiteLogEvent)
+        .where(SiteLogEvent.site_log_event_id == newer.view.event.site_log_event_id)
+        .values(created_at=base + timedelta(minutes=5))
+    )
+    await db_session.commit()
+
+    views = await svc.list_mine(db_session, seeded_admin)
+    ids = [v.event.site_log_event_id for v in views]
+    assert ids.index(newer.view.event.site_log_event_id) < ids.index(
+        older.view.event.site_log_event_id
+    )
+
+
+async def test_list_mine_clamps_an_oversized_limit(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """The service clamps rather than trusting its caller.
+
+    Proved against MORE records than the cap allows: asserting ``<= MAX``
+    over a handful of records is satisfied by any limit at all, so it would
+    have passed with no clamp in the code.
+    """
+    for i in range(svc.MINE_PAGE_MAX + 3):
+        await _declare(
+            db_session, storage, site_log_session_factory, seeded_admin,
+            body_text=f"record {i}",
+        )
+
+    clamped = await svc.list_mine(db_session, seeded_admin, limit=10_000)
+    assert len(clamped) == svc.MINE_PAGE_MAX
+
+    # And a limit inside the cap is honoured exactly, so the clamp is not
+    # simply overriding every request with the maximum.
+    assert len(await svc.list_mine(db_session, seeded_admin, limit=5)) == 5
+
+
+async def test_list_mine_pages_without_overlap_or_gaps(
+    db_session, seeded_admin, storage, site_log_session_factory
+):
+    """Stable order means consecutive pages partition the set."""
+    made = set()
+    for i in range(7):
+        res = await _declare(
+            db_session, storage, site_log_session_factory, seeded_admin,
+            body_text=f"page record {i}",
+        )
+        made.add(res.view.event.site_log_event_id)
+
+    seen: list = []
+    for offset in (0, 3, 6):
+        page = await svc.list_mine(db_session, seeded_admin, limit=3, offset=offset)
+        seen.extend(v.event.site_log_event_id for v in page)
+
+    assert len(seen) == len(set(seen)), "a record appeared on two pages"
+    assert made.issubset(set(seen)), "a record was skipped between pages"

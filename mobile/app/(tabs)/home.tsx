@@ -133,6 +133,7 @@ export default function HomeScreen() {
         </Text>
 
         <CaptureEntryCard />
+        <SiteLogEntryCard />
         {isAdmin ? <StatDuo dequeued={dequeued} /> : null}
         {isAdmin ? (
           <ReviewCardStack
@@ -181,6 +182,35 @@ function CaptureEntryCard() {
       {/* The design shows a mic here. There is no speech-to-text in the
           app, and a mic that opens a keyboard would be a lie — omitted
           until voice capture is a real slice. */}
+    </Pressable>
+  );
+}
+
+/** Site log entry point.
+ *
+ * A separate doorway on purpose. The ➕ and the card above open the EXPENSE
+ * capture screen, which is pre-Charter and stays exactly as it is; a site log
+ * record is a different thing with a different shape, so it gets its own
+ * entrance rather than a mode switch inside someone else's screen.
+ */
+function SiteLogEntryCard() {
+  const s = useScaledStyles(base);
+  const { t } = useTranslation();
+  const router = useRouter();
+  return (
+    <Pressable
+      style={({ pressed }) => [s.captureCard, pressed && s.capturePressed]}
+      onPress={() => router.push('/site-log' as unknown as Href)}
+      accessibilityRole="button"
+      accessibilityLabel={t('siteLog.entry.title')}
+      testID="home-site-log-entry"
+    >
+      <View style={s.captureSquare}>
+        <PlusIcon size={18} color="#ffffff" />
+      </View>
+      <Text style={s.capturePlaceholder} numberOfLines={1}>
+        {t('siteLog.entry.subtitle')}
+      </Text>
     </Pressable>
   );
 }

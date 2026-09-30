@@ -32,6 +32,7 @@ export const api: AxiosInstance = axios.create({
 });
 
 api.interceptors.request.use((config) => {
+  (config as RetryableConfig).__sessionNonce = useAuthStore.getState().sessionNonce;
   const token = useAuthStore.getState().accessToken;
   if (token) {
     config.headers = config.headers ?? {};
@@ -59,6 +60,14 @@ let refreshInFlight: Promise<string | null> | null = null;
  *  the original request and the retry). */
 type RetryableConfig = InternalAxiosRequestConfig & {
   __authRetry?: boolean;
+  /**
+   * The signed-in session this request was ISSUED under. The existing A4
+   * guard compares the refresh token across the refresh call itself, which
+   * does not catch a sign-out-and-sign-in that happened while the ORIGINAL
+   * request was in flight: the replay would then carry the new account's
+   * token and write one person's data under another's name.
+   */
+  __sessionNonce?: number;
 };
 
 /**
@@ -104,6 +113,16 @@ api.interceptors.response.use(
       return Promise.reject(err);
     }
 
+    // Checked BEFORE anything that clears tokens or refreshes: after a
+    // sign-out-and-sign-in the stored tokens belong to somebody else, so
+    // this request is neither retryable nor grounds for logging THEM out.
+    if (
+      original.__sessionNonce !== undefined &&
+      original.__sessionNonce !== useAuthStore.getState().sessionNonce
+    ) {
+      return Promise.reject(err);
+    }
+
     if (original.__authRetry) {
       await useAuthStore.getState().clear();
       return Promise.reject(err);
@@ -123,6 +142,10 @@ api.interceptors.response.use(
         await useAuthStore.getState().clear();
         return Promise.reject(err);
       }
+      // The session this refresh belongs to. A refresh started under one
+      // account can answer after a sign-out and sign-in, and its answer
+      // must not reach into the session that replaced it.
+      const refreshStartedUnder = useAuthStore.getState().sessionNonce;
       refreshInFlight = (async () => {
         try {
           const r = await api.post<{
@@ -161,7 +184,13 @@ api.interceptors.response.use(
             refreshStatus === 401 ||
             refreshStatus === 403 ||
             refreshStatus === 422;
-          if (authFatal) {
+          // Only the session that ASKED can be ended by the answer. A
+          // stale 401 for account A, arriving after B signed in, would
+          // otherwise log B out - and nothing was wrong with B's token.
+          if (
+            authFatal &&
+            useAuthStore.getState().sessionNonce === refreshStartedUnder
+          ) {
             await useAuthStore.getState().clear();
           }
           return null;

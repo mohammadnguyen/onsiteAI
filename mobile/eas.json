@@ -9,13 +9,22 @@
         "simulator": false
       },
       "env": {
+        "FOREY_VARIANT": "default",
         "EXPO_PUBLIC_API_URL": "https://sitetracker-backend-staging.fly.dev"
       }
     },
     "production": {
       "autoIncrement": true,
       "env": {
+        "FOREY_VARIANT": "default",
         "EXPO_PUBLIC_API_URL": "https://sitetracker-backend-staging.fly.dev"
+      }
+    },
+    "test": {
+      "autoIncrement": true,
+      "env": {
+        "FOREY_VARIANT": "test",
+        "EXPO_PUBLIC_API_URL": "https://forey-test-api.fly.dev"
       }
     }
   },
@@ -24,6 +33,12 @@
       "ios": {
         "appleTeamId": "W58T3X33VM",
         "ascAppId": "6799641228"
+      }
+    },
+    "test": {
+      "ios": {
+        "appleTeamId": "W58T3X33VM",
+        "ascAppId": "6813764247"
       }
     }
   }

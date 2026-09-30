@@ -13,7 +13,9 @@ import {
 import { useScaledStyles } from '../src/ui/type';
 import { api, apiUrl } from '../src/api/client';
 import { useMe } from '../src/api/hooks/useAuth';
-import { resetSessionState, wipeFailures } from '../src/store/session';
+import { resetSessionState, wipeOnExplicitLogout } from '../src/store/session';
+import { useSiteLogDrafts } from '../src/store/siteLogDrafts';
+import { confirmDestructive } from '../src/siteLog/dialogs';
 import { useOneShotBack } from '../src/util/navigation';
 import { tokens } from '../src/ui/tokens';
 
@@ -48,21 +50,74 @@ export default function SettingsScreen() {
     await setLanguage(next);
   };
 
-  const onLogout = async () => {
+  // Read BEFORE the tokens are cleared: `clear()` forgets who this was,
+  // and the cleanup below has to know whose files it may delete.
+  const userId = useAuthStore((st) => st.userId);
+
+  /**
+   * `confirmedCaptureIds` is the exact set the user agreed to lose, fixed
+   * at the moment they were asked. It is deliberately NOT recomputed after
+   * the await below: `/auth/logout` is a network request, and while it is
+   * outstanding the user can still navigate to the capture screen and save
+   * a new entry. Recomputing would delete that one too, without ever
+   * having warned about it.
+   */
+  const finishLogout = async (confirmedCaptureIds: string[]) => {
     try {
       await api.post('/auth/logout');
     } catch {
       // logout is best-effort — clear local state regardless.
     }
     await clear();
-    // Audit B-02: explicit logout is a deliberate device handoff —
-    // wipe user-scoped caches AND the persisted failed-capture
-    // texts here, deterministically (the root layout's auth-redirect
-    // reset also fires, but is idempotent and deliberately preserves
-    // failures for INVOLUNTARY logouts).
+    // Audit B-02: explicit logout wipes user-scoped caches and the
+    // persisted failed-capture texts deterministically (the root layout's
+    // auth-redirect reset also fires, but is idempotent and deliberately
+    // preserves failures for INVOLUNTARY logouts).
     resetSessionState();
-    wipeFailures();
-    router.replace('/(auth)/login');
+    // Scoped to the account leaving, and to what it agreed to lose. Other
+    // accounts' unsent captures on this phone are not this one's to
+    // destroy, and neither is one saved after the question was answered.
+    //
+    // Nothing navigates here. `clear()` above already dropped the tokens,
+    // and the root layout's auth effect - the single choke point every
+    // logout path crosses - has taken the user to login by the time this
+    // line runs. Replacing the route again from a callback that has been
+    // awaiting storage writes and file deletions is a stale navigation:
+    // if the wait is long enough for someone to sign in again, it would
+    // throw the NEW session back to login and unmount whatever they had
+    // open.
+    await wipeOnExplicitLogout(userId, confirmedCaptureIds);
+  };
+
+  const onLogout = () => {
+    // Read now, not from render state: this is the set the question below
+    // is about, and the set that may be deleted.
+    const unsent =
+      userId === null
+        ? []
+        : useSiteLogDrafts
+            .getState()
+            .forUser(userId)
+            .map((d) => d.capture_client_id);
+
+    // Nothing unsent: log out immediately, as before, and with an empty
+    // list nothing can be deleted afterwards either.
+    if (unsent.length === 0) {
+      void finishLogout([]);
+      return;
+    }
+    // Unsent captures exist. They hold photos, recordings and documents
+    // that exist nowhere else — a recording cannot be made again — so the
+    // user is told what logging out costs and has to say yes.
+    confirmDestructive({
+      title: t('settings.logout_unsent_title'),
+      body: t('settings.logout_unsent_body', { count: unsent.length }),
+      confirmLabel: t('settings.logout_unsent_confirm'),
+      cancelLabel: t('common.cancel'),
+      onConfirm: () => {
+        void finishLogout(unsent);
+      },
+    });
   };
 
   // M0 release/environment marker (Settings → Diagnostics). All values
@@ -80,6 +135,11 @@ export default function SettingsScreen() {
   const buildCommit =
     (Constants.expoConfig?.extra as { buildCommit?: string } | undefined)
       ?.buildCommit ?? 'dev';
+  // Which app this is. 'default' is Forey; 'test' is the separate Forey
+  // Test build, which must never be mistaken for the real one.
+  const variant =
+    (Constants.expoConfig?.extra as { variant?: string } | undefined)?.variant ??
+    'default';
 
   return (
     <SafeAreaView style={s.safe} edges={['top', 'bottom', 'left', 'right']}>
@@ -238,6 +298,14 @@ export default function SettingsScreen() {
               {buildCommit}
             </Text>
           </View>
+          {variant === 'test' ? (
+            <View style={s.diagRow}>
+              <Text style={s.diagKey}>{t('settings.variant')}</Text>
+              <Text style={s.diagValue} testID="settings-variant">
+                {t('settings.variant_test')}
+              </Text>
+            </View>
+          ) : null}
           <View style={s.diagRow}>
             <Text style={s.diagKey}>{t('settings.api_host')}</Text>
             <Text

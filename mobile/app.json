@@ -36,8 +36,22 @@
     },
     "plugins": [
       "expo-router",
+      "expo-asset",
       "expo-secure-store",
-      "expo-localization"
+      "expo-localization",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Forey uses your photo library so you can attach a site photo to a site log entry.",
+          "cameraPermission": false
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Forey uses the microphone so you can record a voice note for a site log entry."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

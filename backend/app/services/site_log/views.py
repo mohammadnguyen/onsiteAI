@@ -142,6 +142,54 @@ async def list_job_events(
     return views
 
 
+MINE_PAGE_DEFAULT = 20
+MINE_PAGE_MAX = 50
+
+
+async def list_mine(
+    db: AsyncSession,
+    user: User,
+    *,
+    limit: int = MINE_PAGE_DEFAULT,
+    offset: int = 0,
+    capture_client_id: uuid.UUID | None = None,
+) -> list[EventView]:
+    """The caller's own captures, assigned and unassigned alike.
+
+    Scoped to ``author_user_id`` for everyone, admins included: this answers
+    "what did I record", not "what exists". It widens nobody's visibility -
+    an author can already read every one of these by id.
+
+    Bounded on purpose. ``list_unassigned`` and ``list_job_events`` return
+    whole result sets; this one would otherwise grow without limit and carry
+    every historical attachment with it. The order is
+    ``created_at DESC, site_log_event_id DESC`` - the second key makes paging
+    stable when two captures share a timestamp, which two offline captures
+    submitted together plausibly do.
+
+    ``capture_client_id`` narrows to one record. That is how a client whose
+    declare response was lost finds the record it already created, rather
+    than declaring again and risking a second one.
+    """
+    limit = max(1, min(limit, MINE_PAGE_MAX))
+    q = (
+        select(SiteLogEvent)
+        .where(
+            SiteLogEvent.author_user_id == user.user_id,
+            SiteLogEvent.tenant_id == TENANT_ID,
+        )
+        .order_by(
+            SiteLogEvent.created_at.desc(), SiteLogEvent.site_log_event_id.desc()
+        )
+        .limit(limit)
+        .offset(max(0, offset))
+    )
+    if capture_client_id is not None:
+        q = q.where(SiteLogEvent.capture_client_id == capture_client_id)
+    events = list((await db.execute(q)).scalars().all())
+    return [await _view(db, e) for e in events]
+
+
 async def list_unassigned(db: AsyncSession, user: User) -> list[EventView]:
     q = (
         select(SiteLogEvent)

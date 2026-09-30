@@ -1,0 +1,1132 @@
+jest.mock('expo-file-system/legacy', () => require('./support/memfs'));
+jest.mock('../../api/siteLog', () => {
+  const actual = jest.requireActual('../../api/siteLog');
+  return {
+    __esModule: true,
+    // serverOwnedAttachmentIds is pure logic this flow depends on: keep it.
+    serverOwnedAttachmentIds: actual.serverOwnedAttachmentIds,
+    MINE_PAGE_SIZE: actual.MINE_PAGE_SIZE,
+    declareCapture: jest.fn(),
+    uploadAttachment: jest.fn(),
+    finalizeCapture: jest.fn(),
+    getEvent: jest.fn(),
+    findMineByCaptureClientId: jest.fn(),
+    assignJob: jest.fn(),
+    listMine: jest.fn(),
+  };
+});
+
+import * as api from '../../api/siteLog';
+import { useAuthStore } from '../../store/auth';
+import type { SiteLogDraft } from '../../store/siteLogDrafts';
+import { runSubmit } from '../submit';
+import { memfs, setDocumentDirectory } from './support/memfs';
+import {
+  CAPTURE,
+  EVENT_ID,
+  INLINE_ID,
+  USER,
+  attachment,
+  draft,
+  httpError,
+  serverAttachment,
+  serverEvent,
+  timeoutError,
+} from './support/fixtures';
+
+const mocked = api as jest.Mocked<typeof api>;
+
+/** Collects the draft as the flow would leave it on disk. */
+function recorder(d: SiteLogDraft) {
+  const state = { ...d };
+  const patches: Partial<SiteLogDraft>[] = [];
+  return {
+    state,
+    patches,
+    ctx: {
+      draft: d,
+      userId: USER,
+      sessionNonce: 0,
+      patch: async (p: Partial<SiteLogDraft>) => {
+        patches.push(p);
+        Object.assign(state, p);
+      },
+    },
+  };
+}
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  memfs.reset();
+  memfs.put(attachment().uri, 10);
+  useAuthStore.setState({ sessionNonce: 0 });
+});
+
+// =====================================================================
+// One submission, one record
+// =====================================================================
+describe('a submission that goes through', () => {
+  it('declares once, uploads what it declared, and finalizes', async () => {
+    mocked.findMineByCaptureClientId.mockResolvedValue(null);
+    mocked.declareCapture.mockResolvedValue(
+      serverEvent([
+        serverAttachment('att-1', 'awaiting_upload'),
+        serverAttachment(INLINE_ID, 'stored'),
+      ]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([
+        serverAttachment('att-1', 'stored'),
+        serverAttachment(INLINE_ID, 'stored'),
+      ]),
+    );
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent(
+        [serverAttachment('att-1', 'stored'), serverAttachment(INLINE_ID, 'stored')],
+        'complete',
+      ),
+    );
+
+    const r = recorder(draft());
+    const outcome = await runSubmit(r.ctx);
+
+    expect(outcome.kind).toBe('complete');
+    expect(mocked.declareCapture).toHaveBeenCalledTimes(1);
+    expect(mocked.uploadAttachment).toHaveBeenCalledTimes(1);
+    expect(mocked.uploadAttachment).toHaveBeenCalledWith(
+      EVENT_ID,
+      'att-1',
+      expect.objectContaining({ uri: attachment().uri }),
+    );
+    // The server's own row is never PUT to.
+    expect(mocked.uploadAttachment).not.toHaveBeenCalledWith(
+      EVENT_ID,
+      INLINE_ID,
+      expect.anything(),
+    );
+  });
+
+  it('pins the declaration before the first request', async () => {
+    mocked.findMineByCaptureClientId.mockResolvedValue(null);
+    mocked.declareCapture.mockRejectedValue(timeoutError());
+
+    const r = recorder(draft());
+    await runSubmit(r.ctx);
+
+    expect(r.state.declaration).not.toBeNull();
+    expect(r.state.declaration?.capture_client_id).toBe(CAPTURE);
+    expect(r.state.declaration?.attachments.map((a) => a.attachment_client_id)).toEqual([
+      'att-1',
+    ]);
+    // Pinned BEFORE declare was called, not after it answered.
+    const pinnedAt = r.patches.findIndex((p) => 'declaration' in p);
+    expect(pinnedAt).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// =====================================================================
+// A retry is not a second record
+// =====================================================================
+describe('retrying the same submission', () => {
+  it('does not declare again when the record already exists', async () => {
+    const pinned = draft({
+      declaration: {
+        capture_client_id: CAPTURE,
+        job_id: null,
+        occurred_at: null,
+        internal_location: null,
+        body_text: 'Poured 12m3 bay 3',
+        attachments: [
+          { attachment_client_id: 'att-1', declared_media_type: 'image', declared_size_bytes: 10 },
+        ],
+      },
+      server: { site_log_event_id: EVENT_ID, capture_status: 'partial_failed', observed_at: 1 },
+      attachments: [attachment({ status: 'failed' })],
+    });
+    mocked.getEvent
+      .mockResolvedValueOnce(
+        serverEvent([
+          serverAttachment('att-1', 'failed'),
+          serverAttachment(INLINE_ID, 'stored'),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        serverEvent([
+          serverAttachment('att-1', 'stored'),
+          serverAttachment(INLINE_ID, 'stored'),
+        ]),
+      );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent(
+        [serverAttachment('att-1', 'stored'), serverAttachment(INLINE_ID, 'stored')],
+        'complete',
+      ),
+    );
+
+    const outcome = await runSubmit(recorder(pinned).ctx);
+
+    expect(mocked.declareCapture).not.toHaveBeenCalled();
+    expect(outcome.kind).toBe('complete');
+  });
+
+  it('never re-uploads an attachment the server already stored', async () => {
+    const two = draft({
+      attachments: [attachment(), attachment({ attachment_client_id: 'att-2' })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'partial_failed', observed_at: 1 },
+    });
+    memfs.put(two.attachments[1].uri, 10);
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([
+        serverAttachment('att-1', 'stored'),
+        serverAttachment('att-2', 'failed'),
+        serverAttachment(INLINE_ID, 'stored'),
+      ]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-2', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    await runSubmit(recorder(two).ctx);
+
+    const uploaded = mocked.uploadAttachment.mock.calls.map((c) => c[1]);
+    expect(uploaded).toEqual(['att-2']);
+  });
+
+  it('keeps the same ids across two attempts', async () => {
+    mocked.findMineByCaptureClientId.mockResolvedValue(null);
+    mocked.declareCapture.mockRejectedValueOnce(timeoutError());
+
+    const d = draft();
+    const first = recorder(d);
+    await runSubmit(first.ctx);
+
+    // Second attempt, same draft object as the screen would hand back.
+    const resumed: SiteLogDraft = { ...d, ...first.state };
+    mocked.findMineByCaptureClientId.mockResolvedValue(
+      serverEvent([
+        serverAttachment('att-1', 'awaiting_upload'),
+        serverAttachment(INLINE_ID, 'stored'),
+      ]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    await runSubmit(recorder(resumed).ctx);
+
+    expect(resumed.capture_client_id).toBe(CAPTURE);
+    expect(resumed.declaration).toEqual(first.state.declaration);
+    // No second record: the lookup found the first one and declare was not
+    // called again.
+    expect(mocked.declareCapture).toHaveBeenCalledTimes(1);
+  });
+});
+
+// =====================================================================
+// A lost answer is not a failure to save
+// =====================================================================
+describe('when the answer is lost', () => {
+  it('reports the save as unconfirmed rather than failed', async () => {
+    mocked.findMineByCaptureClientId.mockResolvedValue(null);
+    mocked.declareCapture.mockRejectedValue(timeoutError());
+
+    const r = recorder(draft());
+    const outcome = await runSubmit(r.ctx);
+
+    expect(outcome.kind).toBe('unconfirmed');
+    expect(r.state.unconfirmed).toBe(true);
+  });
+
+  it('marks the draft unconfirmed BEFORE the declaration is sent', async () => {
+    mocked.findMineByCaptureClientId.mockResolvedValue(null);
+    let unconfirmedWhenCalled: boolean | undefined;
+    const r = recorder(draft());
+    mocked.declareCapture.mockImplementation(async () => {
+      // This is the window in which the process can die with the record
+      // created on the server and nothing recorded here.
+      unconfirmedWhenCalled = r.state.unconfirmed;
+      throw timeoutError();
+    });
+
+    await runSubmit(r.ctx);
+
+    expect(unconfirmedWhenCalled).toBe(true);
+  });
+
+  it('finds the record again by capture_client_id', async () => {
+    const lost = draft({ server: null });
+    mocked.findMineByCaptureClientId.mockResolvedValue(
+      serverEvent([
+        serverAttachment('att-1', 'stored'),
+        serverAttachment(INLINE_ID, 'stored'),
+      ]),
+    );
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    const r = recorder(lost);
+    const outcome = await runSubmit(r.ctx);
+
+    expect(mocked.findMineByCaptureClientId).toHaveBeenCalledWith(CAPTURE);
+    expect(mocked.declareCapture).not.toHaveBeenCalled();
+    expect(outcome.kind).toBe('complete');
+    expect(r.state.server?.site_log_event_id).toBe(EVENT_ID);
+  });
+
+  it('clears the uncertainty when the server refuses outright', async () => {
+    mocked.findMineByCaptureClientId.mockResolvedValue(null);
+    mocked.declareCapture.mockRejectedValue(httpError(422, 'job is completed'));
+
+    const r = recorder(draft());
+    const outcome = await runSubmit(r.ctx);
+
+    expect(outcome.kind).toBe('error');
+    // The server answered: nothing was created, so this is not "unknown".
+    expect(r.state.unconfirmed).toBe(false);
+  });
+});
+
+// =====================================================================
+// The server's own inline row
+// =====================================================================
+describe('inline text', () => {
+  it('replays the pinned declaration instead of uploading to the reserved row', async () => {
+    const pinnedDeclaration = {
+      capture_client_id: CAPTURE,
+      job_id: null,
+      occurred_at: null,
+      internal_location: null,
+      body_text: 'Poured 12m3 bay 3',
+      attachments: [
+        { attachment_client_id: 'att-1', declared_media_type: 'image' as const, declared_size_bytes: 10 },
+      ],
+    };
+    const d = draft({
+      declaration: pinnedDeclaration,
+      server: { site_log_event_id: EVENT_ID, capture_status: 'partial_failed', observed_at: 1 },
+      attachments: [attachment({ status: 'stored' })],
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([
+        serverAttachment('att-1', 'stored'),
+        serverAttachment(INLINE_ID, 'failed'),
+      ]),
+    );
+    mocked.declareCapture.mockResolvedValue(
+      serverEvent([
+        serverAttachment('att-1', 'stored'),
+        serverAttachment(INLINE_ID, 'stored'),
+      ]),
+    );
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    await runSubmit(recorder(d).ctx);
+
+    // Replayed VERBATIM - the server fingerprints it.
+    expect(mocked.declareCapture).toHaveBeenCalledWith(pinnedDeclaration);
+    expect(mocked.uploadAttachment).not.toHaveBeenCalled();
+  });
+
+  it('states the limitation when the replay is refused, and keeps the record', async () => {
+    const d = draft({
+      declaration: {
+        capture_client_id: CAPTURE,
+        job_id: null,
+        occurred_at: null,
+        internal_location: null,
+        body_text: 'Poured 12m3 bay 3',
+        attachments: [],
+      },
+      attachments: [],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'partial_failed', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment(INLINE_ID, 'failed')], 'partial_failed'),
+    );
+    mocked.declareCapture.mockRejectedValue(httpError(422, 'job is completed'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment(INLINE_ID, 'failed')], 'partial_failed'),
+    );
+
+    const r = recorder(d);
+    const outcome = await runSubmit(r.ctx);
+
+    expect(outcome.kind).toBe('partial');
+    expect(outcome.kind === 'partial' && outcome.limitation).toBe(
+      'siteLog.status.inline_unrecoverable',
+    );
+    // The record and its id survive; no substitute is created.
+    expect(r.state.server?.site_log_event_id).toBe(EVENT_ID);
+    expect(mocked.declareCapture).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the event a 502 carried, and calls it a failure rather than progress', async () => {
+    const carried = serverEvent([
+      serverAttachment('att-1', 'awaiting_upload'),
+      serverAttachment(INLINE_ID, 'failed'),
+    ]);
+    mocked.findMineByCaptureClientId.mockResolvedValue(null);
+    mocked.declareCapture.mockRejectedValue(httpError(502, carried));
+
+    const r = recorder(draft());
+    const outcome = await runSubmit(r.ctx);
+
+    expect(outcome.kind).toBe('created_not_uploaded');
+    expect(outcome.kind === 'created_not_uploaded' && outcome.bodyKey).toBe(
+      'siteLog.status.inline_failed',
+    );
+    expect(r.state.server?.site_log_event_id).toBe(EVENT_ID);
+    expect(r.state.unconfirmed).toBe(false);
+  });
+});
+
+// =====================================================================
+// pending is the server's business
+// =====================================================================
+describe('an attachment the server is still processing', () => {
+  it('is reported, never re-sent and never reset', async () => {
+    const d = draft({
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([
+        serverAttachment('att-1', 'pending'),
+        serverAttachment(INLINE_ID, 'stored'),
+      ]),
+    );
+
+    const outcome = await runSubmit(recorder(d).ctx);
+
+    expect(mocked.uploadAttachment).not.toHaveBeenCalled();
+    // Nothing may finalize while a row is in flight, and nothing here may
+    // clear it: reset is admin-only.
+    expect(mocked.finalizeCapture).not.toHaveBeenCalled();
+    expect(outcome.kind).toBe('created_not_uploaded');
+    expect(outcome.kind === 'created_not_uploaded' && outcome.blocked).toEqual(['att-1']);
+    expect(outcome.kind === 'created_not_uploaded' && outcome.bodyKey).toBe(
+      'siteLog.status.blocked_body',
+    );
+  });
+});
+
+// =====================================================================
+// The file is gone from this phone
+// =====================================================================
+describe('when a kept file has been removed', () => {
+  it('reports it as missing instead of failing an upload', async () => {
+    memfs.reset(); // app data cleared: the kept copy is gone too
+    const d = draft({
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')], 'pending_upload'),
+    );
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')], 'partial_failed'),
+    );
+
+    const r = recorder(d);
+    const outcome = await runSubmit(r.ctx);
+
+    expect(mocked.uploadAttachment).not.toHaveBeenCalled();
+    expect(outcome.kind).toBe('partial');
+    expect(r.state.attachments[0].status).toBe('missing');
+  });
+});
+
+// =====================================================================
+// One submission belongs to one account
+// =====================================================================
+describe('account isolation', () => {
+  it('refuses a draft belonging to somebody else', async () => {
+    const outcome = await runSubmit({
+      draft: draft({ user_id: 'somebody-else' }),
+      userId: USER,
+      sessionNonce: 0,
+      patch: async () => undefined,
+    });
+
+    expect(outcome).toEqual({ kind: 'error', messageKey: 'siteLog.error.not_yours' });
+    expect(mocked.findMineByCaptureClientId).not.toHaveBeenCalled();
+    expect(mocked.declareCapture).not.toHaveBeenCalled();
+  });
+
+  it('stops before sending when the account changed while it was starting', async () => {
+    // The screen read the nonce, then the durable write took long enough for
+    // a sign-out and a sign-in to land.
+    useAuthStore.setState({ sessionNonce: 2 });
+
+    const r = recorder(draft());
+    const outcome = await runSubmit({ ...r.ctx, sessionNonce: 0 });
+
+    expect(outcome).toEqual({ kind: 'error', messageKey: 'siteLog.error.session_changed' });
+    expect(mocked.findMineByCaptureClientId).not.toHaveBeenCalled();
+    expect(mocked.declareCapture).not.toHaveBeenCalled();
+    expect(r.patches).toEqual([]);
+  });
+
+  it('stops before declaring when the account changes during the lookup', async () => {
+    mocked.findMineByCaptureClientId.mockImplementation(async () => {
+      useAuthStore.setState({ sessionNonce: 1 });
+      return null;
+    });
+
+    const r = recorder(draft());
+    const outcome = await runSubmit(r.ctx);
+
+    expect(outcome).toEqual({ kind: 'error', messageKey: 'siteLog.error.session_changed' });
+    expect(mocked.declareCapture).not.toHaveBeenCalled();
+  });
+
+  it('stops before uploading when the account changes after the declare', async () => {
+    mocked.findMineByCaptureClientId.mockResolvedValue(null);
+    mocked.declareCapture.mockImplementation(async () => {
+      useAuthStore.setState({ sessionNonce: 1 });
+      return serverEvent([serverAttachment('att-1', 'awaiting_upload')]);
+    });
+
+    const outcome = await runSubmit(recorder(draft()).ctx);
+
+    expect(outcome).toEqual({ kind: 'error', messageKey: 'siteLog.error.session_changed' });
+    expect(mocked.uploadAttachment).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing to the draft store once the account has changed', async () => {
+    mocked.findMineByCaptureClientId.mockImplementation(async () => {
+      useAuthStore.setState({ sessionNonce: 5 });
+      return null;
+    });
+
+    const r = recorder(draft());
+    await runSubmit(r.ctx);
+
+    // The declaration pin happened before the change; nothing after it.
+    expect(r.patches.every((p) => 'declaration' in p)).toBe(true);
+  });
+});
+
+// =====================================================================
+// Round-5 findings
+// =====================================================================
+describe('a server error is not proof that nothing was saved', () => {
+  it('keeps the save unconfirmed when the declaration answers 5xx', async () => {
+    mocked.findMineByCaptureClientId.mockResolvedValue(null);
+    mocked.declareCapture.mockRejectedValue(httpError(504));
+
+    const r = recorder(draft());
+    const outcome = await runSubmit(r.ctx);
+
+    // A gateway can answer 504 after the backend committed the event, so
+    // the result is unknown - and must be REPORTED as unknown, not as "the
+    // entry could not be created", which is what the screen would say for
+    // an error outcome while the draft says the opposite.
+    expect(outcome.kind).toBe('unconfirmed');
+    expect(r.state.unconfirmed).toBe(true);
+  });
+
+  it('clears the uncertainty only when the server itself refused', async () => {
+    mocked.findMineByCaptureClientId.mockResolvedValue(null);
+    mocked.declareCapture.mockRejectedValue(httpError(422, 'job is completed'));
+
+    const r = recorder(draft());
+    await runSubmit(r.ctx);
+
+    expect(r.state.unconfirmed).toBe(false);
+  });
+});
+
+describe('the account can change while the draft is being written', () => {
+  it('does not declare after a sign-in that landed during the durable write', async () => {
+    mocked.findMineByCaptureClientId.mockResolvedValue(null);
+
+    const d = draft();
+    const patches: Partial<SiteLogDraft>[] = [];
+    const outcome = await runSubmit({
+      draft: d,
+      userId: USER,
+      sessionNonce: 0,
+      patch: async (p) => {
+        patches.push(p);
+        // The write to storage is awaited, and somebody signed in during it.
+        if ('unconfirmed' in p) useAuthStore.setState({ sessionNonce: 9 });
+      },
+    });
+
+    expect(outcome).toEqual({ kind: 'error', messageKey: 'siteLog.error.session_changed' });
+    expect(mocked.declareCapture).not.toHaveBeenCalled();
+  });
+});
+
+describe('an attachment from an older build', () => {
+  it('is copied into the app before it is uploaded', async () => {
+    // Drafts written before retention existed point straight at the OS
+    // cache. Resuming one must move the bytes somewhere safe rather than
+    // hoping the cache is still intact.
+    const legacyUri = 'file:///cache/legacy-photo.jpg';
+    memfs.reset();
+    memfs.put(legacyUri, 64);
+    const d = draft({
+      attachments: [attachment({ uri: legacyUri, retained: undefined, path: undefined, size: 64 })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    const r = recorder(d);
+    await runSubmit(r.ctx);
+
+    const sent = mocked.uploadAttachment.mock.calls[0]?.[2];
+    expect(sent?.uri).toContain(`/${USER}/${CAPTURE}/`);
+    expect(r.state.attachments[0].retained).toBe(true);
+    // Same id, same declared size: only where the bytes live has changed.
+    expect(r.state.attachments[0].attachment_client_id).toBe('att-1');
+    expect(r.state.attachments[0].size).toBe(64);
+  });
+
+  it('is reported missing when the cache file has already gone', async () => {
+    memfs.reset();
+    const d = draft({
+      attachments: [attachment({ uri: 'file:///cache/gone.jpg', retained: undefined, path: undefined })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')], 'partial_failed'),
+    );
+
+    const r = recorder(d);
+    await runSubmit(r.ctx);
+
+    expect(mocked.uploadAttachment).not.toHaveBeenCalled();
+    expect(r.state.attachments[0].status).toBe('missing');
+  });
+});
+
+describe('an account change part way through the uploads', () => {
+  it('stops before sending the next attachment', async () => {
+    const two = draft({
+      attachments: [attachment(), attachment({ attachment_client_id: 'att-2' })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    memfs.put(two.attachments[1].uri, 10);
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([
+        serverAttachment('att-1', 'awaiting_upload'),
+        serverAttachment('att-2', 'awaiting_upload'),
+      ]),
+    );
+    mocked.uploadAttachment.mockImplementation(async () => {
+      // Somebody signed in while the first attachment was going up.
+      useAuthStore.setState({ sessionNonce: 3 });
+      return serverAttachment('att-1', 'stored');
+    });
+
+    const outcome = await runSubmit(recorder(two).ctx);
+
+    expect(mocked.uploadAttachment).toHaveBeenCalledTimes(1);
+    expect(outcome).toEqual({ kind: 'error', messageKey: 'siteLog.error.session_changed' });
+  });
+});
+
+describe('rescuing an older draft with no network', () => {
+  it('keeps the bytes before it asks the server anything', async () => {
+    // The resume that matters happens on a phone with no signal. If the
+    // migration waited for a successful lookup, those bytes would still be
+    // sitting in a cache the system can reclaim.
+    const legacyUri = 'file:///cache/legacy-offline.jpg';
+    memfs.reset();
+    memfs.put(legacyUri, 32);
+    const d = draft({
+      attachments: [attachment({ uri: legacyUri, retained: undefined, path: undefined, size: 32 })],
+    });
+    mocked.findMineByCaptureClientId.mockRejectedValue(timeoutError());
+
+    const r = recorder(d);
+    const outcome = await runSubmit(r.ctx);
+
+    expect(outcome.kind).toBe('unconfirmed');
+    expect(r.state.attachments[0].retained).toBe(true);
+    expect(r.state.attachments[0].uri).toContain(`/${USER}/${CAPTURE}/`);
+    expect(memfs.files.has(r.state.attachments[0].uri)).toBe(true);
+  });
+});
+
+describe('a 502 that carries the event', () => {
+  it('does not put the rescued attachment back in the cache', async () => {
+    const legacyUri = 'file:///cache/legacy-502.jpg';
+    memfs.reset();
+    memfs.put(legacyUri, 16);
+    const d = draft({
+      attachments: [attachment({ uri: legacyUri, retained: undefined, path: undefined, size: 16 })],
+    });
+    mocked.findMineByCaptureClientId.mockResolvedValue(null);
+    mocked.declareCapture.mockRejectedValue(
+      httpError(502, serverEvent([
+        serverAttachment('att-1', 'awaiting_upload'),
+        serverAttachment(INLINE_ID, 'failed'),
+      ])),
+    );
+
+    const r = recorder(d);
+    const outcome = await runSubmit(r.ctx);
+
+    expect(outcome.kind).toBe('created_not_uploaded');
+    // The rescue happened before the declare; this path must not undo it,
+    // or the next resume would copy from a cache file that has gone.
+    expect(r.state.attachments[0].retained).toBe(true);
+    expect(r.state.attachments[0].uri).toContain(`/${USER}/${CAPTURE}/`);
+  });
+});
+
+describe('a server error while repairing the text', () => {
+  it('is reported as unknown, not as something that cannot be retried', async () => {
+    const d = draft({
+      declaration: {
+        capture_client_id: CAPTURE,
+        job_id: null,
+        occurred_at: null,
+        internal_location: null,
+        body_text: 'Poured 12m3 bay 3',
+        attachments: [],
+      },
+      attachments: [],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'partial_failed', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment(INLINE_ID, 'failed')], 'partial_failed'),
+    );
+    mocked.declareCapture.mockRejectedValue(httpError(500));
+
+    const r = recorder(d);
+    const outcome = await runSubmit(r.ctx);
+
+    // The same pinned declaration can be replayed, and it may even have
+    // taken behind the gateway. Telling the user it cannot be retried is
+    // the one thing that must not happen.
+    expect(outcome.kind).toBe('unconfirmed');
+    expect(r.state.last_message).toBe('siteLog.status.unconfirmed');
+    expect(r.state.server?.site_log_event_id).toBe(EVENT_ID);
+  });
+});
+
+describe('an attachment kept before the container moved', () => {
+  it('is uploaded from where it is now, not from the path recorded then', async () => {
+    const path = `site-log/${USER}/${CAPTURE}/att-1.jpg`;
+    const moved = 'file:///containers/NEW-UUID/Documents/';
+    memfs.reset();
+    // Only the NEW location has the file; the old absolute URI is dead.
+    memfs.put(`${moved}${path}`, 10);
+    setDocumentDirectory(moved);
+
+    const d = draft({
+      attachments: [
+        attachment({
+          uri: 'file:///documents/site-log/user-a/capture-1/att-1.jpg',
+          path,
+          retained: true,
+        }),
+      ],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    const outcome = await runSubmit(recorder(d).ctx);
+
+    expect(outcome.kind).toBe('complete');
+    expect(mocked.uploadAttachment).toHaveBeenCalledWith(
+      EVENT_ID,
+      'att-1',
+      expect.objectContaining({ uri: `${moved}${path}` }),
+    );
+  });
+
+  it('is not reported missing just because the container moved', async () => {
+    const path = `site-log/${USER}/${CAPTURE}/att-1.jpg`;
+    const moved = 'file:///containers/ANOTHER-UUID/Documents/';
+    memfs.reset();
+    memfs.put(`${moved}${path}`, 10);
+    setDocumentDirectory(moved);
+
+    const d = draft({
+      attachments: [
+        attachment({ uri: 'file:///documents/site-log/user-a/capture-1/att-1.jpg', path, retained: true }),
+      ],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    const r = recorder(d);
+    await runSubmit(r.ctx);
+
+    expect(r.state.attachments[0].status).not.toBe('missing');
+  });
+});
+
+describe('a draft kept by the PREVIOUS build, which recorded only a URI', () => {
+  it('adopts its file without copying, and records where it is', async () => {
+    const oldUri = 'file:///documents/site-log/user-a/capture-1/att-1.jpg';
+    memfs.reset();
+    memfs.put(oldUri, 10);
+    const d = draft({
+      // retained, but no `path`: exactly what the previous build wrote.
+      attachments: [attachment({ uri: oldUri, path: undefined, retained: true })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    const r = recorder(d);
+    await runSubmit(r.ctx);
+
+    expect(r.state.attachments[0].path).toBe('site-log/user-a/capture-1/att-1.jpg');
+    // Adopted, not duplicated.
+    expect([...memfs.files.keys()].filter((k) => k.includes('att-1.jpg'))).toHaveLength(1);
+    expect(mocked.uploadAttachment).toHaveBeenCalledWith(
+      EVENT_ID, 'att-1', expect.objectContaining({ uri: oldUri }),
+    );
+  });
+
+  it('finds it again after the container has already moved', async () => {
+    // The upgrade the device checklist covers: install the new build over
+    // the old one, on a phone whose container path has changed since.
+    const oldUri = 'file:///containers/OLD-UUID/Documents/site-log/user-a/capture-1/att-1.jpg';
+    const moved = 'file:///containers/NEW-UUID/Documents/';
+    memfs.reset();
+    memfs.put(`${moved}site-log/user-a/capture-1/att-1.jpg`, 10);
+    setDocumentDirectory(moved);
+
+    const d = draft({
+      attachments: [attachment({ uri: oldUri, path: undefined, retained: true })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    const r = recorder(d);
+    const outcome = await runSubmit(r.ctx);
+
+    expect(outcome.kind).toBe('complete');
+    expect(r.state.attachments[0].status).not.toBe('missing');
+    expect(mocked.uploadAttachment).toHaveBeenCalledWith(
+      EVENT_ID,
+      'att-1',
+      expect.objectContaining({ uri: `${moved}site-log/user-a/capture-1/att-1.jpg` }),
+    );
+  });
+});
+
+describe("a legacy attachment pointing outside this capture", () => {
+  it('is refused, and its bytes are never imported as this capture\'s', async () => {
+    // An inconsistent record from an older build: retained, but the URI
+    // names another account's folder. Copying it in would send somebody
+    // else's file as this capture's attachment.
+    const foreign = 'file:///documents/site-log/user-b/capture-b/att-1.jpg';
+    memfs.reset();
+    memfs.put(foreign, 10);
+    const d = draft({
+      attachments: [attachment({ uri: foreign, path: undefined, retained: true })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')], 'partial_failed'),
+    );
+
+    const r = recorder(d);
+    await runSubmit(r.ctx);
+
+    // Not uploaded, not copied into this capture's folder, and reported.
+    expect(mocked.uploadAttachment).not.toHaveBeenCalled();
+    expect([...memfs.files.keys()]).toEqual([foreign]);
+    expect(r.state.attachments[0].status).toBe('missing');
+  });
+});
+
+describe('persisted attachment metadata that names somebody else', () => {
+  it('is refused even when it claims to be retained WITH a path', async () => {
+    const foreignPath = 'site-log/user-b/capture-b/att-1.jpg';
+    memfs.reset();
+    memfs.put(`file:///documents/${foreignPath}`, 10);
+    const d = draft({
+      attachments: [
+        attachment({ uri: `file:///documents/${foreignPath}`, path: foreignPath, retained: true }),
+      ],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')], 'partial_failed'),
+    );
+
+    const r = recorder(d);
+    await runSubmit(r.ctx);
+
+    expect(mocked.uploadAttachment).not.toHaveBeenCalled();
+    expect(r.state.attachments[0].status).toBe('missing');
+  });
+
+  it('is refused when it claims nothing but points inside another capture', async () => {
+    const foreign = 'file:///documents/site-log/user-b/capture-b/att-1.jpg';
+    memfs.reset();
+    memfs.put(foreign, 10);
+    const d = draft({
+      // No `retained` flag at all: the copy path, which is for a picker's
+      // cache file - not for a file already inside the app's own area.
+      attachments: [attachment({ uri: foreign, path: undefined, retained: undefined })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')], 'partial_failed'),
+    );
+
+    const r = recorder(d);
+    await runSubmit(r.ctx);
+
+    expect(mocked.uploadAttachment).not.toHaveBeenCalled();
+    // Not copied into this capture's folder either.
+    expect([...memfs.files.keys()]).toEqual([foreign]);
+    expect(r.state.attachments[0].status).toBe('missing');
+  });
+
+  it('still accepts an ordinary pick from the cache', async () => {
+    const picked = 'file:///cache/IMG_7.jpg';
+    memfs.reset();
+    memfs.put(picked, 10);
+    const d = draft({
+      attachments: [attachment({ uri: picked, path: undefined, retained: undefined })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    const r = recorder(d);
+    const outcome = await runSubmit(r.ctx);
+
+    expect(outcome.kind).toBe('complete');
+    expect(r.state.attachments[0].path).toBe(`site-log/${USER}/${CAPTURE}/att-1.jpg`);
+  });
+});
+
+// =====================================================================
+// Round-16: the three retention cases, through the whole flow
+// =====================================================================
+describe('an attachment whose retained flag is missing but whose file is already ours', () => {
+  it('is adopted, not copied onto itself, and is uploaded from where it is', async () => {
+    // The shape that destroyed a recording: no flag, and a URI that names
+    // the very file retention would have written. The mocked copy deletes
+    // its destination first, as the native one does, so a copy here would
+    // lose the bytes and then fail.
+    const ours = `file:///documents/site-log/${USER}/${CAPTURE}/att-1.jpg`;
+    memfs.reset();
+    memfs.put(ours, 4096);
+    const d = draft({
+      attachments: [attachment({ uri: ours, path: undefined, retained: undefined, size: 4096 })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    const r = recorder(d);
+    const outcome = await runSubmit(r.ctx);
+
+    expect(memfs.files.get(ours)).toBe(4096);          // still there
+    expect(outcome.kind).toBe('complete');
+    expect(r.state.attachments[0].retained).toBe(true);
+    expect(r.state.attachments[0].path).toBe(`site-log/${USER}/${CAPTURE}/att-1.jpg`);
+    expect(mocked.uploadAttachment).toHaveBeenCalledWith(
+      EVENT_ID, 'att-1', expect.objectContaining({ uri: ours }),
+    );
+  });
+
+  it('is adopted through an equivalent spelling of the same path', async () => {
+    const ours = `file:///documents/site-log/${USER}/${CAPTURE}/att-1.jpg`;
+    const dotted = `file:///documents/site-log/${USER}/./${CAPTURE}/att-1.jpg`;
+    memfs.reset();
+    memfs.put(ours, 4096);
+    const d = draft({
+      attachments: [attachment({ uri: dotted, path: undefined, retained: undefined, size: 4096 })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    await runSubmit(recorder(d).ctx);
+
+    expect(memfs.files.get(ours)).toBe(4096);
+    expect(mocked.uploadAttachment).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a path that tries to reach another capture', () => {
+  it.each([
+    ['a dot segment', `file:///documents/site-log/${USER}/${CAPTURE}/../capture-b/att-1.jpg`],
+    ['an encoded dot segment', `file:///documents/site-log/${USER}/${CAPTURE}/%2e%2e/capture-b/att-1.jpg`],
+    ['another account outright', 'file:///documents/site-log/user-b/capture-b/att-1.jpg'],
+    ['a scheme we cannot decide', 'content://media/external/images/1'],
+  ])('is refused when it is %s', async (_label, uri) => {
+    memfs.reset();
+    memfs.put(`file:///documents/site-log/${USER}/capture-b/att-1.jpg`, 10);
+    memfs.put('file:///documents/site-log/user-b/capture-b/att-1.jpg', 10);
+    const before = [...memfs.files.keys()].sort();
+
+    const d = draft({
+      attachments: [attachment({ uri, path: undefined, retained: undefined })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')], 'partial_failed'),
+    );
+
+    const r = recorder(d);
+    await runSubmit(r.ctx);
+
+    expect(mocked.uploadAttachment).not.toHaveBeenCalled();
+    expect([...memfs.files.keys()].sort()).toEqual(before);  // nothing copied, nothing deleted
+    expect(r.state.attachments[0].status).toBe('missing');
+  });
+});
+
+describe('the ordinary cases still work', () => {
+  it.each([
+    ['a photo', 'file:///cache/IMG_1.jpg', 'IMG_1.jpg', 'image' as const],
+    ['a document', 'file:///cache/site-report.pdf', 'site-report.pdf', 'document' as const],
+    ['a recording', 'file:///cache/AV/recording-1.m4a', 'voice-1.m4a', 'audio' as const],
+  ])('keeps %s picked from outside the app', async (_label, source, name, media) => {
+    memfs.reset();
+    memfs.put(source, 2048);
+    const d = draft({
+      attachments: [
+        attachment({
+          uri: source, path: undefined, retained: undefined,
+          name, media_type: media, size: 2048,
+        }),
+      ],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockResolvedValue(serverAttachment('att-1', 'stored'));
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+
+    const r = recorder(d);
+    const outcome = await runSubmit(r.ctx);
+
+    expect(outcome.kind).toBe('complete');
+    expect(r.state.attachments[0].retained).toBe(true);
+    expect(r.state.attachments[0].path).toMatch(
+      new RegExp(`^site-log/${USER}/${CAPTURE}/att-1\\.`),
+    );
+    // The original is left where the picker put it.
+    expect(memfs.files.get(source)).toBe(2048);
+  });
+});
+
+describe('an upload that times out', () => {
+  it('keeps the attachment, reports the result as unknown, and makes no second record', async () => {
+    const ours = `file:///documents/site-log/${USER}/${CAPTURE}/att-1.jpg`;
+    memfs.reset();
+    memfs.put(ours, 4096);
+    const d = draft({
+      attachments: [attachment({ uri: ours, path: `site-log/${USER}/${CAPTURE}/att-1.jpg` })],
+      server: { site_log_event_id: EVENT_ID, capture_status: 'pending_upload', observed_at: 1 },
+    });
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'awaiting_upload')]),
+    );
+    mocked.uploadAttachment.mockRejectedValue(timeoutError());
+
+    const r = recorder(d);
+    const first = await runSubmit(r.ctx);
+
+    // Unknown, not failed: the bytes may well have landed.
+    expect(first.kind).toBe('unconfirmed');
+    expect(r.state.unconfirmed).toBe(true);
+    expect(r.state.attachments[0].status).not.toBe('missing');
+    expect(memfs.files.get(ours)).toBe(4096);
+    expect(mocked.declareCapture).not.toHaveBeenCalled();
+
+    // The next attempt asks the server first. It had in fact stored it.
+    mocked.getEvent.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+    mocked.finalizeCapture.mockResolvedValue(
+      serverEvent([serverAttachment('att-1', 'stored')], 'complete'),
+    );
+    const second = await runSubmit({ ...r.ctx, draft: { ...d, ...r.state } });
+
+    expect(second.kind).toBe('complete');
+    // Not sent twice, and no second record.
+    expect(mocked.uploadAttachment).toHaveBeenCalledTimes(1);
+    expect(mocked.declareCapture).not.toHaveBeenCalled();
+  });
+});
