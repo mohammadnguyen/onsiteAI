@@ -448,10 +448,19 @@ anything has leaked.
 
 **Smallest further step, if wanted (separate authorisation):** inside the
 container, print the **key names** in each file and, per key, one boolean —
-whether its value equals any current production secret value (compared in
-process; no value printed). If every boolean is false, the files hold no
-production credential. If any is true, a rotation plan follows as its own
-decision — rotating `JWT_SECRET`, for example, signs every Build 4 session out.
+whether its value **contains** any current production credential
+**component**: the whole `JWT_SECRET`, `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY` values, and the user and password parsed out of
+`DATABASE_URL` (so a different URL scheme or host spelling cannot hide a
+match). Compared in process; no value printed.
+
+What the result can and cannot say: any true is a production credential in the
+image, and a rotation plan follows as its own decision (rotating `JWT_SECRET`,
+for example, signs every Build 4 session out). All false says only that **no
+current production credential component was found** — it does not clear the
+files, which may still hold other valid credentials (for development or other
+services) that a comparison against production cannot recognise. Assessing
+those means reading values, which is a further, separate decision.
 
 ## 11. Known limits carried into the release
 
@@ -501,7 +510,7 @@ policy. Each part is approved separately.
 | Resources | The operator's existing local PostgreSQL container (port 5433), in a **new scratch database** created for this and dropped after (never the shared test database). Clean git worktrees at `6036491` and `bcc3964`. Local uvicorn processes. Docker Desktop is currently stopped; starting it is a shared local runtime, so it is part of this approval. |
 | Cost | None |
 | Writes | The scratch database only. Nothing reaches Fly, Tigris or production. |
-| Steps | 1 Migrate the scratch database to `c7d8e9f0a1b2` with `6036491`'s Alembic. 2 Seed synthetic data through `6036491`'s own API (an admin, jobs, categories, suppliers, expenses, labour, a review-queue item). 3 Upgrade to `d9e0f1a2b3c4` with `bcc3964`'s Alembic. 4 Run the `6036491` app against it and script Build 4's calls, reads and writes. 5 Run the `bcc3964` app (local storage adapter in a temporary folder) and exercise the normal paths: Site Log declare, upload, finalize, list, read; evidence read and download. 6 Record the attempt-counter state and whether a downgrade would now be lossy. 7 Drop the scratch database. |
+| Steps | 1 Migrate the scratch database to `c7d8e9f0a1b2` with `6036491`'s Alembic. 2 Bootstrap the first admin with `6036491`'s `scripts.seed_admin` and synthetic credentials — the API cannot create the first account (`/users/invite` requires an admin, and migrations seed none). Before running it, confirm the `DATABASE_URL` it will use names the scratch database and nothing else. Then, logged in as that admin, seed the rest through `6036491`'s own API (jobs, categories, suppliers, expenses, labour, a review-queue item). 3 Upgrade to `d9e0f1a2b3c4` with `bcc3964`'s Alembic. 4 Run the `6036491` app against it and script Build 4's calls, reads and writes. 5 Run the `bcc3964` app (local storage adapter in a temporary folder) and exercise the normal paths: Site Log declare, upload, finalize, list, read; evidence read and download. 6 Record the attempt-counter state and whether a downgrade would now be lossy. 7 Drop the scratch database. |
 | Stop if | Any step-4 call fails on the new schema (migrate-first is then invalid — re-plan), or a step-5 normal path fails. |
 | Undo | Drop the scratch database; remove the worktrees. |
 | Gap it leaves | S3 (the local adapter stands in) — covered by R1-b and S-1. Real-data volume — not relevant: the altered table has 0 rows in production, and the old code's tables are unchanged. |
