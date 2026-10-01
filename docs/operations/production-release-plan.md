@@ -1,10 +1,13 @@
 # Production release plan — Site Log (`bcc3964`)
 
-**Status: PREPARATION ONLY. Nothing in this document has been executed
-against production.** It is the plan the founder approves or rejects, step
-by step. Every stateful step below needs its own explicit approval; the
-read-only checks it proposes need approval too, because they run on the
-production machine.
+**Status: PREPARATION. No release step has been executed** — no backup,
+migration, deploy, app build or secret change. What has run, each under its
+own approval: the read-only checks P-2 to P-6, and R1 (section 13), which
+includes a production storage test that wrote labelled test objects to the
+bucket and then deleted them (no database write). This is the plan the
+founder approves or rejects, step by step. Every stateful step below needs its
+own explicit approval; read-only checks need approval too, because they run on
+the production machine.
 
 "Production" here is the Fly app **`sitetracker-backend-staging`**. Its name
 is historical: it carries the operator's real business data and serves the
@@ -35,8 +38,9 @@ under `evidence/`; the Site Log tables and the `evidence` and
 
 **Established by R1 (section 13):**
 - **R1-a, synthetic rehearsal — passed.** On a local scratch database: the old
-  code (`6036491`) ran all 46 of Build 4's calls, reads and writes, on the
-  **migrated** schema; the new code (`bcc3964`) ran its normal paths (Site
+  code (`6036491`) answered 46 of 46 scripted calls drawn from Build 4's
+  endpoints, reads and writes, on the **migrated** schema (review-queue item
+  actions were not exercised); the new code (`bcc3964`) ran its normal paths (Site
   Log declare, replay, upload, finalize, list, read; evidence read and
   download; legacy evidence upload) — 23 of 23; and the old code still read a
   database the new code had written to (11 of 11). The migration took about a
@@ -124,7 +128,7 @@ org-settings and review-queue module. No new setting, default or validator.
 
 | Combination | Result | Basis |
 |---|---|---|
-| **Old code (`6036491`) on the new schema** | Works | `6036491` has no API or service that reads or writes any Site Log table; its ORM does not map the new column, and ORM selects name their columns. An insert would take the server default 0. **Code inspection only — never run.** |
+| **Old code (`6036491`) on the new schema** | Works | `6036491` has no API or service that reads or writes any Site Log table; its ORM does not map the new column, and ORM selects name their columns. An insert would take the server default 0. **Rehearsed 2026-10-01 (R1-a, section 13): 46 of 46 scripted Build 4 calls passed on the migrated schema, and 11 of 11 reads after the new code wrote.** |
 | **New code (`bcc3964`) on the old schema** | **Breaks** | Every select of `SiteLogEventAttachment` names `upload_attempt_no`. That includes all Site Log routes **and** the existing `GET /evidence/{id}`, `/download` and `POST /evidence/{id}/link-job`, which now call `binding_for_evidence`. Startup does not catch it: the schema check only logs. |
 | **Build 4 (old app) on the new backend** | Works (contract) | Build 4 makes 42 calls (auth, expenses, labour, jobs, reports, users, categories, suppliers, org settings, review queue). The modules behind them are byte-identical except `router.py` (additive) and `models/site_log.py` (a table Build 4 never reaches). Build 4 makes no `/evidence` or `/site-log-events` call. |
 | **New app on the old backend** | **Breaks** | No Site Log router at `6036491`: the list fails and every save stops at its first lookup (`siteLog.error.lookup`) before anything is written. |
@@ -165,10 +169,12 @@ Each step: what it does, what proves it worked, and when to stop. Steps marked
 | **P-8** | Synthetic rehearsal off production — see "Rehearsal" below and section 13 (R1-a). **Done 2026-10-01: passed** (46/46 old-code calls on the new schema; 23/23 new-code normal paths; 11/11 old-code reads after the new code wrote). | Every scripted call passes on both versions | Old code fails on the new schema, or the new code's normal path fails |
 | **P-9** | Build the target image **once**, from a **clean worktree at `bcc3964`** (tracked files only; `backend/` has no `.dockerignore`, so building from a working copy copies untracked local files such as `.env.*` into the image). Build-only and push (e.g. `flyctl deploy --build-only --push`; dated example — confirm with `--help`). Record the image digest, base-image digest and uv version (`python:3.12-slim` and `pip install uv` are not pinned). | Digest recorded; build context contains no `.env*` except `*.example`, no `.venv`, no `var/` | Build fails or the context holds untracked env files |
 
-**Rehearsal (P-8) — synthetic data, not production data.** Two claims are
-code inspection only: that old code runs on the new schema, and that the new
-code's normal path works on it. Both are rehearsed on a local scratch database
-filled with synthetic data (section 13, R1-a). Do **not** use the `6036491`
+**Rehearsal (P-8) — synthetic data, not production data.** Two claims rested
+on code inspection alone: that old code runs on the new schema, and that the
+new code's normal path works on it. Both were rehearsed on 2026-10-01 on a
+local scratch database filled with synthetic data and passed (section 13,
+R1-a); review-queue item actions, the S3 path and real-data volume were not
+covered. If the release target changes, re-run it. Do **not** use the `6036491`
 test suite for the first: its fixture drops the schema and rebuilds it from
 `6036491`'s own models, so it would test the old schema and pass falsely —
 run the `6036491` app against an Alembic-upgraded database and script Build 4's
@@ -568,7 +574,7 @@ policy. The plan as approved is kept below; the results follow each part.
 | 1 Migrate to `c7d8e9f0a1b2` (old Alembic) | Passed; `app` resolved to the clean worktree |
 | 2 Bootstrap + seed through the old API | Admin bootstrapped after confirming the target was the scratch database; jobs, alias, category budget, supplier and alias, worker, labour entry, org settings, expense and a contributor created. A no-job expense is refused by the API by design (it asks which job), so the review queue stayed empty and review resolve/reject were **not exercised** |
 | 3 Upgrade to `d9e0f1a2b3c4` (new Alembic) | Passed, about 1 s including start-up; column present, counters 0 |
-| 4 Old app on the new schema — Build 4's calls | **46 of 46** as expected, reads and writes (one call first sent with the wrong parameter form by the test driver, re-run as Build 4 sends it: 200); no application error |
+| 4 Old app on the new schema — Build 4's calls | **46 of 46** scripted calls drawn from Build 4's endpoints returned the expected status, reads and writes, including the expense text parse (200). Not every Build 4 endpoint was exercised: review-queue item read, resolve and reject were not. One call was first sent by the test driver with the wrong parameter form and re-run as Build 4 sends it: 200. No application error |
 | 5 New app — normal paths | **23 of 23**: Site Log declare, replay, upload, finalize, list, by capture id, read (event `complete`, inline text row flagged); bound evidence read and download with matching bytes; `link-job` on bound evidence refused 409; legacy evidence upload, read, download; job evidence and job Site Log lists |
 | 6 Counters | 2 attachments with `upload_attempt_no > 0` — a downgrade would now be lossy |
 | Extra — old app after the new code wrote | **11 of 11** reads; no application error (the rollback case) |
