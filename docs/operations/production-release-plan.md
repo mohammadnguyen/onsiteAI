@@ -37,24 +37,30 @@ under `evidence/`; the Site Log tables and the `evidence` and
 `evidence_audit_log` tables hold no rows.
 
 **Established by R1 (section 13):**
-- **R1-a, synthetic rehearsal — passed.** On a local scratch database: the old
-  code (`6036491`) answered 46 of 46 scripted calls drawn from Build 4's
-  endpoints, reads and writes, on the **migrated** schema (review-queue item
-  actions were not exercised); the new code (`bcc3964`) ran its normal paths (Site
-  Log declare, replay, upload, finalize, list, read; evidence read and
-  download; legacy evidence upload) — 23 of 23; and the old code still read a
-  database the new code had written to (11 of 11). The migration took about a
-  second. Migrate-first is now executed evidence, not only code inspection.
+- **R1-a, synthetic rehearsal — passed.** On a local scratch database, on the
+  **migrated** schema, the old code (`6036491`) gave the expected status for
+  all 46 scripted calls, reads and writes: 43 on Build 4's endpoints, covering
+  39 of its 42, plus three calls Build 4 does not make. One of the 46 was first
+  sent wrongly by the test driver and re-run as Build 4 sends it. Not exercised
+  on the migrated schema: review-queue resolve and reject, and user invite. The
+  new code (`bcc3964`) passed 23 of 23 calls: 15 on Site Log and evidence paths
+  (job-assigned captures only) and 8 daily-flow reads. The old code still read
+  a database the new code had written to (11 of 11 sampled reads). The
+  migration took about a second. Migrate-first is now executed evidence, not
+  only code inspection. Limits: section 13.
 - **R1-b, production storage operations — passed, cleaned.** With the
   production credentials, in `evidence/`: multipart create, part upload,
   complete, HEAD (absent before copy), copy, staging delete, GET read-back with
   matching SHA-256, HEAD on the final object, and abort. Every test object was
-  removed afterwards and verified absent. This proves those **operations and
-  permissions** — not the new adapter's code as a whole, and not clean-up after
-  a hard process death.
-- **Env files in the image:** no current production credential component found;
-  the files do hold a loopback (local development) database URL with a
-  password (section 10).
+  deleted by exact key and verified absent; a read-only follow-up found bucket
+  versioning never enabled, snapshots off, and no object version, delete
+  marker, object or incomplete upload under the test prefixes. This proves
+  those **operations and permissions** — not the new adapter's code as a whole,
+  and not clean-up after a hard process death.
+- **Env files in the image:** in both env files, on every line including
+  comments, no current production credential component was found; the files
+  do hold a loopback (local development) database URL with a password. The
+  `.env*.example` templates were not checked. Not proof of safety (section 10).
 - **Tigris lifecycle:** its documentation lists Expiration and Transitions with
   prefix filters; `AbortIncompleteMultipartUpload` is not documented (7.2).
 
@@ -65,7 +71,8 @@ under `evidence/`; the Site Log tables and the `evidence` and
 | Backend migrate + deploy | Daily app facts | The installed build (Diagnostics) and Build 4's availability as a fallback — the founder is checking |
 | Backend migrate + deploy | The release package itself | Backup, one-off migration machine, deploy — not yet approved |
 | New app | S-1 on the deployed `bcc3964` | The new adapter's own code paths with labelled test objects (R1-b used raw operations from the old machine) |
-| New app | Gate 2 procedure | No supported lifecycle rule for incomplete uploads; the manual check and exact-reclaim procedure (7.2) and its schedule need approval; completed staging residue is accepted only by decision |
+| New app | Gate 2 procedure | No documented lifecycle rule for incomplete uploads; the manual check and exact-reclaim procedure (7.2) and its schedule need approval; completed staging residue is accepted only by decision |
+| Backend deploy (D-2) and new app (N-1) | Production write-smoke policy | The labelled test expense (create, then delete) or real entries only — a founder decision (section 12) |
 
 Not a release blocker: the env files leave the image with the clean build
 (P-9); a `.dockerignore` is a later code slice.
@@ -92,7 +99,7 @@ printed).
 | Evidence storage | **`s3`** on the Tigris endpoint; configured bucket and endpoint equal the Tigris-attached ones; endpoint carries no credentials; client signs as `us-east-1` and Tigris accepts it (P-3, P-4) | unchanged |
 | Upload cap | **26,214,400** effective — the code default; not in the environment, not from a file (P-3) | unchanged |
 | Token lifetimes | access 60 min, refresh 30 days (P-3) | unchanged |
-| Rows | Site Log tables 0; `evidence` 0; `evidence_audit_log` 0. Core-table counts recorded in the ops journal as the backup baseline (P-6) | — |
+| Rows | Site Log tables 0; `evidence` 0; `evidence_audit_log` 0. Core-table counts recorded in the private ops journal (local, outside this repository) as the backup baseline (P-6) | — |
 | Bucket | no lifecycle rules; 0 incomplete multipart uploads under `evidence/` (P-5) | — |
 
 The image carries no git label, and the registry answers `NAME_UNKNOWN` for
@@ -128,7 +135,7 @@ org-settings and review-queue module. No new setting, default or validator.
 
 | Combination | Result | Basis |
 |---|---|---|
-| **Old code (`6036491`) on the new schema** | Works | `6036491` has no API or service that reads or writes any Site Log table; its ORM does not map the new column, and ORM selects name their columns. An insert would take the server default 0. **Rehearsed 2026-10-01 (R1-a, section 13): 46 of 46 scripted Build 4 calls passed on the migrated schema, and 11 of 11 reads after the new code wrote.** |
+| **Old code (`6036491`) on the new schema** | Works | `6036491` has no API or service that reads or writes any Site Log table; its ORM does not map the new column, and ORM selects name their columns. An insert would take the server default 0. **Rehearsed 2026-10-01 (R1-a, section 13): 46 of 46 scripted calls passed on the migrated schema — 43 on Build 4's endpoints, covering 39 of its 42 (not review-queue resolve and reject, not user invite); one call re-run after a test-driver error — and 11 of 11 sampled reads after the new code wrote.** |
 | **New code (`bcc3964`) on the old schema** | **Breaks** | Every select of `SiteLogEventAttachment` names `upload_attempt_no`. That includes all Site Log routes **and** the existing `GET /evidence/{id}`, `/download` and `POST /evidence/{id}/link-job`, which now call `binding_for_evidence`. Startup does not catch it: the schema check only logs. |
 | **Build 4 (old app) on the new backend** | Works (contract) | Build 4 makes 42 calls (auth, expenses, labour, jobs, reports, users, categories, suppliers, org settings, review queue). The modules behind them are byte-identical except `router.py` (additive) and `models/site_log.py` (a table Build 4 never reaches). Build 4 makes no `/evidence` or `/site-log-events` call. |
 | **New app on the old backend** | **Breaks** | No Site Log router at `6036491`: the list fails and every save stops at its first lookup (`siteLog.error.lookup`) before anything is written. |
@@ -159,22 +166,24 @@ Each step: what it does, what proves it worked, and when to stop. Steps marked
 | Step | Action | Proven by | Stop if |
 |---|---|---|---|
 | **P-0** | Freeze scope: from `6036491`/`c7d8e9f0a1b2` to `bcc3964`/`d9e0f1a2b3c4`. No secret is set or unset in this release. | Founder confirms both SHAs | Anyone proposes a secret write, a cap change or a different target |
-| **P-1** | Record the rollback target: current release (v29), its image reference and digest, the machine, and the kill signal/timeout. Confirm the rollback command against `flyctl releases rollback --help`; if unsupported for Machines, rollback is `flyctl deploy --image <v29 ref>`. | Written in the ops journal | Live release is not v29 or the image differs from the measured one (drift since 2026-10-01) |
+| **P-1** | Record the rollback target: current release (v29), its image reference and digest, the machine, and the kill signal/timeout. Confirm the rollback command against `flyctl releases rollback --help`; if unsupported for Machines, rollback is `flyctl deploy --image <v29 ref>`. | Written in the private ops journal | Live release is not v29 or the image differs from the measured one (drift since 2026-10-01) |
 | **P-2** | Database revision, read as measured: `MigrationContext` in a `READ ONLY` transaction, from the image's `/app/.venv`, `python -B`. **Never `uv run`** (it re-syncs packages inside the production container). **Done 2026-10-01: `c7d8e9f0a1b2`.** Re-run immediately before the window. | Exactly one revision, `c7d8e9f0a1b2` | Anything else. Do not install, sync or repair — report |
 | **P-3** | Effective configuration through the deployed settings loader (cwd `/app`), printing no secret: `APP_ENV`, the env file the loader resolves, storage backend, endpoint host, bucket, the effective cap and its source, token lifetimes, booleans. **Do not rely on the `settings_loaded` startup log line** — the app's INFO logs are very likely not emitted (no logging configuration; uvicorn leaves the root logger at WARNING). **Done 2026-10-01: `staging`, no env file, `s3`, cap 26,214,400 from the default** (section 1). Re-run on the new machine after D-1. | `APP_ENV` is `staging` or `production`; no env file loaded; `s3`; cap 26,214,400 | An env file is loaded, or `APP_ENV=development` |
 | **P-4** | Storage Gate 1 probe — section 7.1. **Done 2026-10-01: bucket 200, evidence-shaped key 404.** | `head_bucket` 200 **and** `head_object` 404 | Any 403/301/400, a 404 on the bucket, or 5xx/timeout (inconclusive, not a pass) |
 | **P-5** | Storage Gate 2 reads — section 7.2. **Done 2026-10-01: no lifecycle rules; 0 incomplete uploads under `evidence/`.** | Counts and lifecycle rules recorded | An Expiration rule covers `evidence/` (a retention hazard, DEC-EVIDENCE-001) |
-| **P-6** | Aggregate counts only, in a `READ ONLY` transaction, plus `server_version_num`. **Done 2026-10-01: PG 16.14; Site Log tables 0; `evidence` 0; core counts in the ops journal.** Re-run immediately before the window as the backup baseline. | Server ≥ PG 11; attachment count recorded | PG < 11, or unexpected Site Log rows — re-plan the lock window |
+| **P-6** | Aggregate counts only, in a `READ ONLY` transaction, plus `server_version_num`. **Done 2026-10-01: PG 16.14; Site Log tables 0; `evidence` 0; core counts in the private ops journal.** Re-run immediately before the window as the backup baseline. | Server ≥ PG 11; attachment count recorded | PG < 11, or unexpected Site Log rows — re-plan the lock window |
 | **P-7** | Client inventory: the phone's Settings → Diagnostics shows commit `6036491`. | `6036491` | Any other build — redo the old-app compatibility check for that build first |
-| **P-8** | Synthetic rehearsal off production — see "Rehearsal" below and section 13 (R1-a). **Done 2026-10-01: passed** (46/46 old-code calls on the new schema; 23/23 new-code normal paths; 11/11 old-code reads after the new code wrote). | Every scripted call passes on both versions | Old code fails on the new schema, or the new code's normal path fails |
+| **P-8** | Synthetic rehearsal off production — see "Rehearsal" below and section 13 (R1-a). **Done 2026-10-01: passed** (46/46 old-code calls on the new schema, one re-run after a test-driver error; 23/23 new-code calls; 11/11 old-code reads after the new code wrote; coverage limits in section 13). | Every scripted call passes on both versions | Old code fails on the new schema, or the new code's normal path fails |
 | **P-9** | Build the target image **once**, from a **clean worktree at `bcc3964`** (tracked files only; `backend/` has no `.dockerignore`, so building from a working copy copies untracked local files such as `.env.*` into the image). Build-only and push (e.g. `flyctl deploy --build-only --push`; dated example — confirm with `--help`). Record the image digest, base-image digest and uv version (`python:3.12-slim` and `pip install uv` are not pinned). | Digest recorded; build context contains no `.env*` except `*.example`, no `.venv`, no `var/` | Build fails or the context holds untracked env files |
 
 **Rehearsal (P-8) — synthetic data, not production data.** Two claims rested
 on code inspection alone: that old code runs on the new schema, and that the
 new code's normal path works on it. Both were rehearsed on 2026-10-01 on a
 local scratch database filled with synthetic data and passed (section 13,
-R1-a); review-queue item actions, the S3 path and real-data volume were not
-covered. If the release target changes, re-run it. Do **not** use the `6036491`
+R1-a). Not covered: review-queue resolve and reject and user invite on the
+migrated schema; the new code's unassigned-capture, job-assignment and
+attachment-reset paths; the S3 path; real-data volume. If the release target
+changes, re-run it. Do **not** use the `6036491`
 test suite for the first: its fixture drops the schema and rebuilds it from
 `6036491`'s own models, so it would test the old schema and pass falsely —
 run the `6036491` app against an Alembic-upgraded database and script Build 4's
@@ -311,18 +320,20 @@ generic behaviour — HEAD 404 vs 403 under *that* key's role, error-code shapes
 multipart/abort/copy semantics, read-after-write, SDK checksum-header
 acceptance, region signing.
 
-**What it cannot prove, and production still lacks:** the production key's
-role and policy scope; the production bucket's own settings; and **write
-rights of any kind with the production credentials**.
+**What it cannot prove:** the production key's role and policy scope; the
+production bucket's own settings; and write rights with the production
+credentials. Those needed production evidence: P-4 and R1-b supplied it for
+the storage operations (below); the new adapter's own code still needs S-1.
 
-What the evidence supports about production writes, and no more: no client of
-the deployed release calls the upload path; the production database holds no
-`evidence` or `evidence_audit_log` rows, so the deployed app has never recorded
-an upload attempt, successful or failed; the bucket has no incomplete
-multipart uploads under `evidence/`. Whether any object was ever written to
-the bucket by other means is not established, and was not listed. A HEAD that
-answers correctly, or a policy that looks permissive, is **not** a verified
-upload chain.
+What the evidence supports about production writes by the app, and no more:
+no client of the deployed release calls the upload path; the production
+database holds no `evidence` or `evidence_audit_log` rows, so the deployed app
+has never recorded an upload attempt, successful or failed; the bucket had no
+incomplete multipart uploads under `evidence/` (P-5). Whether any object was
+ever written to the bucket by other means before R1 is not established, and
+the bucket was not listed. R1-b's own labelled test objects were written and
+then deleted (section 13). A HEAD that answers correctly, or a policy that
+looks permissive, is **not** a verified upload chain.
 
 **R1-b (2026-10-01)** then exercised the operations themselves with the
 production credentials in `evidence/` — create, part upload, complete, HEAD,
@@ -333,8 +344,11 @@ which run first in S-1 on the deployed `bcc3964`, nor any clean-up after a hard
 process death.
 
 **An isolated-bucket result never closes a production gate.** Gate 1 closes
-only on the production probe (7.1); Gate 2 only on production lifecycle and
-multipart evidence, or an explicit founder acceptance of residue.
+only after S-1 runs the new adapter's own code on the deployed `bcc3964`; the
+probe (7.1) and R1-b are inputs to it, not its closure. Gate 2 closes only on
+the founder's approval of the manual check, the exact reclaim and their
+schedule (7.2), and a decision on completed staging residue; the P-5 reads are
+inputs, not its closure. Neither gate is open or closed automatically.
 
 ### 7.1 Gate 1 — minimal read-only probe with the production credentials (run 2026-10-01)
 
@@ -361,8 +375,9 @@ multipart evidence, or an explicit founder acceptance of residue.
   upload would then fail. 301/400 = misconfigured — fail. 5xx or timeout =
   inconclusive. 200 on the probe key = an object exists at a freshly random
   evidence key — stop and investigate.
-- **What it does not prove:** write, copy or delete rights in `evidence/`
-  (S-1), and GET rights for downloads.
+- **What it does not prove:** write, copy or delete rights in `evidence/`,
+  and GET rights for downloads — R1-b later established those operations
+  (section 13); the new adapter's own code still needs S-1.
 - **Result, 2026-10-01:** `head_bucket` 200; `head_object` on a fresh
   evidence-shaped key 404. Gate 1's **HEAD precondition** holds for the
   production credentials in `evidence/`. R1-b then verified the storage
@@ -380,8 +395,9 @@ admin reset. A death **after** `complete_multipart_upload` leaves a
 `AbortIncompleteMultipartUpload` rule handles the first case only; **no
 prefix-safe Expiration rule can remove the second**, because it shares the
 `evidence/{id}/` prefix with real evidence and lifecycle filters cannot match
-a suffix. (The module docstring's claim that the lifecycle policy covers it is
-true only for incomplete uploads.)
+a suffix. (The module docstring leaves this residue to a bucket lifecycle
+policy. In production there is none — P-5 found no rules — and Tigris documents
+no abort-incomplete rule, so today nothing automatic covers either case.)
 
 Read-only checks, each needing approval, printing counts and flags only:
 `list_multipart_uploads` under `evidence/` (upload count, truncation, count
@@ -398,7 +414,7 @@ incomplete multipart uploads under `evidence/`.
 
 | Residue | Treatment | Not acceptable |
 |---|---|---|
-| Incomplete multipart uploads (death before completion) | **No supported lifecycle rule** (see below). Manual check and exact reclaim, below. | Treating any lifecycle rule as having solved it |
+| Incomplete multipart uploads (death before completion) | **No documented lifecycle rule** (see below). Manual check and exact reclaim, below. | Treating any lifecycle rule as having solved it |
 | Completed staging objects `evidence/{id}/.staging[.aN]` (death after completion) | No lifecycle rule can target them safely. Count them periodically (a listing — founder decision) and accept them as known residue until a deliberate, reviewed cleanup tool exists. | **Any Expiration rule covering `evidence/`** — it would delete real evidence (DEC-EVIDENCE-001) |
 
 **What Tigris supports (its documentation, checked 2026-10-01):** lifecycle
@@ -417,13 +433,21 @@ ops journal. Run it before and after every backend deploy, and on a schedule
 the founder sets.
 
 **Exact reclaim, per upload, never by prefix:** for each upload older than an
-agreed age, take its key (`evidence/{evidence_id}/.staging.aN`) and upload ID;
-read the matching `evidence` row and attachment row (read-only). Reclaim only
-when the row shows that attempt is no longer live (failed, or an admin reset
-has moved past it). Then `AbortMultipartUpload` with that exact key and upload
-ID, and confirm it no longer lists. Each reclaim is recorded and needs the
-founder's approval of the exact list; anything whose owner cannot be
-established is left and reported.
+agreed age, take its key and upload ID, and read the matching rows
+(read-only). Two key forms exist:
+
+- `evidence/{evidence_id}/.staging.aN` — a Site Log attachment attempt: read
+  the `evidence` row and the attachment row. Reclaim only when the attachment
+  has moved past attempt N (an admin reset) or the attempt is recorded as
+  failed.
+- `evidence/{evidence_id}/.staging` (no suffix) — the legacy `POST /evidence`
+  path, which has no attachment row: read the `evidence` row only. Reclaim only
+  when that row is recorded as failed.
+
+Then `AbortMultipartUpload` with that exact key and upload ID, and confirm it
+no longer lists. Each reclaim is recorded in the private ops journal and needs
+the founder's approval of the exact list; anything whose owner or state cannot
+be established is left and reported.
 
 ## 8. Regression plan
 
@@ -484,13 +508,13 @@ database's history and data.
 | Production credentials: HEAD 404 vs 403, bucket reachable | **Settled by P-4** for HEAD in `evidence/` |
 | Production storage operations and permissions (create/part/complete, HEAD, copy, delete, get, abort) | **Settled by R1-b** |
 | The new adapter's own code paths in production (classification, cancellation, supervised clean-up) | S-1 on the deployed `bcc3964` |
-| Clean-up after a hard process death mid-upload | Not verified; no supported lifecycle rule — manual check and exact reclaim (7.2) |
+| Clean-up after a hard process death mid-upload | Not verified; no documented lifecycle rule — manual check and exact reclaim (7.2) |
 | Lifecycle rules, incomplete multipart uploads | **Settled by P-5**: none, 0 |
 | Completed staging objects in the bucket | Not listed — a listing is a founder decision |
 | Row counts, PostgreSQL version | **Settled by P-6** |
 | Old code on the new schema; the new code's normal path | **Settled by R1-a** (synthetic data, local adapter) |
 | Whether Tigris honours `AbortIncompleteMultipartUpload` | Not documented by Tigris — treated as unsupported (7.2) |
-| Production credentials carried in the image's env files | **Settled by the env check**: no current production component found. Other credentials in the files: one category found (section 10); values not read |
+| Production credentials carried in the image's env files | **Checked for current production components** in both env files, every line including comments: none found. Not proof of safety; one non-production credential category found; the `.env*.example` templates were not checked; values read in process only, never output, copied or hashed (section 10) |
 | Downtime while the single machine is replaced | Fly documentation, or observed at D-1 |
 | Whether the app's INFO startup logs reach Fly logs | The plan does not depend on it |
 | Data retention across a TestFlight downgrade | A device test on a non-daily install |
@@ -504,13 +528,22 @@ here says they are safe, and nothing says anything has leaked.
 | Risk | What is established | What is not |
 |---|---|---|
 | **Runtime configuration** — the files changing how production behaves | With `APP_ENV=staging` the loader reads only `.env.staging`, which is absent; P-3 confirmed no env file is loaded. Today the files do not configure production. A different `APP_ENV`, or a future image carrying a matching file, would change that — the clean build in P-9 removes the files from the next image. | — |
-| **Credentials carried in the image** — the files containing secrets | The env check (2026-10-01, in process, names and booleans only): the files hold a handful of variables — a database URL **with a password** whose host is **loopback** (a local development database), a JWT secret that is **placeholder-like**, and plain configuration. **No value contains any current production credential component** — secret values (JWT secret, storage secret key, database password) and identifiers (storage key id, database user) reported separately, all negative — and none contains the production database host. Anyone who can read the image or open a shell in the container can read the files; the v29 image remains the rollback target until replaced. | Whether the loopback database password is used anywhere else; the values themselves (not read, not copied, not hashed) |
+| **Credentials carried in the image** — the files containing secrets | The env check (2026-10-01, `/app/.env` and `/app/.env.development`, read and compared inside the process; only names, categories and booleans printed): the active lines hold a handful of variables — a database URL **with a password** whose host is **loopback** (taken to be a local development database), a JWT secret that is **placeholder-like**, and plain configuration; the rest are comments. **No line, comments included, contains any current production credential component** — secret values (JWT secret, storage secret key, database password as stored and URL-decoded) and identifiers (storage key id, database user) reported separately, all negative — and none contains the production database host. Anyone who can read the image or open a shell in the container can read the files; the v29 image remains the rollback target until replaced. | Whether the loopback database password is used anywhere else; the `.env*.example` templates in `/app` and any nested files (not checked); the values themselves (read in process only; never printed, copied, stored or hashed) |
 
 **Classification:** production credentials — none found by component
 comparison; a non-production (local development) database credential — present.
 That is not proof of safety: a credential reused elsewhere would not be
-recognised by a comparison against production. Next steps are removal, not
-rotation: the clean build (P-9) leaves these files out of the next image, and
+recognised by a comparison against production.
+
+**Method limits:** exact substring matching of each current production value
+(the database password also URL-decoded), so a split, partly changed,
+differently encoded or previously rotated credential would not match; length
+gates (secret 8, identifier 3, host 4 characters) — every production component
+was long enough to be compared; "placeholder-like" means membership in a fixed
+short list; "local development" is inferred from a loopback host, and a local
+tunnel to a remote database would look the same.
+
+Next steps are removal, not rotation: the clean build (P-9) leaves these files out of the next image, and
 a `.dockerignore` is a later code slice. Rotating the local development
 database password, if it is reused anywhere, is the owner's decision.
 
@@ -524,7 +557,9 @@ database password, if it is reused anywhere, is the owner's decision.
 - Incomplete multipart uploads have no automatic clean-up: Tigris documents no
   rule for it; the manual check and exact reclaim in 7.2 are the route.
 - Review-queue resolve and reject were not exercised in the rehearsal (the API
-  creates no review item from the synthetic inputs used).
+  creates no review item from the synthetic inputs used), nor was user invite
+  on the migrated schema; the new code's unassigned-capture, job-assignment
+  and attachment-reset paths were not exercised either.
 
 ## 12. Decisions
 
@@ -559,7 +594,7 @@ policy. The plan as approved is kept below; the results follow each part.
 
 | | |
 |---|---|
-| Resources | The operator's existing local PostgreSQL container (port 5433), in a **new scratch database** created for this and dropped after (never the shared test database). Clean git worktrees at `6036491` and `bcc3964`. Local uvicorn processes. Docker Desktop is currently stopped; starting it is a shared local runtime, so it is part of this approval. |
+| Resources | The operator's existing local PostgreSQL container (port 5433), in a **new scratch database** created for this and dropped after (never the shared test database). Clean git worktrees at `6036491` and `bcc3964`. Local uvicorn processes. Docker Desktop was stopped when this was planned; starting it is a shared local runtime, so it is part of this approval. (As run: Docker Desktop was started and the existing `sitetracker-db` container ran under it; both were left running.) |
 | Cost | None |
 | Writes | The scratch database only. Nothing reaches Fly, Tigris or production. |
 | Steps | 1 Migrate the scratch database to `c7d8e9f0a1b2` with `6036491`'s Alembic. 2 Bootstrap the first admin with `6036491`'s `scripts.seed_admin` and synthetic credentials — the API cannot create the first account (`/users/invite` requires an admin, and migrations seed none). Before running it, confirm the `DATABASE_URL` it will use names the scratch database and nothing else. Then, logged in as that admin, seed the rest through `6036491`'s own API (jobs, categories, suppliers, expenses, labour, a review-queue item). 3 Upgrade to `d9e0f1a2b3c4` with `bcc3964`'s Alembic. 4 Run the `6036491` app against it and script Build 4's calls, reads and writes. 5 Run the `bcc3964` app (local storage adapter in a temporary folder) and exercise the normal paths: Site Log declare, upload, finalize, list, read; evidence read and download. 6 Record the attempt-counter state and whether a downgrade would now be lossy. 7 Drop the scratch database. |
@@ -572,25 +607,27 @@ policy. The plan as approved is kept below; the results follow each part.
 | Step | Result |
 |---|---|
 | 1 Migrate to `c7d8e9f0a1b2` (old Alembic) | Passed; `app` resolved to the clean worktree |
-| 2 Bootstrap + seed through the old API | Admin bootstrapped after confirming the target was the scratch database; jobs, alias, category budget, supplier and alias, worker, labour entry, org settings, expense and a contributor created. A no-job expense is refused by the API by design (it asks which job), so the review queue stayed empty and review resolve/reject were **not exercised** |
+| 2 Bootstrap + seed through the old API | Admin bootstrapped after confirming the target was the scratch database; a job, alias, category budget, supplier and alias, worker, labour entry, org settings, expense and a contributor (through user invite, on the old schema) created. The one attempt to create a review item, an expense without a job, is refused by the API by design (it asks which job). Other inputs that produce a review item (the parser's supplier, category, amount or duplicate uncertainty) were not tried, so the review queue stayed empty and review resolve/reject were **not exercised** |
 | 3 Upgrade to `d9e0f1a2b3c4` (new Alembic) | Passed, about 1 s including start-up; column present, counters 0 |
-| 4 Old app on the new schema — Build 4's calls | **46 of 46** scripted calls drawn from Build 4's endpoints returned the expected status, reads and writes, including the expense text parse (200). Not every Build 4 endpoint was exercised: review-queue item read, resolve and reject were not. One call was first sent by the test driver with the wrong parameter form and re-run as Build 4 sends it: 200. No application error |
-| 5 New app — normal paths | **23 of 23**: Site Log declare, replay, upload, finalize, list, by capture id, read (event `complete`, inline text row flagged); bound evidence read and download with matching bytes; `link-job` on bound evidence refused 409; legacy evidence upload, read, download; job evidence and job Site Log lists |
+| 4 Old app on the new schema — Build 4's calls | **46 of 46** scripted calls returned the expected status, reads and writes, including the expense text parse (200): 43 on Build 4's endpoints, covering 39 of its 42, plus three calls Build 4 does not make (job audit, expense audit, supplier rename). Not exercised on the migrated schema: review-queue resolve and reject, and user invite (run only on the old schema, during seeding). The driver's own tally was 45 of 46: one call was first sent with the wrong parameter form and re-run as Build 4 sends it: 200. No application error |
+| 5 New app — normal paths | **23 of 23**. 15 Site Log and evidence calls: Site Log declare, replay, upload, finalize, list (twice), read (event `complete`, inline text row flagged); bound evidence read and download with matching bytes; `link-job` on bound evidence refused 409; legacy evidence upload, read, download; job evidence and job Site Log lists. 8 daily-flow calls: login and seven reads. Only job-assigned captures were declared; unassigned capture, assign-job, relink-job, the unassigned list and attachment reset were not exercised |
 | 6 Counters | 2 attachments with `upload_attempt_no > 0` — a downgrade would now be lossy |
-| Extra — old app after the new code wrote | **11 of 11** reads; no application error (the rollback case) |
-| 7 Clean-up | Scratch database dropped; worktrees, synthetic files and credentials removed; other databases and the container untouched |
+| Extra — old app after the new code wrote | **11 of 11** sampled reads; no application error (the rollback case) |
+| 7 Clean-up | Scratch database dropped; worktrees, synthetic files and credentials removed; other databases untouched. Docker Desktop and the `sitetracker-db` container were left running |
 
 Not covered: the S3 path (local adapter), real-data volume, review-queue
-actions.
+resolve and reject, user invite on the migrated schema, and the new code's
+unassigned-capture, job-assignment and attachment-reset paths. Logs and driver
+output are in the private ops journal.
 
 ### R1-b — production upload-chain test with labelled test objects
 
 | | |
 |---|---|
 | Where | Inside the running production machine (v29), from its existing virtualenv, `python -B`; no restart, no install. The production credentials stay in the process and are never printed. |
-| Operations | The exact S3 sequence the new adapter performs, raw: `CreateMultipartUpload` on `evidence/<T1>/.staging.a1` (object metadata labels it as a release test), two `UploadPart`s (5 MiB + 1 MiB), `CompleteMultipartUpload`, `HeadObject` on the final key `evidence/<T1>/<sha16>.a1` (expect 404), `CopyObject` staging → final, `DeleteObject` staging, `GetObject` final with SHA-256 read-back, `HeadObject` final (expect 200). The same for a single-part object at `<T2>`. Then `CreateMultipartUpload` + one `UploadPart` at `<T3>` and `AbortMultipartUpload`, followed by `ListMultipartUploads` under `evidence/<T3>/` (expect 0). `T1`–`T3` are fresh uuid4s; every key is printed and recorded. |
+| Operations | The exact S3 sequence the new adapter performs, raw: `CreateMultipartUpload` on `evidence/<T1>/.staging.a1` (object metadata labels it as a release test), two `UploadPart`s (5 MiB + 1 MiB), `CompleteMultipartUpload`, `HeadObject` on the final key `evidence/<T1>/<sha16>.a1` (expect 404), `CopyObject` staging → final, `DeleteObject` staging, `GetObject` final with SHA-256 read-back, `HeadObject` final (expect 200). The same for a single-part object at `<T2>`. Then `CreateMultipartUpload` + one `UploadPart` at `<T3>` and `AbortMultipartUpload`, followed by `ListMultipartUploads` under `evidence/<T3>/` (expect 0). `T1`–`T3` are fresh uuid4s; every key is printed and recorded. **As run:** the abort was confirmed by `ListParts` on its exact upload ID (`NoSuchUpload`); `ListMultipartUploads` ran in the final check, under all three test prefixes. HEADs were added around every step: all five keys before any write, staging after complete and after delete, each final after its delete, and all five keys at the end. |
 | Writes | Two final test objects (about 6 MiB and 1 KiB) and their staging objects, deleted by the sequence and then by the authorised exact clean-up (founder choice: test objects are not kept). The aborted upload leaves nothing. **No database row.** |
-| Cost | About 30 requests and about 6 MiB stored for minutes — under one US cent at Tigris's published rates (rates not re-checked). |
+| Cost | About 30 requests planned; about 40 as run, with the added HEADs and checks. About 6 MiB stored for minutes — under one US cent at Tigris's published rates (rates not re-checked). |
 | Stop if | Under 150 MB of memory available; any non-2xx on a write operation; the pre-copy HEAD is not 404; read-back SHA-256 mismatch; anything left after the abort. Stop at the first failure — no retries in a loop; bounded clean-up of this run's registered resources only. |
 | Undo | No database change. Exact deletion of this run's final objects, verified absent. |
 | Proves / does not prove | Proves the production credentials can perform each storage operation the new adapter uses, in `evidence/`, with read-after-write for copy and get. Does **not** prove the new adapter's own code paths (classification, cancellation, supervised clean-up) — S-1 runs them on the deployed `bcc3964` before the new app — nor any clean-up after a hard process death. |
@@ -614,7 +651,13 @@ absent first; upload IDs were recorded as each upload was created.
 
 Abort test C: create, one part, `AbortMultipartUpload` — then `ListParts`
 answered `NoSuchUpload`. Final check: all five registered keys absent; no
-incomplete upload under any of the three test prefixes. Nothing left in the
-bucket. Keys, upload IDs, sizes and checksums are in the ops journal.
+incomplete upload under any of the three test prefixes.
+
+**Follow-up, read-only (2026-10-01):** bucket versioning was never enabled and
+`x-tigris-enable-snapshot` is false; under each of the three test prefixes
+there are 0 object versions, 0 delete markers, 0 current objects and 0
+incomplete uploads. Nothing from this run remains in the bucket. Keys, upload
+IDs, sizes and checksums are in the private ops journal (local, outside this
+repository).
 
 The release itself (B, M, D, S, N, C in section 3) is a separate approval.
