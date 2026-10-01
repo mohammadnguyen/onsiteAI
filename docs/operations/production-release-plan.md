@@ -71,7 +71,7 @@ under `evidence/`; the Site Log tables and the `evidence` and
 | Backend migrate + deploy | Daily app facts | The installed build (Diagnostics) and Build 4's availability as a fallback — the founder is checking |
 | Backend migrate + deploy | The release package itself | Backup, one-off migration machine, deploy — not yet approved |
 | New app | S-1 on the deployed `bcc3964` | The new adapter's own code paths with labelled test objects (R1-b used raw operations from the old machine) |
-| New app | Gate 2 procedure | No documented lifecycle rule for incomplete uploads; the manual check and exact-reclaim procedure (7.2) and its schedule need approval; completed staging residue is accepted only by decision |
+| New app | Gate 2 procedure | No documented lifecycle rule for incomplete uploads; the manual check and exact-reclaim procedure (7.2) and its schedule need approval; residue the reclaim cannot remove (completed staging objects, legacy uploads left `pending`) is accepted only by decision |
 | Backend deploy (D-2) and new app (N-1) | Production write-smoke policy | The labelled test expense (create, then delete) or real entries only — a founder decision (section 12) |
 
 Not a release blocker: the env files leave the image with the clean build
@@ -347,8 +347,9 @@ process death.
 only after S-1 runs the new adapter's own code on the deployed `bcc3964`; the
 probe (7.1) and R1-b are inputs to it, not its closure. Gate 2 closes only on
 the founder's approval of the manual check, the exact reclaim and their
-schedule (7.2), and a decision on completed staging residue; the P-5 reads are
-inputs, not its closure. Neither gate is open or closed automatically.
+schedule (7.2), and a decision on the residue the reclaim cannot remove
+(completed staging objects; incomplete uploads of legacy rows left `pending`);
+the P-5 reads are inputs, not its closure. Neither gate is open or closed automatically.
 
 ### 7.1 Gate 1 — minimal read-only probe with the production credentials (run 2026-10-01)
 
@@ -414,7 +415,7 @@ incomplete multipart uploads under `evidence/`.
 
 | Residue | Treatment | Not acceptable |
 |---|---|---|
-| Incomplete multipart uploads (death before completion) | **No documented lifecycle rule** (see below). Manual check and exact reclaim, below. | Treating any lifecycle rule as having solved it |
+| Incomplete multipart uploads (death before completion) | **No documented lifecycle rule** (see below). Manual check and exact reclaim, below — except a legacy upload whose row stays `pending`, which the reclaim cannot establish as dead: known residue, accepted only by decision. | Treating any lifecycle rule as having solved it; aborting by age alone |
 | Completed staging objects `evidence/{id}/.staging[.aN]` (death after completion) | No lifecycle rule can target them safely. Count them periodically (a listing — founder decision) and accept them as known residue until a deliberate, reviewed cleanup tool exists. | **Any Expiration rule covering `evidence/`** — it would delete real evidence (DEC-EVIDENCE-001) |
 
 **What Tigris supports (its documentation, checked 2026-10-01):** lifecycle
@@ -442,7 +443,14 @@ agreed age, take its key and upload ID, and read the matching rows
   failed.
 - `evidence/{evidence_id}/.staging` (no suffix) — the legacy `POST /evidence`
   path, which has no attachment row: read the `evidence` row only. Reclaim only
-  when that row is recorded as failed.
+  when that row is recorded as failed. **A legacy row left `pending` by a hard
+  death never becomes `failed`** — the code has no reset for it (it finds
+  abandoned rows manually: `pending` older than a day) — so its incomplete
+  upload is **not reclaimable under this procedure**. Age alone does not prove
+  the writer is dead, so it is not used instead. Such uploads are known
+  residue, like completed staging objects, accepted only by founder decision.
+  No released client calls `POST /evidence` (Build 4, the new app and the admin
+  web do not), so this arises only from direct API use, such as a test.
 
 Then `AbortMultipartUpload` with that exact key and upload ID, and confirm it
 no longer lists. Each reclaim is recorded in the private ops journal and needs
@@ -576,8 +584,10 @@ bucket lifecycle change.
 **Still needed:**
 
 1. **Gate 2 procedure** — approve the manual check and exact-reclaim
-   procedure (7.2), its schedule, and whether completed staging residue is
-   counted periodically (a listing).
+   procedure (7.2), its schedule, whether completed staging residue is
+   counted periodically (a listing), and acceptance of the residue the reclaim
+   cannot remove (completed staging objects; incomplete uploads of legacy rows
+   left `pending`).
 2. **The release package** (section 3: backup, one-off migration machine,
    deploy, D-2, S-1, then N-1) — a separate approval.
 3. **Production write smokes** in D-2 and N-1: the labelled test expense
