@@ -22,29 +22,49 @@ A result obtained on Forey Test does not carry over where these differ. The
 28,163,249-byte drawing that uploads on Forey Test is **refused at pick time**
 by the real app, with a message naming the 25 MiB limit.
 
-## 0. Where this stands (fact check, 2026-10-01)
+## 0. Where this stands (after R1, 2026-10-01)
 
-**Established, read-only:** production runs `6036491` on database revision
-`c7d8e9f0a1b2` (PostgreSQL 16.14); `APP_ENV=staging`, configuration comes from
-environment variables only (no env file is loaded); evidence storage is `s3`
-on the Tigris endpoint, with the configured bucket and endpoint equal to the
-Tigris-attached ones; the effective upload cap is 26,214,400 (code default);
-with the production credentials a HEAD on a fresh, evidence-shaped key answers
-404 and the bucket answers 200; the bucket has no lifecycle rules and no
-incomplete multipart uploads under `evidence/`; the Site Log tables and the
-`evidence` and `evidence_audit_log` tables hold no rows.
+**Established read-only (P-2 to P-6):** production runs `6036491` on database
+revision `c7d8e9f0a1b2` (PostgreSQL 16.14); `APP_ENV=staging`, configuration
+from environment variables only (no env file is loaded); evidence storage is
+`s3` on the Tigris endpoint, with the configured bucket and endpoint equal to
+the Tigris-attached ones; the effective upload cap is 26,214,400 (code
+default); the bucket has no lifecycle rules and no incomplete multipart uploads
+under `evidence/`; the Site Log tables and the `evidence` and
+`evidence_audit_log` tables hold no rows.
 
-**What blocks release** — see section 13 for the next package:
+**Established by R1 (section 13):**
+- **R1-a, synthetic rehearsal — passed.** On a local scratch database: the old
+  code (`6036491`) ran all 46 of Build 4's calls, reads and writes, on the
+  **migrated** schema; the new code (`bcc3964`) ran its normal paths (Site
+  Log declare, replay, upload, finalize, list, read; evidence read and
+  download; legacy evidence upload) — 23 of 23; and the old code still read a
+  database the new code had written to (11 of 11). The migration took about a
+  second. Migrate-first is now executed evidence, not only code inspection.
+- **R1-b, production storage operations — passed, cleaned.** With the
+  production credentials, in `evidence/`: multipart create, part upload,
+  complete, HEAD (absent before copy), copy, staging delete, GET read-back with
+  matching SHA-256, HEAD on the final object, and abort. Every test object was
+  removed afterwards and verified absent. This proves those **operations and
+  permissions** — not the new adapter's code as a whole, and not clean-up after
+  a hard process death.
+- **Env files in the image:** no current production credential component found;
+  the files do hold a loopback (local development) database URL with a
+  password (section 10).
+- **Tigris lifecycle:** its documentation lists Expiration and Transitions with
+  prefix filters; `AbortIncompleteMultipartUpload` is not documented (7.2).
+
+**What still blocks release:**
 
 | For | Blocker | Why it is open |
 |---|---|---|
-| Backend migrate + deploy | Synthetic rehearsal of the migrate-first path not run | Old code on the new schema, and the new code's normal path, rest on code inspection |
 | Backend migrate + deploy | Daily app facts | The installed build (Diagnostics) and Build 4's availability as a fallback — the founder is checking |
-| New app | Upload chain unverified with the production credentials | HEAD rights and an empty bucket history prove nothing about create/part/complete/copy/delete/get |
-| New app | Gate 2 policy undecided | No lifecycle rule exists; aborting incomplete uploads and completed staging residue need separate decisions |
+| Backend migrate + deploy | The release package itself | Backup, one-off migration machine, deploy — not yet approved |
+| New app | S-1 on the deployed `bcc3964` | The new adapter's own code paths with labelled test objects (R1-b used raw operations from the old machine) |
+| New app | Gate 2 procedure | No supported lifecycle rule for incomplete uploads; the manual check and exact-reclaim procedure (7.2) and its schedule need approval; completed staging residue is accepted only by decision |
 
-Not a release blocker, but open: the deployed image carries untracked env
-files (section 10).
+Not a release blocker: the env files leave the image with the clean build
+(P-9); a `.dockerignore` is a later code slice.
 
 ---
 
@@ -142,7 +162,7 @@ Each step: what it does, what proves it worked, and when to stop. Steps marked
 | **P-5** | Storage Gate 2 reads — section 7.2. **Done 2026-10-01: no lifecycle rules; 0 incomplete uploads under `evidence/`.** | Counts and lifecycle rules recorded | An Expiration rule covers `evidence/` (a retention hazard, DEC-EVIDENCE-001) |
 | **P-6** | Aggregate counts only, in a `READ ONLY` transaction, plus `server_version_num`. **Done 2026-10-01: PG 16.14; Site Log tables 0; `evidence` 0; core counts in the ops journal.** Re-run immediately before the window as the backup baseline. | Server ≥ PG 11; attachment count recorded | PG < 11, or unexpected Site Log rows — re-plan the lock window |
 | **P-7** | Client inventory: the phone's Settings → Diagnostics shows commit `6036491`. | `6036491` | Any other build — redo the old-app compatibility check for that build first |
-| **P-8 (approval)** | Synthetic rehearsal off production — see "Rehearsal" below and section 13 (R1-a). | Every scripted call passes on both versions | Old code fails on the new schema, or the new code's normal path fails |
+| **P-8** | Synthetic rehearsal off production — see "Rehearsal" below and section 13 (R1-a). **Done 2026-10-01: passed** (46/46 old-code calls on the new schema; 23/23 new-code normal paths; 11/11 old-code reads after the new code wrote). | Every scripted call passes on both versions | Old code fails on the new schema, or the new code's normal path fails |
 | **P-9** | Build the target image **once**, from a **clean worktree at `bcc3964`** (tracked files only; `backend/` has no `.dockerignore`, so building from a working copy copies untracked local files such as `.env.*` into the image). Build-only and push (e.g. `flyctl deploy --build-only --push`; dated example — confirm with `--help`). Record the image digest, base-image digest and uv version (`python:3.12-slim` and `pip install uv` are not pinned). | Digest recorded; build context contains no `.env*` except `*.example`, no `.venv`, no `var/` | Build fails or the context holds untracked env files |
 
 **Rehearsal (P-8) — synthetic data, not production data.** Two claims are
@@ -187,7 +207,7 @@ named and requested separately.
 
 | Step | Action | Proven by | Stop if |
 |---|---|---|---|
-| **S-1 (approval)** | Upload chain with the production credentials, through **the new adapter's own code** on the deployed `bcc3964` machine, writing **storage only** (no database row): a small number of clearly labelled test objects at freshly generated, recorded `evidence/<uuid4>/…` keys — a multi-part object and a single-part one through `put`, read back through `open` and compared by SHA-256, `exists` on the final key, and one deliberately failed `put` that must abort its multipart upload. **Not** the first real business capture. R1-b (section 13) runs the same API operations raw before the window; S-1 repeats them through the code that will serve. | Every operation succeeds; read-back matches; abort leaves no incomplete upload; only the recorded keys exist | Any 403/5xx, a read-back mismatch, or residue. Keep the new app unbuilt; the backend can stay (Build 4 never touches storage) |
+| **S-1 (approval)** | Upload chain with the production credentials, through **the new adapter's own code** on the deployed `bcc3964` machine, writing **storage only** (no database row): a small number of clearly labelled test objects at freshly generated, recorded `evidence/<uuid4>/…` keys — a multi-part object and a single-part one through `put`, read back through `open` and compared by SHA-256, `exists` on the final key, and one deliberately failed `put` that must abort its multipart upload. **Not** the first real business capture. R1-b (section 13) ran the same API operations raw before the window and passed; S-1 repeats them through the code that will serve. | Every operation succeeds; read-back matches; abort leaves no incomplete upload; only the recorded keys exist | Any 403/5xx, a read-back mismatch, or residue. Keep the new app unbuilt; the backend can stay (Build 4 never touches storage) |
 
 ### New app — last
 
@@ -298,6 +318,14 @@ the bucket by other means is not established, and was not listed. A HEAD that
 answers correctly, or a policy that looks permissive, is **not** a verified
 upload chain.
 
+**R1-b (2026-10-01)** then exercised the operations themselves with the
+production credentials in `evidence/` — create, part upload, complete, HEAD,
+copy, staging delete, GET read-back, abort — and passed (section 13). That
+establishes the **operations and permissions**. It does not establish the new
+adapter's own code paths (classification, cancellation, supervised clean-up),
+which run first in S-1 on the deployed `bcc3964`, nor any clean-up after a hard
+process death.
+
 **An isolated-bucket result never closes a production gate.** Gate 1 closes
 only on the production probe (7.1); Gate 2 only on production lifecycle and
 multipart evidence, or an explicit founder acceptance of residue.
@@ -363,8 +391,32 @@ incomplete multipart uploads under `evidence/`.
 
 | Residue | Treatment | Not acceptable |
 |---|---|---|
-| Incomplete multipart uploads (death before completion) | An `AbortIncompleteMultipartUpload` lifecycle rule on prefix `evidence/` aborts uploads older than N days. It deletes no completed object. Whether Tigris honours this rule is UNVERIFIED and is checked on an isolated bucket first. A Tigris configuration change — separate approval. | — |
+| Incomplete multipart uploads (death before completion) | **No supported lifecycle rule** (see below). Manual check and exact reclaim, below. | Treating any lifecycle rule as having solved it |
 | Completed staging objects `evidence/{id}/.staging[.aN]` (death after completion) | No lifecycle rule can target them safely. Count them periodically (a listing — founder decision) and accept them as known residue until a deliberate, reviewed cleanup tool exists. | **Any Expiration rule covering `evidence/`** — it would delete real evidence (DEC-EVIDENCE-001) |
+
+**What Tigris supports (its documentation, checked 2026-10-01):** lifecycle
+rules support Expiration and Transitions (to colder tiers), scoped by
+`Filter.Prefix`, up to 10 rules per bucket. `AbortIncompleteMultipartUpload` is
+**not documented**, and the multipart page says only that it is good practice
+to "occasionally list and abort stale multipart uploads". Until Tigris
+documents it, it is treated as unsupported; no rule is set. The S3 API
+operations the manual route needs are documented as supported
+(`ListMultipartUploads`, `AbortMultipartUpload`), and R1-b exercised the abort
+with the production credentials.
+
+**Minimal manual check (read-only):** `ListMultipartUploads` under `evidence/`
+— count and age only in any report; keys and upload IDs kept in the private
+ops journal. Run it before and after every backend deploy, and on a schedule
+the founder sets.
+
+**Exact reclaim, per upload, never by prefix:** for each upload older than an
+agreed age, take its key (`evidence/{evidence_id}/.staging.aN`) and upload ID;
+read the matching `evidence` row and attachment row (read-only). Reclaim only
+when the row shows that attempt is no longer live (failed, or an admin reset
+has moved past it). Then `AbortMultipartUpload` with that exact key and upload
+ID, and confirm it no longer lists. Each reclaim is recorded and needs the
+founder's approval of the exact list; anything whose owner cannot be
+established is left and reported.
 
 ## 8. Regression plan
 
@@ -423,13 +475,15 @@ database's history and data.
 | Build 4 still installable from TestFlight as the fallback | Founder checking |
 | `APP_ENV`, env-file loading, effective cap, token lifetime | **Settled by P-3** (section 1) |
 | Production credentials: HEAD 404 vs 403, bucket reachable | **Settled by P-4** for HEAD in `evidence/` |
-| Production write rights (create/part/complete, copy, delete, get, abort) | R1-b, then S-1 — not settleable read-only |
+| Production storage operations and permissions (create/part/complete, HEAD, copy, delete, get, abort) | **Settled by R1-b** |
+| The new adapter's own code paths in production (classification, cancellation, supervised clean-up) | S-1 on the deployed `bcc3964` |
+| Clean-up after a hard process death mid-upload | Not verified; no supported lifecycle rule — manual check and exact reclaim (7.2) |
 | Lifecycle rules, incomplete multipart uploads | **Settled by P-5**: none, 0 |
 | Completed staging objects in the bucket | Not listed — a listing is a founder decision |
 | Row counts, PostgreSQL version | **Settled by P-6** |
-| Old code on the new schema; the new code's normal path | R1-a synthetic rehearsal |
-| Whether Tigris honours `AbortIncompleteMultipartUpload` | Tigris documentation, then an isolated bucket (separate decision) |
-| Contents of the env files carried in the deployed image | Section 10 — not read |
+| Old code on the new schema; the new code's normal path | **Settled by R1-a** (synthetic data, local adapter) |
+| Whether Tigris honours `AbortIncompleteMultipartUpload` | Not documented by Tigris — treated as unsupported (7.2) |
+| Production credentials carried in the image's env files | **Settled by the env check**: no current production component found. Other credentials in the files: one category found (section 10); values not read |
 | Downtime while the single machine is replaced | Fly documentation, or observed at D-1 |
 | Whether the app's INFO startup logs reach Fly logs | The plan does not depend on it |
 | Data retention across a TestFlight downgrade | A device test on a non-daily install |
@@ -437,30 +491,21 @@ database's history and data.
 ## 10. Env files in the deployed image — two separate risks
 
 The deployed image contains untracked local env files (`.env`-style, from the
-working copy it was built from; `backend/` has no `.dockerignore`). Their
-contents were **not** read. Nothing here says they are safe, and nothing says
-anything has leaked.
+working copy it was built from; `backend/` has no `.dockerignore`). Nothing
+here says they are safe, and nothing says anything has leaked.
 
 | Risk | What is established | What is not |
 |---|---|---|
 | **Runtime configuration** — the files changing how production behaves | With `APP_ENV=staging` the loader reads only `.env.staging`, which is absent; P-3 confirmed no env file is loaded. Today the files do not configure production. A different `APP_ENV`, or a future image carrying a matching file, would change that — the clean build in P-9 removes the files from the next image. | — |
-| **Credentials carried in the image** — the files containing secrets | Nothing. Anyone who can read the image or open a shell in the container can read them; who that is follows the Fly organisation's access. The v29 image remains the rollback target, so it stays in use until replaced. | Whether the files contain credentials at all, and whether any equals a production secret |
+| **Credentials carried in the image** — the files containing secrets | The env check (2026-10-01, in process, names and booleans only): the files hold a handful of variables — a database URL **with a password** whose host is **loopback** (a local development database), a JWT secret that is **placeholder-like**, and plain configuration. **No value contains any current production credential component** — secret values (JWT secret, storage secret key, database password) and identifiers (storage key id, database user) reported separately, all negative — and none contains the production database host. Anyone who can read the image or open a shell in the container can read the files; the v29 image remains the rollback target until replaced. | Whether the loopback database password is used anywhere else; the values themselves (not read, not copied, not hashed) |
 
-**Smallest further step, if wanted (separate authorisation):** inside the
-container, print the **key names** in each file and, per key, one boolean —
-whether its value **contains** any current production credential
-**component**: the whole `JWT_SECRET`, `AWS_ACCESS_KEY_ID` and
-`AWS_SECRET_ACCESS_KEY` values, and the user and password parsed out of
-`DATABASE_URL` (so a different URL scheme or host spelling cannot hide a
-match). Compared in process; no value printed.
-
-What the result can and cannot say: any true is a production credential in the
-image, and a rotation plan follows as its own decision (rotating `JWT_SECRET`,
-for example, signs every Build 4 session out). All false says only that **no
-current production credential component was found** — it does not clear the
-files, which may still hold other valid credentials (for development or other
-services) that a comparison against production cannot recognise. Assessing
-those means reading values, which is a further, separate decision.
+**Classification:** production credentials — none found by component
+comparison; a non-production (local development) database credential — present.
+That is not proof of safety: a credential reused elsewhere would not be
+recognised by a comparison against production. Next steps are removal, not
+rotation: the clean build (P-9) leaves these files out of the next image, and
+a `.dockerignore` is a later code slice. Rotating the local development
+database password, if it is reused anywhere, is the owner's decision.
 
 ## 11. Known limits carried into the release
 
@@ -469,6 +514,10 @@ those means reading values, which is a further, separate decision.
 - Rebuilds are not bit-reproducible (base image and uv unpinned) — the image
   digest is the reference.
 - Completed staging objects have no cleanup tool (7.2).
+- Incomplete multipart uploads have no automatic clean-up: Tigris documents no
+  rule for it; the manual check and exact reclaim in 7.2 are the route.
+- Review-queue resolve and reject were not exercised in the rehearsal (the API
+  creates no review item from the synthetic inputs used).
 
 ## 12. Decisions
 
@@ -478,30 +527,26 @@ first, then the backend, then — only after the daily Forey is confirmed — th
 new app; the rehearsal uses synthetic data, not production data; production
 storage writes are verified with labelled test objects, never with the first
 real capture; incomplete uploads and completed staging residue are treated
-separately, and no Expiration rule covers `evidence/`.
+separately, and no Expiration rule covers `evidence/`. R1-a, R1-b (with exact
+clean-up of its own test objects) and the env-file check approved and done. No
+bucket lifecycle change.
 
 **Still needed:**
 
-1. **R1-a** — approve the synthetic rehearsal, including starting the local
-   Docker engine it needs (section 13).
-2. **R1-b** — approve the production write-chain test: its writes, and whether
-   the two test objects it leaves are kept (default under DEC-EVIDENCE-001) or
-   later deleted by exact key.
-3. **Gate 2** — whether to add the `AbortIncompleteMultipartUpload` rule
-   (a Tigris configuration change; first confirm Tigris honours it), or accept
-   incomplete-upload residue; and whether completed staging residue is counted
-   periodically (a listing).
-4. **Env files** — whether to authorise the names-and-booleans check
-   (section 10).
-5. **Production write smokes** in D-2 and N-1: the labelled test expense
+1. **Gate 2 procedure** — approve the manual check and exact-reclaim
+   procedure (7.2), its schedule, and whether completed staging residue is
+   counted periodically (a listing).
+2. **The release package** (section 3: backup, one-off migration machine,
+   deploy, D-2, S-1, then N-1) — a separate approval.
+3. **Production write smokes** in D-2 and N-1: the labelled test expense
    (create, then delete), or real entries only.
-6. **Devices** — the installed build and Build 4's availability (founder
+4. **Devices** — the installed build and Build 4's availability (founder
    checking).
 
-## 13. Next minimal execution package — R1 (pre-release verification)
+## 13. R1 — pre-release verification (executed 2026-10-01)
 
-Nothing here migrates, deploys, builds an app or changes a secret or a bucket
-policy. Each part is approved separately.
+Nothing here migrated, deployed, built an app or changed a secret or a bucket
+policy. The plan as approved is kept below; the results follow each part.
 
 ### R1-a — synthetic rehearsal (local)
 
@@ -515,17 +560,54 @@ policy. Each part is approved separately.
 | Undo | Drop the scratch database; remove the worktrees. |
 | Gap it leaves | S3 (the local adapter stands in) — covered by R1-b and S-1. Real-data volume — not relevant: the altered table has 0 rows in production, and the old code's tables are unchanged. |
 
+**R1-a result — passed.**
+
+| Step | Result |
+|---|---|
+| 1 Migrate to `c7d8e9f0a1b2` (old Alembic) | Passed; `app` resolved to the clean worktree |
+| 2 Bootstrap + seed through the old API | Admin bootstrapped after confirming the target was the scratch database; jobs, alias, category budget, supplier and alias, worker, labour entry, org settings, expense and a contributor created. A no-job expense is refused by the API by design (it asks which job), so the review queue stayed empty and review resolve/reject were **not exercised** |
+| 3 Upgrade to `d9e0f1a2b3c4` (new Alembic) | Passed, about 1 s including start-up; column present, counters 0 |
+| 4 Old app on the new schema — Build 4's calls | **46 of 46** as expected, reads and writes (one call first sent with the wrong parameter form by the test driver, re-run as Build 4 sends it: 200); no application error |
+| 5 New app — normal paths | **23 of 23**: Site Log declare, replay, upload, finalize, list, by capture id, read (event `complete`, inline text row flagged); bound evidence read and download with matching bytes; `link-job` on bound evidence refused 409; legacy evidence upload, read, download; job evidence and job Site Log lists |
+| 6 Counters | 2 attachments with `upload_attempt_no > 0` — a downgrade would now be lossy |
+| Extra — old app after the new code wrote | **11 of 11** reads; no application error (the rollback case) |
+| 7 Clean-up | Scratch database dropped; worktrees, synthetic files and credentials removed; other databases and the container untouched |
+
+Not covered: the S3 path (local adapter), real-data volume, review-queue
+actions.
+
 ### R1-b — production upload-chain test with labelled test objects
 
 | | |
 |---|---|
 | Where | Inside the running production machine (v29), from its existing virtualenv, `python -B`; no restart, no install. The production credentials stay in the process and are never printed. |
 | Operations | The exact S3 sequence the new adapter performs, raw: `CreateMultipartUpload` on `evidence/<T1>/.staging.a1` (object metadata labels it as a release test), two `UploadPart`s (5 MiB + 1 MiB), `CompleteMultipartUpload`, `HeadObject` on the final key `evidence/<T1>/<sha16>.a1` (expect 404), `CopyObject` staging → final, `DeleteObject` staging, `GetObject` final with SHA-256 read-back, `HeadObject` final (expect 200). The same for a single-part object at `<T2>`. Then `CreateMultipartUpload` + one `UploadPart` at `<T3>` and `AbortMultipartUpload`, followed by `ListMultipartUploads` under `evidence/<T3>/` (expect 0). `T1`–`T3` are fresh uuid4s; every key is printed and recorded. |
-| Writes | Two final test objects (about 6 MiB and 1 KiB) remain. Their two staging objects are deleted by the sequence itself, as the adapter does. The aborted upload leaves nothing. **No database row.** |
-| Cost | About 15 requests and about 6 MiB stored — under one US cent at Tigris's published rates (rates not re-checked). |
-| Stop if | Under 150 MB of memory available; any non-2xx on a write operation; the pre-copy HEAD is not 404; read-back SHA-256 mismatch; anything left after the abort. Stop at the first failure — no retries in a loop. |
-| Undo | No database change. The bucket holds at most the printed test keys. Deleting exactly those keys is a separate approval; by default they are kept. |
-| Proves / does not prove | Proves the production credentials can perform every S3 operation the new adapter needs, in `evidence/`, with read-after-write for copy and get. Does not prove the new adapter's own code paths (classification, cancellation) — S-1 runs them on the deployed `bcc3964` before the new app. |
+| Writes | Two final test objects (about 6 MiB and 1 KiB) and their staging objects, deleted by the sequence and then by the authorised exact clean-up (founder choice: test objects are not kept). The aborted upload leaves nothing. **No database row.** |
+| Cost | About 30 requests and about 6 MiB stored for minutes — under one US cent at Tigris's published rates (rates not re-checked). |
+| Stop if | Under 150 MB of memory available; any non-2xx on a write operation; the pre-copy HEAD is not 404; read-back SHA-256 mismatch; anything left after the abort. Stop at the first failure — no retries in a loop; bounded clean-up of this run's registered resources only. |
+| Undo | No database change. Exact deletion of this run's final objects, verified absent. |
+| Proves / does not prove | Proves the production credentials can perform each storage operation the new adapter uses, in `evidence/`, with read-after-write for copy and get. Does **not** prove the new adapter's own code paths (classification, cancellation, supervised clean-up) — S-1 runs them on the deployed `bcc3964` before the new app — nor any clean-up after a hard process death. |
 
-After R1 passes and the remaining decisions are taken, the release itself
-(B, M, D, S, N, C in section 3) is a separate approval.
+**R1-b result — passed; everything this run created was removed.** Keys were
+generated and recorded before any write; every registered key was confirmed
+absent first; upload IDs were recorded as each upload was created.
+
+| Step | A (6 MiB, 2 parts) | B (1 KiB, 1 part) |
+|---|---|---|
+| Create multipart (labelled) | ok | ok |
+| Upload parts | 5,242,880 + 1,048,576 bytes | 1,024 bytes |
+| Complete | ok | ok |
+| HEAD staging | 200, 6,291,456 bytes | 200, 1,024 bytes |
+| HEAD final before copy | 404 | 404 |
+| Copy staging → final | ok | ok |
+| Delete staging, then HEAD | 404 | 404 |
+| GET final, SHA-256 read-back | match, 6,291,456 bytes, label present | match, 1,024 bytes, label present |
+| HEAD final | 200 | 200 |
+| Exact delete of final, then HEAD | 404 | 404 |
+
+Abort test C: create, one part, `AbortMultipartUpload` — then `ListParts`
+answered `NoSuchUpload`. Final check: all five registered keys absent; no
+incomplete upload under any of the three test prefixes. Nothing left in the
+bucket. Keys, upload IDs, sizes and checksums are in the ops journal.
+
+The release itself (B, M, D, S, N, C in section 3) is a separate approval.
