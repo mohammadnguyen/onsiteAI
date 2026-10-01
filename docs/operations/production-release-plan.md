@@ -359,8 +359,9 @@ multipart evidence, or an explicit founder acceptance of residue.
   (S-1), and GET rights for downloads.
 - **Result, 2026-10-01:** `head_bucket` 200; `head_object` on a fresh
   evidence-shaped key 404. Gate 1's **HEAD precondition** holds for the
-  production credentials in `evidence/`. Gate 1 as a whole stays open until
-  the upload chain is verified (R1-b, then S-1).
+  production credentials in `evidence/`. R1-b then verified the storage
+  operations themselves (section 13). Gate 1 closes only after S-1 runs the
+  new adapter's own code on the deployed `bcc3964`.
 - **Side effects:** a short-lived SSH certificate; one extra Python process on
   a 512 MB machine (check `free -m` first); two billed HEAD requests.
 
