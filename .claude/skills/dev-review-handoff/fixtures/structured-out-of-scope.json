@@ -1,0 +1,43 @@
+{
+  "review": "Adversarial Review",
+  "target": {
+    "mode": "branch",
+    "label": "branch diff against 0123456789abcdef0123456789abcdef01234567",
+    "baseRef": "0123456789abcdef0123456789abcdef01234567",
+    "explicit": true
+  },
+  "threadId": "01a0a366-0000-0000-0000-000000000001",
+  "context": {
+    "repoRoot": "/repo",
+    "branch": "example",
+    "summary": "…"
+  },
+  "codex": {
+    "status": 0,
+    "stderr": "",
+    "stdout": "{\"verdict\": \"needs-attention\", \"summary\": \"A necessary change lies outside the approved scope.\", \"findings\": [{\"severity\": \"medium\", \"title\": \"OUT-OF-SCOPE: the caller must also release the handle\", \"body\": \"A transient failure makes this spin until the request times out, holding the connection for the whole window.\", \"file\": \"app/api/example.py\", \"line_start\": 142, \"line_end\": 151, \"confidence\": 0.86, \"recommendation\": \"Bound it with the caller's deadline, as _supervise_cleanup does.\"}], \"next_steps\": [\"Ask the founder before touching the caller.\"]}",
+    "reasoning": []
+  },
+  "result": {
+    "verdict": "needs-attention",
+    "summary": "A necessary change lies outside the approved scope.",
+    "findings": [
+      {
+        "severity": "medium",
+        "title": "OUT-OF-SCOPE: the caller must also release the handle",
+        "body": "A transient failure makes this spin until the request times out, holding the connection for the whole window.",
+        "file": "app/api/example.py",
+        "line_start": 142,
+        "line_end": 151,
+        "confidence": 0.86,
+        "recommendation": "Bound it with the caller's deadline, as _supervise_cleanup does."
+      }
+    ],
+    "next_steps": [
+      "Ask the founder before touching the caller."
+    ]
+  },
+  "rawOutput": "{\"verdict\": \"needs-attention\", \"summary\": \"A necessary change lies outside the approved scope.\", \"findings\": [{\"severity\": \"medium\", \"title\": \"OUT-OF-SCOPE: the caller must also release the handle\", \"body\": \"A transient failure makes this spin until the request times out, holding the connection for the whole window.\", \"file\": \"app/api/example.py\", \"line_start\": 142, \"line_end\": 151, \"confidence\": 0.86, \"recommendation\": \"Bound it with the caller's deadline, as _supervise_cleanup does.\"}], \"next_steps\": [\"Ask the founder before touching the caller.\"]}",
+  "parseError": null,
+  "reasoningSummary": []
+}
