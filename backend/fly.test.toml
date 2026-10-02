@@ -6,8 +6,9 @@
 # refuses to run against a different one unless --app is given explicitly.
 #
 # Decision of record: docs/decisions/ADR-005-forey-test-app-variant.md.
-# Operator steps: docs/operations/forey-test-backend.md. Nothing here has
-# been created or deployed.
+# Operator steps: docs/operations/forey-test-backend.md. The environment
+# EXISTS (created 2026-09-19): to fix it use that runbook's Recovery
+# section - its creation sequence rotates JWT_SECRET and re-seeds accounts.
 #
 # APP_ENV=test on purpose. It is treated as a NON-development environment
 # (a real JWT secret is required, no wildcard CORS) while still permitting

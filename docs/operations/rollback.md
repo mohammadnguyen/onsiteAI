@@ -1,5 +1,10 @@
 # Rollback procedure
 
+> For the upgrade of the live backend from `6036491` to `bcc3964`, the
+> per-step rollback is in `production-release-plan.md` section 4. Its rule
+> of note: a code rollback never needs the `d9e0f1a2b3c4` downgrade, and
+> Alembic is never run from the old image during a rollback.
+
 Procedural reference for rolling back a bad deploy or a bad migration
 on the staging environment.
 
