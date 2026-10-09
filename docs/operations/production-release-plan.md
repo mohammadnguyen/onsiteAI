@@ -1,13 +1,12 @@
 # Production release plan — Site Log (`bcc3964`)
 
-**Status: PREPARATION. No release step has been executed** — no backup,
-migration, deploy, app build or secret change. What has run, each under its
-own approval: the read-only checks P-2 to P-6, and R1 (section 13), which
-includes a production storage test that wrote labelled test objects to the
-bucket and then deleted them (no database write). This is the plan the
-founder approves or rejects, step by step. Every stateful step below needs its
-own explicit approval; read-only checks need approval too, because they run on
-the production machine.
+**Status: BACKEND RELEASED (R2, 2026-10-09).** Production now runs `bcc3964`
+on database revision `d9e0f1a2b3c4`; what ran, the evidence, the deviations
+and what remains unverified are in `production-release-r2-record.md`. The new
+app (N-1) is in progress. The rest of this file is the plan as approved and
+the pre-R2 record (section 0 and section 13 describe the state before R2).
+Every stateful step needs its own explicit approval; read-only checks need
+approval too, because they run on the production machine.
 
 "Production" here is the Fly app **`sitetracker-backend-staging`**. Its name
 is historical: it carries the operator's real business data and serves the
@@ -25,7 +24,11 @@ A result obtained on Forey Test does not carry over where these differ. The
 28,163,249-byte drawing that uploads on Forey Test is **refused at pick time**
 by the real app, with a message naming the 25 MiB limit.
 
-## 0. Where this stands (after R1, 2026-10-01)
+## 0. Where this stood before R2 (after R1, 2026-10-01)
+
+Historical snapshot, kept for the record. The blockers listed at the end of
+this section were closed by R2 except those noted as open in
+`production-release-r2-record.md` (sections 4–6).
 
 **Established read-only (P-2 to P-6):** production runs `6036491` on database
 revision `c7d8e9f0a1b2` (PostgreSQL 16.14); `APP_ENV=staging`, configuration
