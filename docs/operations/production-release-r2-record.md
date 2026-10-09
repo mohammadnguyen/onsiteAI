@@ -37,7 +37,7 @@ All on 2026-10-09 UTC unless stated (Sydney is UTC+11, AEDT). Window 1:
 | R2-0 pre-flight (read-only) | ~09:50Z | Database URL names the backed-up cluster, `fly-db`, `fly-user`; server identity token recorded; revision `c7d8e9f0a1b2`; configuration as P-3; Site Log, `evidence` and `evidence_audit_log` tables 0 rows; Gate 2 counts 0 incomplete, 0 staging, 0 lifecycle rules |
 | B-1 native backup | 09:52:11–09:52:20Z | Full backup, status `completed` |
 | B-2 portable dump | 09:56:44Z start, file written 09:58:23Z | Run by the founder on the operator PC (password typed at a hidden prompt; cleared after). Verified without credentials: table of contents includes the core and Site Log tables; full read-through exit 0; data stream exit 0 |
-| Backup comparison | live counts ~09:50Z (R2-0) and ~10:00Z (B-2v) vs dump-time counts | **Equal on all 22 tables** — no write between the two live reads and the dump |
+| Backup comparison | live counts ~09:50Z (R2-0) and ~10:00Z (B-2v) vs dump-time counts | **Row counts equal on all 22 tables.** This rules out inserts and deletes that would change a count; it does not rule out updates to existing rows between the live reads and the dump |
 | M-1 migration | ~10:03Z | One-off machine from the same image, no services, audited first (186/186 files). `SET LOCAL` lock_timeout 5 s, statement_timeout 60 s, idle_in_transaction_session_timeout 30 s; target identity re-checked inside the migration transaction. Committed in 0.37 s. After-check: revision `d9e0f1a2b3c4`, column and CHECK present, attachments unchanged, attempt counters 0, no migration session left. Machine destroyed after a guarded check |
 | M-2 old code on the new schema | 10:03Z–11:12Z | Founder's phone list 1: "all good". Logs over the same span: 216 requests, 0 × 5xx |
 | — | 11:14Z | Window 1 ended before D-1; stopped at a supported state (v29 on `d9e0f1a2b3c4`) |
@@ -125,10 +125,14 @@ founder for approval before its first use. It is not part of this record.
   needs the founder's approval of the exact list of objects, under plan 7.2
   (exact key and upload ID, never by prefix, only when the owning row shows
   the attempt is no longer live).
-- A Site Log attachment left `pending` is recovered by retrying from the app
-  or by the existing admin reset — a founder decision per capture. A legacy
-  `evidence` row left `pending` cannot be reclaimed by the procedure and is
-  residue accepted only by decision.
+- A Site Log attachment left `pending` cannot be recovered by retrying from
+  the app alone: the app skips `pending` attachments and the server refuses
+  their upload (409). Recovery is a sequence, approved per capture by the
+  founder: the existing admin reset (allowed only after its 15-minute minimum
+  age, with a reason), which marks the attempt `failed`; then a retry from the
+  app, which uploads and finalizes; then a check that the event is
+  `complete`. A legacy `evidence` row left `pending` cannot be reclaimed by
+  the procedure and is residue accepted only by decision.
 - A manual check is **not** automatic clean-up after a hard crash; that
   remains unverified.
 
