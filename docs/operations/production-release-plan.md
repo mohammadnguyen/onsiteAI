@@ -1,10 +1,11 @@
 # Production release plan — Site Log (`bcc3964`)
 
-**Status: BACKEND RELEASED (R2, 2026-10-09).** Production now runs `bcc3964`
-on database revision `d9e0f1a2b3c4`; what ran, the evidence, the deviations
-and what remains unverified are in `production-release-r2-record.md`. The new
-app (N-1) is in progress. The rest of this file is the plan as approved and
-the pre-R2 record (section 0 and section 13 describe the state before R2).
+**Status: RELEASED — backend (R2, 2026-10-09) and the new daily app (N-1,
+build 5, accepted 2026-10-11).** Production now runs `bcc3964` on database
+revision `d9e0f1a2b3c4`; what ran, the evidence, the deviations and what
+remains unverified are in `production-release-r2-record.md` (N-1 is its
+section 7). The rest of this file is the plan as approved and the pre-R2
+record (section 0 and section 13 describe the state before R2).
 Every stateful step needs its own explicit approval; read-only checks need
 approval too, because they run on the production machine.
 

@@ -1,8 +1,8 @@
-# Production release R2 — record (backend `bcc3964`)
+# Production release R2 and N-1 — record (`bcc3964`)
 
-**Status: the backend is released. The new app (N-1) is in progress and is
-not covered by this record.** This file records what R2 actually did and
-what it did not prove. It authorises nothing. Identifiers that must stay out
+**Status: the backend is released (R2, 2026-10-09) and the new daily app,
+build 5, is installed and accepted (N-1, 2026-10-11; section 7).** This file
+records what R2 and N-1 actually did and what they did not prove. It authorises nothing. Identifiers that must stay out
 of a public repository — backup ID, dump file name and SHA-256, cluster and
 machine IDs, image digest, test keys, upload IDs, business row counts — are
 in the operator's private ops journal (`run-20261009`), not here.
@@ -17,7 +17,7 @@ business data and serves the daily Forey, `com.forey.app`).
 |---|---|---|
 | Backend code | `6036491` (release v29) | **`bcc3964` (release v30)** |
 | Database revision | `c7d8e9f0a1b2` | **`d9e0f1a2b3c4`** |
-| Daily app on the phone | Build 4 (`6036491`) | Build 4 (`6036491`) — unchanged until N-1 |
+| Daily app on the phone | Build 4 (`6036491`) | Build 4 (`6036491`) — replaced by build 5 (`bcc3964`) in N-1, section 7 |
 | Upload cap | 26,214,400 (code default) | unchanged |
 
 The image was built once, locally, from a `git archive` of `backend/` at
@@ -76,8 +76,8 @@ start-up, also seen in R1-a.
 - **S-1 limits:** put cancellation (the `_supervise_cleanup` cancellation
   branch and grace deadline), transient/permanent/unclassified error
   classification, and any API or database upload path (`POST /evidence`,
-  Site Log upload). The first real Site Log upload will be the founder's
-  acceptance record under N-1.
+  Site Log upload). The Site Log upload path has since run once with real
+  files in the N-1 acceptance (section 7); `POST /evidence` has not.
 - **Hard process death mid-upload:** clean-up after it is not verified. Only
   the manual check and exact per-object reclaim (plan 7.2) exist.
 - **Old-app items not exercised on the migrated schema or the new code:**
@@ -89,8 +89,9 @@ start-up, also seen in R1-a.
 ## 5. First-week check plan (N-1)
 
 **When it applies:** for 7 days from the day the new app (build 5 or later
-from `bcc3964`) is installed on the daily phone, and additionally after any
-upload a user reports as failed, stuck or missing.
+from `bcc3964`) is installed on the daily phone — build 5 went on on
+2026-10-10, so through 2026-10-16 — and additionally after any upload a user
+reports as failed, stuck or missing.
 
 **Who and when:**
 
@@ -144,11 +145,62 @@ founder for approval before its first use. It is not part of this record.
 - **TestFlight availability: NOT VERIFIED.** There is no App Store Connect
   read access from this side. TestFlight builds normally expire 90 days after
   upload, which would put build 4 at about 2026-12-02 — computed, not
-  observed. The founder can confirm in the TestFlight app (Forey → Previous
-  Builds) or App Store Connect.
+  observed. In the N-1 acceptance the founder was asked to check Forey →
+  Previous Builds; the answer was a blanket "all works fine" covering the
+  whole list, with no screenshot, so build 4 being listed is founder-reported
+  and not itemised.
 - **How a fallback works:** TestFlight installs an earlier build over the
   current one. No uninstall is needed and the app's data stays (same bundle
   identifier). Build 4 has no Site Log, so any unsent Site Log drafts or kept
   recordings made in the new app would be unreachable from it; fall back
   only when the new app shows none. Whether such drafts survive a downgrade
   and a later re-upgrade is not verified.
+
+## 7. N-1 — the new daily app (build 5)
+
+**Built and checked before submission (2026-10-10 UTC):**
+
+- Real Forey (`com.forey.app`) 0.1.0 (5), production profile, built by EAS
+  from a clean checkout of `bcc3964` after a clean `npm ci`.
+- Checks on that source: `tsc --noEmit` exit 0; jest 17 suites, 237 passed,
+  8 skipped. There is no mobile job in CI.
+- Checked inside the built IPA, not only in configuration: bundle identifier
+  `com.forey.app`, version 0.1.0 (5); embedded app config with API
+  `https://sitetracker-backend-staging.fly.dev`, upload cap 26,214,400 bytes
+  with a 180 s upload timeout, build commit `bcc3964`, variant `default`; an
+  App Store provisioning profile for the right team with no device list and
+  no debugging entitlement; no Forey Test API host, 50 MiB cap or Forey Test
+  identifier anywhere in the JavaScript bundle.
+- Submitted to the real Forey's TestFlight by explicit build ID, not
+  "latest". The EAS build and submission IDs and the IPA hash are in the
+  private ops journal.
+
+**Install:** the founder installed build 5 from TestFlight over the existing
+app on 2026-10-10 (no uninstall, per the founder). The app stayed signed in:
+no sign-in request reached the server, only silent token refreshes.
+
+**Acceptance.** The founder ran the checks on the phone. The server side
+comes from a continuous read-only log capture (2026-10-10 05:26Z to
+2026-10-11 07:30Z, no gap longer than about 30 s after the four-content
+entry) and the Gate 2 counter.
+
+| Check | Evidence | Result |
+|---|---|---|
+| Still signed in; daily screens | founder; server log | On each app resume the expired access token was answered 401 and silently refreshed (200), then data loaded. Today, Jobs, Expenses, Labour, Workers, the review queue and the Excel export all answered 200 |
+| Diagnostics shows `bcc3964` and the production API | founder | Reported OK, inside a blanket "all works fine" (not itemised) |
+| Build 4 still listed in TestFlight | founder | Reported OK, inside the same blanket report (not itemised, no screenshot) |
+| First Site Log entry, 2026-10-10 06:59Z | server log | Text only, saved `complete`; no file was uploaded. The founder continued past the step that said to stop if a voice note had been added, so it is recorded as text only by intent |
+| Four-content entry, 2026-10-11 02:17Z | server log; founder | Declared, three file uploads accepted (201), finalised `complete`: text, photo, voice note and PDF |
+| Viewing after leaving and reopening | server log; founder | The entry was reopened from the list at 07:29Z. Every stored file was served by the server at least once (200): one only in the visit right after saving, one only in the reopen visit, one in both. Founder: "all good". A first report of this check had no matching request on the server; it was repeated and reached the server at 07:29Z. Whether each file rendered is the founder's observation |
+| ~28 MB file refused at pick time | founder; server log | Reported OK; no oversized upload reached the server |
+| Storage after acceptance | Gate 2 counter, ~02:21Z | 0 incomplete multipart uploads, 0 completed staging objects, 0 lifecycle rules |
+| Server errors | log capture | 0 × 5xx; no error-level lines |
+
+**Not verified by N-1:**
+
+- One phone and one account (the founder's iPhone, admin role). Android,
+  a contributor account and a second device are untested on production.
+- Weak-network and offline capture, retry and recovery on production.
+- Hard process death during an upload, and the S-1 limits in section 4.
+- The two checks covered only by the blanket report (Diagnostics, build 4
+  listed).
