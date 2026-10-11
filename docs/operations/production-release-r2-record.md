@@ -1,7 +1,8 @@
 # Production release R2 and N-1 — record (`bcc3964`)
 
 **Status: the backend is released (R2, 2026-10-09) and the new daily app,
-build 5, is installed and accepted (N-1, 2026-10-11; section 7).** This file
+build 5, is installed and accepted by the founder (N-1, 2026-10-11; section
+7, which separates what the server shows from what the founder confirmed).** This file
 records what R2 and N-1 actually did and what they did not prove. It authorises nothing. Identifiers that must stay out
 of a public repository — backup ID, dump file name and SHA-256, cluster and
 machine IDs, image digest, test keys, upload IDs, business row counts — are
@@ -117,6 +118,12 @@ Items 2–3 use the existing read-only Gate 2 counter. Item 1 needs a small
 read-only state query that does not exist yet; it will be shown to the
 founder for approval before its first use. It is not part of this record.
 
+Item 4 relies on a read-only log capture that runs only while the
+operator's PC and a Claude session are up. It is an aid to the daily manual
+check, not round-the-clock monitoring, and no monitoring platform is planned
+for it. Development of the next work package may run in parallel with these
+checks (founder, 2026-10-11).
+
 **Anomaly handling:**
 
 - Report first: counts, affected capture or evidence IDs, and the exact keys
@@ -191,7 +198,8 @@ entry) and the Gate 2 counter.
 | Build 4 still listed in TestFlight | founder | Reported OK, inside the same blanket report (not itemised, no screenshot) |
 | First Site Log entry, 2026-10-10 06:59Z | server log | Text only, saved `complete`; no file was uploaded. The founder continued past the step that said to stop if a voice note had been added, so it is recorded as text only by intent |
 | Four-content entry, 2026-10-11 02:17Z | server log; founder | Declared, three file uploads accepted (201), finalised `complete`: text, photo, voice note and PDF |
-| Viewing after leaving and reopening | server log; founder | The entry was reopened from the list at 07:29Z. Every stored file was served by the server at least once (200): one only in the visit right after saving, one only in the reopen visit, one in both. Founder: "all good". A first report of this check had no matching request on the server; it was repeated and reached the server at 07:29Z. Whether each file rendered is the founder's observation |
+| Photo shown, voice note played, PDF opened on the phone | founder | User-confirmed ("all works fine", then "all good"). The server cannot see what the phone displays or plays |
+| The same files after leaving and reopening the entry | server log | The entry was reopened from the list at 07:29Z. In that visit two of the three files were fetched from the server (200); the third was fetched only in the visit right after saving (02:17Z). So all three were not re-checked after reopening. Each file was delivered by the server at least once. A first report of this check had no matching server request; it was repeated and reached the server at 07:29Z |
 | ~28 MB file refused at pick time | founder; server log | Reported OK; no oversized upload reached the server |
 | Storage after acceptance | Gate 2 counter, ~02:21Z | 0 incomplete multipart uploads, 0 completed staging objects, 0 lifecycle rules |
 | Server errors | log capture | 0 × 5xx; no error-level lines |
@@ -204,3 +212,4 @@ entry) and the Gate 2 counter.
 - Hard process death during an upload, and the S-1 limits in section 4.
 - The two checks covered only by the blanket report (Diagnostics, build 4
   listed).
+- All three files after reopening: one was checked only right after saving.
