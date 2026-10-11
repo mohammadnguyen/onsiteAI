@@ -58,11 +58,19 @@ jest.mock('expo-router', () => ({
 // The flag the screen asked for on its latest render, and the handler the
 // stack calls when Back, the edge swipe or the hardware back is held.
 type MockPrevented = (o: { data: { action: unknown } }) => void;
+// Only the most recently mounted screen reports: screens other tests left
+// mounted re-render on store changes and must not overwrite its flag.
 let mockLeave: { prevent: boolean; onPrevented: MockPrevented } | null = null;
+let mockNewestScreen: symbol | null = null;
 const mockDispatch = jest.fn();
 jest.mock('@react-navigation/native', () => ({
   usePreventRemove: (prevent: boolean, onPrevented: MockPrevented) => {
-    mockLeave = { prevent, onPrevented };
+    const screen = require('react').useRef(null) as { current: symbol | null };
+    if (screen.current === null) {
+      screen.current = Symbol('screen');
+      mockNewestScreen = screen.current;
+    }
+    if (screen.current === mockNewestScreen) mockLeave = { prevent, onPrevented };
   },
   useNavigation: () => ({ dispatch: mockDispatch }),
 }));
@@ -597,6 +605,44 @@ describe('leaving the capture screen before Save', () => {
     expect(mockRunSubmit).toHaveBeenCalledTimes(1);
     // Save's own router.replace must not be held up by the question.
     expect(mockLeave?.prevent).toBe(false);
+  });
+
+  it('REGRESSION: still asks while the first write to the phone is in flight, and the text survives if it fails', async () => {
+    // Save sets busy before upsertDurable() has finished. Leaving in that
+    // window used to go through unasked; if the write then failed, the
+    // capture was removed from the store and the screen holding the text
+    // was gone - the text was lost.
+    const original = useSiteLogDrafts.getState().upsertDurable;
+    let failWrite: (e: Error) => void = () => undefined;
+    useSiteLogDrafts.setState({
+      upsertDurable: () =>
+        new Promise<void>((_resolve, reject) => {
+          failWrite = reject;
+        }),
+    });
+    try {
+      const tree = await open();
+      typeInto(tree, 'Poured bay 3');
+      press(tree, 'siteLog.new.submit');
+      await flush();
+      // Save was tapped, but nothing is reliably on the phone yet.
+      expect(mockLeave?.prevent).toBe(true);
+      tryToLeave();
+      expect(mockConfirm).toHaveBeenCalledTimes(1);
+      expect(mockDispatch).not.toHaveBeenCalled();
+
+      await act(async () => {
+        failWrite(new Error('disk full'));
+      });
+      await flush();
+      expect(mockRunSubmit).not.toHaveBeenCalled();
+      const input = tree.root.findAllByType('TextInput' as unknown as React.ElementType)[0];
+      expect(input.props.value).toBe('Poured bay 3');
+      // Still unsaved, so leaving still asks.
+      expect(mockLeave?.prevent).toBe(true);
+    } finally {
+      useSiteLogDrafts.setState({ upsertDurable: original });
+    }
   });
 
   it('never stands in the way of a sign-out', async () => {

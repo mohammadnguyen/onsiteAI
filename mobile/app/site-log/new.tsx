@@ -450,11 +450,13 @@ export default function NewSiteLogEntry() {
 
   // ...which is why leaving asks first, whenever there is something to
   // lose: typed text, a kept file, a recording, or a file still being kept.
-  // Not once Save was tapped: from then on the capture owns a draft, and
-  // Save itself leaves this screen (router.replace) on success.
+  // Still asked while Save's first write to the phone is in flight (`busy`
+  // but not yet `submitted`): if that write fails the capture is removed and
+  // only this screen holds the text. Not once it is written (`submitted`):
+  // from then on the capture owns a draft, and Save itself leaves this
+  // screen (router.replace) on success.
   const hasUnsaved =
     !submitted &&
-    !busy &&
     (bodyText.trim().length > 0 ||
       attachments.length > 0 ||
       recording ||
