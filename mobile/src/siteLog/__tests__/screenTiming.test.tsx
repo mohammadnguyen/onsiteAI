@@ -54,6 +54,19 @@ jest.mock('expo-router', () => ({
   },
 }));
 
+// ---- leaving, as the native stack reports it ------------------------------
+// The flag the screen asked for on its latest render, and the handler the
+// stack calls when Back, the edge swipe or the hardware back is held.
+type MockPrevented = (o: { data: { action: unknown } }) => void;
+let mockLeave: { prevent: boolean; onPrevented: MockPrevented } | null = null;
+const mockDispatch = jest.fn();
+jest.mock('@react-navigation/native', () => ({
+  usePreventRemove: (prevent: boolean, onPrevented: MockPrevented) => {
+    mockLeave = { prevent, onPrevented };
+  },
+  useNavigation: () => ({ dispatch: mockDispatch }),
+}));
+
 jest.mock('react-i18next', () => ({ useTranslation: () => ({ t: (k: string) => k }) }));
 
 const mockInvalidate = jest.fn();
@@ -510,6 +523,118 @@ describe('the capture screen, when the user leaves mid-submission', () => {
     });
 
     expect(mockRouter.replace).not.toHaveBeenCalled();
+  });
+});
+
+describe('leaving the capture screen before Save', () => {
+  // ux-issues #2: Back, the edge swipe and the hardware back all discarded
+  // an unsaved capture - text, files, a voice note - without asking.
+  const BACK = { type: 'GO_BACK' };
+
+  let mounted: ReactTestRenderer | null = null;
+  async function open(): Promise<ReactTestRenderer> {
+    let tree!: ReactTestRenderer;
+    await act(async () => {
+      tree = create(React.createElement(NewSiteLogEntry));
+    });
+    mounted = tree;
+    return tree;
+  }
+  // Unmounted, so later tests' store resets do not re-render these screens.
+  afterEach(() => {
+    act(() => {
+      mounted?.unmount();
+    });
+    mounted = null;
+    mockLeave = null;
+  });
+
+  function tryToLeave(): void {
+    act(() => {
+      mockLeave?.onPrevented({ data: { action: BACK } });
+    });
+  }
+
+  type Confirm = { title: string; confirmLabel: string; cancelLabel: string; onConfirm: () => void };
+  const lastConfirm = (): Confirm => mockConfirm.mock.calls.at(-1)?.[0] as Confirm;
+
+  it('leaves an empty entry without asking', async () => {
+    const tree = await open();
+    expect(mockLeave?.prevent).toBe(false);
+    typeInto(tree, '   ');
+    expect(mockLeave?.prevent).toBe(false);
+  });
+
+  it('asks once something is typed, and leaves only on Discard', async () => {
+    const tree = await open();
+    typeInto(tree, 'Rain stopped work');
+    expect(mockLeave?.prevent).toBe(true);
+
+    tryToLeave();
+    expect(mockConfirm).toHaveBeenCalledTimes(1);
+    expect(lastConfirm()).toMatchObject({
+      title: 'siteLog.new.leave_title',
+      confirmLabel: 'siteLog.new.leave_confirm',
+      cancelLabel: 'siteLog.new.leave_cancel',
+    });
+    // Keep editing is the dialog's cancel: nothing happens, the text stays.
+    expect(mockDispatch).not.toHaveBeenCalled();
+    const input = tree.root.findAllByType('TextInput' as unknown as React.ElementType)[0];
+    expect(input.props.value).toBe('Rain stopped work');
+
+    act(() => {
+      lastConfirm().onConfirm();
+    });
+    expect(mockDispatch).toHaveBeenCalledWith(BACK);
+  });
+
+  it('stops asking once Save was tapped: the capture owns a draft from then on', async () => {
+    const tree = await open();
+    typeInto(tree, 'Poured bay 3');
+    expect(mockLeave?.prevent).toBe(true);
+    press(tree, 'siteLog.new.submit');
+    await flush();
+    expect(mockRunSubmit).toHaveBeenCalledTimes(1);
+    // Save's own router.replace must not be held up by the question.
+    expect(mockLeave?.prevent).toBe(false);
+  });
+
+  it('never stands in the way of a sign-out', async () => {
+    const tree = await open();
+    typeInto(tree, 'Rain stopped work');
+    expect(mockLeave?.prevent).toBe(true);
+    // The layout clears the whole stack when the session ends.
+    act(() => {
+      useAuthStore.setState({ accessToken: null, sessionNonce: 2 });
+    });
+    expect(mockLeave?.prevent).toBe(false);
+  });
+
+  it('lets the sign-out clear-out through unasked, even if it reaches the guard', async () => {
+    const tree = await open();
+    typeInto(tree, 'Rain stopped work');
+    const held = mockLeave?.onPrevented;
+    act(() => {
+      useAuthStore.setState({ accessToken: null, sessionNonce: 2 });
+    });
+    act(() => {
+      held?.({ data: { action: BACK } });
+    });
+    expect(mockConfirm).not.toHaveBeenCalled();
+    expect(mockDispatch).toHaveBeenCalledWith(BACK);
+  });
+
+  it('REGRESSION guard: a Discard answered after the session ended does nothing', async () => {
+    const tree = await open();
+    typeInto(tree, 'Rain stopped work');
+    tryToLeave();
+    act(() => {
+      useAuthStore.setState({ sessionNonce: 2 });
+    });
+    act(() => {
+      lastConfirm().onConfirm();
+    });
+    expect(mockDispatch).not.toHaveBeenCalled();
   });
 });
 
