@@ -15,6 +15,17 @@ import { discardPending, resolvePending, sendCreate } from './createFlow';
 type Phase = 'checking' | 'not_found' | 'unknown' | 'sending';
 
 /**
+ * Every await below can outlive the screen or the session it began in. Two
+ * different questions follow one: is it still the same account (then what
+ * the server said is true, and the task lists must hear of it), and is the
+ * user still on this screen (then, and only then, move them or change what
+ * the panel says).
+ */
+function sameSession(startedUnder: number): boolean {
+  return useAuthStore.getState().sessionNonce === startedUnder;
+}
+
+/**
  * An earlier create from this entry whose answer never came (plan v2 §5).
  *
  * On opening, the server is ASKED first. Found: the task opens and says it
@@ -45,29 +56,20 @@ export function PendingCreatePanel({
   const [phase, setPhase] = useState<Phase>('checking');
   const started = useRef(false);
 
-  // Every await below can outlive the screen or the session it began in.
-  const stillHere = useCallback(
-    (startedUnder: number) =>
-      useAuthStore.getState().sessionNonce === startedUnder && activeRef.current,
-    [activeRef],
-  );
-
-  const openTask = useCallback(
-    (taskId: string) => {
-      void qc.invalidateQueries({ queryKey: ['tasks'] });
-      router.replace(`/tasks/${taskId}?notice=already_created` as never);
-    },
-    [qc],
-  );
-
   const check = useCallback(async () => {
     const startedUnder = useAuthStore.getState().sessionNonce;
     setPhase('checking');
-    const outcome = await resolvePending(pending);
-    if (!stillHere(startedUnder)) return;
-    if (outcome.kind === 'found') openTask(outcome.task.task_id);
-    else setPhase(outcome.kind);
-  }, [openTask, pending, stillHere]);
+    const outcome = await resolvePending(pending, startedUnder);
+    if (outcome.kind === 'stale' || !sameSession(startedUnder)) return;
+    if (outcome.kind === 'found') {
+      void qc.invalidateQueries({ queryKey: ['tasks'] });
+      if (activeRef.current) {
+        router.replace(`/tasks/${outcome.task.task_id}?notice=already_created` as never);
+      }
+      return;
+    }
+    setPhase(outcome.kind);
+  }, [activeRef, pending, qc]);
 
   useEffect(() => {
     // Once per record: the check is a read, but asking twice at mount is noise.
@@ -80,13 +82,16 @@ export function PendingCreatePanel({
     const startedUnder = useAuthStore.getState().sessionNonce;
     setPhase('sending');
     // The SAME record: same key, same values.
-    const outcome = await sendCreate(pending);
-    if (!stillHere(startedUnder)) return;
+    const outcome = await sendCreate(pending, startedUnder);
+    if (outcome.kind === 'stale' || !sameSession(startedUnder)) return;
     if (outcome.kind === 'created') {
       void qc.invalidateQueries({ queryKey: ['tasks'] });
-      router.replace(`/tasks/${outcome.task.task_id}` as never);
+      if (activeRef.current) router.replace(`/tasks/${outcome.task.task_id}` as never);
     } else if (outcome.kind === 'refused') {
       onRefused(outcome.detail, pending);
+    } else if (outcome.kind === 'not_saved') {
+      // Nothing was sent; the record is as it was.
+      setPhase('not_found');
     } else {
       setPhase('unknown');
     }

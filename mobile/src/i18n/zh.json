@@ -833,7 +833,9 @@
       "saving": "保存中…",
       "save_failed": "无法保存待办。",
       "entry_withdrawn": "该记录已撤回，不能从它创建待办。",
-      "load_failed": "无法加载该记录。"
+      "load_failed": "无法加载该记录。",
+      "not_saved": "无法在手机上保存这条待办，因此没有发送。请重试。",
+      "store_failed": "无法读取手机上保存的待办。请先重试，再新建。"
     },
     "pending": {
       "checking": "正在确认上次的待办是否已保存…",

@@ -15,6 +15,12 @@ import type { TaskOut } from '../../api/tasks';
 const mockPush = jest.fn();
 const mockReplace = jest.fn();
 let mockParams: Record<string, string> = {};
+// Focus, controlled by the test: blurEverything() is "the user went to
+// another screen" while this one stays mounted underneath.
+const mockFocusCleanups: (() => void)[] = [];
+function blurEverything(): void {
+  while (mockFocusCleanups.length > 0) mockFocusCleanups.pop()?.();
+}
 jest.mock('expo-router', () => ({
   router: {
     push: (...a: unknown[]) => mockPush(...a),
@@ -26,7 +32,18 @@ jest.mock('expo-router', () => ({
   useFocusEffect: (cb: () => undefined | (() => void)) => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const react = require('react') as typeof import('react');
-    react.useEffect(() => cb() ?? undefined, []); // eslint-disable-line react-hooks/exhaustive-deps
+    react.useEffect(() => {
+      const cleanup = cb();
+      if (cleanup) mockFocusCleanups.push(cleanup);
+      return () => {
+        if (!cleanup) return;
+        const at = mockFocusCleanups.indexOf(cleanup);
+        if (at >= 0) {
+          mockFocusCleanups.splice(at, 1);
+          cleanup();
+        }
+      };
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
   },
 }));
 jest.mock('react-i18next', () => ({ useTranslation: () => ({ t: (k: string) => k }) }));
@@ -37,9 +54,10 @@ jest.mock('react-native-safe-area-context', () => {
 jest.mock('@react-native-community/datetimepicker', () => ({ __esModule: true, default: () => null }));
 
 let mockQueryData: unknown;
+const mockQueryClient = { setQueryData: jest.fn(), invalidateQueries: jest.fn() };
 jest.mock('@tanstack/react-query', () => ({
   useQuery: () => ({ isLoading: false, data: mockQueryData, error: null }),
-  useQueryClient: () => ({ setQueryData: jest.fn(), invalidateQueries: jest.fn() }),
+  useQueryClient: () => mockQueryClient,
 }));
 
 const mockMe = { user_id: 'me-1', full_name: 'Me Myself', role: 'contributor' };
@@ -59,6 +77,7 @@ jest.mock('../../api/tasks', () => ({
   findMyCreate: (...a: unknown[]) => mockFindMyCreate(...a),
 }));
 
+import { useAuthStore } from '../../store/auth';
 import { useTaskPendingCreates } from '../../store/taskPendingCreates';
 import TaskDetail from '../../../app/tasks/[id]';
 import NewTaskScreen from '../../../app/tasks/new';
@@ -90,20 +109,34 @@ function task(overrides: Partial<TaskOut> = {}): TaskOut {
 const byTestId = (tree: ReactTestRenderer, id: string): ReactTestInstance[] =>
   tree.root.findAll((n) => n.props.testID === id && typeof n.type !== 'string');
 
+// Several turns: the phone-storage mock defers each write by one turn, and a
+// create both writes its record and removes it.
 async function flush() {
-  await act(async () => {
-    await new Promise((r) => setTimeout(r, 0));
-  });
+  for (let i = 0; i < 6; i += 1) {
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  }
 }
 
+const mounted: ReactTestRenderer[] = [];
 async function render(el: React.ReactElement): Promise<ReactTestRenderer> {
   let tree: ReactTestRenderer | undefined;
   await act(async () => {
     tree = create(el);
   });
+  mounted.push(tree as ReactTestRenderer);
   await flush();
   return tree as ReactTestRenderer;
 }
+
+// A screen left mounted would keep reacting to the store in the next test.
+afterEach(() => {
+  while (mounted.length > 0) {
+    const tree = mounted.pop();
+    act(() => tree?.unmount());
+  }
+});
 
 function press(tree: ReactTestRenderer, id: string) {
   const [node] = byTestId(tree, id);
@@ -115,8 +148,11 @@ function press(tree: ReactTestRenderer, id: string) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  blurEverything();
   mockParams = {};
-  useTaskPendingCreates.setState({ pending: [] });
+  (globalThis as unknown as { __asyncStorageData?: Map<string, string> }).__asyncStorageData?.clear();
+  useTaskPendingCreates.setState({ pending: [], hydrated: true, loadFailed: false });
+  useAuthStore.setState({ userId: 'me-1', sessionNonce: 1, accessToken: 'token-me' });
 });
 
 describe('task detail', () => {
@@ -169,6 +205,41 @@ describe('task detail', () => {
     // No greyed-out edit controls for someone who may not edit.
     expect(byTestId(tree, 'due-date-clear')).toHaveLength(0);
     expect(byTestId(tree, 'task-due-readonly')).toHaveLength(1);
+  });
+
+  it('a title being edited survives saving a different field', async () => {
+    mockQueryData = task();
+    mockPatchTask.mockResolvedValue(task({ status: 'blocked' }));
+    const tree = await render(<TaskDetail />);
+    press(tree, 'task-title-edit');
+    const [input] = byTestId(tree, 'task-title-input');
+    act(() => input.props.onChangeText('Brace the north roof today'));
+    press(tree, 'task-status:blocked');
+    await flush();
+    expect(mockPatchTask).toHaveBeenCalledWith('task-1', { status: 'blocked' });
+    const [still] = byTestId(tree, 'task-title-input');
+    expect(still?.props.value).toBe('Brace the north roof today');
+  });
+
+  it('a change that finishes after the user left still updates the cached task and lists', async () => {
+    mockQueryData = task();
+    let finish: (t: TaskOut) => void = () => undefined;
+    mockPatchTask.mockImplementation(
+      () => new Promise<TaskOut>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const tree = await render(<TaskDetail />);
+    press(tree, 'task-status:done');
+    await flush();
+    blurEverything(); // the user went elsewhere; this screen stays mounted
+    await act(async () => {
+      finish(task({ status: 'done' }));
+    });
+    await flush();
+    expect(mockQueryClient.setQueryData).toHaveBeenCalled();
+    expect(mockQueryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['tasks', 'list'] });
+    expect(tree).toBeTruthy();
   });
 
   it('notes when the source entry has moved to another job, and the task stays', async () => {
@@ -252,6 +323,59 @@ describe('creating a task', () => {
       due_date: null,
     });
     expect(mockReplace).toHaveBeenCalledWith('/tasks/task-1');
+  });
+
+  it('a create that succeeds after the user left refreshes the lists but moves nobody', async () => {
+    let finish: (t: TaskOut) => void = () => undefined;
+    mockCreateTask.mockImplementation(
+      () => new Promise<TaskOut>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const tree = await render(<NewTaskScreen />);
+    press(tree, 'task-save');
+    await flush();
+    expect(mockCreateTask).toHaveBeenCalledTimes(1);
+    blurEverything(); // back on the entry screen, which is still mounted
+    await act(async () => {
+      finish(task());
+    });
+    await flush();
+    // The entry screen's list must learn of the task, or it offers a second create.
+    expect(mockQueryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['tasks'] });
+    expect(mockReplace).not.toHaveBeenCalled();
+    expect(useTaskPendingCreates.getState().forEvent('me-1', 'event-1')).toBeUndefined();
+  });
+
+  it('nothing is sent once the account has changed', async () => {
+    mockCreateTask.mockResolvedValue(task());
+    const tree = await render(<NewTaskScreen />);
+    act(() => {
+      useAuthStore.setState({ userId: 'someone-else', sessionNonce: 2 });
+    });
+    press(tree, 'task-save');
+    await flush();
+    expect(mockCreateTask).not.toHaveBeenCalled();
+  });
+
+  it('when the phone’s list cannot be read, no new create is offered until it can', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const storage = require('@react-native-async-storage/async-storage').default;
+    const unreadable = jest.spyOn(storage, 'getItem').mockRejectedValue(new Error('read failed'));
+    try {
+      useTaskPendingCreates.setState({ pending: [], hydrated: false, loadFailed: false });
+      const tree = await render(<NewTaskScreen />); // the screen's own load attempt fails
+      await flush();
+      expect(byTestId(tree, 'task-save')).toHaveLength(0);
+      expect(byTestId(tree, 'task-store-retry').length).toBeGreaterThan(0);
+
+      unreadable.mockRestore(); // readable again: retry brings the form back
+      press(tree, 'task-store-retry');
+      await flush();
+      expect(byTestId(tree, 'task-save').length).toBeGreaterThan(0);
+    } finally {
+      unreadable.mockRestore();
+    }
   });
 
   it('an unresolved create the server already has opens that task (even though resolving unmounts the panel)', async () => {

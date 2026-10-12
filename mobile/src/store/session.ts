@@ -72,8 +72,15 @@ export async function wipeOnExplicitLogout(
   useFailuresStore.getState().clearFailures();
   if (userId === null) return;
   // Task creates whose result is unknown are this account's alone and are
-  // dropped with it (plan v2 §5). Nothing of another account's is touched.
-  await useTaskPendingCreates.getState().clearUser(userId);
+  // dropped with it (plan v2 §5). Nothing of another account's is touched:
+  // the change is applied to what is on the phone, never to a copy that may
+  // have failed to load. If the phone's storage cannot be read, the records
+  // stay - they are still this account's only - and logout carries on.
+  try {
+    await useTaskPendingCreates.getState().clearUser(userId);
+  } catch {
+    // Kept on purpose; see above.
+  }
   if (confirmedCaptureIds.length === 0) return;
   await useSiteLogDrafts.getState().clearCaptures(userId, confirmedCaptureIds);
 }

@@ -59,11 +59,15 @@ export default function TaskDetail() {
     setError(null);
     try {
       const updated = await patchTask(String(id), patch);
-      if (useAuthStore.getState().sessionNonce !== startedUnder || !activeRef.current) return;
+      // Same account: the server's answer is true and every list must hear
+      // of it, whether or not the user is still on this screen.
+      if (useAuthStore.getState().sessionNonce !== startedUnder) return;
       qc.setQueryData<TaskOut>(['tasks', 'detail', id], updated);
       void qc.invalidateQueries({ queryKey: ['tasks', 'list'] });
       void qc.invalidateQueries({ queryKey: ['tasks', 'event'] });
-      setTitleDraft(null);
+      // A title being edited is put away only when it was the title that was
+      // saved; changing the status meanwhile must not throw the typing away.
+      if (activeRef.current && 'title' in patch) setTitleDraft(null);
     } catch (err) {
       if (useAuthStore.getState().sessionNonce !== startedUnder || !activeRef.current) return;
       setError(resolveApiErrorMessage(err, t, t('tasks.detail.save_failed')));

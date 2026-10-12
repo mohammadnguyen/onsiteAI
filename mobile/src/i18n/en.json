@@ -833,7 +833,9 @@
       "saving": "Saving…",
       "save_failed": "Could not save the task.",
       "entry_withdrawn": "This entry was withdrawn, so a task can't be made from it.",
-      "load_failed": "Could not load the entry."
+      "load_failed": "Could not load the entry.",
+      "not_saved": "Could not save this task on the phone, so nothing was sent. Try again.",
+      "store_failed": "Could not read the tasks saved on this phone. Try again before creating a new one."
     },
     "pending": {
       "checking": "Checking whether your earlier task was saved…",

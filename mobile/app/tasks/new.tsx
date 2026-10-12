@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -56,7 +57,7 @@ export default function NewTaskScreen() {
   const userId = me?.user_id ?? tokenUserId;
   const isAdmin = me?.role === 'admin';
   const activeRef = useScreenActive();
-  const hydrated = usePendingCreatesHydrated();
+  const { hydrated, loadFailed } = usePendingCreatesHydrated();
   const pending = useTaskPendingCreates((st) =>
     userId && eventId ? st.forEvent(userId, eventId) : undefined,
   );
@@ -92,15 +93,19 @@ export default function NewTaskScreen() {
     }
   }, [entry.data, title]);
 
+  /** What the screen does with an outcome, once it is still in front. */
   const finish = (outcome: SendOutcome) => {
     if (outcome.kind === 'created') {
-      void qc.invalidateQueries({ queryKey: ['tasks'] });
       router.replace(`/tasks/${outcome.task.task_id}` as never);
       return;
     }
     if (outcome.kind === 'refused') {
-      keyRef.current = newCaptureId();
       setError(outcome.detail ?? t('tasks.new.save_failed'));
+      return;
+    }
+    if (outcome.kind === 'not_saved') {
+      // Nothing was sent; the same key can be used when the user tries again.
+      setError(t('tasks.new.not_saved'));
       return;
     }
     // Unknown: the pending record stays and the panel below takes over.
@@ -124,9 +129,21 @@ export default function NewTaskScreen() {
       created_at: Date.now(),
     };
     try {
-      const outcome = await sendCreate(record);
-      if (useAuthStore.getState().sessionNonce !== startedUnder || !activeRef.current) return;
-      finish(outcome);
+      const outcome = await sendCreate(record, startedUnder);
+      // Another account's session now: nothing here is theirs to update.
+      if (outcome.kind === 'stale' || useAuthStore.getState().sessionNonce !== startedUnder) {
+        return;
+      }
+      // The lists must learn about a new task even if the user has already
+      // left this screen - otherwise the entry they returned to still shows
+      // none and offers another create under a new key.
+      if (outcome.kind === 'created') void qc.invalidateQueries({ queryKey: ['tasks'] });
+      // Nothing was created under a refused key: the next save gets a new one
+      // whether or not the user is looking.
+      if (outcome.kind === 'refused') keyRef.current = newCaptureId();
+      // Moving the user, or changing what this screen says, only while it is
+      // the screen in front.
+      if (activeRef.current) finish(outcome);
     } finally {
       setSending(false);
     }
@@ -135,7 +152,22 @@ export default function NewTaskScreen() {
   if (!eventId) return null;
 
   let body: ReactNode;
-  if (!hydrated || entry.isLoading) {
+  if (!hydrated && loadFailed) {
+    // Whether this entry already has a create in doubt cannot be known, so
+    // no new one is offered until the phone's list can be read.
+    body = (
+      <View style={s.form}>
+        <Text style={s.error}>{t('tasks.new.store_failed')}</Text>
+        <Pressable
+          onPress={() => void useTaskPendingCreates.getState().hydrate()}
+          accessibilityRole="button"
+          testID="task-store-retry"
+        >
+          <Text style={s.retry}>{t('common.retry')}</Text>
+        </Pressable>
+      </View>
+    );
+  } else if (!hydrated || entry.isLoading) {
     body = <ActivityIndicator style={s.spinner} />;
   } else if (pending && !sending) {
     // Only a create that is NOT being sent from this screen right now: while
@@ -242,5 +274,6 @@ const s = StyleSheet.create({
   hint: { color: tokens.ink3, fontSize: 12 },
   error: { color: tokens.bad, fontSize: 13 },
   note: { color: tokens.ink3, marginTop: 16 },
+  retry: { color: tokens.primary, fontWeight: '600', fontSize: 15 },
   spinner: { marginTop: 32 },
 });
