@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -62,6 +64,10 @@ export default function TaskDetail() {
       // Same account: the server's answer is true and every list must hear
       // of it, whether or not the user is still on this screen.
       if (useAuthStore.getState().sessionNonce !== startedUnder) return;
+      // A read of this task that left before the change landed would arrive
+      // after it and put the old values back: cancel it first.
+      await qc.cancelQueries({ queryKey: ['tasks', 'detail', id], exact: true });
+      if (useAuthStore.getState().sessionNonce !== startedUnder) return;
       qc.setQueryData<TaskOut>(['tasks', 'detail', id], updated);
       void qc.invalidateQueries({ queryKey: ['tasks', 'list'] });
       void qc.invalidateQueries({ queryKey: ['tasks', 'event'] });
@@ -95,133 +101,139 @@ export default function TaskDetail() {
   const p = task.permissions;
   return (
     <SafeAreaView style={s.safe} edges={['top', 'bottom']}>
-      <ScrollView contentContainerStyle={s.body} keyboardShouldPersistTaps="handled">
-        <BackLink fallback="/tasks" />
-        {notice === 'already_created' ? (
-          <Text style={s.notice} testID="task-already-created">
-            {t('tasks.pending.found')}
-          </Text>
-        ) : null}
-
-        {titleDraft === null ? (
-          <View style={s.titleRow}>
-            <Text style={s.h1} testID="task-title-text">
-              {task.title}
+      <KeyboardAvoidingView
+        style={s.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView contentContainerStyle={s.body} keyboardShouldPersistTaps="handled">
+          <BackLink fallback="/tasks" />
+          {notice === 'already_created' ? (
+            <Text style={s.notice} testID="task-already-created">
+              {t('tasks.pending.found')}
             </Text>
-            {p.edit ? (
-              <Pressable
-                onPress={() => setTitleDraft(task.title)}
-                accessibilityRole="button"
-                hitSlop={8}
-                testID="task-title-edit"
-              >
-                <Text style={s.link}>{t('tasks.detail.edit_title')}</Text>
-              </Pressable>
-            ) : null}
-          </View>
-        ) : (
-          <View style={s.titleEdit}>
-            <TextInput
-              value={titleDraft}
-              onChangeText={setTitleDraft}
-              editable={!saving}
-              multiline
-              style={s.input}
-              testID="task-title-input"
-            />
-            <View style={s.row}>
-              <Pressable
-                onPress={() => void apply({ title: titleDraft.trim() })}
-                disabled={saving || !isUsableTitle(titleDraft)}
-                accessibilityRole="button"
-                testID="task-title-save"
-              >
-                <Text style={[s.link, saving || !isUsableTitle(titleDraft) ? s.dim : null]}>
-                  {t('tasks.detail.save_title')}
-                </Text>
-              </Pressable>
-              <Pressable onPress={() => setTitleDraft(null)} accessibilityRole="button">
-                <Text style={s.cancel}>{t('common.cancel')}</Text>
-              </Pressable>
+          ) : null}
+
+          {titleDraft === null ? (
+            <View style={s.titleRow}>
+              <Text style={s.h1} testID="task-title-text">
+                {task.title}
+              </Text>
+              {p.edit ? (
+                <Pressable
+                  onPress={() => setTitleDraft(task.title)}
+                  accessibilityRole="button"
+                  hitSlop={8}
+                  testID="task-title-edit"
+                >
+                  <Text style={s.link}>{t('tasks.detail.edit_title')}</Text>
+                </Pressable>
+              ) : null}
             </View>
-          </View>
-        )}
+          ) : (
+            <View style={s.titleEdit}>
+              <TextInput
+                value={titleDraft}
+                onChangeText={setTitleDraft}
+                editable={!saving}
+                multiline
+                style={s.input}
+                testID="task-title-input"
+              />
+              <View style={s.row}>
+                <Pressable
+                  onPress={() => void apply({ title: titleDraft.trim() })}
+                  disabled={saving || !isUsableTitle(titleDraft)}
+                  accessibilityRole="button"
+                  testID="task-title-save"
+                >
+                  <Text style={[s.link, saving || !isUsableTitle(titleDraft) ? s.dim : null]}>
+                    {t('tasks.detail.save_title')}
+                  </Text>
+                </Pressable>
+                <Pressable onPress={() => setTitleDraft(null)} accessibilityRole="button">
+                  <Text style={s.cancel}>{t('common.cancel')}</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
 
-        <Text style={s.label}>{t('tasks.detail.status')}</Text>
-        <TaskStatusChips
-          value={task.status}
-          disabled={!p.change_status || saving}
-          onChange={(status) => void apply({ status })}
-        />
-
-        <Text style={s.label}>{t('tasks.new.assignee')}</Text>
-        {p.edit ? (
-          <AssigneeField
-            value={task.assignee?.user_id ?? null}
-            valueName={task.assignee?.full_name ?? null}
-            me={me ? { user_id: me.user_id, full_name: me.full_name } : null}
-            assignOthers={p.assign_others}
-            disabled={saving}
-            onChange={(userId) => void apply({ assignee_user_id: userId })}
+          <Text style={s.label}>{t('tasks.detail.status')}</Text>
+          <TaskStatusChips
+            value={task.status}
+            disabled={!p.change_status || saving}
+            onChange={(status) => void apply({ status })}
           />
-        ) : (
-          <Text style={s.value}>
-            {task.assignee?.full_name ?? t('tasks.assignee.unassigned')}
-          </Text>
-        )}
 
-        <Text style={s.label}>{t('tasks.new.due')}</Text>
-        {p.edit ? (
-          <DueDateField
-            value={task.due_date}
+          <Text style={s.label}>{t('tasks.new.assignee')}</Text>
+          {p.edit ? (
+            <AssigneeField
+              value={task.assignee?.user_id ?? null}
+              valueName={task.assignee?.full_name ?? null}
+              me={me ? { user_id: me.user_id, full_name: me.full_name } : null}
+              assignOthers={p.assign_others}
+              disabled={saving}
+              onChange={(userId) => void apply({ assignee_user_id: userId })}
+            />
+          ) : (
+            <Text style={s.value}>
+              {task.assignee?.full_name ?? t('tasks.assignee.unassigned')}
+            </Text>
+          )}
+
+          <Text style={s.label}>{t('tasks.new.due')}</Text>
+          {p.edit ? (
+            <DueDateField
+              value={task.due_date}
+              disabled={saving}
+              onChange={(due) => void apply({ due_date: due })}
+            />
+          ) : (
+            // Read-only for anyone who may not edit: no greyed-out controls.
+            <Text style={s.value} testID="task-due-readonly">
+              {task.due_date ? formatDateAU(task.due_date) : t('tasks.due.none')}
+            </Text>
+          )}
+
+          <Text style={s.label}>{t('tasks.detail.job')}</Text>
+          <TaskJobSection
+            task={task}
             disabled={saving}
-            onChange={(due) => void apply({ due_date: due })}
+            onSetJob={(jobId) => void apply({ job_id: jobId })}
+            onChangeJob={(jobId, reason) => void apply({ job_id: jobId, reason })}
           />
-        ) : (
-          // Read-only for anyone who may not edit: no greyed-out controls.
-          <Text style={s.value} testID="task-due-readonly">
-            {task.due_date ? formatDateAU(task.due_date) : t('tasks.due.none')}
+
+          <Text style={s.label}>{t('tasks.detail.source')}</Text>
+          {task.source.readable ? (
+            <Pressable
+              onPress={() => router.push(`/site-log/${task.source.site_log_event_id}` as never)}
+              accessibilityRole="button"
+              testID="task-open-source"
+            >
+              <Text style={s.link}>{t('tasks.detail.open_source')}</Text>
+            </Pressable>
+          ) : (
+            <Text style={s.value} testID="task-source-hidden">
+              {t('tasks.detail.source_hidden')}
+            </Text>
+          )}
+
+          {saving ? <ActivityIndicator /> : null}
+          {error ? <Text style={s.error}>{error}</Text> : null}
+          <Text style={s.meta}>
+            {t('tasks.detail.created_by', {
+              name: task.created_by?.full_name ?? '—',
+              date: new Date(task.created_at).toLocaleDateString(),
+            })}
           </Text>
-        )}
-
-        <Text style={s.label}>{t('tasks.detail.job')}</Text>
-        <TaskJobSection
-          task={task}
-          disabled={saving}
-          onSetJob={(jobId) => void apply({ job_id: jobId })}
-          onChangeJob={(jobId, reason) => void apply({ job_id: jobId, reason })}
-        />
-
-        <Text style={s.label}>{t('tasks.detail.source')}</Text>
-        {task.source.readable ? (
-          <Pressable
-            onPress={() => router.push(`/site-log/${task.source.site_log_event_id}` as never)}
-            accessibilityRole="button"
-            testID="task-open-source"
-          >
-            <Text style={s.link}>{t('tasks.detail.open_source')}</Text>
-          </Pressable>
-        ) : (
-          <Text style={s.value} testID="task-source-hidden">
-            {t('tasks.detail.source_hidden')}
-          </Text>
-        )}
-
-        {saving ? <ActivityIndicator /> : null}
-        {error ? <Text style={s.error}>{error}</Text> : null}
-        <Text style={s.meta}>
-          {t('tasks.detail.created_by', {
-            name: task.created_by?.full_name ?? '—',
-            date: new Date(task.created_at).toLocaleDateString(),
-          })}
-        </Text>
-      </ScrollView>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: tokens.bg },
+  flex: { flex: 1 },
   body: { padding: 16, gap: 10 },
   spinner: { marginTop: 48 },
   notice: {

@@ -11,6 +11,7 @@
  */
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import React from 'react';
+import { KeyboardAvoidingView } from 'react-native';
 
 import type { TaskOut } from '../../api/tasks';
 
@@ -56,7 +57,11 @@ jest.mock('react-native-safe-area-context', () => {
 jest.mock('@react-native-community/datetimepicker', () => ({ __esModule: true, default: () => null }));
 
 let mockQueryData: unknown;
-const mockQueryClient = { setQueryData: jest.fn(), invalidateQueries: jest.fn() };
+const mockQueryClient = {
+  setQueryData: jest.fn(),
+  invalidateQueries: jest.fn(),
+  cancelQueries: jest.fn(() => Promise.resolve()),
+};
 jest.mock('@tanstack/react-query', () => ({
   useQuery: () => ({ isLoading: false, data: mockQueryData, error: null }),
   useQueryClient: () => mockQueryClient,
@@ -160,7 +165,7 @@ beforeEach(() => {
   blurEverything();
   mockParams = {};
   (globalThis as unknown as { __asyncStorageData?: Map<string, string> }).__asyncStorageData?.clear();
-  useTaskPendingCreates.setState({ pending: [], hydrated: true, loadFailed: false });
+  useTaskPendingCreates.setState({ pending: [], sending: [], hydrated: true, loadFailed: false });
   useAuthStore.setState({ userId: 'me-1', sessionNonce: 1, accessToken: 'token-me' });
 });
 
@@ -249,6 +254,29 @@ describe('task detail', () => {
     expect(mockQueryClient.setQueryData).toHaveBeenCalled();
     expect(mockQueryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['tasks', 'list'] });
     expect(tree).toBeTruthy();
+  });
+
+  it('a saved change first cancels an older read of the task, which would put the old values back', async () => {
+    mockQueryData = task();
+    mockPatchTask.mockResolvedValue(task({ status: 'done' }));
+    const tree = await render(<TaskDetail />);
+    press(tree, 'task-status:done');
+    await flush();
+    expect(mockQueryClient.cancelQueries).toHaveBeenCalledWith({
+      queryKey: ['tasks', 'detail', 'task-1'],
+      exact: true,
+    });
+    const [cancelled] = mockQueryClient.cancelQueries.mock.invocationCallOrder;
+    const [installed] = mockQueryClient.setQueryData.mock.invocationCallOrder;
+    expect(cancelled).toBeLessThan(installed);
+  });
+
+  it('keeps its editing controls above the keyboard', async () => {
+    mockQueryData = task();
+    const tree = await render(<TaskDetail />);
+    const [avoiding] = tree.root.findAllByType(KeyboardAvoidingView);
+    expect(avoiding.props.behavior).toBe('padding'); // iOS
+    expect(avoiding.findAll((n) => n.props.testID === 'task-title-edit').length).toBeGreaterThan(0);
   });
 
   it('notes when the source entry has moved to another job, and the task stays', async () => {
@@ -478,6 +506,48 @@ describe('creating a task', () => {
       expect(shown.length).toBeGreaterThan(0);
     });
 
+    it('even before its record reaches the phone, the reopened screen joins that create', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const storage = require('@react-native-async-storage/async-storage').default;
+      const realSet = storage.setItem.bind(storage);
+      let releaseWrite: () => void = () => undefined;
+      const held = new Promise<void>((r) => {
+        releaseWrite = r;
+      });
+      const slowWrite = jest
+        .spyOn(storage, 'setItem')
+        .mockImplementation(async (k: unknown, v: unknown) => {
+          if (k === 'task-pending-creates') await held;
+          return realSet(k, v);
+        });
+      try {
+        const answer = outstanding();
+        const first = await render(<NewTaskScreen />);
+        press(first, 'task-save');
+        await flush();
+        expect(mockCreateTask).not.toHaveBeenCalled(); // still writing the record
+        leave(first);
+        const reopened = await render(<NewTaskScreen />);
+        expect(byTestId(reopened, 'task-save')).toHaveLength(0); // no second create offered
+        expect(byTestId(reopened, 'pending-checking').length).toBeGreaterThan(0);
+        expect(mockFindMyCreate).not.toHaveBeenCalled();
+
+        await act(async () => {
+          releaseWrite();
+        });
+        await flush();
+        expect(mockCreateTask).toHaveBeenCalledTimes(1);
+        await act(async () => {
+          answer.give(task({ task_id: 'task-8' }));
+        });
+        await flush();
+        expect(mockReplace).toHaveBeenCalledWith('/tasks/task-8?notice=already_created');
+        expect(mockCreateTask).toHaveBeenCalledTimes(1);
+      } finally {
+        slowWrite.mockRestore();
+      }
+    });
+
     it('when that answer is lost, then asks the server before anything is resent', async () => {
       const answer = outstanding();
       const reopened = await saveThenReopen();
@@ -490,6 +560,13 @@ describe('creating a task', () => {
       expect(byTestId(reopened, 'pending-not-found')).toHaveLength(1);
       expect(mockCreateTask).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('keeps Save above the keyboard', async () => {
+    const tree = await render(<NewTaskScreen />);
+    const [avoiding] = tree.root.findAllByType(KeyboardAvoidingView);
+    expect(avoiding.props.behavior).toBe('padding'); // iOS
+    expect(avoiding.findAll((n) => n.props.testID === 'task-save').length).toBeGreaterThan(0);
   });
 
   it('a typed due date that is not a date blocks Save until it is one, or gone', async () => {

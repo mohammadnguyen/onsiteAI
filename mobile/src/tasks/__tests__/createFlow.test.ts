@@ -276,6 +276,30 @@ describe('finding out what happened to a lost create', () => {
     expect(mockCreateTask).toHaveBeenCalledTimes(1);
   });
 
+  it('a create can be seen from the tap on, before its record reaches the disk', async () => {
+    const { flow, auth, store, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    const realSet = AsyncStorage.setItem.bind(AsyncStorage);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    jest.spyOn(AsyncStorage, 'setItem').mockImplementation(async (k: string, v: string) => {
+      if (k === STORAGE_KEY) await held;
+      return realSet(k, v);
+    });
+    mockCreateTask.mockRejectedValue(networkError());
+    const sending = flow.sendCreate(record(), 1);
+    // At once - no await in between: a screen opened now sees it.
+    expect(store.getState().forEvent('user-a', 'event-1')?.create_client_id).toBe('key-1');
+    expect(await persisted(AsyncStorage)).toEqual([]);
+    release();
+    expect(await sending).toEqual({ kind: 'unknown' });
+    // Only the disk record remains; the in-memory one is gone with the send.
+    expect(store.getState().sending).toEqual([]);
+    expect(store.getState().forEvent('user-a', 'event-1')?.create_client_id).toBe('key-1');
+  });
+
   it('a create still out is not asked about: its own answer is awaited', async () => {
     const { flow, auth, store, AsyncStorage } = load();
     signIn(auth, 'user-a', 1);

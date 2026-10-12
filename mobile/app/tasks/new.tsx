@@ -1,6 +1,8 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -253,17 +255,23 @@ export default function NewTaskScreen() {
 
   return (
     <SafeAreaView style={s.safe} edges={['top', 'bottom']}>
-      <ScrollView contentContainerStyle={s.body} keyboardShouldPersistTaps="handled">
-        <BackLink fallback={`/site-log/${eventId}`} />
-        <Text style={s.h1}>{t('tasks.new.title')}</Text>
-        {body}
-      </ScrollView>
+      <KeyboardAvoidingView
+        style={s.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView contentContainerStyle={s.body} keyboardShouldPersistTaps="handled">
+          <BackLink fallback={`/site-log/${eventId}`} />
+          <Text style={s.h1}>{t('tasks.new.title')}</Text>
+          {body}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: tokens.bg },
+  flex: { flex: 1 },
   body: { padding: 16, gap: 12 },
   h1: { fontSize: 22, fontWeight: '700', color: tokens.ink },
   form: { gap: 10 },

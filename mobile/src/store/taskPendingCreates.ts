@@ -28,6 +28,13 @@ import { create } from 'zustand';
  * (which a persist middleware does on every change) would erase them, and
  * with them the only way those creates can be recovered without a duplicate.
  * If the disk cannot be read, nothing is written and the caller is told.
+ *
+ * One thing lives in memory only: the creates this app is SENDING right now
+ * (`sending`). A create appears there the moment Save is tapped, before its
+ * record has reached the disk, because a screen opened in that moment - the
+ * user left and came straight back - must see the create in progress, not
+ * offer a second one under a new key. It is never written to disk; the disk
+ * record is what survives a restart.
  */
 export type PendingTaskCreate = {
   /** The idempotency key the request was sent with. Never regenerated. */
@@ -44,6 +51,8 @@ export type PendingTaskCreate = {
 
 type State = {
   pending: PendingTaskCreate[];
+  /** Creates being sent right now. Memory only, never written to disk. */
+  sending: PendingTaskCreate[];
   /** The disk has been read successfully at least once. */
   hydrated: boolean;
   /** The last attempt to read the disk failed. */
@@ -53,8 +62,14 @@ type State = {
   /** Resolves once the record is on disk; rejects if it could not be. */
   putDurable: (p: PendingTaskCreate) => Promise<void>;
   removeDurable: (createClientId: string) => Promise<void>;
-  /** This account's unresolved create for one entry, newest first. */
+  markSending: (p: PendingTaskCreate) => void;
+  unmarkSending: (createClientId: string) => void;
+  /**
+   * This account's unresolved create for one entry, newest first: one being
+   * sent right now, or one on disk whose answer never came.
+   */
   forEvent: (userId: string, eventId: string) => PendingTaskCreate | undefined;
+  /** This account's records on disk. */
   forUser: (userId: string) => PendingTaskCreate[];
   /** Explicit logout: drop exactly this account's records. */
   clearUser: (userId: string) => Promise<void>;
@@ -95,6 +110,7 @@ export const useTaskPendingCreates = create<State>()((set, get) => {
 
   return {
     pending: [],
+    sending: [],
     hydrated: false,
     loadFailed: false,
     hydrate: () =>
@@ -108,9 +124,15 @@ export const useTaskPendingCreates = create<State>()((set, get) => {
     putDurable: (p) =>
       change((list) => [p, ...list.filter((x) => x.create_client_id !== p.create_client_id)]),
     removeDurable: (id) => change((list) => list.filter((x) => x.create_client_id !== id)),
+    markSending: (p) =>
+      set((st) => ({
+        sending: [p, ...st.sending.filter((x) => x.create_client_id !== p.create_client_id)],
+      })),
+    unmarkSending: (id) =>
+      set((st) => ({ sending: st.sending.filter((x) => x.create_client_id !== id) })),
     forEvent: (userId, eventId) =>
-      get()
-        .pending.filter((p) => p.user_id === userId && p.site_log_event_id === eventId)
+      [...get().sending, ...get().pending]
+        .filter((p) => p.user_id === userId && p.site_log_event_id === eventId)
         .sort((a, b) => b.created_at - a.created_at)[0],
     forUser: (userId) => get().pending.filter((p) => p.user_id === userId),
     clearUser: (userId) => change((list) => list.filter((p) => p.user_id !== userId)),

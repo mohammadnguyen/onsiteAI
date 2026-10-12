@@ -51,7 +51,8 @@ export type ResolveOutcome =
  * request is still out; asking the server then could answer "not saved" for
  * a task that is about to exist, and a fresh create would be a duplicate.
  * So while a key is here, nobody asks the server about it and nobody sends
- * it again: both wait for this send's own answer.
+ * it again: both wait for this send's own answer. (The store's `sending`
+ * list is what lets a screen SEE such a create; this map holds its answer.)
  */
 const inFlight = new Map<string, Promise<SendOutcome>>();
 
@@ -92,10 +93,13 @@ function detailOf(err: unknown): string | null {
 export function sendCreate(p: PendingTaskCreate, startedUnder: number): Promise<SendOutcome> {
   const running = inFlight.get(p.create_client_id);
   if (running) return running;
-  // Registered before the record is written, so whenever the record can be
-  // seen while its request is out, this entry is there too.
+  // Both before the first await: from the tap on, a screen opened for this
+  // entry sees this create (`sending`) and can join its answer (`inFlight`)
+  // - even while the record is still on its way to the disk.
+  useTaskPendingCreates.getState().markSending(p);
   const run = send(p, startedUnder).finally(() => {
     inFlight.delete(p.create_client_id);
+    useTaskPendingCreates.getState().unmarkSending(p.create_client_id);
   });
   inFlight.set(p.create_client_id, run);
   return run;
