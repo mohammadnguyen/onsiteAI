@@ -65,6 +65,10 @@ jest.mock('../../api/client', () => ({
 }));
 
 jest.mock('../BackLink', () => ({ BackLink: () => null }));
+// The tasks section has its own tests (src/tasks/__tests__); this file is
+// about the entry itself, and its query mock answers every query with the
+// entry.
+jest.mock('../../tasks/EntryTasksSection', () => ({ EntryTasksSection: () => null }));
 jest.mock('../../ui/kit', () => ({ StatusBadge: () => null }));
 jest.mock('expo-file-system/legacy', () => require('./support/memfs'));
 

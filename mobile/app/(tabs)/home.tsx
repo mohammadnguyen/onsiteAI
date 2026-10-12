@@ -18,7 +18,7 @@ import {
   usePendingExpenseSummaries,
 } from '../../src/api/hooks/useReviewQueue';
 import { useExpensesSince } from '../../src/api/hooks/useExpenses';
-import { ForeyLogo, GearIcon, MicIcon, PlusIcon } from '../../src/ui/icons';
+import { ForeyLogo, GearIcon, MicIcon, NoteIcon, PlusIcon } from '../../src/ui/icons';
 import { useMe } from '../../src/api/hooks/useAuth';
 import { formatMoney } from '../../src/util/format';
 import { monthStart, todayISO, formatTodayLine } from '../../src/util/dates';
@@ -134,6 +134,7 @@ export default function HomeScreen() {
 
         <CaptureEntryCard />
         <SiteLogEntryCard />
+        <TasksEntryCard />
         {isAdmin ? <StatDuo dequeued={dequeued} /> : null}
         {isAdmin ? (
           <ReviewCardStack
@@ -210,6 +211,33 @@ function SiteLogEntryCard() {
       </View>
       <Text style={s.capturePlaceholder} numberOfLines={1}>
         {t('siteLog.entry.subtitle')}
+      </Text>
+    </Pressable>
+  );
+}
+
+/** Tasks entry point (Site Log → Task, plan v2 §6.3).
+ *
+ * Next to the Site Log card because tasks come from site log entries; the
+ * tab bar and the page layout are unchanged (no IA change in this package).
+ */
+function TasksEntryCard() {
+  const s = useScaledStyles(base);
+  const { t } = useTranslation();
+  const router = useRouter();
+  return (
+    <Pressable
+      style={({ pressed }) => [s.captureCard, pressed && s.capturePressed]}
+      onPress={() => router.push('/tasks' as unknown as Href)}
+      accessibilityRole="button"
+      accessibilityLabel={t('tasks.entry.title')}
+      testID="home-tasks-entry"
+    >
+      <View style={s.captureSquare}>
+        <NoteIcon size={18} color="#ffffff" />
+      </View>
+      <Text style={s.capturePlaceholder} numberOfLines={1}>
+        {t('tasks.entry.subtitle')}
       </Text>
     </Pressable>
   );
