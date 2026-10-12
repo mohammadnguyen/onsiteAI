@@ -2,8 +2,10 @@
  * The task screens, rendered for real with react-test-renderer: what a user
  * may touch comes from the server's `permissions`; the source entry link is
  * replaced by a plain statement when the user may not read the entry; Save
- * sends one request however often it is tapped; and an unresolved create is
- * resolved by asking the server before anything is sent again.
+ * sends one request however often it is tapped; an unresolved create is
+ * resolved by asking the server before anything is sent again - unless its
+ * request is still out, whose own answer is then awaited; and a mistyped due
+ * date is never dropped silently.
  *
  * Lives under src/ because a file under app/ is a route.
  */
@@ -79,6 +81,7 @@ jest.mock('../../api/tasks', () => ({
 
 import { useAuthStore } from '../../store/auth';
 import { useTaskPendingCreates } from '../../store/taskPendingCreates';
+import { DueDateField, isTypedDueValid } from '../DueDateField';
 import TaskDetail from '../../../app/tasks/[id]';
 import NewTaskScreen from '../../../app/tasks/new';
 
@@ -128,6 +131,12 @@ async function render(el: React.ReactElement): Promise<ReactTestRenderer> {
   mounted.push(tree as ReactTestRenderer);
   await flush();
   return tree as ReactTestRenderer;
+}
+
+/** The user goes back: the screen is popped, and unmounts. */
+function leave(tree: ReactTestRenderer) {
+  mounted.splice(mounted.indexOf(tree), 1);
+  act(() => tree.unmount());
 }
 
 // A screen left mounted would keep reacting to the store in the next test.
@@ -403,5 +412,107 @@ describe('creating a task', () => {
     mockQueryData = { ...ENTRY, revision: { ...ENTRY.revision, withdrawn: true } };
     const tree = await render(<NewTaskScreen />);
     expect(byTestId(tree, 'task-save')).toHaveLength(0);
+  });
+
+  describe('Save, leave while it is out, open the create again', () => {
+    function outstanding() {
+      const answer: { give: (t: TaskOut) => void; fail: (e: unknown) => void } = {
+        give: () => undefined,
+        fail: () => undefined,
+      };
+      mockCreateTask.mockImplementation(
+        () => new Promise<TaskOut>((resolve, reject) => {
+          answer.give = resolve;
+          answer.fail = reject;
+        }),
+      );
+      return answer;
+    }
+
+    async function saveThenReopen() {
+      const first = await render(<NewTaskScreen />);
+      press(first, 'task-save');
+      await flush();
+      expect(mockCreateTask).toHaveBeenCalledTimes(1);
+      leave(first); // the request is still out
+      return render(<NewTaskScreen />);
+    }
+
+    it('waits for that answer, asks nothing, offers nothing, then opens the task', async () => {
+      const answer = outstanding();
+      const reopened = await saveThenReopen();
+      // The server would say "not there yet", which reads as "not saved".
+      expect(mockFindMyCreate).not.toHaveBeenCalled();
+      expect(byTestId(reopened, 'pending-checking').length).toBeGreaterThan(0);
+      expect(byTestId(reopened, 'pending-send-again')).toHaveLength(0);
+      expect(byTestId(reopened, 'pending-discard')).toHaveLength(0);
+      expect(byTestId(reopened, 'task-save')).toHaveLength(0);
+
+      await act(async () => {
+        answer.give(task({ task_id: 'task-7' }));
+      });
+      await flush();
+      expect(mockReplace).toHaveBeenCalledWith('/tasks/task-7?notice=already_created');
+      expect(mockCreateTask).toHaveBeenCalledTimes(1);
+      expect(useTaskPendingCreates.getState().forEvent('me-1', 'event-1')).toBeUndefined();
+    });
+
+    it('when the server refuses it, the form comes back with those values and the reason', async () => {
+      const answer = outstanding();
+      const reopened = await saveThenReopen();
+      await act(async () => {
+        answer.fail(
+          Object.assign(new Error('HTTP 409'), {
+            isAxiosError: true,
+            response: { status: 409, data: { detail: 'The source entry is withdrawn' } },
+          }),
+        );
+      });
+      await flush();
+      expect(mockFindMyCreate).not.toHaveBeenCalled();
+      const [title] = byTestId(reopened, 'task-title');
+      expect(title.props.value).toBe('Engineer asks for extra roof bracing');
+      const shown = reopened.root.findAll(
+        (n) => typeof n.type === 'string' && n.props.children === 'The source entry is withdrawn',
+      );
+      expect(shown.length).toBeGreaterThan(0);
+    });
+
+    it('when that answer is lost, then asks the server before anything is resent', async () => {
+      const answer = outstanding();
+      const reopened = await saveThenReopen();
+      mockFindMyCreate.mockResolvedValue(null);
+      await act(async () => {
+        answer.fail(Object.assign(new Error('Network Error'), { isAxiosError: true }));
+      });
+      await flush();
+      expect(mockFindMyCreate).toHaveBeenCalledTimes(1);
+      expect(byTestId(reopened, 'pending-not-found')).toHaveLength(1);
+      expect(mockCreateTask).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('a typed due date that is not a date blocks Save until it is one, or gone', async () => {
+    mockCreateTask.mockResolvedValue(task());
+    const tree = await render(<NewTaskScreen />);
+    const field = tree.root.findByType(DueDateField);
+    act(() => field.props.onValidityChange(false));
+    expect(byTestId(tree, 'task-save')[0].props.disabled).toBe(true);
+    press(tree, 'task-save');
+    await flush();
+    expect(mockCreateTask).not.toHaveBeenCalled();
+
+    act(() => field.props.onValidityChange(true));
+    expect(byTestId(tree, 'task-save')[0].props.disabled).toBe(false);
+  });
+
+  it.each([
+    ['', true],
+    ['  ', true],
+    ['17/10/2026', true],
+    ['31/02/2026', false],
+    ['next friday', false],
+  ])('typed due date %j can become the value: %s', (text, valid) => {
+    expect(isTypedDueValid(text)).toBe(valid);
   });
 });

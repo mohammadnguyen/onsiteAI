@@ -5,8 +5,9 @@ lookup, entry access (404) and withdrawal (409), D1 assignee scope, the
 assignee of a task from a job-less entry seeing the task but not the entry
 or its files, the proposed title never leaving the audit, the server-side
 derivation of that title, the task keeping its own job when the entry is
-re-linked, job set/change rules, status and edit permissions, one audit row
-per changed field, the entry's revisions untouched, and list visibility.
+re-linked, job set/change rules, a job a task points at refusing deletion,
+status and edit permissions, one audit row per changed field, the entry's
+revisions untouched, and list visibility.
 Synthetic text only.
 """
 
@@ -473,6 +474,24 @@ async def test_job_set_and_change_rules(
         {"from": None, "to": str(job_a.job_id), "reason": None},
         {"from": str(job_a.job_id), "to": str(job_b.job_id), "reason": "moved site"},
     ]
+
+
+async def test_a_job_a_task_points_at_is_archived_not_deleted(
+    client, db_session, seeded_admin, admin_token, seeded_contributor, contributor_token
+):
+    # Nothing else is on this job: a task from a job-less entry is given it.
+    job = await _mk_job(db_session, seeded_admin, name="Only a task")
+    entry = await _mk_entry(db_session, seeded_contributor)
+    task_id = (await _create(client, contributor_token, entry.site_log_event_id)).json()["task_id"]
+    r = await client.patch(f"/tasks/{task_id}", json={"job_id": str(job.job_id)},
+                           headers=_auth(contributor_token))
+    assert r.status_code == 200
+
+    r = await client.delete(f"/jobs/{job.job_id}", headers=_auth(admin_token))
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == "Job has 1 task and cannot be deleted. Archive it instead."
+    task = await client.get(f"/tasks/{task_id}", headers=_auth(admin_token))
+    assert task.json()["job"]["job_id"] == str(job.job_id)
 
 
 # ------------------------------------------------------- status and edits

@@ -4,10 +4,11 @@
  * What these pin: the pending record is on disk before the request leaves;
  * a definite answer removes it, an unknown one keeps it; a lost answer is
  * resolved by ASKING the server, and a resend reuses the same key and the
- * same values; nothing is sent for an account other than the one that
- * acted; the phone's storage, not a copy in memory, is what every change is
- * applied to, so a failed load can never erase another account's records;
- * and records survive an app restart.
+ * same values; a create still out is neither asked about nor sent again -
+ * its own answer is awaited; nothing is sent for an account other than the
+ * one that acted; the phone's storage, not a copy in memory, is what every
+ * change is applied to, so a failed load can never erase another account's
+ * records; and records survive an app restart.
  */
 import type { TaskOut } from '../../api/tasks';
 import type { PendingTaskCreate } from '../../store/taskPendingCreates';
@@ -65,6 +66,29 @@ function httpError(status: number, detail?: string) {
 
 function networkError() {
   return Object.assign(new Error('Network Error'), { isAxiosError: true, code: 'ERR_NETWORK' });
+}
+
+/** Until the create request has left (its record is on disk by then). */
+async function requestOut(): Promise<void> {
+  for (let turn = 0; turn < 20; turn += 1) {
+    if (mockCreateTask.mock.calls.length > 0) return;
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  throw new Error('the create request never left');
+}
+
+/** The record as a screen would find it, once its write has landed. */
+async function shown(
+  store: ReturnType<typeof load>['store'],
+  userId: string,
+  eventId: string,
+): Promise<PendingTaskCreate> {
+  for (let turn = 0; turn < 20; turn += 1) {
+    const p = store.getState().forEvent(userId, eventId);
+    if (p) return p;
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  throw new Error('the pending record was never written');
 }
 
 async function persisted(AsyncStorage: Storage): Promise<PendingTaskCreate[]> {
@@ -232,6 +256,86 @@ describe('finding out what happened to a lost create', () => {
     const outcome = await flow.resolvePending(store.getState().forUser('user-a')[0], 1);
     expect(outcome).toEqual({ kind: 'unknown' });
     expect((await persisted(AsyncStorage)).length).toBe(1);
+  });
+
+  it('a create still out is not sent again: a second send shares its answer', async () => {
+    const { flow, auth } = load();
+    signIn(auth, 'user-a', 1);
+    let answer: (t: TaskOut) => void = () => undefined;
+    mockCreateTask.mockImplementation(
+      () => new Promise<TaskOut>((resolve) => {
+        answer = resolve;
+      }),
+    );
+    const first = flow.sendCreate(record(), 1);
+    const second = flow.sendCreate(record(), 1);
+    await requestOut();
+    answer(TASK);
+    expect(await first).toEqual({ kind: 'created', task: TASK });
+    expect(await second).toEqual({ kind: 'created', task: TASK });
+    expect(mockCreateTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('a create still out is not asked about: its own answer is awaited', async () => {
+    const { flow, auth, store, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    let answer: (t: TaskOut) => void = () => undefined;
+    mockCreateTask.mockImplementation(
+      () => new Promise<TaskOut>((resolve) => {
+        answer = resolve;
+      }),
+    );
+    const sending = flow.sendCreate(record(), 1);
+    await requestOut();
+    // The user left the saving screen and opened the entry's create again.
+    const asking = flow.resolvePending(await shown(store, 'user-a', 'event-1'), 1);
+    await new Promise((r) => setTimeout(r, 0));
+    // The server would say "not there yet" - and that would read as "not saved".
+    expect(mockFindMyCreate).not.toHaveBeenCalled();
+    answer(TASK);
+    expect(await asking).toEqual({ kind: 'found', task: TASK });
+    expect(await sending).toEqual({ kind: 'created', task: TASK });
+    expect(await persisted(AsyncStorage)).toEqual([]);
+  });
+
+  it('a create still out that the server refuses is reported as refused', async () => {
+    const { flow, auth, store } = load();
+    signIn(auth, 'user-a', 1);
+    let refuse: (e: unknown) => void = () => undefined;
+    mockCreateTask.mockImplementation(
+      () => new Promise((_resolve, reject) => {
+        refuse = reject;
+      }),
+    );
+    void flow.sendCreate(record(), 1);
+    await requestOut();
+    const asking = flow.resolvePending(await shown(store, 'user-a', 'event-1'), 1);
+    refuse(httpError(409, 'The source entry is withdrawn'));
+    expect(await asking).toEqual({
+      kind: 'refused',
+      status: 409,
+      detail: 'The source entry is withdrawn',
+    });
+    expect(mockFindMyCreate).not.toHaveBeenCalled();
+  });
+
+  it('a create still out whose answer is lost is then asked about', async () => {
+    const { flow, auth, store } = load();
+    signIn(auth, 'user-a', 1);
+    let fail: (e: unknown) => void = () => undefined;
+    mockCreateTask.mockImplementation(
+      () => new Promise((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
+    void flow.sendCreate(record(), 1);
+    await requestOut();
+    const asking = flow.resolvePending(await shown(store, 'user-a', 'event-1'), 1);
+    mockFindMyCreate.mockResolvedValue(null);
+    fail(networkError());
+    expect(await asking).toEqual({ kind: 'not_found' });
+    expect(mockFindMyCreate).toHaveBeenCalledWith('key-1');
+    expect(store.getState().forEvent('user-a', 'event-1')).toBeDefined();
   });
 
   it('discard removes only that record', async () => {

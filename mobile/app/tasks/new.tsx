@@ -80,6 +80,8 @@ export default function NewTaskScreen() {
     name: null,
   });
   const [due, setDue] = useState<string | null>(null);
+  // A typed due date that is not a date yet: saving would drop it silently.
+  const [dueValid, setDueValid] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // One key per attempt, kept across double taps. A refusal the server gave
@@ -113,7 +115,9 @@ export default function NewTaskScreen() {
   };
 
   const onSave = async () => {
-    if (sending || !userId || !eventId || title === null || !isUsableTitle(title)) return;
+    if (sending || !dueValid || !userId || !eventId || title === null || !isUsableTitle(title)) {
+      return;
+    }
     // Read before any await: this is the session the user tapped Save in.
     const startedUnder = useAuthStore.getState().sessionNonce;
     setSending(true);
@@ -175,6 +179,7 @@ export default function NewTaskScreen() {
     // the server about it then would race the request it is waiting for.
     body = (
       <PendingCreatePanel
+        key={pending.create_client_id}
         pending={pending}
         screenActive={activeRef}
         onRefused={(detail, values) => {
@@ -223,7 +228,12 @@ export default function NewTaskScreen() {
         />
 
         <Text style={s.label}>{t('tasks.new.due')}</Text>
-        <DueDateField value={due} disabled={sending} onChange={setDue} />
+        <DueDateField
+          value={due}
+          disabled={sending}
+          onChange={setDue}
+          onValidityChange={setDueValid}
+        />
 
         <Text style={s.label}>{t('tasks.new.job')}</Text>
         <Text style={s.value} testID="task-job">
@@ -234,7 +244,7 @@ export default function NewTaskScreen() {
         <PrimaryButton
           label={sending ? t('tasks.new.saving') : t('tasks.new.save')}
           onPress={() => void onSave()}
-          disabled={sending || !isUsableTitle(current)}
+          disabled={sending || !dueValid || !isUsableTitle(current)}
           testID="task-save"
         />
       </View>

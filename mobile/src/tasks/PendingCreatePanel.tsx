@@ -28,11 +28,14 @@ function sameSession(startedUnder: number): boolean {
 /**
  * An earlier create from this entry whose answer never came (plan v2 §5).
  *
- * On opening, the server is ASKED first. Found: the task opens and says it
+ * On opening, what happened to it is found out first: if this app still has
+ * it out (the user left the screen that was saving it), its own answer is
+ * awaited; otherwise the server is ASKED. Found: the task opens and says it
  * was already created. Not found: the saved values are shown with "Send
  * again", which reuses the same key, so even a request that was only slow
  * cannot become a second task. Still unreachable: it says the result is
- * unknown and offers to check again. Discard is always possible, and asks.
+ * unknown and offers to check again. Discard is offered once nothing is
+ * out, and asks.
  */
 export function PendingCreatePanel({
   pending,
@@ -68,8 +71,13 @@ export function PendingCreatePanel({
       }
       return;
     }
+    if (outcome.kind === 'refused') {
+      // The earlier send was still out and the server refused it.
+      onRefused(outcome.detail, pending);
+      return;
+    }
     setPhase(outcome.kind);
-  }, [activeRef, pending, qc]);
+  }, [activeRef, onRefused, pending, qc]);
 
   useEffect(() => {
     // Once per record: the check is a read, but asking twice at mount is noise.

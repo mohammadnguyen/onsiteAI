@@ -36,9 +36,24 @@ export type SendOutcome =
 
 export type ResolveOutcome =
   | { kind: 'found'; task: TaskOut }
+  /** Only when the create was still out and the server then refused it. */
+  | { kind: 'refused'; status: number; detail: string | null }
   | { kind: 'not_found' }
   | { kind: 'unknown' }
   | { kind: 'stale' };
+
+/**
+ * Creates this app has sent and not yet heard back about, by key.
+ *
+ * Only the app can know that a request it sent is still out: to the server,
+ * "not committed yet" and "never arrived" look the same. The user can leave
+ * the screen that is saving and open the entry's create again while the
+ * request is still out; asking the server then could answer "not saved" for
+ * a task that is about to exist, and a fresh create would be a duplicate.
+ * So while a key is here, nobody asks the server about it and nobody sends
+ * it again: both wait for this send's own answer.
+ */
+const inFlight = new Map<string, Promise<SendOutcome>>();
 
 /** Still the session the user acted in, and still the record's owner. */
 function sameSession(startedUnder: number, owner: string): boolean {
@@ -70,11 +85,23 @@ function detailOf(err: unknown): string | null {
  * A 401 is not an answer about the task: the shared client refreshes and
  * replays it, and if it still ends in 401 the session is over - the record
  * stays for the same account's next sign-in.
+ *
+ * A key that is already out is not sent twice: the caller shares the
+ * answer of the send in progress (see `inFlight`).
  */
-export async function sendCreate(
-  p: PendingTaskCreate,
-  startedUnder: number,
-): Promise<SendOutcome> {
+export function sendCreate(p: PendingTaskCreate, startedUnder: number): Promise<SendOutcome> {
+  const running = inFlight.get(p.create_client_id);
+  if (running) return running;
+  // Registered before the record is written, so whenever the record can be
+  // seen while its request is out, this entry is there too.
+  const run = send(p, startedUnder).finally(() => {
+    inFlight.delete(p.create_client_id);
+  });
+  inFlight.set(p.create_client_id, run);
+  return run;
+}
+
+async function send(p: PendingTaskCreate, startedUnder: number): Promise<SendOutcome> {
   if (!sameSession(startedUnder, p.user_id)) return { kind: 'stale' };
   try {
     await useTaskPendingCreates.getState().putDurable(p);
@@ -103,7 +130,11 @@ export async function sendCreate(
 }
 
 /**
- * Ask the server about an unresolved create - before anything is resent.
+ * Find out what happened to an unresolved create - before anything is resent.
+ *
+ * If this app still has it out, that send's own answer is awaited instead of
+ * asking the server (see `inFlight`); a send that ends unknown is followed by
+ * the question below, as on any other return.
  *
  * Found: the record is done with. Not found: the record stays, and the
  * caller offers to send the SAME values again under the SAME key. Asking
@@ -115,6 +146,14 @@ export async function resolvePending(
   startedUnder: number,
 ): Promise<ResolveOutcome> {
   if (!sameSession(startedUnder, p.user_id)) return { kind: 'stale' };
+  const running = inFlight.get(p.create_client_id);
+  if (running) {
+    const sent = await running;
+    if (!sameSession(startedUnder, p.user_id)) return { kind: 'stale' };
+    // The send has already removed the record for a definite answer.
+    if (sent.kind === 'created') return { kind: 'found', task: sent.task };
+    if (sent.kind === 'refused') return sent;
+  }
   let task: TaskOut | null;
   try {
     task = await findMyCreate(p.create_client_id);
