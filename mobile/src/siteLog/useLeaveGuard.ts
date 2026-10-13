@@ -5,6 +5,16 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../store/auth';
 import { confirmDestructive } from './dialogs';
 
+/** The question's strings, as i18n keys. */
+export type LeaveQuestion = { title: string; body: string; confirm: string; cancel: string };
+
+const CAPTURE_QUESTION: LeaveQuestion = {
+  title: 'siteLog.new.leave_title',
+  body: 'siteLog.new.leave_body',
+  confirm: 'siteLog.new.leave_confirm',
+  cancel: 'siteLog.new.leave_cancel',
+};
+
 /**
  * Ask before leaving a capture that has not been saved.
  *
@@ -24,8 +34,14 @@ import { confirmDestructive } from './dialogs';
  * over cannot be saved by this screen anyway. So once the session this
  * screen opened in has ended, leaving is not guarded and nothing is asked -
  * the same rule the draft screen's Discard follows.
+ *
+ * `question` is what the dialog says. Another screen asks in its own words
+ * through this same guard; the default is the capture's.
  */
-export function useLeaveGuard(hasUnsaved: boolean): void {
+export function useLeaveGuard(
+  hasUnsaved: boolean,
+  question: LeaveQuestion = CAPTURE_QUESTION,
+): void {
   const { t } = useTranslation();
   const navigation = useNavigation();
   const [openedIn] = useState(() => useAuthStore.getState().sessionNonce);
@@ -39,10 +55,10 @@ export function useLeaveGuard(hasUnsaved: boolean): void {
       return;
     }
     confirmDestructive({
-      title: t('siteLog.new.leave_title'),
-      body: t('siteLog.new.leave_body'),
-      confirmLabel: t('siteLog.new.leave_confirm'),
-      cancelLabel: t('siteLog.new.leave_cancel'),
+      title: t(question.title),
+      body: t(question.body),
+      confirmLabel: t(question.confirm),
+      cancelLabel: t(question.cancel),
       onConfirm: () => {
         // Checked again HERE: the dialog may be answered after the session
         // it was asked in has ended, by which point the layout has already

@@ -69,6 +69,12 @@ export default function TaskDetail() {
       await qc.cancelQueries({ queryKey: ['tasks', 'detail', id], exact: true });
       if (useAuthStore.getState().sessionNonce !== startedUnder) return;
       qc.setQueryData<TaskOut>(['tasks', 'detail', id], updated);
+      // This answer can also be older than one already shown: two saves of
+      // this task from two screens, answered out of order. So the task is
+      // read again after every save; the last save to be answered is then
+      // followed by a read of what the server holds now. (A title being
+      // typed is screen state, untouched by this read.)
+      void qc.invalidateQueries({ queryKey: ['tasks', 'detail', id], exact: true });
       void qc.invalidateQueries({ queryKey: ['tasks', 'list'] });
       void qc.invalidateQueries({ queryKey: ['tasks', 'event'] });
       // A title being edited is put away only when it was the title that was
@@ -165,7 +171,8 @@ export default function TaskDetail() {
           />
 
           <Text style={s.label}>{t('tasks.new.assignee')}</Text>
-          {p.edit ? (
+          {/* A task assigned to someone else is the admin's to change. */}
+          {p.change_assignee ? (
             <AssigneeField
               value={task.assignee?.user_id ?? null}
               valueName={task.assignee?.full_name ?? null}

@@ -89,15 +89,22 @@ function detailOf(err: unknown): string | null {
  *
  * A key that is already out is not sent twice: the caller shares the
  * answer of the send in progress (see `inFlight`).
+ *
+ * `onRecorded` is called once the record is on the phone - from then on,
+ * leaving the screen loses nothing (only for the call that starts the send).
  */
-export function sendCreate(p: PendingTaskCreate, startedUnder: number): Promise<SendOutcome> {
+export function sendCreate(
+  p: PendingTaskCreate,
+  startedUnder: number,
+  onRecorded?: () => void,
+): Promise<SendOutcome> {
   const running = inFlight.get(p.create_client_id);
   if (running) return running;
   // Both before the first await: from the tap on, a screen opened for this
   // entry sees this create (`sending`) and can join its answer (`inFlight`)
   // - even while the record is still on its way to the disk.
   useTaskPendingCreates.getState().markSending(p);
-  const run = send(p, startedUnder).finally(() => {
+  const run = send(p, startedUnder, onRecorded).finally(() => {
     inFlight.delete(p.create_client_id);
     useTaskPendingCreates.getState().unmarkSending(p.create_client_id);
   });
@@ -105,13 +112,18 @@ export function sendCreate(p: PendingTaskCreate, startedUnder: number): Promise<
   return run;
 }
 
-async function send(p: PendingTaskCreate, startedUnder: number): Promise<SendOutcome> {
+async function send(
+  p: PendingTaskCreate,
+  startedUnder: number,
+  onRecorded: (() => void) | undefined,
+): Promise<SendOutcome> {
   if (!sameSession(startedUnder, p.user_id)) return { kind: 'stale' };
   try {
     await useTaskPendingCreates.getState().putDurable(p);
   } catch {
     return { kind: 'not_saved' };
   }
+  onRecorded?.();
   // The write above was an await: check again, immediately before sending.
   if (!sameSession(startedUnder, p.user_id)) return { kind: 'stale' };
   try {

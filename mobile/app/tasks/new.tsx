@@ -31,6 +31,7 @@ import { AssigneeField } from '../../src/tasks/AssigneeField';
 import { DueDateField } from '../../src/tasks/DueDateField';
 import { PendingCreatePanel } from '../../src/tasks/PendingCreatePanel';
 import { sendCreate, type SendOutcome } from '../../src/tasks/createFlow';
+import { useTaskLeaveGuard } from '../../src/tasks/useTaskLeaveGuard';
 import {
   TITLE_MAX_CHARS,
   isUsableTitle,
@@ -89,13 +90,27 @@ export default function NewTaskScreen() {
   // One key per attempt, kept across double taps. A refusal the server gave
   // on purpose starts a new one; an unknown result keeps it in the store.
   const keyRef = useRef<string>(newCaptureId());
+  // This attempt's record is on the phone: from then on leaving loses nothing.
+  const [recorded, setRecorded] = useState(false);
+  // Save was tapped; until its record is on the phone, its values are only here.
+  const [attempted, setAttempted] = useState(false);
 
   // The title starts as the entry's first line, once, when the entry loads.
+  const proposed = entry.data ? proposedTitleFrom(entry.data.revision.body_text) : null;
   useEffect(() => {
-    if (title === null && entry.data) {
-      setTitle(proposedTitleFrom(entry.data.revision.body_text));
-    }
-  }, [entry.data, title]);
+    if (title === null && proposed !== null) setTitle(proposed);
+  }, [proposed, title]);
+
+  useTaskLeaveGuard({
+    edited:
+      (title !== null && proposed !== null && title.trim() !== proposed) ||
+      assignee.id !== null ||
+      due !== null ||
+      !dueValid,
+    saving: sending,
+    recorded,
+    attempted,
+  });
 
   /** What the screen does with an outcome, once it is still in front. */
   const finish = (outcome: SendOutcome) => {
@@ -123,6 +138,8 @@ export default function NewTaskScreen() {
     // Read before any await: this is the session the user tapped Save in.
     const startedUnder = useAuthStore.getState().sessionNonce;
     setSending(true);
+    setAttempted(true);
+    setRecorded(false);
     setError(null);
     const record: PendingTaskCreate = {
       create_client_id: keyRef.current,
@@ -135,7 +152,7 @@ export default function NewTaskScreen() {
       created_at: Date.now(),
     };
     try {
-      const outcome = await sendCreate(record, startedUnder);
+      const outcome = await sendCreate(record, startedUnder, () => setRecorded(true));
       // Another account's session now: nothing here is theirs to update.
       if (outcome.kind === 'stale' || useAuthStore.getState().sessionNonce !== startedUnder) {
         return;
@@ -145,8 +162,11 @@ export default function NewTaskScreen() {
       // none and offers another create under a new key.
       if (outcome.kind === 'created') void qc.invalidateQueries({ queryKey: ['tasks'] });
       // Nothing was created under a refused key: the next save gets a new one
-      // whether or not the user is looking.
-      if (outcome.kind === 'refused') keyRef.current = newCaptureId();
+      // whether or not the user is looking, and the values are only here again.
+      if (outcome.kind === 'refused') {
+        keyRef.current = newCaptureId();
+        setRecorded(false);
+      }
       // Moving the user, or changing what this screen says, only while it is
       // the screen in front.
       if (activeRef.current) finish(outcome);
@@ -186,8 +206,11 @@ export default function NewTaskScreen() {
         screenActive={activeRef}
         onRefused={(detail, values) => {
           // Nothing was created under that key; the next save gets a new one,
-          // starting from the values the user had chosen.
+          // starting from the values the user had chosen - which, until then,
+          // exist only on this screen.
           keyRef.current = newCaptureId();
+          setRecorded(false);
+          setAttempted(true);
           setTitle(values.title);
           setAssignee({ id: values.assignee_user_id, name: values.assignee_name });
           setDue(values.due_date);

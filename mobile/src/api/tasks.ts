@@ -34,7 +34,10 @@ export type TaskSource = {
 
 export type TaskPermissions = {
   change_status: boolean;
+  /** Title and due date. */
   edit: boolean;
+  /** Who it is assigned to. A creator may not undo an admin's assignment. */
+  change_assignee: boolean;
   assign_others: boolean;
   set_job: boolean;
   change_job: boolean;

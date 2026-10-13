@@ -839,7 +839,15 @@
       "entry_withdrawn": "该记录已撤回，不能从它创建待办。",
       "load_failed": "无法加载该记录。",
       "not_saved": "无法在手机上保存这条待办，因此没有发送。请重试。",
-      "store_failed": "无法读取手机上保存的待办。请先重试，再新建。"
+      "store_failed": "无法读取手机上保存的待办。请先重试，再新建。",
+      "leave_title": "丢弃这个任务？",
+      "leave_body": "任务尚未保存，此处填写的内容将会丢失。",
+      "leave_confirm": "丢弃",
+      "leave_cancel": "继续编辑",
+      "saving_leave_title": "任务仍在保存",
+      "saving_leave_body": "任务仍在保存到本机。现在离开，任务仍可能被创建；如果保存失败，它将丢失。",
+      "saving_leave_confirm": "仍然离开",
+      "saving_leave_cancel": "留下"
     },
     "pending": {
       "checking": "正在确认上次的待办是否已保存…",

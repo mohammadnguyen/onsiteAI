@@ -839,7 +839,15 @@
       "entry_withdrawn": "This entry was withdrawn, so a task can't be made from it.",
       "load_failed": "Could not load the entry.",
       "not_saved": "Could not save this task on the phone, so nothing was sent. Try again.",
-      "store_failed": "Could not read the tasks saved on this phone. Try again before creating a new one."
+      "store_failed": "Could not read the tasks saved on this phone. Try again before creating a new one.",
+      "leave_title": "Discard this task?",
+      "leave_body": "It has not been saved. What you entered here will be lost.",
+      "leave_confirm": "Discard",
+      "leave_cancel": "Keep editing",
+      "saving_leave_title": "Still saving this task",
+      "saving_leave_body": "It is still being saved on this phone. If you leave now it may still be created; if saving fails, it is lost.",
+      "saving_leave_confirm": "Leave anyway",
+      "saving_leave_cancel": "Stay"
     },
     "pending": {
       "checking": "Checking whether your earlier task was saved…",

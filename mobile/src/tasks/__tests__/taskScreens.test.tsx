@@ -17,6 +17,8 @@ import type { TaskOut } from '../../api/tasks';
 
 const mockPush = jest.fn();
 const mockReplace = jest.fn();
+// Whether the leave question was armed at the moment each replace happened.
+let mockGuardAtReplace: (boolean | null)[] = [];
 let mockParams: Record<string, string> = {};
 // Focus, controlled by the test: blurEverything() is "the user went to
 // another screen" while this one stays mounted underneath.
@@ -27,7 +29,10 @@ function blurEverything(): void {
 jest.mock('expo-router', () => ({
   router: {
     push: (...a: unknown[]) => mockPush(...a),
-    replace: (...a: unknown[]) => mockReplace(...a),
+    replace: (...a: unknown[]) => {
+      mockGuardAtReplace.push(mockLeave ? mockLeave.prevent : null);
+      mockReplace(...a);
+    },
     back: jest.fn(),
     canGoBack: () => true,
   },
@@ -48,6 +53,29 @@ jest.mock('expo-router', () => ({
       };
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
   },
+}));
+// The leave guard (PR #22's hook), as its own tests drive it: only the most
+// recently mounted screen reports its flag and its handler.
+type MockPrevented = (o: { data: { action: unknown } }) => void;
+let mockLeave: { prevent: boolean; onPrevented: MockPrevented } | null = null;
+let mockNewestScreen: symbol | null = null;
+const mockDispatch = jest.fn();
+jest.mock('@react-navigation/native', () => ({
+  usePreventRemove: (prevent: boolean, onPrevented: MockPrevented) => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const screen = require('react').useRef(null) as { current: symbol | null };
+    if (screen.current === null) {
+      screen.current = Symbol('screen');
+      mockNewestScreen = screen.current;
+    }
+    if (screen.current === mockNewestScreen) mockLeave = { prevent, onPrevented };
+  },
+  useNavigation: () => ({ dispatch: mockDispatch }),
+}));
+const mockConfirm = jest.fn();
+jest.mock('../../siteLog/dialogs', () => ({
+  ...jest.requireActual('../../siteLog/dialogs'),
+  confirmDestructive: (args: unknown) => mockConfirm(args),
 }));
 jest.mock('react-i18next', () => ({ useTranslation: () => ({ t: (k: string) => k }) }));
 jest.mock('react-native-safe-area-context', () => {
@@ -104,6 +132,7 @@ function task(overrides: Partial<TaskOut> = {}): TaskOut {
     permissions: {
       change_status: true,
       edit: true,
+      change_assignee: true,
       assign_others: false,
       set_job: false,
       change_job: false,
@@ -163,6 +192,8 @@ function press(tree: ReactTestRenderer, id: string) {
 beforeEach(() => {
   jest.clearAllMocks();
   blurEverything();
+  mockLeave = null;
+  mockGuardAtReplace = [];
   mockParams = {};
   (globalThis as unknown as { __asyncStorageData?: Map<string, string> }).__asyncStorageData?.clear();
   useTaskPendingCreates.setState({ pending: [], sending: [], hydrated: true, loadFailed: false });
@@ -206,6 +237,7 @@ describe('task detail', () => {
       permissions: {
         change_status: false,
         edit: false,
+        change_assignee: false,
         assign_others: false,
         set_job: false,
         change_job: false,
@@ -277,6 +309,30 @@ describe('task detail', () => {
     const [avoiding] = tree.root.findAllByType(KeyboardAvoidingView);
     expect(avoiding.props.behavior).toBe('padding'); // iOS
     expect(avoiding.findAll((n) => n.props.testID === 'task-title-edit').length).toBeGreaterThan(0);
+  });
+
+  it('a task assigned to someone else: its creator sees who, with no control to change it', async () => {
+    mockQueryData = task({
+      assignee: { user_id: 'other-1', full_name: 'Someone Else' },
+      permissions: {
+        change_status: true,
+        edit: true,
+        change_assignee: false,
+        assign_others: false,
+        set_job: false,
+        change_job: false,
+      },
+    });
+    const tree = await render(<TaskDetail />);
+    expect(byTestId(tree, 'assignee-me')).toHaveLength(0);
+    expect(byTestId(tree, 'assignee-none')).toHaveLength(0);
+    const named = tree.root.findAll(
+      (n) => typeof n.type === 'string' && n.props.children === 'Someone Else',
+    );
+    expect(named.length).toBeGreaterThan(0);
+    // The rest of the creator's editing is unchanged by the ruling.
+    expect(tree.root.findAllByType(DueDateField)).toHaveLength(1);
+    expect(byTestId(tree, 'task-title-edit').length).toBeGreaterThan(0);
   });
 
   it('notes when the source entry has moved to another job, and the task stays', async () => {
@@ -504,6 +560,8 @@ describe('creating a task', () => {
         (n) => typeof n.type === 'string' && n.props.children === 'The source entry is withdrawn',
       );
       expect(shown.length).toBeGreaterThan(0);
+      // Those values now exist only on this screen: leaving asks first.
+      expect(mockLeave?.prevent).toBe(true);
     });
 
     it('even before its record reaches the phone, the reopened screen joins that create', async () => {
@@ -591,5 +649,193 @@ describe('creating a task', () => {
     ['next friday', false],
   ])('typed due date %j can become the value: %s', (text, valid) => {
     expect(isTypedDueValid(text)).toBe(valid);
+  });
+});
+
+describe('leaving the create screen (PR #22’s guard, in the task’s words)', () => {
+  const ENTRY = {
+    site_log_event_id: 'event-1',
+    job_id: null,
+    revision: { body_text: 'Engineer asks for extra roof bracing\nNorth side', withdrawn: false },
+  };
+  const BACK = { type: 'GO_BACK' };
+  type Question = { title: string; confirmLabel: string; cancelLabel: string; onConfirm: () => void };
+  const lastQuestion = (): Question =>
+    mockConfirm.mock.calls[mockConfirm.mock.calls.length - 1][0] as Question;
+
+  beforeEach(() => {
+    mockParams = { eventId: 'event-1' };
+    mockQueryData = ENTRY;
+    mockFindMyCreate.mockResolvedValue(null);
+  });
+
+  function tryToLeave(): void {
+    act(() => {
+      mockLeave?.onPrevented({ data: { action: BACK } });
+    });
+  }
+
+  /** The pending-create write to the phone, held until the test lets it go. */
+  function holdTheWrite(fail?: Error) {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const storage = require('@react-native-async-storage/async-storage').default;
+    const realSet = storage.setItem.bind(storage);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    const spy = jest
+      .spyOn(storage, 'setItem')
+      .mockImplementation(async (k: unknown, v: unknown) => {
+        if (k === 'task-pending-creates') {
+          await held;
+          if (fail) throw fail;
+        }
+        return realSet(k, v);
+      });
+    return { release, restore: () => spy.mockRestore() };
+  }
+
+  it('leaves a form nobody touched without asking', async () => {
+    await render(<NewTaskScreen />);
+    expect(mockLeave?.prevent).toBe(false);
+  });
+
+  it('asks once the title is changed; Keep editing keeps it, Discard leaves', async () => {
+    const tree = await render(<NewTaskScreen />);
+    const [input] = byTestId(tree, 'task-title');
+    act(() => input.props.onChangeText('Brace the north side today'));
+    expect(mockLeave?.prevent).toBe(true);
+
+    tryToLeave();
+    expect(lastQuestion()).toMatchObject({
+      title: 'tasks.new.leave_title',
+      confirmLabel: 'tasks.new.leave_confirm',
+      cancelLabel: 'tasks.new.leave_cancel',
+    });
+    expect(mockDispatch).not.toHaveBeenCalled(); // until Discard
+    expect(byTestId(tree, 'task-title')[0].props.value).toBe('Brace the north side today');
+    act(() => lastQuestion().onConfirm());
+    expect(mockDispatch).toHaveBeenCalledWith(BACK);
+
+    // Typed back to the entry's own line: nothing of the user's to lose.
+    act(() => byTestId(tree, 'task-title')[0].props.onChangeText('Engineer asks for extra roof bracing'));
+    expect(mockLeave?.prevent).toBe(false);
+  });
+
+  it('asks once an assignee or a due date is chosen', async () => {
+    const tree = await render(<NewTaskScreen />);
+    press(tree, 'assignee-me');
+    expect(mockLeave?.prevent).toBe(true);
+    press(tree, 'assignee-none');
+    expect(mockLeave?.prevent).toBe(false);
+    act(() => tree.root.findByType(DueDateField).props.onChange('2026-10-17'));
+    expect(mockLeave?.prevent).toBe(true);
+  });
+
+  it('while Save’s first write to the phone is in flight: asks, without promising to cancel anything', async () => {
+    const write = holdTheWrite();
+    try {
+      let answer: (t: TaskOut) => void = () => undefined;
+      mockCreateTask.mockImplementation(
+        () => new Promise<TaskOut>((resolve) => {
+          answer = resolve;
+        }),
+      );
+      const tree = await render(<NewTaskScreen />);
+      press(tree, 'task-save');
+      await flush();
+      expect(mockCreateTask).not.toHaveBeenCalled(); // still being written
+      expect(mockLeave?.prevent).toBe(true);
+      tryToLeave();
+      expect(lastQuestion()).toMatchObject({
+        title: 'tasks.new.saving_leave_title',
+        confirmLabel: 'tasks.new.saving_leave_confirm',
+        cancelLabel: 'tasks.new.saving_leave_cancel',
+      });
+
+      // On the phone, the request out: leaving loses nothing from here on.
+      await act(async () => {
+        write.release();
+      });
+      await flush();
+      expect(mockCreateTask).toHaveBeenCalledTimes(1);
+      expect(mockLeave?.prevent).toBe(false);
+
+      await act(async () => {
+        answer(task());
+      });
+      await flush();
+      expect(mockReplace).toHaveBeenCalledWith('/tasks/task-1');
+      expect(mockGuardAtReplace).toEqual([false]);
+    } finally {
+      write.restore();
+    }
+  });
+
+  it('a first write that fails keeps asking, even with nothing typed', async () => {
+    const write = holdTheWrite(new Error('disk full'));
+    try {
+      const tree = await render(<NewTaskScreen />);
+      press(tree, 'task-save');
+      await act(async () => {
+        write.release();
+      });
+      await flush();
+      expect(mockCreateTask).not.toHaveBeenCalled();
+      const said = tree.root.findAll(
+        (n) => typeof n.type === 'string' && n.props.children === 'tasks.new.not_saved',
+      );
+      expect(said.length).toBeGreaterThan(0);
+      expect(mockLeave?.prevent).toBe(true);
+      tryToLeave();
+      expect(lastQuestion()).toMatchObject({ title: 'tasks.new.leave_title' });
+    } finally {
+      write.restore();
+    }
+  });
+
+  it('Save’s own move to the new task is never held up by the question', async () => {
+    mockCreateTask.mockResolvedValue(task());
+    const tree = await render(<NewTaskScreen />);
+    act(() => byTestId(tree, 'task-title')[0].props.onChangeText('Brace the north side today'));
+    expect(mockLeave?.prevent).toBe(true);
+    press(tree, 'task-save');
+    await flush();
+    expect(mockReplace).toHaveBeenCalledWith('/tasks/task-1');
+    expect(mockGuardAtReplace).toEqual([false]);
+  });
+
+  it('a refused save brings its values back, and asks again', async () => {
+    mockCreateTask.mockRejectedValue(
+      Object.assign(new Error('HTTP 422'), {
+        isAxiosError: true,
+        response: { status: 422, data: { detail: 'the assignee must be an active user' } },
+      }),
+    );
+    const tree = await render(<NewTaskScreen />);
+    press(tree, 'task-save');
+    await flush();
+    expect(byTestId(tree, 'task-save').length).toBeGreaterThan(0);
+    expect(mockLeave?.prevent).toBe(true);
+  });
+
+  it('an unresolved create already on the phone: the panel, and no question', async () => {
+    await act(async () => {
+      await useTaskPendingCreates.getState().putDurable({
+        create_client_id: 'lost-key',
+        user_id: 'me-1',
+        site_log_event_id: 'event-1',
+        title: 'Brace the north roof',
+        assignee_user_id: null,
+        assignee_name: null,
+        due_date: null,
+        created_at: 1,
+      });
+    });
+    const tree = await render(<NewTaskScreen />);
+    await flush();
+    expect(byTestId(tree, 'pending-not-found')).toHaveLength(1);
+    expect(mockLeave?.prevent).toBe(false);
   });
 });

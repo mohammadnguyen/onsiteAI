@@ -158,6 +158,49 @@ describe('sending a create', () => {
     expect((await persisted(AsyncStorage)).map((p) => p.create_client_id)).toEqual(['key-1']);
   });
 
+  it('says when the record is on the phone: before the request, and never when the write failed', async () => {
+    const { flow, auth, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    const order: string[] = [];
+    mockCreateTask.mockImplementation(async () => {
+      order.push('request');
+      return TASK;
+    });
+    await flow.sendCreate(record(), 1, () => order.push('recorded'));
+    expect(order).toEqual(['recorded', 'request']);
+
+    jest.spyOn(AsyncStorage, 'setItem').mockRejectedValueOnce(new Error('disk full'));
+    const recorded = jest.fn();
+    const outcome = await flow.sendCreate(record({ create_client_id: 'key-2' }), 1, recorded);
+    expect(outcome).toEqual({ kind: 'not_saved' });
+    expect(recorded).not.toHaveBeenCalled();
+  });
+
+  it('a resend that times out while the server still holds the first keeps its key', async () => {
+    const { flow, auth, store, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    const timeout = () =>
+      Object.assign(new Error('timeout'), { isAxiosError: true, code: 'ECONNABORTED' });
+    mockCreateTask.mockRejectedValueOnce(timeout());
+    expect(await flow.sendCreate(record(), 1)).toEqual({ kind: 'unknown' });
+    // Send again: the server waits for the first request, the phone gives up first.
+    mockCreateTask.mockRejectedValueOnce(timeout());
+    expect(await flow.sendCreate(await shown(store, 'user-a', 'event-1'), 1)).toEqual({
+      kind: 'unknown',
+    });
+    expect((await persisted(AsyncStorage)).map((p) => p.create_client_id)).toEqual(['key-1']);
+    // Later the server has it: found under the same key, nothing sent twice.
+    mockFindMyCreate.mockResolvedValue(TASK);
+    expect(await flow.resolvePending(await shown(store, 'user-a', 'event-1'), 1)).toEqual({
+      kind: 'found',
+      task: TASK,
+    });
+    const keys = mockCreateTask.mock.calls.map(
+      (c) => (c[1] as { create_client_id: string }).create_client_id,
+    );
+    expect(keys).toEqual(['key-1', 'key-1']);
+  });
+
   it('sends nothing when the record cannot be written to the phone', async () => {
     const { flow, auth, AsyncStorage } = load();
     signIn(auth, 'user-a', 1);
