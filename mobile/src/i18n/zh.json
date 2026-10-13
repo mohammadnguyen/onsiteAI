@@ -682,7 +682,11 @@
       "sent_hint": "已发送。可在“我的现场记录”中查看或重试。",
       "recording_note": "请先停止录音。停止后语音才会附加到本条记录。",
       "attachments_mobile_only": "照片、文件和语音需在手机 App 中添加。",
-      "keeping_files": "正在将文件保存到本机…"
+      "keeping_files": "正在将文件保存到本机…",
+      "leave_title": "丢弃这条记录？",
+      "leave_body": "尚未保存。其中的文字、照片、文档和语音将从本机删除。",
+      "leave_confirm": "丢弃",
+      "leave_cancel": "继续编辑"
     },
     "list": {
       "title": "我的现场记录",
@@ -794,6 +798,113 @@
       "play_failed": "无法播放该录音。",
       "export_failed": "无法导出该录音。",
       "export_unavailable": "该设备不支持分享功能。"
+    }
+  },
+  "tasks": {
+    "entry": {
+      "title": "待办",
+      "subtitle": "跟进需要处理的事"
+    },
+    "status": {
+      "to_do": "待办",
+      "in_progress": "进行中",
+      "blocked": "受阻",
+      "done": "已完成"
+    },
+    "unavailable": "此服务器暂不支持待办功能。",
+    "list": {
+      "title": "待办",
+      "all": "全部",
+      "mine": "分配给我",
+      "empty": "暂无待办。",
+      "load_failed": "无法加载待办，下拉重试。",
+      "no_job": "无项目",
+      "due": "截止 {{date}}",
+      "overdue": "已逾期 · 截止 {{date}}"
+    },
+    "new": {
+      "title": "新建待办",
+      "title_label": "待办内容",
+      "title_placeholder": "需要做什么？",
+      "title_hint": "默认取自记录的第一行，保存前可修改。",
+      "title_too_long": "请控制在 {{max}} 个字以内。",
+      "assignee": "负责人",
+      "due": "截止日期",
+      "job": "项目",
+      "job_from_entry": "{{job}}（取自记录）",
+      "no_job": "无项目（该记录未关联项目）",
+      "save": "保存待办",
+      "saving": "保存中…",
+      "save_failed": "无法保存待办。",
+      "entry_withdrawn": "该记录已撤回，不能从它创建待办。",
+      "load_failed": "无法加载该记录。",
+      "not_saved": "无法在手机上保存这条待办，因此没有发送。请重试。",
+      "store_failed": "无法读取手机上保存的待办。请先重试，再新建。",
+      "leave_title": "丢弃这个任务？",
+      "leave_body": "任务尚未保存，此处填写的内容将会丢失。",
+      "leave_confirm": "丢弃",
+      "leave_cancel": "继续编辑",
+      "saving_leave_title": "任务仍在保存",
+      "saving_leave_body": "任务仍在保存到本机。现在离开，任务仍可能被创建；如果保存失败，它将丢失。",
+      "saving_leave_confirm": "仍然离开",
+      "saving_leave_cancel": "留下"
+    },
+    "pending": {
+      "checking": "正在确认上次的待办是否已保存…",
+      "found": "这条待办已经创建过了。",
+      "not_found_title": "上次的待办没有保存",
+      "not_found_body": "用相同内容再发送一次？不会产生重复的待办。",
+      "unknown_title": "尚未确认",
+      "unknown_body": "连接中断，暂时无法确认待办是否已保存。确认之前不会再次发送。",
+      "send_again": "再次发送",
+      "check_again": "再次确认",
+      "discard": "放弃",
+      "discard_title": "放弃这条待办？",
+      "discard_body": "如果其实已经保存，它仍会出现在待办列表中。",
+      "banner": "这条记录有一条待办尚未确认，点击确认。"
+    },
+    "assignee": {
+      "me": "我",
+      "unassigned": "未分配",
+      "someone": "其他人",
+      "change": "更改",
+      "pick_title": "分配给",
+      "load_failed": "无法加载人员列表。"
+    },
+    "due": {
+      "none": "无截止日期",
+      "pick": "选择日期",
+      "clear": "清除",
+      "placeholder": "日/月/年",
+      "invalid": "请使用 日/月/年 格式。"
+    },
+    "detail": {
+      "status": "状态",
+      "edit_title": "编辑",
+      "save_title": "保存",
+      "job": "项目",
+      "no_job": "无项目",
+      "set_job": "设置项目",
+      "change_job": "更改项目",
+      "job_reason_title": "把这条待办移到 {{job}}？请说明原因。",
+      "job_reason_placeholder": "原因（必填）",
+      "job_confirm": "移动待办",
+      "job_moved_note": "来源记录现在属于 {{job}}，这条待办保持不变。",
+      "job_moved_unknown": "其他项目",
+      "source": "来源记录",
+      "open_source": "打开来源记录",
+      "source_hidden": "你无权查看来源记录",
+      "not_found": "找不到这条待办。",
+      "save_failed": "无法保存修改。",
+      "created_by": "{{name}} 创建 · {{date}}",
+      "not_refreshed": "无法刷新此任务，显示的可能不是最新状态。",
+      "refresh": "刷新"
+    },
+    "entry_section": {
+      "title": "来自这条记录的待办",
+      "create": "创建待办",
+      "none": "这条记录还没有待办。",
+      "load_failed": "无法加载这条记录的待办。"
     }
   }
 }

@@ -26,6 +26,7 @@ import { isSameLocalFile } from '../../src/siteLog/localDocument';
 import { captureStatusBadgeKey } from '../../src/siteLog/status';
 import { useScreenActive } from '../../src/siteLog/useScreenActive';
 import { useAuthStore } from '../../src/store/auth';
+import { EntryTasksSection } from '../../src/tasks/EntryTasksSection';
 import { StatusBadge } from '../../src/ui/kit';
 import { tokens } from '../../src/ui/tokens';
 
@@ -745,6 +746,9 @@ export default function SiteLogRecordDetail() {
           <Text style={s.warnNote}>{t('siteLog.detail.partial_note')}</Text>
         ) : null}
         <Text style={s.readOnly}>{t('siteLog.detail.read_only')}</Text>
+        {/* Tasks made from this entry. A task carries its own copy of what
+            it needs; nothing here changes the entry above. */}
+        <EntryTasksSection eventId={e.site_log_event_id} withdrawn={e.revision.withdrawn} />
       </ScrollView>
 
       {/* Full-screen viewer for a photo or a PDF. One modal, two bodies:

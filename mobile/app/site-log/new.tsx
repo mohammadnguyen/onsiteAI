@@ -26,6 +26,7 @@ import { useMe } from '../../src/api/hooks/useAuth';
 import { useJobs } from '../../src/api/hooks/useJobs';
 import { JobPickerSheet } from '../../src/components/JobPickerSheet';
 import { BackLink } from '../../src/siteLog/BackLink';
+import { useLeaveGuard } from '../../src/siteLog/useLeaveGuard';
 import { useScreenActive } from '../../src/siteLog/useScreenActive';
 import { notify } from '../../src/siteLog/dialogs';
 import {
@@ -446,6 +447,22 @@ export default function NewSiteLogEntry() {
       if (userId) void releaseCapture(userId, captureClientId);
     };
   }, [captureClientId]);
+
+  // ...which is why leaving asks first, whenever there is something to
+  // lose: typed text, a kept file, a recording, or a file still being kept.
+  // Still asked while Save's first write to the phone is in flight (`busy`
+  // but not yet `submitted`): if that write fails the capture is removed and
+  // only this screen holds the text. Not once it is written (`submitted`):
+  // from then on the capture owns a draft, and Save itself leaves this
+  // screen (router.replace) on success.
+  const hasUnsaved =
+    !submitted &&
+    (bodyText.trim().length > 0 ||
+      attachments.length > 0 ||
+      recording ||
+      audioBusy ||
+      retaining > 0);
+  useLeaveGuard(hasUnsaved);
 
   const submit = useCallback(async () => {
     if (!userId) return;

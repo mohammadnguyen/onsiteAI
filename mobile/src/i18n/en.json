@@ -682,7 +682,11 @@
       "sent_hint": "Already sent. Open it from My site log to check or retry.",
       "recording_note": "Stop the recording first. A voice note is only attached once you stop.",
       "attachments_mobile_only": "Photos, documents and voice notes can be attached in the mobile app.",
-      "keeping_files": "Keeping the file on this phone…"
+      "keeping_files": "Keeping the file on this phone…",
+      "leave_title": "Discard this entry?",
+      "leave_body": "It has not been saved. Its text, photos, documents and voice notes will be deleted from this phone.",
+      "leave_confirm": "Discard",
+      "leave_cancel": "Keep editing"
     },
     "list": {
       "title": "My site log",
@@ -794,6 +798,113 @@
       "play_failed": "That recording could not be played.",
       "export_failed": "That recording could not be exported.",
       "export_unavailable": "Sharing is not available on this device."
+    }
+  },
+  "tasks": {
+    "entry": {
+      "title": "Tasks",
+      "subtitle": "Follow up what needs doing"
+    },
+    "status": {
+      "to_do": "To do",
+      "in_progress": "In progress",
+      "blocked": "Blocked",
+      "done": "Done"
+    },
+    "unavailable": "Tasks are not available on this server yet.",
+    "list": {
+      "title": "Tasks",
+      "all": "All",
+      "mine": "Assigned to me",
+      "empty": "No tasks here yet.",
+      "load_failed": "Could not load tasks. Pull down to try again.",
+      "no_job": "No job",
+      "due": "Due {{date}}",
+      "overdue": "Overdue · was due {{date}}"
+    },
+    "new": {
+      "title": "New task",
+      "title_label": "Task",
+      "title_placeholder": "What needs doing?",
+      "title_hint": "Starts as the entry's first line. Edit it before saving.",
+      "title_too_long": "Keep it to {{max}} characters.",
+      "assignee": "Assigned to",
+      "due": "Due date",
+      "job": "Job",
+      "job_from_entry": "{{job}} (from the entry)",
+      "no_job": "No job (the entry has none)",
+      "save": "Save task",
+      "saving": "Saving…",
+      "save_failed": "Could not save the task.",
+      "entry_withdrawn": "This entry was withdrawn, so a task can't be made from it.",
+      "load_failed": "Could not load the entry.",
+      "not_saved": "Could not save this task on the phone, so nothing was sent. Try again.",
+      "store_failed": "Could not read the tasks saved on this phone. Try again before creating a new one.",
+      "leave_title": "Discard this task?",
+      "leave_body": "It has not been saved. What you entered here will be lost.",
+      "leave_confirm": "Discard",
+      "leave_cancel": "Keep editing",
+      "saving_leave_title": "Still saving this task",
+      "saving_leave_body": "It is still being saved on this phone. If you leave now it may still be created; if saving fails, it is lost.",
+      "saving_leave_confirm": "Leave anyway",
+      "saving_leave_cancel": "Stay"
+    },
+    "pending": {
+      "checking": "Checking whether your earlier task was saved…",
+      "found": "This task was already created.",
+      "not_found_title": "Your earlier task was not saved",
+      "not_found_body": "Send it again with the same details? It cannot make a second task.",
+      "unknown_title": "Not confirmed yet",
+      "unknown_body": "The connection dropped, so it is not known whether the task was saved. Nothing is sent again until that has been checked.",
+      "send_again": "Send again",
+      "check_again": "Check again",
+      "discard": "Discard",
+      "discard_title": "Discard this task?",
+      "discard_body": "If it was saved after all, it will still appear in Tasks.",
+      "banner": "A task from this entry is not confirmed yet. Tap to check."
+    },
+    "assignee": {
+      "me": "Me",
+      "unassigned": "Unassigned",
+      "someone": "Someone else",
+      "change": "Change",
+      "pick_title": "Assign to",
+      "load_failed": "Could not load the list of people."
+    },
+    "due": {
+      "none": "No due date",
+      "pick": "Pick date",
+      "clear": "Clear",
+      "placeholder": "DD/MM/YYYY",
+      "invalid": "Use DD/MM/YYYY."
+    },
+    "detail": {
+      "status": "Status",
+      "edit_title": "Edit",
+      "save_title": "Save",
+      "job": "Job",
+      "no_job": "No job",
+      "set_job": "Set job",
+      "change_job": "Change job",
+      "job_reason_title": "Move this task to {{job}}? Say why.",
+      "job_reason_placeholder": "Reason (required)",
+      "job_confirm": "Move task",
+      "job_moved_note": "The source entry is now under {{job}}. This task stays where it is.",
+      "job_moved_unknown": "another job",
+      "source": "Source entry",
+      "open_source": "Open source entry",
+      "source_hidden": "Source entry not visible to you",
+      "not_found": "Task not found.",
+      "save_failed": "Could not save the change.",
+      "created_by": "Created by {{name}} · {{date}}",
+      "not_refreshed": "Could not refresh this task, so what you see may not be its latest state.",
+      "refresh": "Refresh"
+    },
+    "entry_section": {
+      "title": "Tasks from this entry",
+      "create": "Create task",
+      "none": "No tasks from this entry yet.",
+      "load_failed": "Could not load this entry's tasks."
     }
   }
 }

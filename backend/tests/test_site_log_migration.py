@@ -4,10 +4,14 @@ Runs the real migration chain against a dedicated scratch database
 (``sitetracker_migration_test``) so the main ``sitetracker_test`` DB —
 whose schema conftest builds from metadata — is never touched:
 
-    upgrade head → verify (incl. A1b upload_attempt_no) →
+    upgrade d9e0f1a2b3c4 → verify (incl. A1b upload_attempt_no) →
     downgrade c7d8e9f0a1b2 → A1b column gone, A1 intact →
     downgrade b7e9f3a2d815 → all gone →
-    upgrade head → verify again
+    upgrade d9e0f1a2b3c4 → verify again
+
+The target is the last Site Log revision, not ``head``: later migrations
+(tasks, ``e1f2a3b4c5d6``) build on this chain and have their own round-trip
+test, so this one keeps testing exactly the Site Log chain.
 
 Alembic is invoked as a subprocess because ``alembic/env.py`` drives an
 async engine via ``asyncio.run``, which cannot be nested inside the
@@ -125,7 +129,7 @@ async def _version() -> str:
 @pytest.mark.asyncio
 async def test_site_log_migration_round_trip(scratch_db):
     # -- upgrade to head ---------------------------------------------------
-    up = _alembic("upgrade", "head")
+    up = _alembic("upgrade", "d9e0f1a2b3c4")
     assert up.returncode == 0, f"upgrade failed:\n{up.stdout}\n{up.stderr}"
     assert await _version() == "d9e0f1a2b3c4"
 
@@ -267,7 +271,7 @@ async def test_site_log_migration_round_trip(scratch_db):
     assert "evidence" in tables and "jobs" in tables
 
     # -- upgrade again (round trip completes) ------------------------------
-    up2 = _alembic("upgrade", "head")
+    up2 = _alembic("upgrade", "d9e0f1a2b3c4")
     assert up2.returncode == 0, f"re-upgrade failed:\n{up2.stdout}\n{up2.stderr}"
     assert await _version() == "d9e0f1a2b3c4"
     tables = await _table_names()

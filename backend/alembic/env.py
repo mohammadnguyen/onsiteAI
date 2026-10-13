@@ -24,6 +24,7 @@ from app.models import (  # noqa: F401  # ensure metadata is registered
     review_queue,
     site_log,
     supplier,
+    task,
     user,
 )
 
