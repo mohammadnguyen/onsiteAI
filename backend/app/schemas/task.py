@@ -68,7 +68,11 @@ class TaskSourceOut(BaseModel):
 
 class TaskPermissionsOut(BaseModel):
     change_status: bool
+    # Title and due date.
     edit: bool
+    # Who it is assigned to; with ``assign_others`` false, only to the
+    # caller or nobody.
+    change_assignee: bool
     assign_others: bool
     set_job: bool
     change_job: bool

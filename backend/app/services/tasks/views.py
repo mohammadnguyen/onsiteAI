@@ -23,6 +23,7 @@ from app.services.site_log_access import TENANT_ID, can_read_event
 
 from .access import (
     can_assign_others,
+    can_change_assignee,
     can_change_job,
     can_change_status,
     can_edit_task,
@@ -46,7 +47,9 @@ class TaskPermissions:
     app shows controls without restating the rules."""
 
     change_status: bool
+    # Title and due date.
     edit: bool
+    change_assignee: bool
     assign_others: bool
     set_job: bool
     change_job: bool
@@ -71,6 +74,7 @@ def _permissions(user: User, task: Task) -> TaskPermissions:
     return TaskPermissions(
         change_status=can_change_status(user, task),
         edit=can_edit_task(user, task),
+        change_assignee=can_change_assignee(user, task),
         assign_others=can_assign_others(user),
         set_job=can_set_job(user, task),
         change_job=can_change_job(user, task),

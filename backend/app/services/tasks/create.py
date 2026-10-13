@@ -7,16 +7,21 @@ Idempotency follows the Site Log declare pattern: a device-generated
 ``create_client_id``, unique per tenant and creator; a SAVEPOINT insert; a
 fingerprint in the created audit row. A replay with the same body returns
 the existing task; the same key with a different body is refused.
+
+Requests for one key are handled one at a time (a transaction-scoped
+advisory lock, the labour day-lock pattern), and a key already used is
+answered before anything that can change between two requests is checked.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,6 +54,17 @@ logger = logging.getLogger("app.services.tasks")
 class CreateResult:
     view: TaskView
     created: bool
+
+
+def _create_lock_key(creator_id: uuid.UUID, create_client_id: uuid.UUID) -> int:
+    """Stable signed 64-bit key for the per-(tenant, creator, create key)
+    advisory lock - the same scheme as the labour day lock
+    (``services/labour.py``): Postgres advisory-lock keys are bigints."""
+    digest = hashlib.blake2b(
+        f"task-create:{TENANT_ID}:{creator_id}:{create_client_id}".encode(),
+        digest_size=8,
+    ).digest()
+    return int.from_bytes(digest, "big", signed=True)
 
 
 async def _by_client_id(
@@ -86,28 +102,40 @@ async def create_task(
 ) -> CreateResult:
     """Create a task from entry ``event_id`` or return the one this key made.
 
-    Order: the entry must be readable (404) → the title must be usable
-    (422) → a key already used by this creator is a replay (200) or a
-    misuse (409) → a withdrawn entry is refused (409) → the assignee must
-    be allowed (422) → insert.
+    Order: the title must be usable (422) → this creator's requests for
+    this key, one at a time → a key already used is a replay (200) or a
+    misuse (409) → the entry must be readable (404) → a withdrawn entry is
+    refused (409) → the assignee must be allowed (422) → insert.
 
-    A replay is answered before the withdrawn and assignee checks on
-    purpose: a create that already succeeded keeps answering with its task
-    even if the entry was withdrawn, or the assignee deactivated, since.
+    A key already used is answered before any of the checks after it, on
+    purpose: they read state that can change between two requests. A create
+    that succeeded keeps answering with its task even if the entry was
+    withdrawn, or the assignee deactivated, since. And a resend that arrives
+    while the first request is still uncommitted waits for it at the lock:
+    if the first commits, the resend replays its task; if it rolls back, the
+    resend is judged as a new create. Judged on its own instead, a resend
+    could be refused (the assignee deactivated in between), the app would
+    give up the key, and the first request would still commit - a second
+    task would follow. Waiting at the lock is no answer: an app whose
+    request times out meanwhile keeps its key and asks again later.
     """
-    event = await readable_source(db, user, event_id)
     final_title = clean_title(title)
     fingerprint = create_fingerprint(
-        source_site_log_event_id=event.site_log_event_id,
+        source_site_log_event_id=event_id,
         title=final_title,
         assignee_user_id=assignee_user_id,
         due_date=due_date,
+    )
+    # Transaction-scoped: released at this request's commit or rollback.
+    await db.execute(
+        select(func.pg_advisory_xact_lock(_create_lock_key(user.user_id, create_client_id)))
     )
 
     existing = await _by_client_id(db, user, create_client_id)
     if existing is not None:
         return await _replay(db, user, existing, fingerprint)
 
+    event = await readable_source(db, user, event_id)
     revision = await current_revision(db, event)
     if revision.withdrawn:
         raise TaskSourceWithdrawn()
@@ -130,7 +158,8 @@ async def create_task(
     )
     try:
         # SAVEPOINT: a lost race on the unique key rolls back only this
-        # insert; the caller's loaded objects stay usable.
+        # insert; the caller's loaded objects stay usable. (The lock above
+        # already serialises one key; the unique key stays the backstop.)
         async with db.begin_nested():
             db.add(task)
             await db.flush()

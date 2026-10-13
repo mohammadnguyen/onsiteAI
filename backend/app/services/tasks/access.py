@@ -7,7 +7,10 @@ directory.
   user who may read that job (``can_read_job`` — today, any active user;
   the same rule as Site Log entries that have a job).
 * Change status: admin, creator, assignee.
-* Edit title, due date or assignee: admin, creator.
+* Edit title or due date: admin, creator.
+* Change the assignee: admin; the creator only while the task is unassigned
+  or assigned to the creator - a task assigned to someone else is the
+  admin's to change (founder ruling 2026-10-13, supplementing D1).
 * Assign: an admin may pick any active user; anyone else only themselves or
   nobody (D1).
 * Job: set it when it is empty — admin or creator; change it once set —
@@ -71,8 +74,17 @@ def can_change_status(user: User, task: Task) -> bool:
 
 
 def can_edit_task(user: User, task: Task) -> bool:
-    """Title, due date and assignee."""
+    """Title and due date."""
     return _is_admin(user) or _is_creator(user, task)
+
+
+def can_change_assignee(user: User, task: Task) -> bool:
+    """Who the task is assigned to (D1 supplement, 2026-10-13): an admin
+    always; the creator only while it is unassigned or assigned to them, so
+    a creator can neither clear nor take over someone else's assignment."""
+    if _is_admin(user):
+        return True
+    return _is_creator(user, task) and task.assignee_user_id in (None, user.user_id)
 
 
 def can_assign_others(user: User) -> bool:

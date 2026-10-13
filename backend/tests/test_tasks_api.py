@@ -40,7 +40,9 @@ TASK_KEYS = {
     "created_by", "source", "permissions", "created_at", "updated_at",
 }
 SOURCE_KEYS = {"site_log_event_id", "revision_no", "readable", "job_id"}
-PERMISSION_KEYS = {"change_status", "edit", "assign_others", "set_job", "change_job"}
+PERMISSION_KEYS = {
+    "change_status", "edit", "change_assignee", "assign_others", "set_job", "change_job",
+}
 ROOF = "Engineer asks for extra roof bracing"
 
 
@@ -154,8 +156,8 @@ async def test_create_happy_path_shape_and_confirmation_record(
         "job_id": str(job.job_id),
     }
     assert body["permissions"] == {
-        "change_status": True, "edit": True, "assign_others": False,
-        "set_job": False, "change_job": False,
+        "change_status": True, "edit": True, "change_assignee": True,
+        "assign_others": False, "set_job": False, "change_job": False,
     }
     assert "proposed_title" not in r.text
 
@@ -341,6 +343,55 @@ async def test_assignee_scope_d1(
     assert r.status_code == 200 and r.json()["assignee"] is None
 
 
+async def test_a_creator_cannot_clear_or_take_over_someone_elses_assignment(
+    client, db_session, admin_token, seeded_contributor, contributor_token
+):
+    """D1 supplement (founder ruling 2026-10-13): a contributor creator picks
+    themselves or nobody only while the task is unassigned or theirs; a task
+    an admin gave to someone else is the admin's to change."""
+    other, _ = await _mk_user(db_session, name="Someone Else")
+    entry = await _mk_entry(db_session, seeded_contributor)
+    task_id = (await _create(client, contributor_token, entry.site_log_event_id)).json()["task_id"]
+    url = f"/tasks/{task_id}"
+    me = str(seeded_contributor.user_id)
+    as_creator = _auth(contributor_token)
+
+    # Unassigned, then theirs: between themselves and nobody, freely.
+    assert (await client.get(url, headers=as_creator)).json()["permissions"]["change_assignee"]
+    assert (await client.patch(url, json={"assignee_user_id": me},
+                               headers=as_creator)).status_code == 200
+    assert (await client.patch(url, json={"assignee_user_id": None},
+                               headers=as_creator)).status_code == 200
+
+    # An admin gives it to someone else.
+    r = await client.patch(url, json={"assignee_user_id": str(other.user_id)},
+                           headers=_auth(admin_token))
+    assert r.status_code == 200
+    perms = (await client.get(url, headers=as_creator)).json()["permissions"]
+    assert perms["change_assignee"] is False
+    assert perms["edit"] is True  # title and due date: unchanged by the ruling
+    before = len(await _audit_rows(db_session, task_id))
+    for target in (None, me):  # neither clear it nor take it over
+        r = await client.patch(url, json={"assignee_user_id": target}, headers=as_creator)
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"] == "Only an admin can change this assignment"
+    # Sending the current assignee is not a change and needs no permission.
+    same = await client.patch(url, json={"assignee_user_id": str(other.user_id)},
+                              headers=as_creator)
+    assert same.status_code == 200
+    # The creator still edits the rest; the assignment stays.
+    r = await client.patch(url, json={"title": "Brace the north side", "due_date": "2026-10-20"},
+                           headers=as_creator)
+    assert r.status_code == 200 and r.json()["assignee"]["user_id"] == str(other.user_id)
+    assert len(await _audit_rows(db_session, task_id)) == before + 2  # title + due date only
+
+    # The admin changes it; back to unassigned, the creator may take it again.
+    r = await client.patch(url, json={"assignee_user_id": None}, headers=_auth(admin_token))
+    assert r.status_code == 200 and r.json()["assignee"] is None
+    r = await client.patch(url, json={"assignee_user_id": me}, headers=as_creator)
+    assert r.status_code == 200 and r.json()["assignee"]["user_id"] == me
+
+
 async def test_assignee_of_a_jobless_entry_task_sees_the_task_but_not_the_entry(
     client, db_session, seeded_admin, admin_token, seeded_contributor, contributor_token,
     site_log_session_factory,
@@ -513,9 +564,13 @@ async def test_status_and_edit_permissions(
                                headers=_auth(contributor_token))).status_code == 403
     assert (await client.patch(url, json={"due_date": "2026-11-01"},
                                headers=_auth(contributor_token))).status_code == 403
+    # Nor hand the task back: who it is assigned to is not the assignee's call.
+    assert (await client.patch(url, json={"assignee_user_id": None},
+                               headers=_auth(contributor_token))).status_code == 403
     # Nor give it a job: setting an empty job is for the creator or an admin.
     assignee_view = (await client.get(url, headers=_auth(contributor_token))).json()
     assert assignee_view["permissions"]["set_job"] is False
+    assert assignee_view["permissions"]["change_assignee"] is False
     some_job = await _mk_job(db_session, seeded_admin, name="Some job")
     assert (await client.patch(url, json={"job_id": str(some_job.job_id)},
                                headers=_auth(contributor_token))).status_code == 403
@@ -531,8 +586,8 @@ async def test_status_and_edit_permissions(
     seen = await client.get(f"/tasks/{job_task}", headers=_auth(viewer_token))
     assert seen.status_code == 200
     assert seen.json()["permissions"] == {
-        "change_status": False, "edit": False, "assign_others": False,
-        "set_job": False, "change_job": False,
+        "change_status": False, "edit": False, "change_assignee": False,
+        "assign_others": False, "set_job": False, "change_job": False,
     }
     assert (await client.patch(f"/tasks/{job_task}", json={"status": "done"},
                                headers=_auth(viewer_token))).status_code == 403

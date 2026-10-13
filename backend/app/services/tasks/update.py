@@ -22,7 +22,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction
 from app.models.task import Task, TaskAuditAction
 from app.models.user import User
 
-from .access import can_change_job, can_change_status, can_edit_task, can_set_job
+from .access import (
+    can_change_assignee,
+    can_change_job,
+    can_change_status,
+    can_edit_task,
+    can_set_job,
+)
 from .errors import TaskForbidden, TaskReasonRequired, TaskValidationError
 from .rules import (
     audit_row,
@@ -39,8 +45,9 @@ logger = logging.getLogger("app.services.tasks")
 UPDATABLE_FIELDS = frozenset(
     {"title", "status", "assignee_user_id", "due_date", "job_id"}
 )
-# Fields the creator (or an admin) may edit; status has its own wider rule.
-_EDIT_FIELDS = ("title", "assignee_user_id", "due_date")
+# Fields the creator (or an admin) may edit; status and the assignee have
+# their own rules.
+_EDIT_FIELDS = ("title", "due_date")
 
 
 @contextlib.asynccontextmanager
@@ -101,6 +108,13 @@ async def update_task(
                 raise TaskForbidden()
             if f in _EDIT_FIELDS and not can_edit_task(user, task):
                 raise TaskForbidden()
+            if f == "assignee_user_id" and not can_change_assignee(user, task):
+                # The creator may edit the task, just not this assignment.
+                raise TaskForbidden(
+                    "Only an admin can change this assignment"
+                    if can_edit_task(user, task)
+                    else None
+                )
             if f == "job_id":
                 if task.job_id is None:
                     if not can_set_job(user, task):

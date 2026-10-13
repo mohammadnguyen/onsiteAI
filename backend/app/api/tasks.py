@@ -76,6 +76,7 @@ def _out(view: task_svc.TaskView) -> TaskOut:
         permissions=TaskPermissionsOut(
             change_status=p.change_status,
             edit=p.edit,
+            change_assignee=p.change_assignee,
             assign_others=p.assign_others,
             set_job=p.set_job,
             change_job=p.change_job,

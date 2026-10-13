@@ -29,12 +29,19 @@ import tempfile
 #                               non-dev length gate)
 #   * CORS_ALLOWED_ORIGINS    — non-empty, non-wildcard; satisfies the non-dev
 #                               origins gate without exposing real origins
-os.environ.pop("ENVIRONMENT", None)
-os.environ.setdefault("APP_ENV", "test")
-os.environ.setdefault(
-    "DATABASE_URL",
+#
+# The suite's database is the shared local ``sitetracker_test`` unless
+# TEST_DATABASE_URL names another. Every run drops and re-creates the tables
+# of ITS OWN models there, so a branch whose models add tables runs against
+# its own database: left in the shared one, those tables would hold foreign
+# keys that stop other branches' runs from dropping theirs.
+TEST_DB_URL = os.environ.get(
+    "TEST_DATABASE_URL",
     "postgresql+asyncpg://sitetracker:sitetracker@localhost:5433/sitetracker_test",
 )
+os.environ.pop("ENVIRONMENT", None)
+os.environ.setdefault("APP_ENV", "test")
+os.environ.setdefault("DATABASE_URL", TEST_DB_URL)
 os.environ.setdefault("JWT_SECRET", "test-secret-for-sitetracker-phase1-never-production")
 os.environ.setdefault("CORS_ALLOWED_ORIGINS", "https://localhost.test")
 # Disable the auth rate limiter during the suite (audit E2): many tests share
@@ -67,8 +74,6 @@ from app.main import app  # noqa: E402
 from app.models import user as _user_model  # noqa: E402, F401  # register User metadata
 from app.models.base import Base  # noqa: E402
 from app.models.user import LanguageCode, User, UserRole  # noqa: E402
-
-TEST_DB_URL = "postgresql+asyncpg://sitetracker:sitetracker@localhost:5433/sitetracker_test"
 
 SEED_ADMIN_EMAIL = "admin@example.com"
 SEED_ADMIN_PASSWORD = "admin"
