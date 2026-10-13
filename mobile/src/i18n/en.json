@@ -682,7 +682,11 @@
       "sent_hint": "Already sent. Open it from My site log to check or retry.",
       "recording_note": "Stop the recording first. A voice note is only attached once you stop.",
       "attachments_mobile_only": "Photos, documents and voice notes can be attached in the mobile app.",
-      "keeping_files": "Keeping the file on this phone…"
+      "keeping_files": "Keeping the file on this phone…",
+      "leave_title": "Discard this entry?",
+      "leave_body": "It has not been saved. Its text, photos, documents and voice notes will be deleted from this phone.",
+      "leave_confirm": "Discard",
+      "leave_cancel": "Keep editing"
     },
     "list": {
       "title": "My site log",
