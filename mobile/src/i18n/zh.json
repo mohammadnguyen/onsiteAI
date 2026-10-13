@@ -896,7 +896,9 @@
       "source_hidden": "你无权查看来源记录",
       "not_found": "找不到这条待办。",
       "save_failed": "无法保存修改。",
-      "created_by": "{{name}} 创建 · {{date}}"
+      "created_by": "{{name}} 创建 · {{date}}",
+      "not_refreshed": "无法刷新此任务，显示的可能不是最新状态。",
+      "refresh": "刷新"
     },
     "entry_section": {
       "title": "来自这条记录的待办",

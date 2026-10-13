@@ -41,6 +41,7 @@ export function PendingCreatePanel({
   pending,
   screenActive,
   onRefused,
+  onDiscarded,
 }: {
   pending: PendingTaskCreate;
   /**
@@ -52,6 +53,9 @@ export function PendingCreatePanel({
   /** The server refused the resend on purpose; the record is gone, and its
    *  values are handed back so the user can correct and save them. */
   onRefused: (detail: string | null, values: PendingTaskCreate) => void;
+  /** The user discarded the record and it is gone from the phone: the
+   *  screen is back to its form, with nothing of that create kept. */
+  onDiscarded: () => void;
 }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
@@ -115,7 +119,11 @@ export function PendingCreatePanel({
       onConfirm: () => {
         // Answered in the session that asked, or not acted on.
         if (useAuthStore.getState().sessionNonce !== startedUnder) return;
-        void discardPending(pending.create_client_id);
+        void discardPending(pending.create_client_id).then((gone) => {
+          // Discarding only forgets the record on this phone: a request
+          // that reached the server is not cancelled (the dialog says so).
+          if (gone && sameSession(startedUnder)) onDiscarded();
+        });
       },
     });
   };

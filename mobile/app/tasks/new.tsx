@@ -216,6 +216,13 @@ export default function NewTaskScreen() {
           setDue(values.due_date);
           setError(detail ?? t('tasks.new.save_failed'));
         }}
+        onDiscarded={() => {
+          // The record that made leaving safe is gone; whatever is typed
+          // into the form from here on exists only on this screen.
+          setRecorded(false);
+          setAttempted(false);
+          setError(null);
+        }}
       />
     );
   } else if (!entry.data) {

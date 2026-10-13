@@ -182,9 +182,18 @@ export async function resolvePending(
   return { kind: 'found', task };
 }
 
-/** The user gives up on an unresolved create. Asked first by the screen. */
-export async function discardPending(createClientId: string): Promise<void> {
-  await forget(createClientId);
+/**
+ * The user gives up on an unresolved create. Asked first by the screen.
+ * True once the record is gone; false if the phone's storage could not be
+ * written, and the record - with its key - stays.
+ */
+export async function discardPending(createClientId: string): Promise<boolean> {
+  try {
+    await useTaskPendingCreates.getState().removeDurable(createClientId);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

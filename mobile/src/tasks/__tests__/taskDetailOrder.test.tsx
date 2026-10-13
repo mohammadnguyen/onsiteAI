@@ -40,9 +40,16 @@ jest.mock('../../components/JobPickerSheet', () => ({ JobPickerSheet: () => null
 type Save = { patch: TaskPatch; answer?: TaskOut; deliver: (t: TaskOut) => void };
 let mockServer: TaskOut;
 const mockSaves: Save[] = [];
+// While set, a read of the task does not get through (no signal).
+let mockReadsFail = false;
+let mockReads = 0;
 jest.mock('../../api/tasks', () => ({
   TASK_STATUSES: ['to_do', 'in_progress', 'blocked', 'done'],
-  getTask: jest.fn(async () => ({ ...mockServer })),
+  getTask: jest.fn(async () => {
+    mockReads += 1;
+    if (mockReadsFail) throw Object.assign(new Error('Network Error'), { isAxiosError: true });
+    return { ...mockServer };
+  }),
   patchTask: jest.fn(
     (_id: string, patch: TaskPatch) =>
       new Promise<TaskOut>((resolve) => {
@@ -136,6 +143,8 @@ function close(tree: ReactTestRenderer) {
 
 beforeEach(() => {
   mockSaves.length = 0;
+  mockReadsFail = false;
+  mockReads = 0;
   mockServer = task();
   useAuthStore.setState({ userId: 'me-1', sessionNonce: 1, accessToken: 'token-me' });
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
@@ -176,6 +185,39 @@ it('two saves from two screens, answered out of order, end on what the server ho
   expect(mockServer.status).toBe('done');
   expect(shownStatus(second)).toBe('done');
   expect(client.getQueryData<TaskOut>(['tasks', 'detail', 'task-1'])?.status).toBe('done');
+  expect(byTestId(second, 'task-title-input')[0].props.value).toBe('Brace the north side today');
+});
+
+it('if that re-read fails, the screen says it is not refreshed; Refresh only reads, and the title stays', async () => {
+  const first = await openTask();
+  press(first, 'task-status:in_progress'); // save 0
+  await flush();
+  close(first);
+  const second = await openTask();
+  press(second, 'task-title-edit');
+  act(() => byTestId(second, 'task-title-input')[0].props.onChangeText('Brace the north side today'));
+  press(second, 'task-status:done'); // save 1
+  await flush();
+  serverApplies(0);
+  serverApplies(1);
+  await answerArrives(1); // Done, and its re-read gets through
+  expect(byTestId(second, 'task-not-refreshed')).toHaveLength(0);
+
+  mockReadsFail = true; // no signal for the next read
+  await answerArrives(0); // the older answer lands; its re-read fails
+  // The older status is on screen - but not passed off as the latest.
+  expect(shownStatus(second)).toBe('in_progress');
+  expect(byTestId(second, 'task-not-refreshed').length).toBeGreaterThan(0);
+  expect(byTestId(second, 'task-title-input')[0].props.value).toBe('Brace the north side today');
+
+  mockReadsFail = false; // signal back
+  const readsBefore = mockReads;
+  press(second, 'task-refresh');
+  await flush();
+  expect(mockReads).toBe(readsBefore + 1); // one read...
+  expect(mockSaves).toHaveLength(2); // ...and no save sent again
+  expect(shownStatus(second)).toBe('done');
+  expect(byTestId(second, 'task-not-refreshed')).toHaveLength(0);
   expect(byTestId(second, 'task-title-input')[0].props.value).toBe('Brace the north side today');
 });
 

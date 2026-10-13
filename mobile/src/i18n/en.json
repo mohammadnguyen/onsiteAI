@@ -896,7 +896,9 @@
       "source_hidden": "Source entry not visible to you",
       "not_found": "Task not found.",
       "save_failed": "Could not save the change.",
-      "created_by": "Created by {{name}} · {{date}}"
+      "created_by": "Created by {{name}} · {{date}}",
+      "not_refreshed": "Could not refresh this task, so what you see may not be its latest state.",
+      "refresh": "Refresh"
     },
     "entry_section": {
       "title": "Tasks from this entry",

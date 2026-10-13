@@ -820,6 +820,81 @@ describe('leaving the create screen (PR #22’s guard, in the task’s words)', 
     expect(mockLeave?.prevent).toBe(true);
   });
 
+  it('an unconfirmed save, then Discard, then a new edit: leaving asks again', async () => {
+    const offline = () => Object.assign(new Error('Network Error'), { isAxiosError: true });
+    mockCreateTask.mockRejectedValue(offline()); // the save's answer is lost...
+    mockFindMyCreate.mockRejectedValue(offline()); // ...and the server cannot be asked
+    const tree = await render(<NewTaskScreen />);
+    press(tree, 'task-save');
+    await flush();
+    expect(byTestId(tree, 'pending-unknown')).toHaveLength(1); // "Not confirmed yet"
+    expect(mockLeave?.prevent).toBe(false); // its record is on the phone
+
+    press(tree, 'pending-discard');
+    expect(lastQuestion()).toMatchObject({ title: 'tasks.pending.discard_title' });
+    await act(async () => {
+      lastQuestion().onConfirm();
+    });
+    await flush();
+    // Back on the form, and the phone holds nothing of that create now.
+    expect(byTestId(tree, 'task-save').length).toBeGreaterThan(0);
+    expect(useTaskPendingCreates.getState().forEvent('me-1', 'event-1')).toBeUndefined();
+    expect(mockLeave?.prevent).toBe(false); // nothing new typed yet
+
+    act(() => byTestId(tree, 'task-title')[0].props.onChangeText('Brace the south side instead'));
+    expect(mockLeave?.prevent).toBe(true);
+    tryToLeave();
+    expect(lastQuestion()).toMatchObject({ title: 'tasks.new.leave_title' });
+    expect(mockDispatch).not.toHaveBeenCalled(); // until Discard is chosen
+    expect(byTestId(tree, 'task-title')[0].props.value).toBe('Brace the south side instead');
+  });
+
+  it('a Discard the phone could not write leaves the record, and leaving stays safe', async () => {
+    const offline = () => Object.assign(new Error('Network Error'), { isAxiosError: true });
+    mockCreateTask.mockRejectedValue(offline());
+    mockFindMyCreate.mockRejectedValue(offline());
+    const tree = await render(<NewTaskScreen />);
+    act(() => byTestId(tree, 'task-title')[0].props.onChangeText('Brace the north side today'));
+    press(tree, 'task-save');
+    await flush();
+    expect(byTestId(tree, 'pending-unknown')).toHaveLength(1);
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const storage = require('@react-native-async-storage/async-storage').default;
+    const failing = jest.spyOn(storage, 'setItem').mockRejectedValue(new Error('disk full'));
+    try {
+      press(tree, 'pending-discard');
+      await act(async () => {
+        lastQuestion().onConfirm();
+      });
+      await flush();
+    } finally {
+      failing.mockRestore();
+    }
+    // Still on the phone, with its key: the panel stays, nothing to lose by leaving.
+    expect(useTaskPendingCreates.getState().forEvent('me-1', 'event-1')).toBeDefined();
+    expect(byTestId(tree, 'pending-unknown')).toHaveLength(1);
+    expect(mockLeave?.prevent).toBe(false);
+  });
+
+  it('a Discard answered after the account changed keeps the record for its owner', async () => {
+    const offline = () => Object.assign(new Error('Network Error'), { isAxiosError: true });
+    mockCreateTask.mockRejectedValue(offline());
+    mockFindMyCreate.mockRejectedValue(offline());
+    const tree = await render(<NewTaskScreen />);
+    press(tree, 'task-save');
+    await flush();
+    press(tree, 'pending-discard');
+    const question = lastQuestion();
+    act(() => {
+      useAuthStore.setState({ userId: 'someone-else', sessionNonce: 2 });
+    });
+    await act(async () => {
+      question.onConfirm();
+    });
+    await flush();
+    expect(useTaskPendingCreates.getState().forEvent('me-1', 'event-1')).toBeDefined();
+  });
+
   it('an unresolved create already on the phone: the panel, and no question', async () => {
     await act(async () => {
       await useTaskPendingCreates.getState().putDurable({

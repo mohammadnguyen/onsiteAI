@@ -163,6 +163,28 @@ export default function TaskDetail() {
             </View>
           )}
 
+          {/* The last read of this task failed, so what is shown may be older
+              than what the server holds - e.g. two saves answered out of
+              order, then a re-read that did not get through. Say so, and
+              offer a read only: nothing is sent again, a title being typed
+              is kept. */}
+          {q.isRefetchError ? (
+            <View style={s.stale} testID="task-not-refreshed">
+              <Text style={s.staleText}>{t('tasks.detail.not_refreshed')}</Text>
+              <Pressable
+                onPress={() => void q.refetch()}
+                disabled={q.isFetching}
+                accessibilityRole="button"
+                hitSlop={8}
+                testID="task-refresh"
+              >
+                <Text style={[s.link, q.isFetching ? s.dim : null]}>
+                  {t('tasks.detail.refresh')}
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
+
           <Text style={s.label}>{t('tasks.detail.status')}</Text>
           <TaskStatusChips
             value={task.status}
@@ -252,6 +274,15 @@ const s = StyleSheet.create({
     padding: 10,
     fontWeight: '600',
   },
+  stale: {
+    gap: 6,
+    backgroundColor: tokens.warnBg,
+    borderColor: tokens.warnBorder,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 10,
+  },
+  staleText: { color: tokens.warnMid },
   titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
   h1: { flex: 1, fontSize: 21, fontWeight: '700', color: tokens.ink },
   titleEdit: { gap: 8 },
