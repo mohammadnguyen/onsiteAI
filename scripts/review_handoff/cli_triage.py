@@ -1,0 +1,510 @@
+"""The ``findings`` subcommands: recording what each finding turned into.
+
+Judgement stays with the agent. Nothing in here scores reviewer prose or
+decides whether a finding is real — it records a decision that was already
+made, with a note saying on what basis, and then holds the run to it. The
+structured channel's findings arrive on their own (the plugin returns them
+against its own schema); these commands exist for the prose channel and for
+resolving anything from either one.
+
+Recording is mandatory in one direction only: a channel that produced a
+review must end up with either findings or an explicit "none". Silence is
+not evidence that nobody found anything.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+from .console import EXIT_BLOCKED, EXIT_MISUSE, EXIT_OK, emit
+from .findings import (
+    AWAITING,
+    DISPOSITIONS,
+    RESOLVED_DISPOSITIONS,
+    SEVERITIES,
+    SOURCE_AGENT,
+    Finding,
+    channel_state,
+    finding_id,
+)
+from .locking import LockBusy
+from .runner import REVIEW_CHANNELS
+from .state import StateError, linked_chain, load_state, utc_now
+
+
+def _load(args: argparse.Namespace):
+    """Load a run under its lock; the caller must release it.
+
+    Every failure releases. Catching only StateError left the lock held on
+    anything else - a corrupt file, a permission error, a KeyboardInterrupt -
+    and a run whose lock is held by a process that has exited needs a manual
+    --break-lock to move again.
+    """
+    from .cli import acquire_run_lock  # local import: one-way dependency
+
+    run_dir = Path(args.run_dir).resolve()
+    lock = acquire_run_lock(run_dir, purpose="findings", args=args)
+    try:
+        state = load_state(run_dir)
+    except BaseException:
+        lock.release()
+        raise
+    if getattr(args, "break_lock", False):
+        # Recorded here too: a break that leaves no trace is indistinguishable
+        # from no contention having happened.
+        state.events.append(
+            {
+                "at": utc_now().isoformat(timespec="seconds"),
+                "event": "run lock broken",
+                "purpose": "findings",
+            }
+        )
+        state.save(run_dir)
+    return run_dir, lock, state
+
+
+def _scope_block(findings: list[dict], target_id: str) -> str | None:
+    """Why this defect may not be recorded as dealt with, or None.
+
+    The whole GROUP, not just the one record: an out-of-scope sighting
+    linked as a duplicate still needs the founder, and closing the in-scope
+    half must not retire it.
+    """
+    group = [
+        f for f in findings if f["id"] == target_id or f.get("duplicate_of") == target_id
+    ]
+    blocked = next(
+        (
+            f
+            for f in group
+            if f.get("out_of_scope") and f["disposition"] not in RESOLVED_DISPOSITIONS
+        ),
+        None,
+    )
+    if blocked is None:
+        return None
+    if blocked["id"] == target_id:
+        return "is marked out of the approved scope"
+    return f"is linked to {blocked['id']}, which is out of the approved scope"
+
+
+def _round(state, number: int):
+    for record in state.rounds:
+        if record.number == number:
+            return record
+    return None
+
+
+def cmd_findings_record(args: argparse.Namespace) -> int:
+    try:
+        run_dir, lock, state = _load(args)
+    except StateError as exc:
+        emit(f"MISUSE: {exc}")
+        return EXIT_MISUSE
+    except LockBusy as exc:
+        emit(f"BLOCKED: {exc}")
+        return EXIT_BLOCKED
+    try:
+        if args.channel not in REVIEW_CHANNELS:
+            emit(f"MISUSE: unknown channel {args.channel!r}; expected one of {REVIEW_CHANNELS}")
+            return EXIT_MISUSE
+        record = _round(state, args.round)
+        if record is None:
+            emit(f"MISUSE: this run has no review round {args.round}")
+            return EXIT_MISUSE
+        # Attestations made FOR AN ANCESTOR live here too, and they say
+        # nothing about this run's own round of the same number. Counting
+        # them locally refused the local triage while _release_block still
+        # demanded it, leaving the run with no way to move at all.
+        attested = [
+            a
+            for a in state.triage
+            if not a.get("origin_run")
+            and int(a["round"]) == args.round
+            and a["channel"] == args.channel
+        ]
+        if attested:
+            emit(
+                f"MISUSE: round {args.round} channel {args.channel} was already "
+                "attested as reporting no findings; that attestation and a "
+                "finding cannot both be true - correct the record deliberately"
+            )
+            return EXIT_MISUSE
+
+        duplicate_of = (args.duplicate_of or "").strip()
+        if duplicate_of:
+            target = next((f for f in state.findings if f["id"] == duplicate_of), None)
+            if target is None:
+                emit(
+                    f"MISUSE: no finding {duplicate_of!r} in this run to link to; a "
+                    "duplicate must point at a record that exists here"
+                )
+                return EXIT_MISUSE
+            if target.get("duplicate_of"):
+                emit(
+                    f"MISUSE: {duplicate_of} is itself a duplicate of "
+                    f"{target['duplicate_of']}; link to the primary record instead"
+                )
+                return EXIT_MISUSE
+            if target["channel"] == args.channel:
+                emit(
+                    f"MISUSE: {duplicate_of} is on the same channel; a duplicate "
+                    "links the SAME defect seen by a DIFFERENT channel"
+                )
+                return EXIT_MISUSE
+
+        new = Finding(
+            id=finding_id(args.round, args.channel, args.title, args.file or "", args.line),
+            round=args.round,
+            channel=args.channel,
+            severity=args.severity,
+            title=args.title.strip(),
+            file=(args.file or "").strip(),
+            line_start=args.line,
+            body=(args.body or "").strip(),
+            recommendation=(args.recommendation or "").strip(),
+            source=SOURCE_AGENT,
+            duplicate_of=duplicate_of,
+            out_of_scope=bool(args.out_of_scope),
+            disposition=AWAITING if args.out_of_scope else "pending",
+            note="reported as necessary but outside the approved scope"
+            if args.out_of_scope
+            else "",
+            recorded_at=utc_now().isoformat(timespec="seconds"),
+        )
+        if any(f["id"] == new.id for f in state.findings):
+            emit(f"MISUSE: finding {new.id} is already recorded")
+            return EXIT_MISUSE
+        state.findings.append(new.to_dict())
+        state.save(run_dir)
+        emit(f"recorded {new.one_line()}")
+        if duplicate_of:
+            emit(
+                f"linked to {duplicate_of}: the same defect seen by two channels, "
+                "kept as two pieces of evidence and counted as one item"
+            )
+        elif new.blocking:
+            emit("this finding BLOCKS delivery until it is fixed or refuted")
+        if new.out_of_scope:
+            emit(
+                "out of approved scope: do NOT change it. Stop the run and ask "
+                "the founder for authorisation."
+            )
+        return EXIT_OK
+    finally:
+        lock.release()
+
+
+def cmd_findings_none(args: argparse.Namespace) -> int:
+    try:
+        run_dir, lock, state = _load(args)
+    except StateError as exc:
+        emit(f"MISUSE: {exc}")
+        return EXIT_MISUSE
+    except LockBusy as exc:
+        emit(f"BLOCKED: {exc}")
+        return EXIT_BLOCKED
+    try:
+        if args.channel not in REVIEW_CHANNELS:
+            emit(f"MISUSE: unknown channel {args.channel!r}; expected one of {REVIEW_CHANNELS}")
+            return EXIT_MISUSE
+        origin_run = (getattr(args, "origin_run", "") or "").strip()
+        if origin_run and origin_run != state.run_id:
+            # Accounting for a channel of a run earlier in the chain. Its own
+            # record is left exactly as it is; the attestation belongs here.
+            origin = next(
+                (
+                    older
+                    for _, older in linked_chain(state).runs
+                    if older.run_id == origin_run
+                ),
+                None,
+            )
+            if origin is None:
+                emit(
+                    f"MISUSE: no run called {origin_run!r} anywhere behind this one"
+                )
+                return EXIT_MISUSE
+            if _round(origin, args.round) is None:
+                emit(f"MISUSE: {origin_run} has no review round {args.round}")
+                return EXIT_MISUSE
+            if any(
+                a.get("origin_run") == origin_run
+                and int(a["round"]) == args.round
+                and a["channel"] == args.channel
+                for a in state.triage
+            ):
+                emit(
+                    f"MISUSE: {origin_run} round {args.round} channel {args.channel} "
+                    "is already attested in this run"
+                )
+                return EXIT_MISUSE
+            state.triage.append(
+                {
+                    "origin_run": origin_run,
+                    "round": args.round,
+                    "channel": args.channel,
+                    "at": utc_now().isoformat(timespec="seconds"),
+                    "note": args.note.strip(),
+                    "channel_status": channel_state(_round(origin, args.round), args.channel),
+                }
+            )
+            state.save(run_dir)
+            emit(
+                f"attested: {origin_run} round {args.round} channel {args.channel} "
+                "accounted for here; that run's own record is unchanged"
+            )
+            return EXIT_OK
+        record = _round(state, args.round)
+        if record is None:
+            emit(f"MISUSE: this run has no review round {args.round}")
+            return EXIT_MISUSE
+        existing = [
+            f
+            for f in state.findings
+            if f["round"] == args.round and f["channel"] == args.channel
+        ]
+        if existing:
+            emit(
+                f"MISUSE: round {args.round} channel {args.channel} already has "
+                f"{len(existing)} recorded finding(s); it cannot also have none"
+            )
+            return EXIT_MISUSE
+        if any(
+            not a.get("origin_run")
+            and int(a["round"]) == args.round
+            and a["channel"] == args.channel
+            for a in state.triage
+        ):
+            emit(f"MISUSE: round {args.round} channel {args.channel} is already attested")
+            return EXIT_MISUSE
+        # What is being attested depends on what actually happened to that
+        # channel. "It reported nothing" and "its outcome was never recorded"
+        # are different statements, and the record must not blur them.
+        status = channel_state(record, args.channel)
+        state.triage.append(
+            {
+                "round": args.round,
+                "channel": args.channel,
+                "at": utc_now().isoformat(timespec="seconds"),
+                "note": args.note.strip(),
+                "channel_status": status,
+                "incomplete": status != "completed",
+            }
+        )
+        state.save(run_dir)
+        if status == "completed":
+            emit(f"attested: round {args.round} channel {args.channel} reported no findings")
+        else:
+            emit(
+                f"attested: round {args.round} channel {args.channel} is {status} — "
+                "recorded as accounted for, NOT as having reported nothing"
+            )
+        return EXIT_OK
+    finally:
+        lock.release()
+
+
+def cmd_findings_resolve(args: argparse.Namespace) -> int:
+    try:
+        run_dir, lock, state = _load(args)
+    except StateError as exc:
+        emit(f"MISUSE: {exc}")
+        return EXIT_MISUSE
+    except LockBusy as exc:
+        emit(f"BLOCKED: {exc}")
+        return EXIT_BLOCKED
+    try:
+        origin_run = (getattr(args, "origin_run", "") or "").strip()
+        # Naming THIS run is an ordinary local resolution. Routing it through
+        # the ancestral path recorded a carried resolution instead, so the
+        # command reported success while the release check still saw the
+        # finding pending - and its scope checks were skipped.
+        if origin_run in ("", state.run_id):
+            target = next((f for f in state.findings if f["id"] == args.id), None)
+        else:
+            target = None
+        if target is None:
+            # It may belong to a run earlier in the chain. That record is left
+            # exactly as it is - rewriting it would destroy the history it
+            # exists to hold - and the disposition is recorded HERE instead,
+            # as the separate evidence that the item was dealt with later.
+            # Ids carry the round and the channel but not the run, so the
+            # same defect reported again in a later run collides with the
+            # earlier record. Picking the nearest would make the older one
+            # permanently unreachable, so an ambiguous id is refused and the
+            # caller names the run it means.
+            matches = [
+                older
+                for _, older in linked_chain(state).runs
+                if any(f["id"] == args.id for f in older.findings)
+            ]
+            if origin_run:
+                matches = [older for older in matches if older.run_id == origin_run]
+                if not matches:
+                    emit(
+                        f"MISUSE: no finding {args.id!r} in a run called {origin_run!r} "
+                        "anywhere in this chain"
+                    )
+                    return EXIT_MISUSE
+            elif len(matches) > 1:
+                emit(
+                    f"MISUSE: {args.id} names a finding in more than one run "
+                    f"({', '.join(sorted(m.run_id for m in matches))}); pass "
+                    "--origin-run to say which one you mean"
+                )
+                return EXIT_MISUSE
+            if not matches:
+                emit(f"MISUSE: no finding {args.id!r} in this run or anywhere behind it")
+                return EXIT_MISUSE
+            origin = matches[0]
+            # Inheriting a finding does not authorise it. The ancestral path
+            # returned before the guard below, so a successor with exactly
+            # the same approved scope could close an inherited out-of-scope
+            # blocker as "fixed" and release the delivery.
+            if args.disposition in RESOLVED_DISPOSITIONS:
+                which = _scope_block(origin.findings, args.id)
+                if which is not None:
+                    emit(
+                        f"BLOCKED: {args.id} {which}, in {origin.run_id}. Inheriting "
+                        "it does not authorise it: this run may not change it "
+                        "either, so it cannot be recorded as fixed here; leave it "
+                        "awaiting adjudication and stop for authorisation."
+                    )
+                    return EXIT_BLOCKED
+            # Appended, never replaced: an item may be marked as awaiting the
+            # founder and then, once authorised, actually closed, and both
+            # steps are part of the record. The latest entry is the one that
+            # counts.
+            state.carried_resolutions.append(
+                {
+                    "origin_run": origin.run_id,
+                    "finding_id": args.id,
+                    "disposition": args.disposition,
+                    "note": args.note.strip(),
+                    "at": utc_now().isoformat(timespec="seconds"),
+                }
+            )
+            state.save(run_dir)
+            emit(
+                f"{args.id} (raised in {origin.run_id}): {args.disposition} — "
+                f"{args.note.strip()}"
+            )
+            emit(
+                f"recorded here; {origin.run_id}'s own record is unchanged and still "
+                "says what it said"
+            )
+            return EXIT_OK
+        if args.disposition in RESOLVED_DISPOSITIONS:
+            which = _scope_block(state.findings, args.id)
+            if which is not None:
+                emit(
+                    f"BLOCKED: {args.id} {which}. This run may not change it, so it "
+                    "cannot be recorded as fixed; leave it awaiting adjudication and "
+                    "stop for authorisation."
+                )
+                return EXIT_BLOCKED
+        target["disposition"] = args.disposition
+        target["note"] = args.note.strip()
+        target["resolved_at"] = utc_now().isoformat(timespec="seconds")
+        state.save(run_dir)
+        emit(f"{args.id}: {args.disposition} — {target['note']}")
+        return EXIT_OK
+    finally:
+        lock.release()
+
+
+def cmd_findings_list(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir).resolve()
+    try:
+        state = load_state(run_dir)
+    except StateError as exc:
+        emit(f"MISUSE: {exc}")
+        return EXIT_MISUSE
+    records = [Finding(**f) for f in state.findings]
+    if args.pending:
+        records = [f for f in records if not f.resolved]
+    if args.json:
+        emit(json.dumps([f.to_dict() for f in records], indent=2))
+        return EXIT_OK
+    if not records:
+        emit("no findings recorded")
+    for finding in records:
+        emit(finding.one_line())
+    blocking = [f for f in records if f.blocking and not f.resolved]
+    if blocking:
+        emit(f"{len(blocking)} unresolved blocking finding(s); delivery is not possible")
+    return EXIT_OK
+
+
+def add_findings_parser(sub, lock_arguments) -> None:
+    findings = sub.add_parser(
+        "findings",
+        help="record what each review finding turned into (the release condition)",
+    )
+    inner = findings.add_subparsers(dest="findings_command", required=True)
+
+    record = inner.add_parser("record", help="record a finding read from a prose channel")
+    record.add_argument("--run-dir", required=True)
+    record.add_argument("--round", type=int, required=True)
+    record.add_argument("--channel", required=True)
+    record.add_argument("--severity", required=True, choices=list(SEVERITIES))
+    record.add_argument("--title", required=True)
+    record.add_argument("--file", default="")
+    record.add_argument("--line", type=int)
+    record.add_argument("--body", default="")
+    record.add_argument("--recommendation", default="")
+    record.add_argument(
+        "--duplicate-of",
+        default="",
+        help="the id of the SAME defect already recorded from the other "
+        "channel; both records are kept and the pair counts as one item",
+    )
+    record.add_argument(
+        "--out-of-scope",
+        action="store_true",
+        help="the change it asks for is outside the approved scope: it is "
+        "recorded as awaiting the founder, never made by this run",
+    )
+    lock_arguments(record)
+    record.set_defaults(func=cmd_findings_record)
+
+    none = inner.add_parser(
+        "none", help="attest that a channel reported no findings this round"
+    )
+    none.add_argument("--run-dir", required=True)
+    none.add_argument("--round", type=int, required=True)
+    none.add_argument("--channel", required=True)
+    none.add_argument(
+        "--origin-run",
+        default="",
+        help="the run that RAN the channel, when accounting for one earlier in "
+        "the chain; that run's own record is left untouched",
+    )
+    none.add_argument("--note", required=True, help="what you read, and where")
+    lock_arguments(none)
+    none.set_defaults(func=cmd_findings_none)
+
+    resolve = inner.add_parser("resolve", help="record a disposition for one finding")
+    resolve.add_argument("--run-dir", required=True)
+    resolve.add_argument("--id", required=True)
+    resolve.add_argument(
+        "--origin-run",
+        default="",
+        help="the run that RAISED the finding, when the same id exists in more "
+        "than one run in the chain",
+    )
+    resolve.add_argument("--disposition", required=True, choices=list(DISPOSITIONS))
+    resolve.add_argument(
+        "--note", required=True, help="the commit, test or evidence behind this disposition"
+    )
+    lock_arguments(resolve)
+    resolve.set_defaults(func=cmd_findings_resolve)
+
+    listing = inner.add_parser("list", help="show findings and their dispositions")
+    listing.add_argument("--run-dir", required=True)
+    listing.add_argument("--json", action="store_true")
+    listing.add_argument("--pending", action="store_true")
+    listing.set_defaults(func=cmd_findings_list)
