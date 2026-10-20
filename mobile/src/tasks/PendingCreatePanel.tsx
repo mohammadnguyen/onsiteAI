@@ -12,7 +12,7 @@ import { PrimaryButton } from '../ui/kit';
 import { tokens } from '../ui/tokens';
 import { discardPending, resolvePending, sendCreate } from './createFlow';
 
-type Phase = 'checking' | 'not_found' | 'unknown' | 'sending';
+type Phase = 'checking' | 'not_found' | 'unknown' | 'unavailable' | 'sending';
 
 /**
  * Every await below can outlive the screen or the session it began in. Two
@@ -34,8 +34,10 @@ function sameSession(startedUnder: number): boolean {
  * was already created. Not found: the saved values are shown with "Send
  * again", which reuses the same key, so even a request that was only slow
  * cannot become a second task. Still unreachable: it says the result is
- * unknown and offers to check again. Discard is offered once nothing is
- * out, and asks.
+ * unknown and offers to check again. The server offers no tasks right now
+ * (an older or rolled-back backend): it says so, keeps the record as it is
+ * and offers to check again - never to send. Discard is offered once nothing
+ * is out, and asks.
  */
 export function PendingCreatePanel({
   pending,
@@ -104,6 +106,9 @@ export function PendingCreatePanel({
     } else if (outcome.kind === 'not_saved') {
       // Nothing was sent; the record is as it was.
       setPhase('not_found');
+    } else if (outcome.kind === 'unavailable') {
+      // The routes were gone when it was sent: kept, same key, same values.
+      setPhase('unavailable');
     } else {
       setPhase('unknown');
     }
@@ -138,14 +143,12 @@ export function PendingCreatePanel({
   }
 
   const notFound = phase === 'not_found';
+  const words =
+    phase === 'not_found' ? 'not_found' : phase === 'unavailable' ? 'unavailable' : 'unknown';
   return (
-    <View style={s.panel} testID={notFound ? 'pending-not-found' : 'pending-unknown'}>
-      <Text style={s.title}>
-        {notFound ? t('tasks.pending.not_found_title') : t('tasks.pending.unknown_title')}
-      </Text>
-      <Text style={s.body}>
-        {notFound ? t('tasks.pending.not_found_body') : t('tasks.pending.unknown_body')}
-      </Text>
+    <View style={s.panel} testID={`pending-${words.replace('_', '-')}`}>
+      <Text style={s.title}>{t(`tasks.pending.${words}_title`)}</Text>
+      <Text style={s.body}>{t(`tasks.pending.${words}_body`)}</Text>
       <View style={s.saved}>
         <Text style={s.savedTitle}>{pending.title}</Text>
         <Text style={s.savedMeta}>

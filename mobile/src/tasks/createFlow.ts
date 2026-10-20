@@ -13,9 +13,11 @@ import {
  * show the outcome.
  *
  * The rule both follow: a create is either ANSWERED (the task, or a refusal
- * the server gave on purpose) or UNKNOWN. Unknown keeps the pending record;
- * nothing is retried in the background, and nothing is sent again until the
- * server has been asked whether the first one went through.
+ * the server gave on purpose), UNAVAILABLE (the server answered, but not
+ * about this task - see `classify`) or UNKNOWN. Unavailable and unknown keep
+ * the pending record, its key and its values; nothing is retried in the
+ * background, and nothing is sent again until the server has been asked
+ * whether the first one went through.
  *
  * Every request is made for the session the user acted in - `startedUnder`,
  * the auth store's session nonce read BEFORE the first await - and only for
@@ -28,6 +30,8 @@ import {
 export type SendOutcome =
   | { kind: 'created'; task: TaskOut }
   | { kind: 'refused'; status: number; detail: string | null }
+  /** The server offers no task routes right now; the record is kept. */
+  | { kind: 'unavailable' }
   | { kind: 'unknown' }
   /** The record could not be written to the phone; nothing was sent. */
   | { kind: 'not_saved' }
@@ -39,6 +43,8 @@ export type ResolveOutcome =
   /** Only when the create was still out and the server then refused it. */
   | { kind: 'refused'; status: number; detail: string | null }
   | { kind: 'not_found' }
+  /** The server offers no task routes right now; nothing was concluded. */
+  | { kind: 'unavailable' }
   | { kind: 'unknown' }
   | { kind: 'stale' };
 
@@ -76,12 +82,49 @@ function detailOf(err: unknown): string | null {
 }
 
 /**
+ * The one 404 the task API gives on purpose to a create: the entry does not
+ * exist, or this account may not read it (backend `TaskSourceNotFound`).
+ * The server answers a key it has already used BEFORE that check, so this
+ * 404 means nothing was created under the key.
+ *
+ * Any other 404 - a server without the task routes (an older backend, or one
+ * rolled back), a proxy, a body that cannot be read - says nothing about the
+ * task, and so is no reason to forget the record: it is "unavailable". If
+ * the backend's wording ever changed, its 404 would be treated as
+ * unavailable too - the side that keeps the record.
+ */
+const SOURCE_NOT_FOUND = 'Site log event not found';
+
+/** The server answered, but the task routes were not there to answer. */
+function routeMissing(status: number, detail: string | null): boolean {
+  return (status === 404 && detail !== SOURCE_NOT_FOUND) || status === 405;
+}
+
+/**
+ * What a failed create request means. Refused: the server judged this
+ * create and said no, on purpose - nothing exists under the key. Unavailable:
+ * it answered without judging it. Unknown: no usable answer at all (a lost
+ * connection, a server error, or a session that ended - a 401 is the shared
+ * client's to handle, and the record stays for the same account's next
+ * sign-in).
+ */
+function classify(
+  err: unknown,
+): { kind: 'refused'; status: number; detail: string | null } | { kind: 'unavailable' } | { kind: 'unknown' } {
+  const status = answeredStatus(err);
+  if (status === null || status === 401) return { kind: 'unknown' };
+  const detail = detailOf(err);
+  if (routeMissing(status, detail)) return { kind: 'unavailable' };
+  return { kind: 'refused', status, detail };
+}
+
+/**
  * Record, then send.
  *
  * The pending record is on disk BEFORE the request leaves, so a crash or a
  * kill at any later moment still leaves the key the server may have used.
  * If it cannot be written, nothing is sent. A definite answer removes it;
- * an unknown result keeps it.
+ * an unavailable or unknown result keeps it, with its key and values.
  *
  * A 401 is not an answer about the task: the shared client refreshes and
  * replays it, and if it still ends in 401 the session is over - the record
@@ -136,12 +179,11 @@ async function send(
     await forget(p.create_client_id);
     return { kind: 'created', task };
   } catch (err) {
-    const status = answeredStatus(err);
-    if (status !== null && status !== 401) {
-      await forget(p.create_client_id);
-      return { kind: 'refused', status, detail: detailOf(err) };
-    }
-    return { kind: 'unknown' };
+    const answer = classify(err);
+    // Only a refusal says nothing exists under the key; anything else keeps
+    // the record - the same key and values - for the next check.
+    if (answer.kind === 'refused') await forget(p.create_client_id);
+    return answer;
   }
 }
 
@@ -153,9 +195,11 @@ async function send(
  * the question below, as on any other return.
  *
  * Found: the record is done with. Not found: the record stays, and the
- * caller offers to send the SAME values again under the SAME key. Asking
- * failed: still unknown; nothing changes. Asked under another account (the
- * lookup only ever finds the asker's own creates): nothing is concluded.
+ * caller offers to send the SAME values again under the SAME key. The
+ * server offers no task routes: unavailable; nothing changes. Asking failed
+ * otherwise: still unknown; nothing changes. Asked under another account
+ * (the lookup only ever finds the asker's own creates): nothing is
+ * concluded.
  */
 export async function resolvePending(
   p: PendingTaskCreate,
@@ -173,7 +217,11 @@ export async function resolvePending(
   let task: TaskOut | null;
   try {
     task = await findMyCreate(p.create_client_id);
-  } catch {
+  } catch (err) {
+    // The lookup never refuses on purpose: a 404/405 here is the routes
+    // being absent, never "no such task" (that is an empty list).
+    const status = answeredStatus(err);
+    if (status === 404 || status === 405) return { kind: 'unavailable' };
     return { kind: 'unknown' };
   }
   if (!sameSession(startedUnder, p.user_id)) return { kind: 'stale' };

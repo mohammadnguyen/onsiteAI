@@ -856,12 +856,15 @@
       "not_found_body": "Send it again with the same details? It cannot make a second task.",
       "unknown_title": "Not confirmed yet",
       "unknown_body": "The connection dropped, so it is not known whether the task was saved. Nothing is sent again until that has been checked.",
+      "unavailable_title": "Tasks are not available right now",
+      "unavailable_body": "The server is not offering tasks at the moment, so it cannot be checked whether this task was saved. It is kept on this phone with the same details and checked again once tasks are back. Nothing is sent again until then.",
       "send_again": "Send again",
       "check_again": "Check again",
       "discard": "Discard",
       "discard_title": "Discard this task?",
       "discard_body": "If it was saved after all, it will still appear in Tasks.",
-      "banner": "A task from this entry is not confirmed yet. Tap to check."
+      "banner": "A task from this entry is not confirmed yet. Tap to check.",
+      "kept_unavailable": "A task from this entry is kept on this phone. It is checked again once tasks are available."
     },
     "assignee": {
       "me": "Me",
