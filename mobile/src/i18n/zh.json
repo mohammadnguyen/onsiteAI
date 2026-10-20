@@ -682,7 +682,11 @@
       "sent_hint": "已发送。可在“我的现场记录”中查看或重试。",
       "recording_note": "请先停止录音。停止后语音才会附加到本条记录。",
       "attachments_mobile_only": "照片、文件和语音需在手机 App 中添加。",
-      "keeping_files": "正在将文件保存到本机…"
+      "keeping_files": "正在将文件保存到本机…",
+      "leave_title": "丢弃这条记录？",
+      "leave_body": "尚未保存。其中的文字、照片、文档和语音将从本机删除。",
+      "leave_confirm": "丢弃",
+      "leave_cancel": "继续编辑"
     },
     "list": {
       "title": "我的现场记录",
