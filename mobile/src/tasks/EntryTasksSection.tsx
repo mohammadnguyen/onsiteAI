@@ -40,11 +40,17 @@ export function EntryTasksSection({
   });
 
   // A server without tasks answers 404 on this route; the entry itself was
-  // just read, so that means "no task feature here", not "no entry".
+  // just read, so that means "no task feature here", not "no entry". A create
+  // from here still in doubt stays on the phone, and the screen says so.
   if (q.isError && axios.isAxiosError(q.error) && q.error.response?.status === 404) {
     return (
-      <View style={s.section}>
+      <View style={s.section} testID="entry-tasks-unavailable">
         <Text style={s.note}>{t('tasks.unavailable')}</Text>
+        {pending ? (
+          <Text style={s.note} testID="entry-task-pending-kept">
+            {t('tasks.pending.kept_unavailable')}
+          </Text>
+        ) : null}
       </View>
     );
   }

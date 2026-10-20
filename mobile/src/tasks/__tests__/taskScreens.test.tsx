@@ -85,13 +85,20 @@ jest.mock('react-native-safe-area-context', () => {
 jest.mock('@react-native-community/datetimepicker', () => ({ __esModule: true, default: () => null }));
 
 let mockQueryData: unknown;
+// Set by a test to make every query fail with this error (null: none fails).
+let mockQueryError: unknown = null;
 const mockQueryClient = {
   setQueryData: jest.fn(),
   invalidateQueries: jest.fn(),
   cancelQueries: jest.fn(() => Promise.resolve()),
 };
 jest.mock('@tanstack/react-query', () => ({
-  useQuery: () => ({ isLoading: false, data: mockQueryData, error: null }),
+  useQuery: () => ({
+    isLoading: false,
+    data: mockQueryError ? undefined : mockQueryData,
+    error: mockQueryError,
+    isError: mockQueryError !== null,
+  }),
   useQueryClient: () => mockQueryClient,
 }));
 
@@ -115,6 +122,7 @@ jest.mock('../../api/tasks', () => ({
 import { useAuthStore } from '../../store/auth';
 import { useTaskPendingCreates } from '../../store/taskPendingCreates';
 import { DueDateField, isTypedDueValid } from '../DueDateField';
+import { EntryTasksSection } from '../EntryTasksSection';
 import TaskDetail from '../../../app/tasks/[id]';
 import NewTaskScreen from '../../../app/tasks/new';
 
@@ -195,6 +203,7 @@ beforeEach(() => {
   mockLeave = null;
   mockGuardAtReplace = [];
   mockParams = {};
+  mockQueryError = null;
   (globalThis as unknown as { __asyncStorageData?: Map<string, string> }).__asyncStorageData?.clear();
   useTaskPendingCreates.setState({ pending: [], sending: [], hydrated: true, loadFailed: false });
   useAuthStore.setState({ userId: 'me-1', sessionNonce: 1, accessToken: 'token-me' });
@@ -912,5 +921,109 @@ describe('leaving the create screen (PR #22’s guard, in the task’s words)', 
     await flush();
     expect(byTestId(tree, 'pending-not-found')).toHaveLength(1);
     expect(mockLeave?.prevent).toBe(false);
+  });
+});
+
+describe('a server without the task routes (older or rolled-back backend)', () => {
+  const ENTRY = {
+    site_log_event_id: 'event-1',
+    job_id: null,
+    revision: { body_text: 'Engineer asks for extra roof bracing\nNorth side', withdrawn: false },
+  };
+  const routeMissing = () =>
+    Object.assign(new Error('HTTP 404'), {
+      isAxiosError: true,
+      response: { status: 404, data: { detail: 'Not Found' } },
+    });
+  const sentKeys = () =>
+    mockCreateTask.mock.calls.map((c) => (c[1] as { create_client_id: string }).create_client_id);
+
+  beforeEach(() => {
+    mockParams = { eventId: 'event-1' };
+    mockQueryData = ENTRY;
+  });
+
+  it('Save answered by a missing route: kept as it was, said so, and later resolved under the same key', async () => {
+    mockCreateTask.mockRejectedValueOnce(routeMissing());
+    mockFindMyCreate.mockRejectedValue(routeMissing());
+    const tree = await render(<NewTaskScreen />);
+    act(() => byTestId(tree, 'task-title')[0].props.onChangeText('Brace the north side today'));
+    press(tree, 'task-save');
+    await flush();
+    // The real state - tasks are unavailable - not a refusal, and not a new form.
+    expect(byTestId(tree, 'pending-unavailable')).toHaveLength(1);
+    expect(byTestId(tree, 'task-save')).toHaveLength(0);
+    const kept = useTaskPendingCreates.getState().forEvent('me-1', 'event-1');
+    expect(kept).toMatchObject({ title: 'Brace the north side today', create_client_id: sentKeys()[0] });
+    expect(mockLeave?.prevent).toBe(false); // its record is on the phone
+
+    // Check again while the routes are still gone: still unavailable, nothing sent.
+    press(tree, 'pending-check-again');
+    await flush();
+    expect(byTestId(tree, 'pending-unavailable')).toHaveLength(1);
+    expect(mockCreateTask).toHaveBeenCalledTimes(1);
+
+    // The routes are back and the server does not have it: Send again, SAME key.
+    mockFindMyCreate.mockReset();
+    mockFindMyCreate.mockResolvedValue(null);
+    press(tree, 'pending-check-again');
+    await flush();
+    expect(mockFindMyCreate).toHaveBeenCalledWith(sentKeys()[0]);
+    expect(byTestId(tree, 'pending-not-found')).toHaveLength(1);
+    mockCreateTask.mockResolvedValueOnce(task());
+    press(tree, 'pending-send-again');
+    await flush();
+    expect(sentKeys()).toHaveLength(2);
+    expect(new Set(sentKeys()).size).toBe(1); // one request identity, never a second
+    expect(mockReplace).toHaveBeenCalledWith('/tasks/task-1');
+  });
+
+  it('Send again answered by a missing route keeps the record, and its key', async () => {
+    await act(async () => {
+      await useTaskPendingCreates.getState().putDurable({
+        create_client_id: 'lost-key',
+        user_id: 'me-1',
+        site_log_event_id: 'event-1',
+        title: 'Brace the north roof',
+        assignee_user_id: null,
+        assignee_name: null,
+        due_date: '2026-10-30',
+        created_at: 1,
+      });
+    });
+    mockFindMyCreate.mockResolvedValue(null); // the lookup still answers...
+    mockCreateTask.mockRejectedValueOnce(routeMissing()); // ...then the routes go
+    const tree = await render(<NewTaskScreen />);
+    await flush();
+    press(tree, 'pending-send-again');
+    await flush();
+    expect(byTestId(tree, 'pending-unavailable')).toHaveLength(1);
+    expect(useTaskPendingCreates.getState().forEvent('me-1', 'event-1')).toMatchObject({
+      create_client_id: 'lost-key',
+      title: 'Brace the north roof',
+      due_date: '2026-10-30',
+    });
+    expect(sentKeys()).toEqual(['lost-key']);
+  });
+
+  it('the entry says a create from it is kept on the phone, instead of hiding it', async () => {
+    await act(async () => {
+      await useTaskPendingCreates.getState().putDurable({
+        create_client_id: 'lost-key',
+        user_id: 'me-1',
+        site_log_event_id: 'event-1',
+        title: 'Brace the north roof',
+        assignee_user_id: null,
+        assignee_name: null,
+        due_date: null,
+        created_at: 1,
+      });
+    });
+    mockQueryError = routeMissing(); // the entry's task list: no such route
+    const tree = await render(<EntryTasksSection eventId="event-1" withdrawn={false} />);
+    expect(byTestId(tree, 'entry-tasks-unavailable')).toHaveLength(1);
+    expect(byTestId(tree, 'entry-task-pending-kept')).toHaveLength(1);
+    expect(byTestId(tree, 'entry-task-create')).toHaveLength(0);
+    expect(useTaskPendingCreates.getState().forEvent('me-1', 'event-1')?.create_client_id).toBe('lost-key');
   });
 });

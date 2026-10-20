@@ -88,7 +88,8 @@ export default function NewTaskScreen() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // One key per attempt, kept across double taps. A refusal the server gave
-  // on purpose starts a new one; an unknown result keeps it in the store.
+  // on purpose starts a new one; an unknown or unavailable result keeps it in
+  // the store (a server without the task routes is no refusal).
   const keyRef = useRef<string>(newCaptureId());
   // This attempt's record is on the phone: from then on leaving loses nothing.
   const [recorded, setRecorded] = useState(false);
@@ -127,7 +128,8 @@ export default function NewTaskScreen() {
       setError(t('tasks.new.not_saved'));
       return;
     }
-    // Unknown: the pending record stays and the panel below takes over.
+    // Unknown or unavailable: the pending record stays - same key, same
+    // values - and the panel below takes over and says which it is.
     setError(null);
   };
 

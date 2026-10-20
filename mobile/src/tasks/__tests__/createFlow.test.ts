@@ -488,3 +488,113 @@ describe('whose records they are, and where they live', () => {
     expect(second.store.getState().forEvent('user-a', 'event-1')?.create_client_id).toBe('key-1');
   });
 });
+
+/**
+ * A server without the task routes - an older backend, or one rolled back -
+ * answers 404 (or 405) to every task request. That is no refusal: it says
+ * nothing about whether an earlier request created the task, so the record
+ * stays - the same key and the same values - and is resolved under that key
+ * once the routes are back. Only the create's own business 404 (the entry is
+ * not there for this account) is a refusal.
+ */
+describe('a server without the task routes', () => {
+  const ROUTE_MISSING: [string, ReturnType<typeof httpError>][] = [
+    ['the framework’s 404 for a route that does not exist', httpError(404, 'Not Found')],
+    ['a 404 with no body', httpError(404)],
+    ['a 404 with some other detail (not the create’s refusal)', httpError(404, 'Job not found')],
+    ['a 405 for a path that exists with other methods', httpError(405, 'Method Not Allowed')],
+  ];
+
+  it.each(ROUTE_MISSING)('a first send answered by %s keeps the whole record', async (_l, err) => {
+    const { flow, auth, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreateTask.mockRejectedValue(err);
+    const original = record({ assignee_user_id: 'user-b', assignee_name: 'B' });
+    expect(await flow.sendCreate(original, 1)).toEqual({ kind: 'unavailable' });
+    // The same key and every value, exactly as recorded.
+    expect(await persisted(AsyncStorage)).toEqual([original]);
+  });
+
+  it.each(ROUTE_MISSING)('a resend answered by %s keeps the record and its key', async (_l, err) => {
+    const { flow, auth, store, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreateTask.mockRejectedValueOnce(networkError()); // the first answer is lost
+    expect(await flow.sendCreate(record(), 1)).toEqual({ kind: 'unknown' });
+    mockCreateTask.mockRejectedValueOnce(err); // Send again: the routes are gone now
+    expect(await flow.sendCreate(await shown(store, 'user-a', 'event-1'), 1)).toEqual({
+      kind: 'unavailable',
+    });
+    expect(await persisted(AsyncStorage)).toEqual([record()]);
+    const keys = mockCreateTask.mock.calls.map(
+      (c) => (c[1] as { create_client_id: string }).create_client_id,
+    );
+    expect(keys).toEqual(['key-1', 'key-1']);
+  });
+
+  it('asking about a record is "unavailable", never "not saved", while the routes are gone', async () => {
+    const { flow, auth, store, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreateTask.mockRejectedValue(networkError());
+    await flow.sendCreate(record(), 1);
+    for (const err of [httpError(404, 'Not Found'), httpError(405)]) {
+      mockFindMyCreate.mockRejectedValueOnce(err);
+      expect(await flow.resolvePending(await shown(store, 'user-a', 'event-1'), 1)).toEqual({
+        kind: 'unavailable',
+      });
+    }
+    expect(mockCreateTask).toHaveBeenCalledTimes(1); // nothing was resent
+    expect(await persisted(AsyncStorage)).toEqual([record()]);
+  });
+
+  it('the create’s own 404 (the entry is not there) is still a refusal', async () => {
+    const { flow, auth, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreateTask.mockRejectedValue(httpError(404, 'Site log event not found'));
+    expect(await flow.sendCreate(record(), 1)).toEqual({
+      kind: 'refused',
+      status: 404,
+      detail: 'Site log event not found',
+    });
+    expect(await persisted(AsyncStorage)).toEqual([]);
+  });
+
+  it.each([
+    ['the server has it (it was created before the routes went)', TASK, ['key-1']],
+    ['the server does not have it: sent again, same key', null, ['key-1', 'key-1']],
+  ])(
+    'after a restart, once the routes are back: %s',
+    async (_l, onServer, expectedKeys) => {
+      const first = load();
+      signIn(first.auth, 'user-a', 1);
+      mockCreateTask.mockRejectedValueOnce(httpError(404, 'Not Found'));
+      expect(await first.flow.sendCreate(record(), 1)).toEqual({ kind: 'unavailable' });
+
+      jest.resetModules(); // the app restarts; the phone's storage is the same
+      const second = load();
+      signIn(second.auth, 'user-a', 1);
+      await second.store.getState().hydrate();
+      const reloaded = second.store.getState().forEvent('user-a', 'event-1');
+      expect(reloaded).toEqual(record()); // same key, same values
+
+      // The routes are back (the backend was redeployed).
+      mockFindMyCreate.mockResolvedValueOnce(onServer);
+      const resolved = await second.flow.resolvePending(reloaded as PendingTaskCreate, 1);
+      expect(mockFindMyCreate).toHaveBeenLastCalledWith('key-1');
+      if (onServer) {
+        expect(resolved).toEqual({ kind: 'found', task: TASK });
+      } else {
+        expect(resolved).toEqual({ kind: 'not_found' });
+        mockCreateTask.mockResolvedValueOnce(TASK);
+        expect(await second.flow.sendCreate(reloaded as PendingTaskCreate, 1)).toEqual({
+          kind: 'created',
+          task: TASK,
+        });
+      }
+      const keys = mockCreateTask.mock.calls.map(
+        (c) => (c[1] as { create_client_id: string }).create_client_id,
+      );
+      expect(keys).toEqual(expectedKeys); // one request identity, never a second
+      expect(await persisted(second.AsyncStorage)).toEqual([]);
+    },
+  );
+});
