@@ -42,6 +42,13 @@ from app.models.site_log import (
     SiteLogEventRevision,
 )
 from app.models.supplier import Supplier, SupplierAlias
+from app.models.task import (
+    Task,
+    TaskAuditAction,
+    TaskAuditLog,
+    TaskOrigin,
+    TaskStatus,
+)
 from app.models.user import LanguageCode, User, UserRole
 
 __all__ = [
@@ -79,6 +86,11 @@ __all__ = [
     "SiteLogEventRevision",
     "Supplier",
     "SupplierAlias",
+    "Task",
+    "TaskAuditAction",
+    "TaskAuditLog",
+    "TaskOrigin",
+    "TaskStatus",
     "User",
     "UserRole",
     "Worker",

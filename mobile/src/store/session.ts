@@ -1,6 +1,7 @@
 import { queryClient } from '../api/queryClient';
 import { useFailuresStore } from './failures';
 import { useSiteLogDrafts } from './siteLogDrafts';
+import { useTaskPendingCreates } from './taskPendingCreates';
 import { useLabourEditTargetStore } from './labourEditTarget';
 import { useExpenseListFiltersStore } from './expenseListFilters';
 
@@ -57,8 +58,9 @@ export function resetSessionState(): void {
  * first, and during that wait the user can still reach the capture screen
  * and save something. A list computed at deletion time would take that new
  * capture too, after a confirmation that never mentioned it. An empty list
- * deletes nothing, which is what an ordinary logout with no unsent work
- * should do.
+ * deletes no draft, which is what an ordinary logout with no unsent work
+ * should do. (This account's unresolved task creates are still dropped:
+ * plan v2 §5.)
  *
  * `userId` null means no identifiable account, and then nothing is
  * touched: deleting somebody's evidence is not the safe default.
@@ -68,6 +70,17 @@ export async function wipeOnExplicitLogout(
   confirmedCaptureIds: string[],
 ): Promise<void> {
   useFailuresStore.getState().clearFailures();
-  if (userId === null || confirmedCaptureIds.length === 0) return;
+  if (userId === null) return;
+  // Task creates whose result is unknown are this account's alone and are
+  // dropped with it (plan v2 §5). Nothing of another account's is touched:
+  // the change is applied to what is on the phone, never to a copy that may
+  // have failed to load. If the phone's storage cannot be read, the records
+  // stay - they are still this account's only - and logout carries on.
+  try {
+    await useTaskPendingCreates.getState().clearUser(userId);
+  } catch {
+    // Kept on purpose; see above.
+  }
+  if (confirmedCaptureIds.length === 0) return;
   await useSiteLogDrafts.getState().clearCaptures(userId, confirmedCaptureIds);
 }

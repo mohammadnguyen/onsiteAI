@@ -32,6 +32,7 @@ from app.models.job import Job, JobAlias, JobCategoryBudget, JobStatus
 from app.models.job_audit_log import JobAuditLog
 from app.models.labour import LabourEntry
 from app.models.review_queue import ExpenseReviewQueue
+from app.models.task import Task
 from app.models.user import LanguageCode, User
 
 
@@ -615,6 +616,7 @@ async def delete_empty_job(
     * ``SELECT COUNT(*) FROM expense_review_queue erq
         JOIN expenses e ON erq.expense_id = e.expense_id
         WHERE e.job_id = $1`` must be 0.
+    * labour entries and tasks on the job must be 0 (checks 3 and 4).
 
     Audit row is written BEFORE the SQL DELETE so the trail survives
     via ``ON DELETE SET NULL`` on ``job_audit_log.job_id`` (v1A-1
@@ -690,6 +692,23 @@ async def delete_empty_job(
         noun = "labour entry" if labour_count == 1 else "labour entries"
         raise JobHasDependencies(
             f"Job has {labour_count} {noun} and cannot be deleted. "
+            "Archive it instead."
+        )
+
+    # Dependency check 4 (Tasks): a task keeps its own job and that job is
+    # never cleared, so a job any task points at is archived, not deleted.
+    # The foreign key on tasks.job_id is the backstop; this 409 is the
+    # contract (without it the delete fails as a 500).
+    task_count = int(
+        (
+            await db.execute(select(func.count()).where(Task.job_id == job_id))
+        ).scalar()
+        or 0
+    )
+    if task_count > 0:
+        noun = "task" if task_count == 1 else "tasks"
+        raise JobHasDependencies(
+            f"Job has {task_count} {noun} and cannot be deleted. "
             "Archive it instead."
         )
 
