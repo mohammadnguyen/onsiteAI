@@ -46,10 +46,12 @@ jest.mock('../../components/JobPickerSheet', () => ({ JobPickerSheet: () => null
 
 // ---- the fake server ------------------------------------------------------
 const mockGetPv = jest.fn();
+const mockListEvent = jest.fn();
 const mockFind = jest.fn();
 jest.mock('../../api/potentialVariations', () => ({
   ...jest.requireActual('../../api/potentialVariations'),
   getPotentialVariation: (...a: unknown[]) => mockGetPv(...a),
+  listEventPotentialVariations: (...a: unknown[]) => mockListEvent(...a),
   findMyPvCreate: (...a: unknown[]) => mockFind(...a),
   createPotentialVariation: jest.fn(),
   updatePotentialVariation: jest.fn(),
@@ -61,6 +63,7 @@ jest.mock('../../api/siteLog', () => ({
 
 import { useAuthStore } from '../../store/auth';
 import { usePvPendingCreates } from '../../store/pvPendingCreates';
+import { EntryPvSection } from '../EntryPvSection';
 import PotentialVariationDetail from '../../../app/potential-variations/[id]';
 import NewPotentialVariationScreen from '../../../app/potential-variations/new';
 
@@ -188,20 +191,31 @@ describe('the detail screen', () => {
     expect(text).toContain(NOTE);
     expect(text).toContain(SECOND_LINE);
 
-    // E.g. this admin was made a contributor while the screen stayed open.
-    mockGetPv.mockRejectedValueOnce(httpError(404, 'Potential variation not found'));
+    // E.g. this admin was made a contributor while the screen stayed open:
+    // from now on the server refuses every read.
+    mockGetPv.mockRejectedValue(httpError(404, 'Potential variation not found'));
     await act(async () => {
       await client.refetchQueries({ queryKey: DETAIL_KEY, exact: true });
     });
     await flush();
 
-    // The cache still holds the earlier read...
-    expect(client.getQueryData(DETAIL_KEY)).toBeDefined();
-    // ...and the screen shows none of it.
+    // The screen shows none of it, and the cache no longer holds it.
     expect(byTestId(tree, 'pv-not-found')).toHaveLength(1);
     text = allText(tree);
     for (const secret of [TITLE, NOTE, SECOND_LINE]) expect(text).not.toContain(secret);
     expect(byTestId(tree, 'pv-decision-save')).toHaveLength(0);
+    expect(client.getQueryData(DETAIL_KEY)).toBeUndefined();
+
+    // A later read that merely fails (no signal) replaces the 404 - and
+    // still brings nothing back: there is nothing left to show.
+    mockGetPv.mockRejectedValueOnce(noSignal());
+    await act(async () => {
+      await client.refetchQueries({ queryKey: DETAIL_KEY, exact: true });
+    });
+    await flush();
+    text = allText(tree);
+    for (const secret of [TITLE, NOTE, SECOND_LINE]) expect(text).not.toContain(secret);
+    expect(byTestId(tree, 'pv-load-failed')).toHaveLength(1);
   });
 
   it('a refetch that merely fails (no signal) keeps showing the flag, and says it may be old', async () => {
@@ -275,5 +289,29 @@ describe('the flag screen', () => {
     expect(byTestId(tree, 'pv-pending-not-found')).toHaveLength(1);
     expect(allText(tree)).not.toContain(TITLE);
     expect(allText(tree)).toContain('potentialVariations.placeholder_title');
+  });
+});
+
+describe("the entry's section", () => {
+  it('rows shown, then the server says no: they go, and a later failed read brings none back', async () => {
+    const row = { ...builderView(), source: { site_log_event_id: 'event-1', revision_no: 1, readable: true, job_id: null } };
+    mockListEvent.mockResolvedValueOnce([row]);
+    const tree = await render(<EntryPvSection eventId="event-1" withdrawn={false} />);
+    expect(allText(tree)).toContain(TITLE);
+
+    mockListEvent.mockRejectedValue(httpError(404, 'Site log event not found'));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['potential-variations', 'event', 'event-1'] });
+    });
+    await flush();
+    expect(byTestId(tree, 'entry-pv-unavailable')).toHaveLength(1);
+    expect(allText(tree)).not.toContain(TITLE);
+
+    mockListEvent.mockRejectedValueOnce(noSignal());
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['potential-variations', 'event', 'event-1'] });
+    });
+    await flush();
+    expect(allText(tree)).not.toContain(TITLE);
   });
 });

@@ -89,6 +89,7 @@ const mockQueryClient = {
     mockOnInvalidate(queryKey);
   }),
   cancelQueries: jest.fn(() => Promise.resolve()),
+  resetQueries: jest.fn(() => Promise.resolve()),
 };
 // The list's paged query: what it was asked for, and one page of rows.
 type MockInfinite = { queryKey: unknown[]; queryFn: (o: { pageParam: number }) => unknown };

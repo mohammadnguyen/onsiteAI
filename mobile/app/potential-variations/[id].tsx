@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -100,6 +100,16 @@ export default function PotentialVariationDetail() {
   // not go on seeing the flag, the entry's text or the builder's note.
   const denied =
     q.isError && axios.isAxiosError(q.error) && q.error.response?.status === 404;
+  // Hiding is not enough: a later read that merely fails (no signal) would
+  // replace the 404 and put the cached flag back on screen. So a 404 drops
+  // what the cache holds - the reset reads once more, and with no data left
+  // there is nothing to drop the second time.
+  const deniedWithData = denied && q.data !== undefined;
+  useEffect(() => {
+    if (deniedWithData) {
+      void qc.resetQueries({ queryKey: ['potential-variations', 'detail', id], exact: true });
+    }
+  }, [deniedWithData, id, qc]);
   if (q.isLoading) return <ActivityIndicator style={s.spinner} />;
   if (denied || !q.data) {
     return (

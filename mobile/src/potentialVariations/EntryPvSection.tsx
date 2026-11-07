@@ -1,8 +1,9 @@
+import { useEffect } from 'react';
 import axios from 'axios';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { useTranslation } from 'react-i18next';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { useMe } from '../api/hooks/useAuth';
 import { listEventPotentialVariations, type PvOut } from '../api/potentialVariations';
@@ -28,15 +29,25 @@ export function EntryPvSection({ eventId, withdrawn }: { eventId: string; withdr
   const tokenUserId = useAuthStore((s) => s.userId);
   const userId = me?.user_id ?? tokenUserId;
   const pending = usePvPendingCreates((s) => (userId ? s.forEvent(userId, eventId) : undefined));
+  const qc = useQueryClient();
   const q = useQuery({
     queryKey: ['potential-variations', 'event', eventId],
     queryFn: () => listEventPotentialVariations(eventId),
   });
+  const refused = q.isError && axios.isAxiosError(q.error) && q.error.response?.status === 404;
+  // A 404 drops the rows an earlier read cached (their titles come from the
+  // entry): only hidden, they would come back when a later read merely fails.
+  const refusedWithRows = refused && q.data !== undefined;
+  useEffect(() => {
+    if (refusedWithRows) {
+      void qc.resetQueries({ queryKey: ['potential-variations', 'event', eventId], exact: true });
+    }
+  }, [refusedWithRows, eventId, qc]);
 
-  // A server without flags answers 404 on this route; the entry itself was
-  // just read, so that means "no flags here", not "no entry". A flag from
-  // here still in doubt stays on the phone, and the screen says so.
-  if (q.isError && axios.isAxiosError(q.error) && q.error.response?.status === 404) {
+  // A server without flags answers 404 on this route (as does one that no
+  // longer lets this user read the entry). A flag from here still in doubt
+  // stays on the phone, and the screen says so.
+  if (refused) {
     return (
       <View style={s.section} testID="entry-pv-unavailable">
         <Text style={s.note}>{t('potentialVariations.unavailable')}</Text>
