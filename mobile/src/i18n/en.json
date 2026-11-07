@@ -909,5 +909,132 @@
       "none": "No tasks from this entry yet.",
       "load_failed": "Could not load this entry's tasks."
     }
+  },
+  "potentialVariations": {
+    "disclaimer": "A flag means someone should check this. It is not client approval, not a price, and not approval to start work.",
+    "placeholder_title": "Potential variation (source entry not available)",
+    "unavailable": "Potential variations are not available on this server yet.",
+    "flagged_by": "Flagged by {{name}} · {{date}}",
+    "state": {
+      "to_check": "To check",
+      "following_up": "Following up",
+      "ended": "Follow-up ended"
+    },
+    "reason": {
+      "already_in_contract": "Already in the contract",
+      "client_not_proceeding": "Client not going ahead",
+      "handled_outside_forey": "Handled outside Forey",
+      "flagged_in_error": "Flagged by mistake or duplicate",
+      "other": "Other"
+    },
+    "home": {
+      "to_check": "Potential variations to check: {{n}}"
+    },
+    "job_row": {
+      "title": "Potential variations"
+    },
+    "list": {
+      "title": "Potential variations",
+      "all": "All",
+      "empty": "No potential variations here.",
+      "load_failed": "Could not load potential variations. Pull down to try again.",
+      "no_job": "No job yet",
+      "job_filter": "Job: {{job}}",
+      "clear_job": "All jobs",
+      "this_job": "this job"
+    },
+    "new": {
+      "title": "Flag as potential variation",
+      "entry_label": "The entry",
+      "version": "Version {{n}}",
+      "no_text": "(no text)",
+      "title_label": "What should be checked?",
+      "title_placeholder": "e.g. Two extra power points in the kitchen",
+      "title_hint": "Starts as the entry's first line. Edit it before saving.",
+      "title_too_long": "Keep it to {{max}} characters.",
+      "job": "Job",
+      "job_from_entry": "{{job}} (from the entry)",
+      "no_job": "No job (the entry has none)",
+      "save": "Save flag",
+      "saving": "Saving…",
+      "save_failed": "Could not save the flag.",
+      "source_changed": "The entry changed since you opened it. Check it and save again.",
+      "entry_withdrawn": "This entry was withdrawn, so it can't be flagged.",
+      "entry_gone": "This entry can't be opened any more, so it can't be flagged.",
+      "load_failed": "Could not load the entry.",
+      "not_saved": "Could not save this flag on the phone, so nothing was sent. Try again.",
+      "store_failed": "Could not read the flags saved on this phone. Try again before flagging.",
+      "leave_title": "Discard this flag?",
+      "leave_body": "It has not been saved. What you entered here will be lost.",
+      "leave_confirm": "Discard",
+      "leave_cancel": "Keep editing",
+      "saving_leave_title": "Still saving this flag",
+      "saving_leave_body": "It is still being saved on this phone. If you leave now it may still be saved; if saving fails, it is lost.",
+      "saving_leave_confirm": "Leave anyway",
+      "saving_leave_cancel": "Stay"
+    },
+    "pending": {
+      "checking": "Checking whether your earlier flag was saved…",
+      "found": "This flag was already saved.",
+      "not_found_title": "Your earlier flag was not saved",
+      "not_found_body": "Send it again with the same details? It cannot make a second flag.",
+      "unknown_title": "Not confirmed yet",
+      "unknown_body": "The connection dropped, so it is not known whether the flag was saved. Nothing is sent again until that has been checked.",
+      "unavailable_title": "Flags are not available right now",
+      "unavailable_body": "Flags aren't available on this server right now. Your flag is kept on this phone with the same details and checked again once flags are back. Nothing is sent again until then.",
+      "send_again": "Send again",
+      "check_again": "Check again",
+      "discard": "Discard",
+      "discard_title": "Discard this flag?",
+      "discard_body": "If it was saved after all, it will still appear under Potential variations.",
+      "banner": "A flag from this entry is not confirmed yet. Tap to check.",
+      "kept_unavailable": "A flag from this entry is kept on this phone. It is checked again once flags are available."
+    },
+    "entry_section": {
+      "title": "Potential variations from this entry",
+      "flag": "Flag as potential variation",
+      "none": "Not flagged yet.",
+      "load_failed": "Could not load this entry's flags."
+    },
+    "detail": {
+      "source": "Site log entry",
+      "source_hidden": "The source entry is not visible to you.",
+      "original": "Original record, version {{n}}, recorded {{time}}",
+      "location": "Location: {{place}}",
+      "newer_version": "The entry has a newer version ({{n}}).",
+      "withdrawn": "The entry has since been withdrawn.",
+      "attachments_now": "Attachments on the entry now: {{list}}",
+      "attachments_not_all_saved": "not all saved",
+      "list_separator": ", ",
+      "open_entry": "Open entry",
+      "job": "Job",
+      "set_job": "Set job",
+      "change_job": "Change job",
+      "add_job_prompt": "Add a job so this can be found under the job.",
+      "job_moved_note": "The entry is now under {{job}}. This flag stays where it is.",
+      "job_moved_unknown": "another job",
+      "job_move_title": "Move this flag to {{job}}?",
+      "job_move_confirm": "Move flag",
+      "note": "Builder's note",
+      "decided_by": "Follow-up updated by {{name}} · {{date}}",
+      "not_found": "Flag not found.",
+      "save_failed": "Could not save the change.",
+      "not_refreshed": "Could not refresh this flag, so what you see may not be its latest state.",
+      "refresh": "Refresh"
+    },
+    "decision": {
+      "title": "Follow-up",
+      "choose_to_check": "To check",
+      "choose_following_up": "Following up",
+      "choose_ended": "End follow-up",
+      "reason_label": "Why did follow-up end?",
+      "note_label": "Builder's note (optional)",
+      "note_required_label": "Builder's note (needed for Other)",
+      "note_placeholder": "Seen only by admins",
+      "note_hint": "Up to {{max}} characters. Saving replaces the note.",
+      "note_too_long": "Keep it to {{max}} characters.",
+      "note_needed": "Add a note for Other.",
+      "save": "Save"
+    }
   }
 }

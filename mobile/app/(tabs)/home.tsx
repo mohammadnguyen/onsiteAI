@@ -27,6 +27,7 @@ import { useToastStore } from '../../src/store/toast';
 import { tokens } from '../../src/ui/tokens';
 import { ReviewCardStack } from '../../src/components/home/ReviewCardStack';
 import { TodayAttendance } from '../../src/components/home/TodayAttendance';
+import { HomePvCard } from '../../src/potentialVariations/HomePvCard';
 import { Toast } from '../../src/ui/kit';
 
 /**
@@ -92,6 +93,7 @@ export default function HomeScreen() {
       qc.invalidateQueries({ queryKey: ['expenses'] }),
       qc.invalidateQueries({ queryKey: ['review-queue'] }),
       qc.invalidateQueries({ queryKey: ['labour-entries'] }),
+      qc.invalidateQueries({ queryKey: ['potential-variations'] }),
     ]).finally(() => setUserRefreshing(false));
   };
 
@@ -135,6 +137,9 @@ export default function HomeScreen() {
         <CaptureEntryCard />
         <SiteLogEntryCard />
         <TasksEntryCard />
+        {/* Builder only: potential variations still To check (DEC-PV-001).
+            Renders nothing when there are none or the count is unknown. */}
+        {isAdmin ? <HomePvCard /> : null}
         {isAdmin ? <StatDuo dequeued={dequeued} /> : null}
         {isAdmin ? (
           <ReviewCardStack

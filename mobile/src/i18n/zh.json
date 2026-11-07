@@ -909,5 +909,132 @@
       "none": "这条记录还没有待办。",
       "load_failed": "无法加载这条记录的待办。"
     }
+  },
+  "potentialVariations": {
+    "disclaimer": "这只是提醒核对：不代表客户已批准、可以收费或可以开工。",
+    "placeholder_title": "潜在变更（来源记录不可查看）",
+    "unavailable": "此服务器暂不支持潜在变更功能。",
+    "flagged_by": "{{name}} 标记 · {{date}}",
+    "state": {
+      "to_check": "待核对",
+      "following_up": "继续跟进",
+      "ended": "已结束跟进"
+    },
+    "reason": {
+      "already_in_contract": "原合同已包含",
+      "client_not_proceeding": "客户不做了",
+      "handled_outside_forey": "已在 Forey 外处理",
+      "flagged_in_error": "标记有误或重复",
+      "other": "其他"
+    },
+    "home": {
+      "to_check": "待核对的潜在变更：{{n}}"
+    },
+    "job_row": {
+      "title": "潜在变更"
+    },
+    "list": {
+      "title": "潜在变更",
+      "all": "全部",
+      "empty": "这里暂无潜在变更。",
+      "load_failed": "无法加载潜在变更，下拉重试。",
+      "no_job": "尚未关联项目",
+      "job_filter": "项目：{{job}}",
+      "clear_job": "全部项目",
+      "this_job": "该项目"
+    },
+    "new": {
+      "title": "标记为潜在变更",
+      "entry_label": "记录内容",
+      "version": "第 {{n}} 版",
+      "no_text": "（无文字）",
+      "title_label": "需要核对什么？",
+      "title_placeholder": "例如：厨房加两个插座",
+      "title_hint": "默认取自记录的第一行，保存前可修改。",
+      "title_too_long": "请控制在 {{max}} 个字以内。",
+      "job": "项目",
+      "job_from_entry": "{{job}}（取自记录）",
+      "no_job": "无项目（该记录未关联项目）",
+      "save": "保存标记",
+      "saving": "保存中…",
+      "save_failed": "无法保存标记。",
+      "source_changed": "你打开之后这条记录有改动。请核对后再保存。",
+      "entry_withdrawn": "该记录已撤回，不能标记。",
+      "entry_gone": "该记录已无法打开，不能标记。",
+      "load_failed": "无法加载该记录。",
+      "not_saved": "无法在手机上保存这条标记，因此没有发送。请重试。",
+      "store_failed": "无法读取手机上保存的标记。请先重试，再标记。",
+      "leave_title": "丢弃这条标记？",
+      "leave_body": "尚未保存，此处填写的内容将会丢失。",
+      "leave_confirm": "丢弃",
+      "leave_cancel": "继续编辑",
+      "saving_leave_title": "标记仍在保存",
+      "saving_leave_body": "标记仍在保存到本机。现在离开，标记仍可能被保存；如果保存失败，它将丢失。",
+      "saving_leave_confirm": "仍然离开",
+      "saving_leave_cancel": "留下"
+    },
+    "pending": {
+      "checking": "正在确认上次的标记是否已保存…",
+      "found": "这条标记已经保存过了。",
+      "not_found_title": "上次的标记没有保存",
+      "not_found_body": "用相同内容再发送一次？不会产生重复的标记。",
+      "unknown_title": "尚未确认",
+      "unknown_body": "连接中断，暂时无法确认标记是否已保存。确认之前不会再次发送。",
+      "unavailable_title": "标记功能暂时不可用",
+      "unavailable_body": "此服务器目前不提供潜在变更功能。你的标记已按原内容保留在这部手机上，功能恢复后会再次确认。在此之前不会再次发送。",
+      "send_again": "再次发送",
+      "check_again": "再次确认",
+      "discard": "放弃",
+      "discard_title": "放弃这条标记？",
+      "discard_body": "如果其实已经保存，它仍会出现在潜在变更列表中。",
+      "banner": "这条记录有一条标记尚未确认，点击确认。",
+      "kept_unavailable": "这条记录有一条标记保留在这部手机上，功能恢复后会再次确认。"
+    },
+    "entry_section": {
+      "title": "来自这条记录的潜在变更",
+      "flag": "标记为潜在变更",
+      "none": "尚未标记。",
+      "load_failed": "无法加载这条记录的标记。"
+    },
+    "detail": {
+      "source": "现场记录",
+      "source_hidden": "你无权查看来源记录。",
+      "original": "原始记录：第 {{n}} 版，记录于 {{time}}",
+      "location": "位置：{{place}}",
+      "newer_version": "该记录已有更新的版本（第 {{n}} 版）。",
+      "withdrawn": "该记录之后已被撤回。",
+      "attachments_now": "该记录目前的附件：{{list}}",
+      "attachments_not_all_saved": "部分未保存",
+      "list_separator": "、",
+      "open_entry": "打开记录",
+      "job": "项目",
+      "set_job": "设置项目",
+      "change_job": "更改项目",
+      "add_job_prompt": "请关联项目，以便在项目下找到它。",
+      "job_moved_note": "该记录现在属于 {{job}}，这条标记保持不变。",
+      "job_moved_unknown": "其他项目",
+      "job_move_title": "把这条标记移到 {{job}}？",
+      "job_move_confirm": "移动标记",
+      "note": "管理员备注",
+      "decided_by": "{{name}} 更新跟进 · {{date}}",
+      "not_found": "找不到这条标记。",
+      "save_failed": "无法保存修改。",
+      "not_refreshed": "无法刷新这条标记，显示的可能不是最新状态。",
+      "refresh": "刷新"
+    },
+    "decision": {
+      "title": "跟进",
+      "choose_to_check": "待核对",
+      "choose_following_up": "继续跟进",
+      "choose_ended": "结束跟进",
+      "reason_label": "为什么结束跟进？",
+      "note_label": "管理员备注（可选）",
+      "note_required_label": "管理员备注（选“其他”时必填）",
+      "note_placeholder": "仅管理员可见",
+      "note_hint": "最多 {{max}} 个字。保存后会替换原备注。",
+      "note_too_long": "请控制在 {{max}} 个字以内。",
+      "note_needed": "选择“其他”时请填写备注。",
+      "save": "保存"
+    }
   }
 }

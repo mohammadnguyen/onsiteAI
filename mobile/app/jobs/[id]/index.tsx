@@ -28,6 +28,7 @@ import {
 } from '../../../src/api/hooks/useLabour';
 import { useMe } from '../../../src/api/hooks/useAuth';
 import { RecentCapturesList } from '../../../src/components/RecentCapturesList';
+import { JobPvRow } from '../../../src/potentialVariations/JobPvRow';
 import {
   formatDays,
   formatMoney,
@@ -312,6 +313,9 @@ export default function JobDetailScreen() {
                   </TouchableOpacity>
                 ))}
               </View>
+              {/* Potential variations flagged on this job (DEC-PV-001):
+                  money-free, every role; hidden when it cannot be read. */}
+              {jobId ? <JobPvRow jobId={jobId} /> : null}
               {isAdmin ? (
                 <View style={s.lifecycleSection} testID="job-lifecycle">
                   {data.status === 'active' ? (
