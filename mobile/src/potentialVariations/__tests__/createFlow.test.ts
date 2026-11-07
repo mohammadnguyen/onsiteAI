@@ -171,6 +171,9 @@ describe('sending a flag', () => {
     ['a server error (503)', httpError(503)],
     ['a server error (500)', httpError(500, 'Potential variation error')],
     ['an ended session (401)', httpError(401)],
+    // "Not now", not "no": the first request may still be running.
+    ['a request timeout answered by the server or a proxy (408)', httpError(408)],
+    ['too many requests (429)', httpError(429, 'Too Many Requests')],
   ])('keeps the record when the result is unknown: %s', async (_l, err) => {
     const { flow, auth, AsyncStorage } = load();
     signIn(auth, 'user-a', 1);
@@ -283,6 +286,28 @@ describe('finding out what happened to a lost flag', () => {
     expect(second).toEqual(first); // same entry, same key, same title, same version
     expect(store.getState().forEvent('user-a', 'event-1')).toBeUndefined();
   });
+
+  it.each([408, 429])(
+    'a resend answered %i keeps the record - same key, same values - and stays unknown',
+    async (status) => {
+      // The original timed out on the phone but may still be running on the
+      // server: the lookup finds nothing yet, and the resend is told "not
+      // now". Dropping the record here would let the next save take a new
+      // key while the original can still commit.
+      const { flow, auth, store, AsyncStorage } = load();
+      signIn(auth, 'user-a', 1);
+      mockCreate.mockRejectedValueOnce(networkError());
+      await flow.sendPvCreate(record(), 1);
+      mockFind.mockResolvedValue(null);
+      const pending = await shown(store, 'user-a', 'event-1');
+      expect(await flow.resolvePvPending(pending, 1)).toEqual({ kind: 'not_found' });
+
+      mockCreate.mockRejectedValueOnce(httpError(status));
+      expect(await flow.sendPvCreate(pending, 1)).toEqual({ kind: 'unknown' });
+      expect(await persisted(AsyncStorage)).toEqual([record()]);
+      expect(sentKeys()).toEqual(['key-1', 'key-1']);
+    },
+  );
 
   it('still unreachable: unknown, and nothing changes', async () => {
     const { flow, auth, store, AsyncStorage } = load();

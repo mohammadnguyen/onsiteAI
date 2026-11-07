@@ -71,6 +71,10 @@ function mockAnswer(queryKey: unknown[]) {
   const r = mockResults[queryKey.slice(0, 2).join(':')] ?? {};
   return {
     isLoading: r.isLoading ?? false,
+    // The latest read succeeded. (A read that failed after an earlier one
+    // succeeded keeps that data in the real cache: pvCacheAccess.test.tsx
+    // covers that with the real QueryClient.)
+    isSuccess: !r.error && !(r.isLoading ?? false) && r.data !== undefined,
     data: r.error ? undefined : r.data,
     error: r.error ?? null,
     isError: Boolean(r.error),
@@ -421,6 +425,54 @@ describe('flagging an entry', () => {
     await flush();
     expect(mockCreate).not.toHaveBeenCalled();
     expect(mockReplace).toHaveBeenCalledWith('/potential-variations/pv-9?notice=already_created');
+  });
+
+  it('an unresolved flag whose entry this user can no longer read: kept and asked about, its saved title not shown', async () => {
+    await act(async () => {
+      await usePvPendingCreates.getState().putDurable({
+        create_client_id: 'lost-key',
+        user_id: 'me-1',
+        site_log_event_id: 'event-1',
+        source_revision_no: 3,
+        title: KITCHEN,
+        created_at: 1,
+      });
+    });
+    mockResults['site-log:event'] = {
+      error: Object.assign(new Error('HTTP 404'), {
+        isAxiosError: true,
+        response: { status: 404, data: { detail: 'Site log event not found' } },
+      }),
+    };
+    const tree = await render(<NewPotentialVariationScreen />);
+    await flush();
+    expect(mockFind).toHaveBeenCalledWith('lost-key');
+    expect(byTestId(tree, 'pv-pending-not-found')).toHaveLength(1);
+    expect(allText(tree)).not.toContain(KITCHEN);
+    expect(allText(tree)).toContain('potentialVariations.placeholder_title');
+    // The record itself - key and values - is untouched.
+    expect(usePvPendingCreates.getState().forEvent('me-1', 'event-1')).toMatchObject({
+      create_client_id: 'lost-key',
+      title: KITCHEN,
+      source_revision_no: 3,
+    });
+  });
+
+  it('an unresolved flag on an entry this user can read shows its saved title', async () => {
+    await act(async () => {
+      await usePvPendingCreates.getState().putDurable({
+        create_client_id: 'lost-key',
+        user_id: 'me-1',
+        site_log_event_id: 'event-1',
+        source_revision_no: 3,
+        title: 'Two extra GPOs',
+        created_at: 1,
+      });
+    });
+    const tree = await render(<NewPotentialVariationScreen />);
+    await flush();
+    expect(byTestId(tree, 'pv-pending-not-found')).toHaveLength(1);
+    expect(allText(tree)).toContain('Two extra GPOs');
   });
 
   it('a route-less server keeps the flag on the phone and says so', async () => {

@@ -1018,6 +1018,7 @@
       "note": "管理员备注",
       "decided_by": "{{name}} 更新跟进 · {{date}}",
       "not_found": "找不到这条标记。",
+      "load_failed": "无法加载这条标记。请检查网络后重试。",
       "save_failed": "无法保存修改。",
       "not_refreshed": "无法刷新这条标记，显示的可能不是最新状态。",
       "refresh": "刷新"

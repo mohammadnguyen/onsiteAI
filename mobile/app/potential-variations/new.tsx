@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import axios from 'axios';
 
 import { useMe } from '../../src/api/hooks/useAuth';
 import { useJobs } from '../../src/api/hooks/useJobs';
@@ -72,6 +73,9 @@ export default function NewPotentialVariationScreen() {
     queryFn: () => getEvent(String(eventId)),
     enabled: Boolean(eventId),
   });
+  // Readable now = the latest read of the entry succeeded (not merely that
+  // some earlier read left data in the cache).
+  const entryReadable = entry.isSuccess;
   const jobs = useJobs();
   const jobName = useMemo(() => {
     const id = entry.data?.job_id;
@@ -140,7 +144,7 @@ export default function NewPotentialVariationScreen() {
   };
 
   const onSave = async () => {
-    if (sending || reloading || !userId || !eventId || !entry.data) return;
+    if (sending || reloading || !userId || !eventId || !entryReadable || !entry.data) return;
     if (title === null || !isUsableTitle(title)) return;
     // Read before any await: this is the session the user tapped Save in,
     // and the version on screen is the one the user saw.
@@ -207,6 +211,9 @@ export default function NewPotentialVariationScreen() {
       <PendingFlagPanel
         key={pending.create_client_id}
         pending={pending}
+        // The latest read succeeded: this user can read the entry. A 404, or
+        // no answer at all, establishes nothing - the saved title stays hidden.
+        sourceReadable={entryReadable}
         screenActive={activeRef}
         onRefused={(refusal, values) => {
           // Nothing was created under that key; the next save gets a new
@@ -227,8 +234,30 @@ export default function NewPotentialVariationScreen() {
         }}
       />
     );
-  } else if (!entry.data) {
-    body = <Text style={s.note}>{t('potentialVariations.new.load_failed')}</Text>;
+  } else if (!entryReadable || !entry.data) {
+    // Nothing from the entry is shown unless the LATEST read succeeded: the
+    // query cache keeps an earlier read's data through a failed one, and a
+    // 404 now means this user may no longer read the entry.
+    const gone = axios.isAxiosError(entry.error) && entry.error.response?.status === 404;
+    body = gone ? (
+      <Text style={s.note} testID="pv-entry-gone">
+        {t('potentialVariations.new.entry_gone')}
+      </Text>
+    ) : (
+      <View style={s.form}>
+        <Text style={s.note} testID="pv-entry-load-failed">
+          {t('potentialVariations.new.load_failed')}
+        </Text>
+        <Pressable
+          onPress={() => void entry.refetch()}
+          disabled={entry.isFetching}
+          accessibilityRole="button"
+          testID="pv-entry-retry"
+        >
+          <Text style={s.retry}>{t('common.retry')}</Text>
+        </Pressable>
+      </View>
+    );
   } else if (entry.data.revision.withdrawn) {
     body = <Text style={s.note}>{t('potentialVariations.new.entry_withdrawn')}</Text>;
   } else {

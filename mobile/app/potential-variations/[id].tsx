@@ -79,7 +79,13 @@ export default function PotentialVariationDetail() {
       void qc.invalidateQueries({ queryKey: ['potential-variations', 'count'] });
       return true;
     } catch (err) {
-      if (useAuthStore.getState().sessionNonce !== startedUnder || !activeRef.current) return false;
+      if (useAuthStore.getState().sessionNonce !== startedUnder) return false;
+      // A 404 means this user may no longer see the flag: read it again, so
+      // the screen stops showing what it holds (see `denied` below).
+      if (axios.isAxiosError(err) && err.response?.status === 404) {
+        void qc.invalidateQueries({ queryKey: detailKey, exact: true });
+      }
+      if (!activeRef.current) return false;
       setError(resolveApiErrorMessage(err, t, t('potentialVariations.detail.save_failed')));
       return false;
     } finally {
@@ -87,16 +93,41 @@ export default function PotentialVariationDetail() {
     }
   };
 
+  // A 404 is the server saying this user may not see this flag (or it is
+  // gone) - also AFTER an earlier read succeeded. The query cache keeps that
+  // earlier read's data through a failed refetch, so once the server has said
+  // no, none of it is shown: an admin demoted while this screen was open must
+  // not go on seeing the flag, the entry's text or the builder's note.
+  const denied =
+    q.isError && axios.isAxiosError(q.error) && q.error.response?.status === 404;
   if (q.isLoading) return <ActivityIndicator style={s.spinner} />;
-  if (!q.data) {
-    const missing = axios.isAxiosError(q.error) && q.error.response?.status === 404;
+  if (denied || !q.data) {
     return (
       <SafeAreaView style={s.safe} edges={['top']}>
         <View style={s.body}>
           <BackLink fallback="/potential-variations" />
-          <Text style={s.note}>
-            {missing ? t('potentialVariations.detail.not_found') : t('potentialVariations.list.load_failed')}
-          </Text>
+          {denied ? (
+            <Text style={s.note} testID="pv-not-found">
+              {t('potentialVariations.detail.not_found')}
+            </Text>
+          ) : (
+            // Never loaded (no signal, a server error): say so and offer a
+            // read - automatic retries are off, so nothing else would.
+            <>
+              <Text style={s.note} testID="pv-load-failed">
+                {t('potentialVariations.detail.load_failed')}
+              </Text>
+              <Pressable
+                onPress={() => void q.refetch()}
+                disabled={q.isFetching}
+                accessibilityRole="button"
+                hitSlop={8}
+                testID="pv-load-retry"
+              >
+                <Text style={[s.link, q.isFetching ? s.dim : null]}>{t('common.retry')}</Text>
+              </Pressable>
+            </>
+          )}
         </View>
       </SafeAreaView>
     );

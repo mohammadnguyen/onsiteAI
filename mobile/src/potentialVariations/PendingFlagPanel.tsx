@@ -43,11 +43,19 @@ function sameSession(startedUnder: number): boolean {
  */
 export function PendingFlagPanel({
   pending,
+  sourceReadable,
   screenActive,
   onRefused,
   onDiscarded,
 }: {
   pending: PendingPvCreate;
+  /**
+   * Whether this user can read the source entry NOW (the screen has just
+   * read it). The saved title was taken from the entry's text, so it is
+   * shown only then; otherwise a neutral placeholder stands in. The record
+   * itself - key and values - is kept and resent unchanged either way.
+   */
+  sourceReadable: boolean;
   /** The SCREEN's focus: resolving a record unmounts this panel first. */
   screenActive: { readonly current: boolean };
   /** The server refused on purpose; the record is gone, and its values are
@@ -147,7 +155,9 @@ export function PendingFlagPanel({
       <Text style={s.title}>{t(`potentialVariations.pending.${words}_title`)}</Text>
       <Text style={s.body}>{t(`potentialVariations.pending.${words}_body`)}</Text>
       <View style={s.saved}>
-        <Text style={s.savedTitle}>{pending.title}</Text>
+        <Text style={s.savedTitle} testID="pending-saved-title">
+          {sourceReadable ? pending.title : t('potentialVariations.placeholder_title')}
+        </Text>
         <Text style={s.savedMeta}>
           {t('potentialVariations.new.version', { n: pending.source_revision_no })}
         </Text>

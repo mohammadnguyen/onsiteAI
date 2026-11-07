@@ -1018,6 +1018,7 @@
       "note": "Builder's note",
       "decided_by": "Follow-up updated by {{name}} · {{date}}",
       "not_found": "Flag not found.",
+      "load_failed": "Couldn't load this flag. Check your signal and try again.",
       "save_failed": "Could not save the change.",
       "not_refreshed": "Could not refresh this flag, so what you see may not be its latest state.",
       "refresh": "Refresh"
