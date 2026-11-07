@@ -24,6 +24,14 @@ from app.models.job import Job, JobAlias, JobCategoryBudget, JobStatus
 from app.models.job_audit_log import JobAuditLog
 from app.models.labour import LabourEntry, Worker
 from app.models.org_settings import OrgSettings
+from app.models.potential_variation import (
+    PotentialVariation,
+    PotentialVariationAuditLog,
+    PvAuditAction,
+    PvEndReason,
+    PvOrigin,
+    PvReviewState,
+)
 from app.models.review_queue import (
     ExpenseAuditLog,
     ExpenseReviewQueue,
@@ -75,6 +83,12 @@ __all__ = [
     "LanguageCode",
     "OrgSettings",
     "PaymentMethod",
+    "PotentialVariation",
+    "PotentialVariationAuditLog",
+    "PvAuditAction",
+    "PvEndReason",
+    "PvOrigin",
+    "PvReviewState",
     "ReceiptStatus",
     "ReviewQueueStatus",
     "ReviewReasonCode",

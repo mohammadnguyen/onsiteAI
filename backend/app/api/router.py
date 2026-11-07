@@ -15,6 +15,7 @@ from app.api import (
     jobs,
     labour,
     org_settings,
+    potential_variations,
     reports,
     review_queue,
     site_log,
@@ -40,6 +41,9 @@ api_router.include_router(site_log.router)
 # Tasks span /tasks and /site-log-events/{id}/tasks — unprefixed,
 # absolute paths, same pattern as Site Log.
 api_router.include_router(tasks.router)
+# Potential Variations span /potential-variations and
+# /site-log-events/{id}/potential-variations — same pattern as tasks.
+api_router.include_router(potential_variations.router)
 api_router.include_router(org_settings.router)
 api_router.include_router(reports.router, prefix="/reports")
 api_router.include_router(review_queue.router, prefix="/review-queue")
