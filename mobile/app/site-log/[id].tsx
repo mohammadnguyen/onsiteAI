@@ -22,6 +22,7 @@ import { WebView } from 'react-native-webview';
 import { api } from '../../src/api/client';
 import { BackLink } from '../../src/siteLog/BackLink';
 import { getEvent, type AttachmentOut } from '../../src/api/siteLog';
+import { EntryPvSection } from '../../src/potentialVariations/EntryPvSection';
 import { isSameLocalFile } from '../../src/siteLog/localDocument';
 import { captureStatusBadgeKey } from '../../src/siteLog/status';
 import { useScreenActive } from '../../src/siteLog/useScreenActive';
@@ -749,6 +750,9 @@ export default function SiteLogRecordDetail() {
         {/* Tasks made from this entry. A task carries its own copy of what
             it needs; nothing here changes the entry above. */}
         <EntryTasksSection eventId={e.site_log_event_id} withdrawn={e.revision.withdrawn} />
+        {/* Potential variations flagged from this entry (DEC-PV-001). A flag
+            is independent of the tasks above and changes nothing here. */}
+        <EntryPvSection eventId={e.site_log_event_id} withdrawn={e.revision.withdrawn} />
       </ScrollView>
 
       {/* Full-screen viewer for a photo or a PDF. One modal, two bodies:

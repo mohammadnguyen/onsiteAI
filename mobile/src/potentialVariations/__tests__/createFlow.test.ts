@@ -1,0 +1,570 @@
+/**
+ * Duplicate-safe flagging (DEC-PV-001, reliability "P"), without a screen.
+ *
+ * The task create's guarantees, held by the flag's own copy: the pending
+ * record is on disk before the request leaves; a definite answer removes
+ * it, an unknown one keeps it; a lost answer is resolved by ASKING the
+ * server, and a resend reuses the same key and the same values; a flag
+ * still out is neither asked about nor sent again; nothing is sent for an
+ * account other than the one that acted. Plus the flag's own rules: the
+ * entry's version or job changed since it was shown (`source_changed`,
+ * `job_changed`, refused: nothing exists under the key), and a key the server
+ * says it already used for a different flag (`conflict`): the record is KEPT
+ * and the flag is looked up by that key - never a new key.
+ */
+import type { PvOut } from '../../api/potentialVariations';
+import type { PendingPvCreate } from '../../store/pvPendingCreates';
+
+const mockCreate = jest.fn();
+const mockFind = jest.fn();
+jest.mock('../../api/potentialVariations', () => ({
+  createPotentialVariation: (...a: unknown[]) => mockCreate(...a),
+  findMyPvCreate: (...a: unknown[]) => mockFind(...a),
+}));
+jest.mock('expo-file-system/legacy', () => require('../../siteLog/__tests__/support/memfs'));
+
+const STORAGE_KEY = 'pv-pending-creates';
+type Storage = typeof import('@react-native-async-storage/async-storage').default;
+
+function load() {
+  /* eslint-disable @typescript-eslint/no-var-requires */
+  const flow = require('../createFlow') as typeof import('../createFlow');
+  const { usePvPendingCreates } = require('../../store/pvPendingCreates') as typeof import('../../store/pvPendingCreates');
+  const { useAuthStore } = require('../../store/auth') as typeof import('../../store/auth');
+  const storageModule = require('@react-native-async-storage/async-storage');
+  /* eslint-enable @typescript-eslint/no-var-requires */
+  const AsyncStorage = (storageModule.default ?? storageModule) as Storage;
+  return { flow, store: usePvPendingCreates, auth: useAuthStore, AsyncStorage };
+}
+
+function signIn(auth: ReturnType<typeof load>['auth'], userId: string, nonce: number) {
+  auth.setState({ userId, sessionNonce: nonce, accessToken: `token-${userId}` });
+}
+
+function record(overrides: Partial<PendingPvCreate> = {}): PendingPvCreate {
+  return {
+    create_client_id: 'key-1',
+    user_id: 'user-a',
+    site_log_event_id: 'event-1',
+    source_revision_no: 1,
+    job_id: null,
+    title: 'Two extra power points in the kitchen',
+    created_at: 1,
+    ...overrides,
+  };
+}
+
+const PV = { potential_variation_id: 'pv-1' } as unknown as PvOut;
+const SOURCE_CHANGED =
+  'source_changed: the entry has changed since it was opened; check it and confirm again';
+const JOB_CHANGED =
+  "job_changed: the entry's job has changed since it was opened; check it and confirm again";
+const KEY_REUSED = 'create_client_id reused with a different potential variation';
+
+function httpError(status: number, detail?: string) {
+  return Object.assign(new Error(`HTTP ${status}`), {
+    isAxiosError: true,
+    response: { status, data: detail ? { detail } : {} },
+  });
+}
+
+function networkError() {
+  return Object.assign(new Error('Network Error'), { isAxiosError: true, code: 'ERR_NETWORK' });
+}
+
+async function requestOut(): Promise<void> {
+  for (let turn = 0; turn < 20; turn += 1) {
+    if (mockCreate.mock.calls.length > 0) return;
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  throw new Error('the flag request never left');
+}
+
+async function shown(
+  store: ReturnType<typeof load>['store'],
+  userId: string,
+  eventId: string,
+): Promise<PendingPvCreate> {
+  for (let turn = 0; turn < 20; turn += 1) {
+    const p = store.getState().forEvent(userId, eventId);
+    if (p) return p;
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  throw new Error('the pending record was never written');
+}
+
+async function persisted(AsyncStorage: Storage): Promise<PendingPvCreate[]> {
+  const raw = await AsyncStorage.getItem(STORAGE_KEY);
+  return raw ? (JSON.parse(raw).state.pending as PendingPvCreate[]) : [];
+}
+
+const sentKeys = () =>
+  mockCreate.mock.calls.map((c) => (c[1] as { create_client_id: string }).create_client_id);
+
+beforeEach(() => {
+  jest.resetModules();
+  mockCreate.mockReset();
+  mockFind.mockReset();
+  (globalThis as unknown as { __asyncStorageData?: Map<string, string> }).__asyncStorageData?.clear();
+});
+
+describe('sending a flag', () => {
+  it('writes the pending record to disk before the request is sent', async () => {
+    const { flow, auth, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    let onDiskWhenSent: PendingPvCreate[] = [];
+    mockCreate.mockImplementation(async () => {
+      onDiskWhenSent = await persisted(AsyncStorage);
+      return PV;
+    });
+    const outcome = await flow.sendPvCreate(record(), 1);
+    expect(onDiskWhenSent.map((p) => p.create_client_id)).toEqual(['key-1']);
+    expect(outcome).toEqual({ kind: 'created', pv: PV });
+    expect(await persisted(AsyncStorage)).toEqual([]);
+  });
+
+  it.each([
+    ['a job', 'job-7'],
+    ['no job (always sent, as null)', null],
+  ])('sends exactly the recorded key, title, entry version and job: %s', async (_l, jobId) => {
+    const { flow, auth } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreate.mockResolvedValue(PV);
+    await flow.sendPvCreate(record({ source_revision_no: 3, job_id: jobId }), 1);
+    expect(mockCreate).toHaveBeenCalledWith('event-1', {
+      create_client_id: 'key-1',
+      title: 'Two extra power points in the kitchen',
+      source_revision_no: 3,
+      job_id: jobId,
+    });
+  });
+
+  it('sends nothing when the record cannot be written to the phone', async () => {
+    const { flow, auth, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    jest.spyOn(AsyncStorage, 'setItem').mockRejectedValueOnce(new Error('disk full'));
+    const recorded = jest.fn();
+    expect(await flow.sendPvCreate(record(), 1, recorded)).toEqual({ kind: 'not_saved' });
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(recorded).not.toHaveBeenCalled();
+  });
+
+  it('says the record is on the phone before the request leaves', async () => {
+    const { flow, auth } = load();
+    signIn(auth, 'user-a', 1);
+    const order: string[] = [];
+    mockCreate.mockImplementation(async () => {
+      order.push('request');
+      return PV;
+    });
+    await flow.sendPvCreate(record(), 1, () => order.push('recorded'));
+    expect(order).toEqual(['recorded', 'request']);
+  });
+
+  it.each([
+    ['the entry changed (409 source_changed)', httpError(409, SOURCE_CHANGED), 409, true, false],
+    ["the entry's job changed (409 job_changed)", httpError(409, JOB_CHANGED), 409, false, true],
+    ['a withdrawn entry (409)', httpError(409, 'The source entry is withdrawn'), 409, false, false],
+    ['an unreadable entry (the deliberate 404)', httpError(404, 'Site log event not found'), 404, false, false],
+    ['a title the server refuses (422)', httpError(422, 'title must contain non-whitespace text'), 422, false, false],
+  ])('drops the record on %s and reports the refusal', async (_l, err, status, sourceChanged, jobChanged) => {
+    const { flow, auth, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreate.mockRejectedValue(err);
+    const outcome = await flow.sendPvCreate(record(), 1);
+    expect(outcome).toMatchObject({ kind: 'refused', status, sourceChanged, jobChanged });
+    expect(await persisted(AsyncStorage)).toEqual([]);
+  });
+
+  it.each([
+    ['no connection', networkError()],
+    ['a timeout', Object.assign(new Error('timeout'), { isAxiosError: true, code: 'ECONNABORTED' })],
+    ['a server error (503)', httpError(503)],
+    ['a server error (500)', httpError(500, 'Potential variation error')],
+    ['an ended session (401)', httpError(401)],
+    // "Not now", not "no": the first request may still be running.
+    ['a request timeout answered by the server or a proxy (408)', httpError(408)],
+    ['too many requests (429)', httpError(429, 'Too Many Requests')],
+  ])('keeps the record when the result is unknown: %s', async (_l, err) => {
+    const { flow, auth, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreate.mockRejectedValue(err);
+    expect(await flow.sendPvCreate(record(), 1)).toEqual({ kind: 'unknown' });
+    expect(await persisted(AsyncStorage)).toEqual([record()]);
+  });
+
+  it('double taps and retries reuse the same key: one request while it is out', async () => {
+    const { flow, auth, store } = load();
+    signIn(auth, 'user-a', 1);
+    let answer: (pv: PvOut) => void = () => undefined;
+    mockCreate.mockImplementationOnce(
+      () => new Promise<PvOut>((resolve) => {
+        answer = resolve;
+      }),
+    );
+    const first = flow.sendPvCreate(record(), 1);
+    const second = flow.sendPvCreate(record(), 1);
+    await requestOut();
+    answer(PV);
+    expect(await first).toEqual({ kind: 'created', pv: PV });
+    expect(await second).toEqual({ kind: 'created', pv: PV });
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+
+    // A retry after a lost answer goes out under the same key again.
+    mockCreate.mockRejectedValueOnce(networkError());
+    await flow.sendPvCreate(record({ create_client_id: 'key-2' }), 1);
+    mockCreate.mockResolvedValueOnce(PV);
+    await flow.sendPvCreate(await shown(store, 'user-a', 'event-1'), 1);
+    expect(sentKeys()).toEqual(['key-1', 'key-2', 'key-2']);
+  });
+});
+
+describe('only the account that acted', () => {
+  it('sends nothing if the account changed while the record was being written', async () => {
+    const { flow, auth, store, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    const realSet = AsyncStorage.setItem.bind(AsyncStorage);
+    let release: () => void = () => undefined;
+    jest.spyOn(AsyncStorage, 'setItem').mockImplementationOnce(async (k: string, v: string) => {
+      await new Promise<void>((r) => {
+        release = r;
+      });
+      return realSet(k, v);
+    });
+    const sending = flow.sendPvCreate(record(), 1);
+    await new Promise((r) => setTimeout(r, 0));
+    signIn(auth, 'user-b', 2);
+    release();
+    expect(await sending).toEqual({ kind: 'stale' });
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(store.getState().forEvent('user-a', 'event-1')?.create_client_id).toBe('key-1');
+    expect(store.getState().forEvent('user-b', 'event-1')).toBeUndefined();
+  });
+
+  it('a stale session sends nothing at all', async () => {
+    const { flow, auth, AsyncStorage } = load();
+    signIn(auth, 'user-a', 2); // the tap happened in session 1
+    expect(await flow.sendPvCreate(record(), 1)).toEqual({ kind: 'stale' });
+    signIn(auth, 'user-b', 3); // and a record that is not this account's
+    expect(await flow.sendPvCreate(record(), 3)).toEqual({ kind: 'stale' });
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(await persisted(AsyncStorage)).toEqual([]);
+  });
+
+  it('a lookup answered after the account changed concludes nothing', async () => {
+    const { flow, auth, store } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreate.mockRejectedValue(networkError());
+    await flow.sendPvCreate(record(), 1);
+    mockFind.mockImplementation(async () => {
+      signIn(auth, 'user-b', 2);
+      return PV;
+    });
+    expect(await flow.resolvePvPending(store.getState().forUser('user-a')[0], 1)).toEqual({
+      kind: 'stale',
+    });
+    expect(store.getState().forEvent('user-a', 'event-1')).toBeDefined();
+  });
+});
+
+describe('finding out what happened to a lost flag', () => {
+  it('asks the server by the ORIGINAL key before anything is resent; found: done with', async () => {
+    const { flow, auth, store, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreate.mockRejectedValue(networkError());
+    await flow.sendPvCreate(record(), 1);
+    mockFind.mockResolvedValue(PV);
+    const outcome = await flow.resolvePvPending(store.getState().forUser('user-a')[0], 1);
+    expect(mockFind).toHaveBeenCalledWith('key-1');
+    expect(outcome).toEqual({ kind: 'found', pv: PV });
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    expect(await persisted(AsyncStorage)).toEqual([]);
+  });
+
+  it('not found: the record stays, and a resend reuses the same key and the same values', async () => {
+    const { flow, auth, store } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreate.mockRejectedValueOnce(networkError());
+    await flow.sendPvCreate(record({ source_revision_no: 2 }), 1);
+    mockFind.mockResolvedValue(null);
+    const pending = await shown(store, 'user-a', 'event-1');
+    expect(await flow.resolvePvPending(pending, 1)).toEqual({ kind: 'not_found' });
+    expect(store.getState().forEvent('user-a', 'event-1')).toBeDefined();
+
+    mockCreate.mockResolvedValueOnce(PV);
+    await flow.sendPvCreate(store.getState().forEvent('user-a', 'event-1')!, 1);
+    const [first, second] = mockCreate.mock.calls;
+    expect(second).toEqual(first); // same entry, same key, same title, same version
+    expect(store.getState().forEvent('user-a', 'event-1')).toBeUndefined();
+  });
+
+  it.each([408, 429])(
+    'a resend answered %i keeps the record - same key, same values - and stays unknown',
+    async (status) => {
+      // The original timed out on the phone but may still be running on the
+      // server: the lookup finds nothing yet, and the resend is told "not
+      // now". Dropping the record here would let the next save take a new
+      // key while the original can still commit.
+      const { flow, auth, store, AsyncStorage } = load();
+      signIn(auth, 'user-a', 1);
+      mockCreate.mockRejectedValueOnce(networkError());
+      await flow.sendPvCreate(record(), 1);
+      mockFind.mockResolvedValue(null);
+      const pending = await shown(store, 'user-a', 'event-1');
+      expect(await flow.resolvePvPending(pending, 1)).toEqual({ kind: 'not_found' });
+
+      mockCreate.mockRejectedValueOnce(httpError(status));
+      expect(await flow.sendPvCreate(pending, 1)).toEqual({ kind: 'unknown' });
+      expect(await persisted(AsyncStorage)).toEqual([record()]);
+      expect(sentKeys()).toEqual(['key-1', 'key-1']);
+    },
+  );
+
+  it('still unreachable: unknown, and nothing changes', async () => {
+    const { flow, auth, store, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreate.mockRejectedValue(networkError());
+    await flow.sendPvCreate(record(), 1);
+    for (const err of [networkError(), httpError(503), httpError(401)]) {
+      mockFind.mockRejectedValueOnce(err);
+      expect(await flow.resolvePvPending(await shown(store, 'user-a', 'event-1'), 1)).toEqual({
+        kind: 'unknown',
+      });
+    }
+    expect(await persisted(AsyncStorage)).toEqual([record()]);
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('a flag still out is not asked about: its own answer is awaited', async () => {
+    const { flow, auth, store, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    let answer: (pv: PvOut) => void = () => undefined;
+    mockCreate.mockImplementation(
+      () => new Promise<PvOut>((resolve) => {
+        answer = resolve;
+      }),
+    );
+    const sending = flow.sendPvCreate(record(), 1);
+    await requestOut();
+    const asking = flow.resolvePvPending(await shown(store, 'user-a', 'event-1'), 1);
+    await new Promise((r) => setTimeout(r, 0));
+    // The server would say "not there yet" - and that would read as "not saved".
+    expect(mockFind).not.toHaveBeenCalled();
+    answer(PV);
+    expect(await asking).toEqual({ kind: 'found', pv: PV });
+    expect(await sending).toEqual({ kind: 'created', pv: PV });
+    expect(await persisted(AsyncStorage)).toEqual([]);
+  });
+
+  it('a flag still out that the server refuses (the entry changed) is reported as refused', async () => {
+    const { flow, auth, store, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    let refuse: (e: unknown) => void = () => undefined;
+    mockCreate.mockImplementation(
+      () => new Promise((_resolve, reject) => {
+        refuse = reject;
+      }),
+    );
+    void flow.sendPvCreate(record(), 1);
+    await requestOut();
+    const asking = flow.resolvePvPending(await shown(store, 'user-a', 'event-1'), 1);
+    refuse(httpError(409, SOURCE_CHANGED));
+    expect(await asking).toEqual({
+      kind: 'refused',
+      status: 409,
+      detail: SOURCE_CHANGED,
+      sourceChanged: true,
+      jobChanged: false,
+    });
+    expect(mockFind).not.toHaveBeenCalled();
+    expect(await persisted(AsyncStorage)).toEqual([]);
+  });
+
+  it('a flag still out whose answer is lost is then asked about', async () => {
+    const { flow, auth, store } = load();
+    signIn(auth, 'user-a', 1);
+    let fail: (e: unknown) => void = () => undefined;
+    mockCreate.mockImplementation(
+      () => new Promise((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
+    void flow.sendPvCreate(record(), 1);
+    await requestOut();
+    const asking = flow.resolvePvPending(await shown(store, 'user-a', 'event-1'), 1);
+    mockFind.mockResolvedValue(null);
+    fail(networkError());
+    expect(await asking).toEqual({ kind: 'not_found' });
+    expect(mockFind).toHaveBeenCalledWith('key-1');
+    expect(store.getState().forEvent('user-a', 'event-1')).toBeDefined();
+  });
+
+  it('discard removes only that record', async () => {
+    const { flow, auth, store } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreate.mockRejectedValue(networkError());
+    await flow.sendPvCreate(record(), 1);
+    await flow.sendPvCreate(record({ create_client_id: 'key-2', site_log_event_id: 'event-2' }), 1);
+    expect(await flow.discardPvPending('key-1')).toBe(true);
+    expect(store.getState().forUser('user-a').map((p) => p.create_client_id)).toEqual(['key-2']);
+  });
+});
+
+describe('a server without the flag routes (older or rolled-back backend)', () => {
+  const ROUTE_MISSING: [string, ReturnType<typeof httpError>][] = [
+    ['the framework’s 404 for a route that does not exist', httpError(404, 'Not Found')],
+    ['a 404 with no body', httpError(404)],
+    ['a 404 with some other detail', httpError(404, 'Job not found')],
+    ['a 405 for a path that exists with other methods', httpError(405, 'Method Not Allowed')],
+  ];
+
+  it.each(ROUTE_MISSING)('a send answered by %s is unavailable and keeps the whole record', async (_l, err) => {
+    const { flow, auth, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreate.mockRejectedValue(err);
+    const original = record({ source_revision_no: 4 });
+    expect(await flow.sendPvCreate(original, 1)).toEqual({ kind: 'unavailable' });
+    expect(await persisted(AsyncStorage)).toEqual([original]);
+  });
+
+  it('asking about a record is "unavailable", never "not saved", while the routes are gone', async () => {
+    const { flow, auth, store, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreate.mockRejectedValue(networkError());
+    await flow.sendPvCreate(record(), 1);
+    for (const err of [httpError(404, 'Not Found'), httpError(405)]) {
+      mockFind.mockRejectedValueOnce(err);
+      expect(await flow.resolvePvPending(await shown(store, 'user-a', 'event-1'), 1)).toEqual({
+        kind: 'unavailable',
+      });
+    }
+    expect(mockCreate).toHaveBeenCalledTimes(1); // nothing was resent
+    expect(await persisted(AsyncStorage)).toEqual([record()]);
+  });
+
+  it.each([
+    ['the server has it', PV, ['key-1']],
+    ['the server does not have it: sent again, same key', null, ['key-1', 'key-1']],
+  ])('after a restart, once the routes are back: %s', async (_l, onServer, expectedKeys) => {
+    const first = load();
+    signIn(first.auth, 'user-a', 1);
+    mockCreate.mockRejectedValueOnce(httpError(404, 'Not Found'));
+    expect(await first.flow.sendPvCreate(record(), 1)).toEqual({ kind: 'unavailable' });
+
+    jest.resetModules(); // the app restarts; the phone's storage is the same
+    const second = load();
+    signIn(second.auth, 'user-a', 1);
+    await second.store.getState().hydrate();
+    const reloaded = second.store.getState().forEvent('user-a', 'event-1');
+    expect(reloaded).toEqual(record());
+
+    mockFind.mockResolvedValueOnce(onServer);
+    const resolved = await second.flow.resolvePvPending(reloaded as PendingPvCreate, 1);
+    expect(mockFind).toHaveBeenLastCalledWith('key-1');
+    if (onServer) {
+      expect(resolved).toEqual({ kind: 'found', pv: PV });
+    } else {
+      expect(resolved).toEqual({ kind: 'not_found' });
+      mockCreate.mockResolvedValueOnce(PV);
+      expect(await second.flow.sendPvCreate(reloaded as PendingPvCreate, 1)).toEqual({
+        kind: 'created',
+        pv: PV,
+      });
+    }
+    expect(sentKeys()).toEqual(expectedKeys);
+    expect(await persisted(second.AsyncStorage)).toEqual([]);
+  });
+});
+
+describe('a key the server says it already used (409 conflict)', () => {
+  it.each([
+    ['the key-reuse refusal', httpError(409, KEY_REUSED)],
+    ['a 409 this app does not know', httpError(409, 'Something new the server says')],
+    ['a 409 with no body', httpError(409)],
+  ])('%s keeps the record - same key, same values - and says conflict', async (_l, err) => {
+    const { flow, auth, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreate.mockRejectedValue(err);
+    const original = record({ source_revision_no: 2, job_id: 'job-7' });
+    expect(await flow.sendPvCreate(original, 1)).toEqual({ kind: 'conflict' });
+    expect(await persisted(AsyncStorage)).toEqual([original]);
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('is then resolved by asking the server by the SAME key: found, done with, nothing resent', async () => {
+    const { flow, auth, store, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreate.mockRejectedValueOnce(httpError(409, KEY_REUSED));
+    expect(await flow.sendPvCreate(record(), 1)).toEqual({ kind: 'conflict' });
+    mockFind.mockResolvedValue(PV);
+    const outcome = await flow.resolvePvPending(await shown(store, 'user-a', 'event-1'), 1);
+    expect(mockFind).toHaveBeenCalledWith('key-1');
+    expect(outcome).toEqual({ kind: 'found', pv: PV });
+    expect(sentKeys()).toEqual(['key-1']);
+    expect(await persisted(AsyncStorage)).toEqual([]);
+  });
+
+  it('a resend answered "key already used" keeps the record and its key', async () => {
+    // Lost answer, lookup "not found yet", resend: the server now says the
+    // key is used (the first request committed meanwhile, or the server
+    // compares the request differently). Not a refusal: kept, looked up.
+    const { flow, auth, store, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreate.mockRejectedValueOnce(networkError());
+    await flow.sendPvCreate(record(), 1);
+    mockFind.mockResolvedValueOnce(null);
+    const pending = await shown(store, 'user-a', 'event-1');
+    expect(await flow.resolvePvPending(pending, 1)).toEqual({ kind: 'not_found' });
+
+    mockCreate.mockRejectedValueOnce(httpError(409, KEY_REUSED));
+    expect(await flow.sendPvCreate(pending, 1)).toEqual({ kind: 'conflict' });
+    expect(await persisted(AsyncStorage)).toEqual([record()]);
+    expect(sentKeys()).toEqual(['key-1', 'key-1']);
+
+    mockFind.mockResolvedValueOnce(PV);
+    expect(await flow.resolvePvPending(pending, 1)).toEqual({ kind: 'found', pv: PV });
+    expect(mockFind).toHaveBeenLastCalledWith('key-1');
+  });
+
+  it('a flag still out whose answer is a conflict is then asked about by its key', async () => {
+    const { flow, auth, store } = load();
+    signIn(auth, 'user-a', 1);
+    let fail: (e: unknown) => void = () => undefined;
+    mockCreate.mockImplementation(
+      () => new Promise((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
+    void flow.sendPvCreate(record(), 1);
+    await requestOut();
+    const asking = flow.resolvePvPending(await shown(store, 'user-a', 'event-1'), 1);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockFind).not.toHaveBeenCalled(); // waits for the send's own answer first
+    mockFind.mockResolvedValue(PV);
+    fail(httpError(409, KEY_REUSED));
+    expect(await asking).toEqual({ kind: 'found', pv: PV });
+    expect(mockFind).toHaveBeenCalledWith('key-1');
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('isJobChanged', () => {
+  it('is the 409 whose detail starts with "job_changed:" - nothing else', async () => {
+    const { flow } = load();
+    expect(flow.isJobChanged(409, JOB_CHANGED)).toBe(true);
+    expect(flow.isJobChanged(409, SOURCE_CHANGED)).toBe(false);
+    expect(flow.isJobChanged(409, KEY_REUSED)).toBe(false);
+    expect(flow.isJobChanged(422, JOB_CHANGED)).toBe(false);
+    expect(flow.isJobChanged(409, null)).toBe(false);
+  });
+});
+
+describe('isSourceChanged', () => {
+  it('is the 409 whose detail starts with "source_changed:" - nothing else', async () => {
+    const { flow } = load();
+    expect(flow.isSourceChanged(409, SOURCE_CHANGED)).toBe(true);
+    expect(flow.isSourceChanged(409, 'The source entry is withdrawn')).toBe(false);
+    expect(flow.isSourceChanged(422, SOURCE_CHANGED)).toBe(false);
+    expect(flow.isSourceChanged(409, null)).toBe(false);
+  });
+});

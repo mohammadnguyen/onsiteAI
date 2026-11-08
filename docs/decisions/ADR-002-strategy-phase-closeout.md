@@ -27,6 +27,12 @@
 
 Any new idea arriving mid-sequence (quoting, Gantt, new candidate types, integrations…) is recorded in the backlog **only**. It does not enter planning without evidence and does not interrupt the sequence.
 
+## Recorded exceptions
+
+Each exception to the sequence above is a separate founder decision with its own reason and scope.
+
+- [Exception 001](ADR-002-exception-001-manual-potential-variation.md) — manual Potential Variation (DEC-PV-001) built ahead of Baseline v0.1; that package only; the AI line stays paused (founder, 2026-11-07).
+
 ## Re-entry bar for strategy discussion
 
 Strategy-level discussion reopens only with real evidence in hand: baseline eval numbers plus per-failure reading notes (e.g. "PV recall 72%, precision 91%, wrong-job 0%; 3 misses were all indirect client requests"). Prediction: the first baseline numbers should look bad — their function is to create an immediate measuring stick, not to look good.

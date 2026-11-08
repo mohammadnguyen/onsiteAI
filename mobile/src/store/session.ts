@@ -2,6 +2,7 @@ import { queryClient } from '../api/queryClient';
 import { useFailuresStore } from './failures';
 import { useSiteLogDrafts } from './siteLogDrafts';
 import { useTaskPendingCreates } from './taskPendingCreates';
+import { usePvPendingCreates } from './pvPendingCreates';
 import { useLabourEditTargetStore } from './labourEditTarget';
 import { useExpenseListFiltersStore } from './expenseListFilters';
 
@@ -60,7 +61,7 @@ export function resetSessionState(): void {
  * capture too, after a confirmation that never mentioned it. An empty list
  * deletes no draft, which is what an ordinary logout with no unsent work
  * should do. (This account's unresolved task creates are still dropped:
- * plan v2 §5.)
+ * plan v2 §5 - and so are its unresolved potential-variation flags.)
  *
  * `userId` null means no identifiable account, and then nothing is
  * touched: deleting somebody's evidence is not the safe default.
@@ -78,6 +79,13 @@ export async function wipeOnExplicitLogout(
   // stay - they are still this account's only - and logout carries on.
   try {
     await useTaskPendingCreates.getState().clearUser(userId);
+  } catch {
+    // Kept on purpose; see above.
+  }
+  // Potential-variation flags whose result is unknown: the same rule, from
+  // their own store (DEC-PV-001).
+  try {
+    await usePvPendingCreates.getState().clearUser(userId);
   } catch {
     // Kept on purpose; see above.
   }

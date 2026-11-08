@@ -31,6 +31,7 @@ from app.models.expense import Expense
 from app.models.job import Job, JobAlias, JobCategoryBudget, JobStatus
 from app.models.job_audit_log import JobAuditLog
 from app.models.labour import LabourEntry
+from app.models.potential_variation import PotentialVariation
 from app.models.review_queue import ExpenseReviewQueue
 from app.models.task import Task
 from app.models.user import LanguageCode, User
@@ -616,7 +617,8 @@ async def delete_empty_job(
     * ``SELECT COUNT(*) FROM expense_review_queue erq
         JOIN expenses e ON erq.expense_id = e.expense_id
         WHERE e.job_id = $1`` must be 0.
-    * labour entries and tasks on the job must be 0 (checks 3 and 4).
+    * labour entries, tasks and potential variations on the job must be 0
+      (checks 3, 4 and 5).
 
     Audit row is written BEFORE the SQL DELETE so the trail survives
     via ``ON DELETE SET NULL`` on ``job_audit_log.job_id`` (v1A-1
@@ -709,6 +711,25 @@ async def delete_empty_job(
         noun = "task" if task_count == 1 else "tasks"
         raise JobHasDependencies(
             f"Job has {task_count} {noun} and cannot be deleted. "
+            "Archive it instead."
+        )
+
+    # Dependency check 5 (Potential Variations, DEC-PV-001): same reason as
+    # tasks - a flag keeps its own job and that job is never cleared. The
+    # foreign key on potential_variations.job_id is the backstop; this 409
+    # is the contract (without it the delete fails as a 500).
+    pv_count = int(
+        (
+            await db.execute(
+                select(func.count()).where(PotentialVariation.job_id == job_id)
+            )
+        ).scalar()
+        or 0
+    )
+    if pv_count > 0:
+        noun = "potential variation" if pv_count == 1 else "potential variations"
+        raise JobHasDependencies(
+            f"Job has {pv_count} {noun} and cannot be deleted. "
             "Archive it instead."
         )
 
