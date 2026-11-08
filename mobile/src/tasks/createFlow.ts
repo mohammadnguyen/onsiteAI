@@ -101,18 +101,28 @@ function routeMissing(status: number, detail: string | null): boolean {
 }
 
 /**
+ * Answers that say "not now", not "no": a request timeout (408) or too many
+ * requests (429), from the server or anything in front of it. The request
+ * may still be running, or may never have reached the task routes; either
+ * way nothing was judged, so the record - its key and values - must stay.
+ * Treated as a refusal, the record would be dropped and the next save would
+ * take a new key while the first request could still commit: two tasks.
+ */
+const NOT_NOW = new Set([408, 429]);
+
+/**
  * What a failed create request means. Refused: the server judged this
  * create and said no, on purpose - nothing exists under the key. Unavailable:
  * it answered without judging it. Unknown: no usable answer at all (a lost
- * connection, a server error, or a session that ended - a 401 is the shared
- * client's to handle, and the record stays for the same account's next
- * sign-in).
+ * connection, a server error, a "not now" answer - see `NOT_NOW` - or a
+ * session that ended - a 401 is the shared client's to handle, and the
+ * record stays for the same account's next sign-in).
  */
 function classify(
   err: unknown,
 ): { kind: 'refused'; status: number; detail: string | null } | { kind: 'unavailable' } | { kind: 'unknown' } {
   const status = answeredStatus(err);
-  if (status === null || status === 401) return { kind: 'unknown' };
+  if (status === null || status === 401 || NOT_NOW.has(status)) return { kind: 'unknown' };
   const detail = detailOf(err);
   if (routeMissing(status, detail)) return { kind: 'unavailable' };
   return { kind: 'refused', status, detail };
