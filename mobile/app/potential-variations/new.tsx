@@ -22,6 +22,7 @@ import { FlagForm } from '../../src/potentialVariations/FlagForm';
 import { PendingFlagPanel } from '../../src/potentialVariations/PendingFlagPanel';
 import {
   sendPvCreate,
+  WITHDRAWN,
   type PvRefusal,
   type PvSendOutcome,
 } from '../../src/potentialVariations/createFlow';
@@ -38,7 +39,6 @@ import {
 import { isUsableTitle, proposedTitleFrom } from '../../src/tasks/proposedTitle';
 import { tokens } from '../../src/ui/tokens';
 
-const WITHDRAWN = 'The source entry is withdrawn';
 const SOURCE_NOT_FOUND = 'Site log event not found';
 
 /**
@@ -47,12 +47,14 @@ const SOURCE_NOT_FOUND = 'Site log event not found';
  * The entry's current text and version are shown; the title starts as its
  * first line (empty for a voice-only entry) and the user confirms or edits
  * it; the job comes from the entry and is shown, not chosen. Save pins the
- * version on screen at that moment. Saving writes a pending record to the
- * phone first, then sends - so a lost answer is recovered by asking the
- * server, never by sending a second flag under a new key. If the entry has
- * changed meanwhile, the server refuses; the entry is reloaded and the user
- * checks it and saves again. An unresolved flag from this entry is dealt
- * with before a new one can start.
+ * version AND the job (or no job) on screen at that moment. Saving writes a
+ * pending record to the phone first, then sends - so a lost answer is
+ * recovered by asking the server, never by sending a second flag under a
+ * new key. If the entry has changed meanwhile - its text or its job - the
+ * server refuses; the entry is reloaded and the user checks it and saves
+ * again. If the server says the key already made a flag, the record is kept
+ * and the panel finds that flag by the key. An unresolved flag from this
+ * entry is dealt with before a new one can start.
  */
 export default function NewPotentialVariationScreen() {
   const { t } = useTranslation();
@@ -112,6 +114,7 @@ export default function NewPotentialVariationScreen() {
   /** What a refusal says, in the user's language where it is a known one. */
   const refusalMessage = (r: PvRefusal): string => {
     if (r.sourceChanged) return t('potentialVariations.new.source_changed');
+    if (r.jobChanged) return t('potentialVariations.new.job_changed');
     if (r.status === 409 && r.detail === WITHDRAWN) return t('potentialVariations.new.entry_withdrawn');
     if (r.status === 404 && r.detail === SOURCE_NOT_FOUND) return t('potentialVariations.new.entry_gone');
     return r.detail ?? t('potentialVariations.new.save_failed');
@@ -137,8 +140,9 @@ export default function NewPotentialVariationScreen() {
       // Nothing was sent; the same key can be used when the user tries again.
       setError(t('potentialVariations.new.not_saved'));
     } else {
-      // Unknown or unavailable: the pending record stays - same key, same
-      // values - and the panel takes over and says which it is.
+      // Conflict, unknown or unavailable: the pending record stays - same
+      // key, same values - and the panel takes over: it asks the server by
+      // the key first (a conflict is found there), then says what it knows.
       setError(null);
     }
   };
@@ -147,9 +151,10 @@ export default function NewPotentialVariationScreen() {
     if (sending || reloading || !userId || !eventId || !entryReadable || !entry.data) return;
     if (title === null || !isUsableTitle(title)) return;
     // Read before any await: this is the session the user tapped Save in,
-    // and the version on screen is the one the user saw.
+    // and the version and the job on screen are the ones the user saw.
     const startedUnder = useAuthStore.getState().sessionNonce;
     const shownRevision = entry.data.revision.revision_no;
+    const shownJob = entry.data.job_id ?? null;
     setSending(true);
     setAttempted(true);
     setRecorded(false);
@@ -159,6 +164,7 @@ export default function NewPotentialVariationScreen() {
       user_id: userId,
       site_log_event_id: eventId,
       source_revision_no: shownRevision,
+      job_id: shownJob,
       title: title.trim(),
       created_at: Date.now(),
     };
@@ -176,7 +182,7 @@ export default function NewPotentialVariationScreen() {
         // Nothing was created under that key: the next save gets a new one.
         keyRef.current = newCaptureId();
         setRecorded(false);
-        if (outcome.sourceChanged) void reloadEntry();
+        if (outcome.sourceChanged || outcome.jobChanged) void reloadEntry();
       }
       if (activeRef.current) finish(outcome);
     } finally {
@@ -224,7 +230,7 @@ export default function NewPotentialVariationScreen() {
           setAttempted(true);
           setTitle(values.title);
           setError(refusalMessage(refusal));
-          if (refusal.sourceChanged) void reloadEntry();
+          if (refusal.sourceChanged || refusal.jobChanged) void reloadEntry();
         }}
         onDiscarded={() => {
           // The record that made leaving safe is gone.

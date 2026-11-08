@@ -1,9 +1,12 @@
 /**
  * The potential-variation screens (DEC-PV-001), rendered for real with
  * react-test-renderer: the flag screen prefills from the entry's first line
- * and pins the version on screen; a "the entry changed" refusal reloads the
- * entry, says so, keeps the typed title and starts a new key; an unresolved
- * flag is asked about by its key before anything is resent; the detail
+ * and pins the version and the job on screen; a "the entry changed" or "the
+ * entry's job changed" refusal reloads the entry, says so, keeps the typed
+ * title and starts a new key; "this key already made a flag" keeps the
+ * record and finds that flag by the key; an unresolved flag is asked about
+ * by its key before anything is resent; moving a flag that has a job needs
+ * a reason, which is sent; the detail
  * shows the decision only with `permissions.decide`, the builder's note only
  * with `permissions.read_note`, and nothing taken from the entry when the
  * entry is not readable; the entry's section says "not available" on a 404.
@@ -149,6 +152,16 @@ import NewPotentialVariationScreen from '../../../app/potential-variations/new';
 const KITCHEN = 'Owner asked on site for two extra power points in the kitchen';
 const SOURCE_CHANGED =
   'source_changed: the entry has changed since it was opened; check it and confirm again';
+const JOB_CHANGED =
+  "job_changed: the entry's job has changed since it was opened; check it and confirm again";
+const KEY_REUSED = 'create_client_id reused with a different potential variation';
+
+function http409(detail: string) {
+  return Object.assign(new Error('HTTP 409'), {
+    isAxiosError: true,
+    response: { status: 409, data: { detail } },
+  });
+}
 
 function entry(revisionNo: number, body: string | null, extra: Record<string, unknown> = {}) {
   return {
@@ -254,9 +267,24 @@ function type(tree: ReactTestRenderer, id: string, text: string) {
   act(() => node.props.onChangeText(text));
 }
 
+/** Pick a job in the (mocked) job picker sheet, as the user would. */
+function pickJob(tree: ReactTestRenderer, jobId: string) {
+  const [sheet] = tree.root.findAll(
+    (n) => typeof n.type !== 'string' && typeof n.props.onSelect === 'function' && 'jobs' in n.props,
+  );
+  if (!sheet) throw new Error('no job picker');
+  act(() => sheet.props.onSelect(jobId));
+}
+
 const sentBodies = () =>
   mockCreate.mock.calls.map(
-    (c) => c[1] as { create_client_id: string; title: string; source_revision_no: number },
+    (c) =>
+      c[1] as {
+        create_client_id: string;
+        title: string;
+        source_revision_no: number;
+        job_id: string | null;
+      },
   );
 
 beforeEach(() => {
@@ -308,10 +336,12 @@ describe('flagging an entry', () => {
       create_client_id: expect.any(String),
       title: 'Two extra power points, kitchen',
       source_revision_no: 3,
+      job_id: 'job-1', // the job shown with the entry
     });
     // The record is on the phone while the request is out.
     expect(usePvPendingCreates.getState().forEvent('me-1', 'event-1')).toMatchObject({
       source_revision_no: 3,
+      job_id: 'job-1',
     });
 
     await act(async () => {
@@ -417,6 +447,7 @@ describe('flagging an entry', () => {
         user_id: 'me-1',
         site_log_event_id: 'event-1',
         source_revision_no: 2,
+        job_id: 'job-1',
         title: 'x',
         created_at: 1,
       });
@@ -435,6 +466,7 @@ describe('flagging an entry', () => {
         user_id: 'me-1',
         site_log_event_id: 'event-1',
         source_revision_no: 3,
+        job_id: 'job-1',
         title: KITCHEN,
         created_at: 1,
       });
@@ -451,6 +483,8 @@ describe('flagging an entry', () => {
     expect(byTestId(tree, 'pv-pending-not-found')).toHaveLength(1);
     expect(allText(tree)).not.toContain(KITCHEN);
     expect(allText(tree)).toContain('potentialVariations.placeholder_title');
+    // Nor which job the entry was on: that is the entry's to tell.
+    expect(allText(tree)).not.toContain('potentialVariations.pending.job');
     // The record itself - key and values - is untouched.
     expect(usePvPendingCreates.getState().forEvent('me-1', 'event-1')).toMatchObject({
       create_client_id: 'lost-key',
@@ -459,13 +493,14 @@ describe('flagging an entry', () => {
     });
   });
 
-  it('an unresolved flag on an entry this user can read shows its saved title', async () => {
+  it('an unresolved flag on an entry this user can read shows its saved title, version and job', async () => {
     await act(async () => {
       await usePvPendingCreates.getState().putDurable({
         create_client_id: 'lost-key',
         user_id: 'me-1',
         site_log_event_id: 'event-1',
         source_revision_no: 3,
+        job_id: 'job-1',
         title: 'Two extra GPOs',
         created_at: 1,
       });
@@ -474,6 +509,7 @@ describe('flagging an entry', () => {
     await flush();
     expect(byTestId(tree, 'pv-pending-not-found')).toHaveLength(1);
     expect(allText(tree)).toContain('Two extra GPOs');
+    expect(allText(tree)).toContain('potentialVariations.pending.job|job=Simulated job');
   });
 
   it('a route-less server keeps the flag on the phone and says so', async () => {
@@ -492,6 +528,91 @@ describe('flagging an entry', () => {
       title: KITCHEN,
       source_revision_no: 3,
     });
+  });
+
+  it("the entry's job changed: it is reloaded, the user is asked to check the job, and the job now shown is sent under a new key", async () => {
+    mockCreate.mockRejectedValueOnce(http409(JOB_CHANGED));
+    mockOnInvalidate = (key) => {
+      if (key[0] === 'site-log') {
+        mockResults['site-log:event'] = {
+          data: { ...entry(3, `${KITCHEN}\nNear the island bench`), job_id: null },
+        };
+      }
+    };
+    const tree = await render(<NewPotentialVariationScreen />);
+    press(tree, 'pv-save');
+    await flush();
+
+    expect(mockQueryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['site-log', 'event', 'event-1'],
+      exact: true,
+    });
+    expect(allText(tree)).toContain('potentialVariations.new.job_changed');
+    expect(allText(tree)).toContain('potentialVariations.new.no_job');
+    expect(usePvPendingCreates.getState().forEvent('me-1', 'event-1')).toBeUndefined();
+
+    mockCreate.mockResolvedValueOnce(pv({ potential_variation_id: 'pv-3', job: null }));
+    press(tree, 'pv-save');
+    await flush();
+    const [first, second] = sentBodies();
+    expect(first.job_id).toBe('job-1');
+    expect(second.job_id).toBeNull(); // the job (none) now on screen
+    expect(second.create_client_id).not.toBe(first.create_client_id);
+    expect(mockReplace).toHaveBeenCalledWith('/potential-variations/pv-3');
+  });
+
+  it('an entry with no job sends that it showed no job', async () => {
+    mockResults['site-log:event'] = {
+      data: { ...entry(2, KITCHEN), job_id: null },
+    };
+    mockCreate.mockResolvedValue(pv({ job: null }));
+    const tree = await render(<NewPotentialVariationScreen />);
+    expect(allText(tree)).toContain('potentialVariations.new.no_job');
+    press(tree, 'pv-save');
+    await flush();
+    expect(sentBodies()[0]).toMatchObject({ source_revision_no: 2, job_id: null });
+  });
+
+  it('the server says this key already made a flag: the record is kept, the flag is found by that key and opened', async () => {
+    mockCreate.mockRejectedValueOnce(http409(KEY_REUSED));
+    mockFind.mockResolvedValue(pv({ potential_variation_id: 'pv-7' }));
+    const tree = await render(<NewPotentialVariationScreen />);
+    press(tree, 'pv-save');
+    await flush();
+    const [sent] = sentBodies();
+    // Asked by the SAME key; nothing sent again, no new key.
+    expect(mockFind).toHaveBeenCalledWith(sent.create_client_id);
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    expect(mockReplace).toHaveBeenCalledWith('/potential-variations/pv-7?notice=already_created');
+    expect(allText(tree)).not.toContain('create_client_id reused');
+  });
+
+  it('"key already used" while the flag is still not found keeps the record and its key', async () => {
+    await act(async () => {
+      await usePvPendingCreates.getState().putDurable({
+        create_client_id: 'lost-key',
+        user_id: 'me-1',
+        site_log_event_id: 'event-1',
+        source_revision_no: 3,
+        job_id: 'job-1',
+        title: KITCHEN,
+        created_at: 1,
+      });
+    });
+    mockFind.mockResolvedValueOnce(null); // first check: not found yet
+    const tree = await render(<NewPotentialVariationScreen />);
+    await flush();
+    expect(byTestId(tree, 'pv-pending-not-found')).toHaveLength(1);
+
+    mockCreate.mockRejectedValueOnce(http409(KEY_REUSED));
+    mockFind.mockResolvedValueOnce(pv({ potential_variation_id: 'pv-8' }));
+    press(tree, 'pv-pending-send-again');
+    await flush();
+    expect(sentBodies()).toEqual([
+      { create_client_id: 'lost-key', title: KITCHEN, source_revision_no: 3, job_id: 'job-1' },
+    ]);
+    expect(mockFind.mock.calls).toEqual([['lost-key'], ['lost-key']]);
+    expect(mockReplace).toHaveBeenCalledWith('/potential-variations/pv-8?notice=already_created');
   });
 
   it('a withdrawn entry offers no flag', async () => {
@@ -652,17 +773,61 @@ describe('a flag’s detail', () => {
     });
   });
 
-  it('a flag with no job asks for one, and the flagger may set it', async () => {
+  it('a flag with no job asks for one, and the flagger may set it - no reason asked', async () => {
     mockResults['potential-variations:detail'] = {
       data: detail({
         job: null,
         permissions: { decide: false, read_note: false, set_job: true, change_job: false },
       }),
     };
+    mockUpdate.mockResolvedValue(detail());
     const tree = await render(<PotentialVariationDetail />);
     expect(byTestId(tree, 'pv-job-prompt')).toHaveLength(1);
     expect(byTestId(tree, 'pv-job-pick').length).toBeGreaterThan(0);
     expect(allText(tree)).toContain('potentialVariations.detail.set_job');
+    pickJob(tree, 'job-1');
+    await flush();
+    expect(byTestId(tree, 'pv-job-reason')).toHaveLength(0);
+    expect(mockUpdate).toHaveBeenCalledWith('pv-1', { job_id: 'job-1' });
+  });
+
+  it('the builder moving a flag that has a job: asks why, and Move sends the reason only once there is one', async () => {
+    mockMe = { user_id: 'boss', full_name: 'Boss', role: 'admin' };
+    mockResults['potential-variations:detail'] = { data: detail({ permissions: ADMIN_PERMISSIONS }) };
+    mockUpdate.mockResolvedValue(detail({ permissions: ADMIN_PERMISSIONS }));
+    const tree = await render(<PotentialVariationDetail />);
+    expect(allText(tree)).toContain('potentialVariations.detail.change_job');
+    pickJob(tree, 'job-2');
+    expect(byTestId(tree, 'pv-job-confirm-box')).toHaveLength(1);
+    expect(byTestId(tree, 'pv-job-confirm')[0].props.disabled).toBe(true);
+    type(tree, 'pv-job-reason', '   ');
+    expect(byTestId(tree, 'pv-job-confirm')[0].props.disabled).toBe(true);
+    press(tree, 'pv-job-confirm');
+    await flush();
+    expect(mockUpdate).not.toHaveBeenCalled();
+
+    type(tree, 'pv-job-reason', '  Owner moved it to stage 2  ');
+    expect(byTestId(tree, 'pv-job-confirm')[0].props.disabled).toBe(false);
+    press(tree, 'pv-job-confirm');
+    await flush();
+    expect(mockUpdate).toHaveBeenCalledWith('pv-1', {
+      job_id: 'job-2',
+      reason: 'Owner moved it to stage 2',
+    });
+    expect(byTestId(tree, 'pv-job-confirm-box')).toHaveLength(0);
+  });
+
+  it('cancelling a move sends nothing and forgets the typed reason', async () => {
+    mockMe = { user_id: 'boss', full_name: 'Boss', role: 'admin' };
+    mockResults['potential-variations:detail'] = { data: detail({ permissions: ADMIN_PERMISSIONS }) };
+    const tree = await render(<PotentialVariationDetail />);
+    pickJob(tree, 'job-2');
+    type(tree, 'pv-job-reason', 'half a thought');
+    press(tree, 'pv-job-cancel');
+    expect(byTestId(tree, 'pv-job-confirm-box')).toHaveLength(0);
+    pickJob(tree, 'job-2');
+    expect(byTestId(tree, 'pv-job-reason')[0].props.value).toBe('');
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 });
 
@@ -685,6 +850,7 @@ describe('the entry’s section', () => {
         user_id: 'me-1',
         site_log_event_id: 'event-1',
         source_revision_no: 1,
+        job_id: 'job-1',
         title: 'Extra power points',
         created_at: 1,
       });
@@ -711,6 +877,7 @@ describe('the entry’s section', () => {
         user_id: 'me-1',
         site_log_event_id: 'event-1',
         source_revision_no: 1,
+        job_id: 'job-1',
         title: 'x',
         created_at: 1,
       });

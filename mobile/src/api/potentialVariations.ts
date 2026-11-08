@@ -32,6 +32,8 @@ export const PV_END_REASONS: readonly PvEndReason[] = [
 
 /** Server limits (backend/app/models/potential_variation.py). */
 export const PV_NOTE_MAX_CHARS = 500;
+/** The reason for moving a flag's job (backend/app/schemas/potential_variation.py). */
+export const PV_JOB_REASON_MAX_CHARS = 500;
 
 export type PvUser = { user_id: string; full_name: string };
 
@@ -112,6 +114,13 @@ export type PvCreateBody = {
   title: string;
   /** The entry version shown to the person when they tapped Save. */
   source_revision_no: number;
+  /**
+   * The job shown with the entry when they tapped Save; null when it showed
+   * none. Always sent: the server refuses a flag whose entry is no longer on
+   * this job (`job_changed`), and a resend under the same key must ask for
+   * the same job to be a replay.
+   */
+  job_id: string | null;
 };
 
 /** State, end reason and note travel together, as one decision. */
@@ -121,8 +130,11 @@ export type PvDecision = {
   note?: string | null;
 };
 
-/** Only the fields sent are changed. `job_id` can be set, never cleared. */
-export type PvPatch = { decision?: PvDecision; job_id?: string };
+/**
+ * Only the fields sent are changed. `job_id` can be set, never cleared;
+ * moving a flag that already has a job needs `reason` (kept in the audit).
+ */
+export type PvPatch = { decision?: PvDecision; job_id?: string; reason?: string };
 
 export const PV_PAGE_SIZE = 20;
 /** The largest page the server accepts (`limit` is 1..50). */

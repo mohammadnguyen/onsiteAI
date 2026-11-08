@@ -25,10 +25,16 @@ import { usePvPendingCreates, type PendingPvCreate } from '../store/pvPendingCre
  * the auth store's session nonce read BEFORE the first await - and only for
  * a record that belongs to the signed-in account.
  *
- * The one difference from tasks: the flag pins the entry version the person
- * saw. If the entry has moved on, the server refuses with `source_changed`
- * and nothing is created under the key; the screen reloads the entry and
- * asks the person to check it and save again, under a new key.
+ * The differences from tasks:
+ * - The flag pins the entry version AND the job (or no job) the person saw.
+ *   If the entry has moved on, the server refuses with `source_changed` or
+ *   `job_changed` and nothing is created under the key; the screen reloads
+ *   the entry and asks the person to check it and save again, under a new
+ *   key.
+ * - A key the server says it has already used for a different flag
+ *   (`conflict`) is never given up: the record is kept and the flag is
+ *   looked up by that key. Giving the key up for a new one could make a
+ *   second flag next to the one that exists.
  */
 
 export type PvRefusal = {
@@ -37,11 +43,19 @@ export type PvRefusal = {
   detail: string | null;
   /** The entry has a newer version than the one the person saw. */
   sourceChanged: boolean;
+  /** The entry is no longer on the job (or no job) the person saw. */
+  jobChanged: boolean;
 };
 
 export type PvSendOutcome =
   | { kind: 'created'; pv: PvOut }
   | PvRefusal
+  /**
+   * The server says something already exists under this key (or answered
+   * 409 for a reason this app does not know): the record is kept, and the
+   * flag is looked up by the key. Never a new key.
+   */
+  | { kind: 'conflict' }
   /** The server offers no flag routes right now; the record is kept. */
   | { kind: 'unavailable' }
   | { kind: 'unknown' }
@@ -101,10 +115,32 @@ const SOURCE_NOT_FOUND = 'Site log event not found';
 
 /** The machine-readable start of the server's "the entry changed" refusal. */
 const SOURCE_CHANGED_PREFIX = 'source_changed:';
+/** ... and of its "the entry's job changed" refusal. */
+const JOB_CHANGED_PREFIX = 'job_changed:';
+/** The server's refusal of a withdrawn entry (backend `PvSourceWithdrawn`). */
+export const WITHDRAWN = 'The source entry is withdrawn';
 
 /** The server refused because the entry has a newer version than the one shown. */
 export function isSourceChanged(status: number, detail: string | null): boolean {
   return status === 409 && detail !== null && detail.startsWith(SOURCE_CHANGED_PREFIX);
+}
+
+/** The server refused because the entry is not on the job (or no job) shown. */
+export function isJobChanged(status: number, detail: string | null): boolean {
+  return status === 409 && detail !== null && detail.startsWith(JOB_CHANGED_PREFIX);
+}
+
+/**
+ * The 409s the server gives on purpose when NOTHING exists under the key:
+ * it answers a key it has already used before any of these checks, so each
+ * of them means no flag was made with it. Every other 409 - above all "this
+ * key was already used for a different flag" - may mean a flag exists under
+ * the key: the record is kept and looked up (`conflict`), never dropped for
+ * a new key. A 409 whose wording this app does not know lands on that side
+ * too: the side that keeps the record.
+ */
+function nothingUnderKey(status: number, detail: string | null): boolean {
+  return detail === WITHDRAWN || isSourceChanged(status, detail) || isJobChanged(status, detail);
 }
 
 /** The server answered, but the flag routes were not there to answer. */
@@ -125,18 +161,28 @@ const NOT_NOW = new Set([408, 429]);
 /**
  * What a failed create request means. Refused: the server judged this flag
  * and said no, on purpose - nothing exists under the key (that includes
- * `source_changed`). Unavailable: it answered without judging it. Unknown:
- * no usable answer at all (a lost connection, a server error, a "not now"
- * answer - see `NOT_NOW` - or a session that ended - a 401 is the shared
- * client's to handle, and the record stays for the same account's next
- * sign-in).
+ * `source_changed` and `job_changed`). Conflict: a 409 that may mean a flag
+ * exists under the key (see `nothingUnderKey`). Unavailable: it answered
+ * without judging it. Unknown: no usable answer at all (a lost connection,
+ * a server error, a "not now" answer - see `NOT_NOW` - or a session that
+ * ended - a 401 is the shared client's to handle, and the record stays for
+ * the same account's next sign-in).
  */
-function classify(err: unknown): PvRefusal | { kind: 'unavailable' } | { kind: 'unknown' } {
+function classify(
+  err: unknown,
+): PvRefusal | { kind: 'conflict' } | { kind: 'unavailable' } | { kind: 'unknown' } {
   const status = answeredStatus(err);
   if (status === null || status === 401 || NOT_NOW.has(status)) return { kind: 'unknown' };
   const detail = detailOf(err);
   if (routeMissing(status, detail)) return { kind: 'unavailable' };
-  return { kind: 'refused', status, detail, sourceChanged: isSourceChanged(status, detail) };
+  if (status === 409 && !nothingUnderKey(status, detail)) return { kind: 'conflict' };
+  return {
+    kind: 'refused',
+    status,
+    detail,
+    sourceChanged: isSourceChanged(status, detail),
+    jobChanged: isJobChanged(status, detail),
+  };
 }
 
 /**
@@ -145,7 +191,8 @@ function classify(err: unknown): PvRefusal | { kind: 'unavailable' } | { kind: '
  * The pending record is on disk BEFORE the request leaves, so a crash or a
  * kill at any later moment still leaves the key the server may have used.
  * If it cannot be written, nothing is sent. A definite answer removes it;
- * an unavailable or unknown result keeps it, with its key and values.
+ * a conflict, unavailable or unknown result keeps it, with its key and
+ * values.
  *
  * A key that is already out is not sent twice: the caller shares the
  * answer of the send in progress (see `inFlight`).
@@ -190,6 +237,7 @@ async function send(
       create_client_id: p.create_client_id,
       title: p.title,
       source_revision_no: p.source_revision_no,
+      job_id: p.job_id,
     });
     await forget(p.create_client_id);
     return { kind: 'created', pv };
@@ -206,8 +254,8 @@ async function send(
  * Find out what happened to an unresolved flag - before anything is resent.
  *
  * If this app still has it out, that send's own answer is awaited instead of
- * asking the server; a send that ends unknown is followed by the question
- * below, as on any other return.
+ * asking the server; a send that ends in a conflict or unknown is followed
+ * by the question below, as on any other return.
  *
  * Found: the record is done with. Not found: the record stays, and the
  * caller offers to send the SAME values again under the SAME key. The

@@ -4,6 +4,7 @@ import { router } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 
+import { useJobs } from '../api/hooks/useJobs';
 import { confirmDestructive } from '../siteLog/dialogs';
 import { useAuthStore } from '../store/auth';
 import type { PendingPvCreate } from '../store/pvPendingCreates';
@@ -39,7 +40,13 @@ function sameSession(startedUnder: number): boolean {
  * values, so even a request that was only slow cannot become a second flag.
  * Still unreachable: it says the result is unknown and offers to check
  * again. The server offers no flags right now: it says so, keeps the record
- * and offers to check again - never to send. Discard asks first.
+ * and asks the user to come back and check again - nothing runs in the
+ * background, and nothing is sent. A resend the server answers "this key
+ * was already used" is followed by the same check, by the key. Discard asks
+ * first.
+ *
+ * The saved values shown are the ones resent: the title (only while the
+ * entry is readable, see `sourceReadable`), the version and the job.
  */
 export function PendingFlagPanel({
   pending,
@@ -66,6 +73,8 @@ export function PendingFlagPanel({
 }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
+  const jobs = useJobs();
+  const jobNameOf = (jobId: string) => jobs.data?.find((j) => j.job_id === jobId)?.job_name;
   const activeRef = screenActive;
   const [phase, setPhase] = useState<Phase>('checking');
   const started = useRef(false);
@@ -112,6 +121,10 @@ export function PendingFlagPanel({
       }
     } else if (outcome.kind === 'refused') {
       onRefused(outcome, pending);
+    } else if (outcome.kind === 'conflict') {
+      // The server says this key already made a flag: find it by the key,
+      // never send it under a new one. The record is still on the phone.
+      void check();
     } else if (outcome.kind === 'not_saved') {
       // Nothing was sent; the record is as it was.
       setPhase('not_found');
@@ -158,8 +171,17 @@ export function PendingFlagPanel({
         <Text style={s.savedTitle} testID="pending-saved-title">
           {sourceReadable ? pending.title : t('potentialVariations.placeholder_title')}
         </Text>
-        <Text style={s.savedMeta}>
+        <Text style={s.savedMeta} testID="pending-saved-meta">
           {t('potentialVariations.new.version', { n: pending.source_revision_no })}
+          {sourceReadable
+            ? ` · ${
+                pending.job_id === null
+                  ? t('potentialVariations.pending.no_job')
+                  : t('potentialVariations.pending.job', {
+                      job: jobNameOf(pending.job_id) ?? t('siteLog.detail.assigned'),
+                    })
+              }`
+            : ''}
         </Text>
       </View>
       {phase === 'not_found' ? (

@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { useJobs } from '../api/hooks/useJobs';
-import type { PvOut } from '../api/potentialVariations';
+import { PV_JOB_REASON_MAX_CHARS, type PvOut } from '../api/potentialVariations';
 import { JobPickerSheet } from '../components/JobPickerSheet';
 import { tokens } from '../ui/tokens';
 
@@ -12,18 +12,21 @@ import { tokens } from '../ui/tokens';
  * (src/tasks/TaskJobSection.tsx). The flag keeps the job it was made with;
  * a later correction of its entry never moves it. A flag with no job cannot
  * be found under a job, so it says so and offers to set one. Set it while
- * empty (the flagger or the builder), or move it (the builder, after a
- * confirmation). The server says which applies in `permissions`; a job is
- * never cleared.
+ * empty (the flagger or the builder), or move it (the builder, with a
+ * reason the server keeps in the flag's audit, as for tasks and the Site
+ * Log's own re-link). The server says which applies in `permissions`; a job
+ * is never cleared.
  */
 export function PvJobSection({
   pv,
   disabled,
   onSetJob,
+  onChangeJob,
 }: {
   pv: PvOut;
   disabled: boolean;
   onSetJob: (jobId: string) => void;
+  onChangeJob: (jobId: string, reason: string) => void;
 }) {
   const { t } = useTranslation();
   const jobs = useJobs();
@@ -31,8 +34,13 @@ export function PvJobSection({
   const nameOf = (jobId: string) => jobs.data?.find((j) => j.job_id === jobId)?.job_name;
   const [picking, setPicking] = useState(false);
   const [moveTo, setMoveTo] = useState<string | null>(null);
+  const [reason, setReason] = useState('');
 
   const p = pv.permissions;
+  const closeMove = () => {
+    setMoveTo(null);
+    setReason('');
+  };
   const canPick = p.set_job || p.change_job;
   // Shown only when the server says this user may read the entry.
   const entryMoved =
@@ -73,26 +81,37 @@ export function PvJobSection({
         </Text>
       ) : null}
       {moveTo ? (
-        // Moving a flag that already has a job is the builder's deliberate act.
+        // Moving a flag that already has a job is the builder's deliberate
+        // act, and needs a reason (the server refuses a move without one).
         <View style={s.confirmBox} testID="pv-job-confirm-box">
           <Text style={s.confirmTitle}>
             {t('potentialVariations.detail.job_move_title', { job: nameOf(moveTo) ?? '' })}
           </Text>
+          <TextInput
+            value={reason}
+            onChangeText={setReason}
+            placeholder={t('potentialVariations.detail.job_move_reason_placeholder')}
+            placeholderTextColor={tokens.muted}
+            maxLength={PV_JOB_REASON_MAX_CHARS}
+            style={s.input}
+            testID="pv-job-reason"
+          />
           <View style={s.row}>
             <Pressable
               onPress={() => {
-                onSetJob(moveTo);
-                setMoveTo(null);
+                if (!reason.trim()) return;
+                onChangeJob(moveTo, reason.trim());
+                closeMove();
               }}
-              disabled={disabled}
+              disabled={disabled || !reason.trim()}
               accessibilityRole="button"
               testID="pv-job-confirm"
             >
-              <Text style={[s.link, disabled ? s.dim : null]}>
+              <Text style={[s.link, disabled || !reason.trim() ? s.dim : null]}>
                 {t('potentialVariations.detail.job_move_confirm')}
               </Text>
             </Pressable>
-            <Pressable onPress={() => setMoveTo(null)} accessibilityRole="button">
+            <Pressable onPress={closeMove} accessibilityRole="button" testID="pv-job-cancel">
               <Text style={s.cancel}>{t('common.cancel')}</Text>
             </Pressable>
           </View>
@@ -133,4 +152,13 @@ const s = StyleSheet.create({
     backgroundColor: tokens.surface,
   },
   confirmTitle: { color: tokens.ink, fontWeight: '600' },
+  input: {
+    borderWidth: 1,
+    borderColor: tokens.line,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    color: tokens.ink,
+    backgroundColor: tokens.surfaceSub,
+  },
 });

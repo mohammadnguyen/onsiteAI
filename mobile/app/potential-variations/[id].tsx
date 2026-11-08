@@ -198,7 +198,12 @@ export default function PotentialVariationDetail() {
           <PvEvidence pv={pv} />
 
           <Text style={s.label}>{t('potentialVariations.detail.job')}</Text>
-          <PvJobSection pv={pv} disabled={saving} onSetJob={(jobId) => void apply({ job_id: jobId })} />
+          <PvJobSection
+            pv={pv}
+            disabled={saving}
+            onSetJob={(jobId) => void apply({ job_id: jobId })}
+            onChangeJob={(jobId, reason) => void apply({ job_id: jobId, reason })}
+          />
 
           {p.read_note && pv.decision_note ? (
             <>

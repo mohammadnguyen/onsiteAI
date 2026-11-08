@@ -28,6 +28,7 @@ function record(overrides: Partial<PendingPvCreate> = {}): PendingPvCreate {
     user_id: 'user-a',
     site_log_event_id: 'event-1',
     source_revision_no: 1,
+    job_id: null,
     title: 'Two extra power points in the kitchen',
     created_at: 1,
     ...overrides,

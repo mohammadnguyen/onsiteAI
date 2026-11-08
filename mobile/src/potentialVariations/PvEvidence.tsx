@@ -10,7 +10,7 @@ import { attachmentCounts } from './status';
  * What a flag points at (DEC-PV-001 evidence rules).
  *
  * The flag pins the entry version the person saw: that version's text is
- * shown as the original record. Attachments belong to the ENTRY, not to a
+ * shown as the entry as confirmed when flagging. Attachments belong to the ENTRY, not to a
  * version, so they are summarised as the entry's list NOW - never as a
  * snapshot of that version - and are opened through the entry, under the
  * entry's own rules. A newer version, or a withdrawal since, is said

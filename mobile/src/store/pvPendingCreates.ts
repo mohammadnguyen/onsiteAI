@@ -46,6 +46,11 @@ export type PendingPvCreate = {
   site_log_event_id: string;
   /** The entry version the person saw when they tapped Save. */
   source_revision_no: number;
+  /**
+   * The job shown with the entry when they tapped Save; null when it showed
+   * none. Part of what they confirmed, so it is kept and resent unchanged.
+   */
+  job_id: string | null;
   title: string;
   created_at: number;
 };
