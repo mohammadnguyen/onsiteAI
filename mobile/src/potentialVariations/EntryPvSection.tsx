@@ -1,9 +1,8 @@
-import { useEffect } from 'react';
 import axios from 'axios';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { useTranslation } from 'react-i18next';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 
 import { useMe } from '../api/hooks/useAuth';
 import { listEventPotentialVariations, type PvOut } from '../api/potentialVariations';
@@ -29,20 +28,11 @@ export function EntryPvSection({ eventId, withdrawn }: { eventId: string; withdr
   const tokenUserId = useAuthStore((s) => s.userId);
   const userId = me?.user_id ?? tokenUserId;
   const pending = usePvPendingCreates((s) => (userId ? s.forEvent(userId, eventId) : undefined));
-  const qc = useQueryClient();
   const q = useQuery({
     queryKey: ['potential-variations', 'event', eventId],
     queryFn: () => listEventPotentialVariations(eventId),
   });
   const refused = q.isError && axios.isAxiosError(q.error) && q.error.response?.status === 404;
-  // A 404 drops the rows an earlier read cached (their titles come from the
-  // entry): only hidden, they would come back when a later read merely fails.
-  const refusedWithRows = refused && q.data !== undefined;
-  useEffect(() => {
-    if (refusedWithRows) {
-      void qc.resetQueries({ queryKey: ['potential-variations', 'event', eventId], exact: true });
-    }
-  }, [refusedWithRows, eventId, qc]);
 
   // A server without flags answers 404 on this route (as does one that no
   // longer lets this user read the entry). A flag from here still in doubt
@@ -60,8 +50,13 @@ export function EntryPvSection({ eventId, withdrawn }: { eventId: string; withdr
     );
   }
 
-  // Only a list is a list: anything else (a proxy's page) shows no rows.
-  const flags: PvOut[] = Array.isArray(q.data) ? q.data : [];
+  // Rows only from a read that has just succeeded. The query cache keeps an
+  // earlier read's rows through a failed one - a 404 (this user may no
+  // longer read the entry) and then a read that merely failed would bring
+  // them back, and their titles come from the entry's text. And only a list
+  // is a list: anything else (a proxy's page) shows no rows.
+  const listed: PvOut[] | null = q.isSuccess && Array.isArray(q.data) ? q.data : null;
+  const flags: PvOut[] = listed ?? [];
   const openFlag = () => router.push(`/potential-variations/new?eventId=${eventId}` as never);
 
   return (
@@ -81,7 +76,7 @@ export function EntryPvSection({ eventId, withdrawn }: { eventId: string; withdr
       {q.isError ? (
         <Text style={s.note}>{t('potentialVariations.entry_section.load_failed')}</Text>
       ) : null}
-      {Array.isArray(q.data) && q.data.length === 0 ? (
+      {listed !== null && listed.length === 0 ? (
         <Text style={s.note}>{t('potentialVariations.entry_section.none')}</Text>
       ) : null}
       {flags.map((pv) => (
