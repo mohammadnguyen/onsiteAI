@@ -149,6 +149,9 @@ describe('sending a create', () => {
     ['a timeout', Object.assign(new Error('timeout'), { isAxiosError: true, code: 'ECONNABORTED' })],
     ['a server error (503)', httpError(503)],
     ['an ended session (401)', httpError(401)],
+    // "Not now", not "no": the first request may still be running.
+    ['a request timeout answered by the server or a proxy (408)', httpError(408)],
+    ['too many requests (429)', httpError(429, 'Too Many Requests')],
   ])('keeps the record when the result is unknown: %s', async (_label, err) => {
     const { flow, auth, AsyncStorage } = load();
     signIn(auth, 'user-a', 1);
@@ -289,6 +292,30 @@ describe('finding out what happened to a lost create', () => {
     expect(second).toEqual(first); // same event, same key, same body
     expect(store.getState().forEvent('user-a', 'event-1')).toBeUndefined();
   });
+
+  it.each([408, 429])(
+    'a resend answered %i keeps the record - same key, same values - and stays unknown',
+    async (status) => {
+      // The original timed out on the phone but may still be running on the
+      // server: the lookup finds nothing yet, and the resend is told "not
+      // now". Dropping the record here would let the next save take a new
+      // key while the original can still commit.
+      const { flow, auth, store, AsyncStorage } = load();
+      signIn(auth, 'user-a', 1);
+      mockCreateTask.mockRejectedValueOnce(networkError());
+      await flow.sendCreate(record(), 1);
+      mockFindMyCreate.mockResolvedValue(null);
+      const pending = store.getState().forEvent('user-a', 'event-1');
+      expect(pending).toBeDefined();
+      expect(await flow.resolvePending(pending!, 1)).toEqual({ kind: 'not_found' });
+
+      mockCreateTask.mockRejectedValueOnce(httpError(status));
+      expect(await flow.sendCreate(pending!, 1)).toEqual({ kind: 'unknown' });
+      expect(await persisted(AsyncStorage)).toEqual([record()]);
+      const [first, second] = mockCreateTask.mock.calls;
+      expect(second).toEqual(first); // same event, same key, same body
+    },
+  );
 
   it('still unreachable: unknown, and nothing changes', async () => {
     const { flow, auth, store, AsyncStorage } = load();
