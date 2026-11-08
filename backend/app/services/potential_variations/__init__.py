@@ -16,8 +16,9 @@ Modules, dependencies one way: ``errors`` → ``access`` → ``rules`` →
 * :mod:`views` — access resolution, source protection, the view model, the
   reads.
 * :mod:`create` — flag an entry, idempotent per creator and key, pinned to
-  the version the person confirmed.
-* :mod:`update` — the builder's decision and the job, one audit row each.
+  the version and the job (or no job) the person confirmed.
+* :mod:`update` — the builder's decision and the job (a move needs a
+  reason), one audit row each.
 
 Callers use ``from app.services import potential_variations as pv_svc``.
 """
@@ -29,9 +30,11 @@ from .errors import (
     PvError,
     PvFingerprintMismatch,
     PvForbidden,
+    PvJobChanged,
     PvJobCompleted,
     PvJobNotFound,
     PvNotFound,
+    PvReasonRequired,
     PvSourceChanged,
     PvSourceNotFound,
     PvSourceWithdrawn,
@@ -61,10 +64,12 @@ __all__ = [
     "PvError",
     "PvFingerprintMismatch",
     "PvForbidden",
+    "PvJobChanged",
     "PvJobCompleted",
     "PvJobNotFound",
     "PvNotFound",
     "PvPermissions",
+    "PvReasonRequired",
     "PvSourceChanged",
     "PvSourceNotFound",
     "PvSourceWithdrawn",

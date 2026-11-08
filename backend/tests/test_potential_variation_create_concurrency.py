@@ -5,14 +5,15 @@ waiting for another. These tests build their own scratch database
 (``alembic upgrade head``, like the task concurrency tests), run an original
 flag and its resend on two independent physical connections, and hold the
 original at a controlled point: its flag written, not yet committed. The
-entry is corrected meanwhile (a new revision), on a third connection.
+entry changes meanwhile, on a third connection: corrected (a new revision),
+or put under a job (the person confirmed "no job").
 
 Whatever happens to the original, the key ends with at most one flag and one
 ``created`` audit row: the resend waits for the original, then replays its
-flag (original committed - never ``source_changed``) or is judged as a new
-flag (original rolled back - and then the corrected entry IS a change the
-person has not seen). Synthetic rows only; the database is dropped
-afterwards.
+flag (original committed - never ``source_changed`` or ``job_changed``) or
+is judged as a new flag (original rolled back - and then the changed entry
+IS a change the person has not seen). Synthetic rows only; the database is
+dropped afterwards.
 """
 
 from __future__ import annotations
@@ -27,12 +28,14 @@ from pathlib import Path
 
 import asyncpg
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.security import hash_password
 from app.models import (
     CaptureStatus,
+    Job,
+    JobStatus,
     PotentialVariation,
     PotentialVariationAuditLog,
     SiteLogEvent,
@@ -209,6 +212,30 @@ async def _correct_entry(factory, event_id: uuid.UUID, author_id: uuid.UUID) -> 
         await s.commit()
 
 
+async def _put_entry_on_a_job(factory, event_id: uuid.UUID, author_id: uuid.UUID) -> None:
+    """The entry the person saw with no job gets one (what assign-job does
+    to the event row; no attachments or evidence to carry along here)."""
+    async with factory() as s:
+        job = Job(job_id=uuid.uuid4(), job_name="Simulated job", status=JobStatus.active,
+                  created_by=author_id)
+        s.add(job)
+        await s.flush()
+        await s.execute(
+            update(SiteLogEvent)
+            .where(SiteLogEvent.site_log_event_id == event_id)
+            .values(job_id=job.job_id)
+        )
+        await s.commit()
+
+
+# What changes on the entry while the original is held, and what a NEW flag
+# of what the person saw is refused as once nothing exists under the key.
+CHANGES = {
+    "corrected": (_correct_entry, pv_svc.PvSourceChanged),
+    "put_on_a_job": (_put_entry_on_a_job, pv_svc.PvJobChanged),
+}
+
+
 @contextlib.asynccontextmanager
 async def _held(task: asyncio.Task, session: _HeldSession):
     """Never strand the held original (see the task concurrency tests)."""
@@ -221,15 +248,17 @@ async def _held(task: asyncio.Task, session: _HeldSession):
                 await asyncio.wait_for(task, timeout=30)
 
 
+@pytest.mark.parametrize("change", sorted(CHANGES))
 @pytest.mark.parametrize("original_commits", [True, False])
 async def test_a_resend_waits_for_the_uncommitted_original(
-    engine, factory, scene, original_commits
+    engine, factory, scene, original_commits, change
 ):
     flagger, event_id = scene
+    change_entry, refusal = CHANGES[change]
     key = uuid.uuid4()
     args = dict(
         user=flagger, event_id=event_id, create_client_id=key, title=KITCHEN,
-        source_revision_no=1,
+        source_revision_no=1, job_id=None,
     )
 
     async with _connection(engine) as (c1, pid1), _connection(engine) as (c2, pid2):
@@ -237,12 +266,12 @@ async def test_a_resend_waits_for_the_uncommitted_original(
         original_db = _HeldSession(bind=c1, expire_on_commit=False, fail=not original_commits)
         original = asyncio.create_task(pv_svc.create_pv(original_db, **args))
         async with _held(original, original_db):
-            # The original has checked the version and written its flag,
-            # and holds its transaction open.
+            # The original has checked the version and the job, written its
+            # flag, and holds its transaction open.
             await asyncio.wait_for(original_db.reached.wait(), timeout=10)
 
-            # The entry is corrected, committed, on another connection.
-            await _correct_entry(factory, event_id, flagger.user_id)
+            # The entry changes, committed, on another connection.
+            await change_entry(factory, event_id, flagger.user_id)
 
             async def resend():
                 async with AsyncSession(bind=c2, expire_on_commit=False) as s:
@@ -257,7 +286,7 @@ async def test_a_resend_waits_for_the_uncommitted_original(
                 first = await asyncio.wait_for(original, timeout=30)
                 replay = await asyncio.wait_for(second, timeout=30)
                 # The resend answers with the original's flag: a replay,
-                # not "source_changed".
+                # not "source_changed" or "job_changed".
                 assert first.created is True and replay.created is False
                 assert (
                     replay.view.pv.potential_variation_id
@@ -268,8 +297,9 @@ async def test_a_resend_waits_for_the_uncommitted_original(
                 with pytest.raises(ConnectionResetError):
                     await asyncio.wait_for(original, timeout=30)
                 # Nothing was made under the key, so the resend is a new
-                # flag - of a version that is no longer current: refused.
-                with pytest.raises(pv_svc.PvSourceChanged):
+                # flag - of an entry that is no longer what the person saw:
+                # refused, as a changed version or a changed job.
+                with pytest.raises(refusal):
                     await asyncio.wait_for(second, timeout=30)
                 assert await _counts(factory, key) == (0, 0)
 
@@ -282,7 +312,7 @@ async def test_two_identical_flags_at_once_make_one(engine, factory, scene):
         async with AsyncSession(bind=conn, expire_on_commit=False) as s:
             res = await pv_svc.create_pv(
                 s, user=flagger, event_id=event_id, create_client_id=key, title=KITCHEN,
-                source_revision_no=1,
+                source_revision_no=1, job_id=None,
             )
             return res.created, res.view.pv.potential_variation_id
 

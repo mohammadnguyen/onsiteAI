@@ -138,9 +138,11 @@ _STATUS = {
     pv_svc.PvJobNotFound: 404,
     pv_svc.PvSourceWithdrawn: 409,
     pv_svc.PvSourceChanged: 409,
+    pv_svc.PvJobChanged: 409,
     pv_svc.PvFingerprintMismatch: 409,
     pv_svc.PvForbidden: 403,
     pv_svc.PvJobCompleted: 422,
+    pv_svc.PvReasonRequired: 422,
     pv_svc.PvValidationError: 422,
 }
 
@@ -170,6 +172,7 @@ async def create_potential_variation(
             create_client_id=payload.create_client_id,
             title=payload.title,
             source_revision_no=payload.source_revision_no,
+            job_id=payload.job_id,
         )
     except pv_svc.PvError as exc:
         raise _map(exc) from exc
@@ -255,6 +258,7 @@ async def update_potential_variation(
             decision=decision,
             job_id_sent="job_id" in sent,
             job_id=payload.job_id,
+            reason=payload.reason,
         )
     except pv_svc.PvError as exc:
         raise _map(exc) from exc

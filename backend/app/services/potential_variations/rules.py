@@ -93,11 +93,15 @@ def create_fingerprint(
     *,
     source_site_log_event_id: uuid.UUID,
     source_revision_no: int,
+    job_id: uuid.UUID | None,
     title: str,
 ) -> str:
     """Canonical hash of what a create asked for (idempotency-key misuse
-    detection only). ``title`` is the cleaned title."""
+    detection only): the entry, the version and the job (``None``: no job)
+    the person confirmed, and the cleaned title. A resend under the same key
+    must match all four to be a replay."""
     canonical = {
+        "job_id": str_or_none(job_id),
         "source_revision_no": source_revision_no,
         "source_site_log_event_id": str(source_site_log_event_id),
         "title": title,

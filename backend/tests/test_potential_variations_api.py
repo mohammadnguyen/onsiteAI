@@ -1,11 +1,13 @@
 """Site Log → Potential Variation (DEC-PV-001): the HTTP surface and its rules.
 
-Covers: flag / replay / key misuse; the pinned version (a changed entry is
-refused as ``source_changed``, but only after a used key has been answered);
-withdrawn and unreadable entries; the three identities (builder = admin,
-flagger, unrelated contributor) on every route; the builder-only decision as
-one unit and the builder-only note; lost source access hiding every
-entry-derived field; job set/change rules; Task independence both ways; a
+Covers: flag / replay / key misuse; the pinned version and the pinned job (a
+changed entry is refused as ``source_changed`` / ``job_changed``, but only
+after a used key has been answered, and a resend asking for another job is
+key misuse); withdrawn and unreadable entries; the three identities (builder
+= admin, flagger, unrelated contributor) on every route; the builder-only
+decision as one unit and the builder-only note; lost source access hiding
+every entry-derived field; job set/change rules (a move needs a reason, kept
+in the audit); Task independence both ways; a
 job a flag points at refusing deletion; the entry's current attachments
 (inline-text row left out by identity); response key sets with no price or
 approval field; the audit; logs without text.
@@ -134,10 +136,13 @@ async def _add_revision(db, event, revision_no, *, body=KITCHEN, withdrawn=False
 
 
 async def _flag(client, token, event_id, *, revision_no=1, **body):
+    """``job_id`` defaults to null ("the entry showed no job"); a test of an
+    entry on a job passes the job the person saw."""
     payload = {
         "create_client_id": str(uuid.uuid4()),
         "title": KITCHEN_TITLE,
         "source_revision_no": revision_no,
+        "job_id": None,
         **body,
     }
     return await client.post(
@@ -191,7 +196,7 @@ async def test_flag_shape_and_confirmation_record(
     job = await _mk_job(db_session, seeded_admin, name="Simulated kitchen job")
     entry = await _mk_entry(db_session, seeded_contributor, job=job)
     r = await _flag(client, contributor_token, entry.site_log_event_id,
-                    title="  Two extra power points, kitchen  ")
+                    title="  Two extra power points, kitchen  ", job_id=str(job.job_id))
     assert r.status_code == 201, r.text
     body = r.json()
     assert set(body) == PV_KEYS
@@ -335,10 +340,17 @@ async def test_title_and_version_validation(
     assert r.status_code == 422
     r = await client.post(
         f"/site-log-events/{entry.site_log_event_id}/potential-variations",
-        json={"create_client_id": str(uuid.uuid4()), "title": KITCHEN_TITLE},
+        json={"create_client_id": str(uuid.uuid4()), "title": KITCHEN_TITLE, "job_id": None},
         headers=_auth(contributor_token),
     )
     assert r.status_code == 422  # the version the person saw is required
+    r = await client.post(
+        f"/site-log-events/{entry.site_log_event_id}/potential-variations",
+        json={"create_client_id": str(uuid.uuid4()), "title": KITCHEN_TITLE,
+              "source_revision_no": 1},
+        headers=_auth(contributor_token),
+    )
+    assert r.status_code == 422  # so is the job they saw: "no job" is never assumed
     # A version that does not exist is "changed", never pinned.
     r = await _flag(client, contributor_token, entry.site_log_event_id, revision_no=7)
     assert r.status_code == 409 and r.json()["detail"].startswith("source_changed:")
@@ -367,9 +379,8 @@ async def test_who_sees_what_admin_flagger_and_unrelated_contributor(
     job = await _mk_job(db_session, seeded_admin)
     # On a job: every active user may read the ENTRY - but not the flag.
     entry = await _mk_entry(db_session, seeded_contributor, job=job)
-    pv_id = (await _flag(client, contributor_token, entry.site_log_event_id)).json()[
-        "potential_variation_id"
-    ]
+    pv_id = (await _flag(client, contributor_token, entry.site_log_event_id,
+                         job_id=str(job.job_id))).json()["potential_variation_id"]
 
     for token in (admin_token, contributor_token):
         listed = await client.get("/potential-variations", headers=_auth(token))
@@ -397,7 +408,7 @@ async def test_who_sees_what_admin_flagger_and_unrelated_contributor(
         assert r.status_code == 404, patch
 
     # The outsider may still flag the same entry (they can read it).
-    mine = await _flag(client, outsider_token, entry.site_log_event_id)
+    mine = await _flag(client, outsider_token, entry.site_log_event_id, job_id=str(job.job_id))
     assert mine.status_code == 201
     # ... and then sees only their own flag.
     listed = await client.get("/potential-variations", headers=_auth(outsider_token))
@@ -554,7 +565,9 @@ async def test_lost_source_access_hides_every_entry_derived_field(
     entry = await _mk_entry(db_session, author, job=job)
     key = str(uuid.uuid4())
     pv_id = (await _flag(client, contributor_token, entry.site_log_event_id,
-                         create_client_id=key)).json()["potential_variation_id"]
+                         create_client_id=key, job_id=str(job.job_id))).json()[
+        "potential_variation_id"
+    ]
 
     await db_session.execute(
         update(SiteLogEvent)
@@ -655,31 +668,132 @@ async def test_job_set_and_change_rules(
                             headers=_auth(admin_token))
     assert both.status_code == 422
 
-    async def set_job(token, job_id):
-        return await client.patch(f"/potential-variations/{pv_id}", json={"job_id": job_id},
+    async def set_job(token, job_id, reason=None):
+        body = {"job_id": job_id}
+        if reason is not None:
+            body["reason"] = reason
+        return await client.patch(f"/potential-variations/{pv_id}", json=body,
                                   headers=_auth(token))
 
     assert (await set_job(contributor_token, str(done.job_id))).status_code == 422
     assert (await set_job(contributor_token, str(uuid.uuid4()))).status_code == 404
+    # A first set needs no reason.
     r = await set_job(contributor_token, str(job_a.job_id))
     assert r.status_code == 200 and r.json()["job"]["job_id"] == str(job_a.job_id)
     assert r.json()["permissions"]["set_job"] is False
 
-    # Once set, the flagger cannot move it; the same job again is a no-op.
+    # Once set, the flagger cannot move it, reason or not (403 before any
+    # reason check); the same job again is a no-op.
     assert (await set_job(contributor_token, str(job_b.job_id))).status_code == 403
+    assert (await set_job(contributor_token, str(job_b.job_id), "moved")).status_code == 403
     assert (await set_job(contributor_token, str(job_a.job_id))).status_code == 200
     assert (await set_job(admin_token, None)).status_code == 422
-    r = await set_job(admin_token, str(job_b.job_id))
+
+    # The builder moves it only with a reason.
+    for missing in (None, "", "   "):
+        r = await set_job(admin_token, str(job_b.job_id), missing)
+        assert r.status_code == 422, (missing, r.text)
+        assert r.json()["detail"] == "A non-empty reason is required"
+    assert (await set_job(admin_token, str(job_b.job_id), "x" * 501)).status_code == 422
+    assert [a.action for a in await _audit(db_session, pv_id)].count("job_set") == 1
+
+    r = await set_job(admin_token, str(job_b.job_id), "  Owner moved it to stage 2  ")
     assert r.status_code == 200 and r.json()["job"]["job_id"] == str(job_b.job_id)
+    # The same move sent again (its answer lost) is a no-op, reason or not.
+    for again in (None, "Owner moved it to stage 2"):
+        r = await set_job(admin_token, str(job_b.job_id), again)
+        assert r.status_code == 200 and r.json()["job"]["job_id"] == str(job_b.job_id)
 
     by_job = await client.get(f"/potential-variations?job_id={job_b.job_id}",
                               headers=_auth(admin_token))
     assert [p["potential_variation_id"] for p in by_job.json()] == [pv_id]
     rows = [a for a in await _audit(db_session, pv_id) if a.action == "job_set"]
     assert [a.changed_fields for a in rows] == [
-        {"from": None, "to": str(job_a.job_id)},
-        {"from": str(job_a.job_id), "to": str(job_b.job_id)},
+        {"from": None, "to": str(job_a.job_id), "reason": None},
+        {"from": str(job_a.job_id), "to": str(job_b.job_id),
+         "reason": "Owner moved it to stage 2"},
     ]
+    assert all(a.actor_user_id == seeded_admin.user_id for a in rows[1:])
+    # The reason is the audit's, not the flag's: no response carries it.
+    detail = await client.get(f"/potential-variations/{pv_id}", headers=_auth(admin_token))
+    assert "stage 2" not in detail.text
+
+
+async def test_the_job_the_person_confirmed_is_pinned_and_checked(
+    client, db_session, seeded_admin, seeded_contributor, contributor_token
+):
+    """The app sends the job it showed (or none). If the entry's job is not
+    that one when the flag is saved, nothing is made and the person confirms
+    again - the flag never lands on a job they did not see."""
+    job_a = await _mk_job(db_session, seeded_admin, name="A")
+    job_b = await _mk_job(db_session, seeded_admin, name="B")
+    on_a = await _mk_entry(db_session, seeded_contributor, job=job_a)
+    jobless = await _mk_entry(db_session, seeded_contributor)
+
+    for entry, wrong in ((on_a, None), (on_a, str(job_b.job_id)), (jobless, str(job_a.job_id))):
+        r = await _flag(client, contributor_token, entry.site_log_event_id, job_id=wrong)
+        assert r.status_code == 409, (wrong, r.text)
+        assert r.json()["detail"].startswith("job_changed:")
+    assert await _count(db_session, PotentialVariation) == 0
+
+    r = await _flag(client, contributor_token, on_a.site_log_event_id, job_id=str(job_a.job_id))
+    assert r.status_code == 201, r.text
+    assert r.json()["job"]["job_id"] == str(job_a.job_id)
+    [created] = await _audit(db_session, r.json()["potential_variation_id"])
+    assert created.changed_fields["job_id"] == str(job_a.job_id)
+
+    r = await _flag(client, contributor_token, jobless.site_log_event_id, job_id=None)
+    assert r.status_code == 201, r.text
+    assert r.json()["job"] is None
+    [created] = await _audit(db_session, r.json()["potential_variation_id"])
+    assert created.changed_fields["job_id"] is None
+
+
+async def test_a_used_key_is_answered_before_the_job_check(
+    client, db_session, seeded_admin, admin_token, seeded_contributor, contributor_token
+):
+    """The entry moves to another job after the flag was saved: the same
+    request sent again still gets its flag, never ``job_changed`` - and a
+    request under that key asking for another job is key misuse, because the
+    job is part of what a resend must match."""
+    job_a = await _mk_job(db_session, seeded_admin, name="A")
+    job_b = await _mk_job(db_session, seeded_admin, name="B")
+    entry = await _mk_entry(db_session, seeded_contributor, job=job_a)
+    key = str(uuid.uuid4())
+    first = await _flag(client, contributor_token, entry.site_log_event_id,
+                        create_client_id=key, job_id=str(job_a.job_id))
+    assert first.status_code == 201, first.text
+
+    relinked = await client.post(
+        f"/site-log-events/{entry.site_log_event_id}/relink-job",
+        json={"job_id": str(job_b.job_id), "reason": "Recorded under the wrong job"},
+        headers=_auth(admin_token),
+    )
+    assert relinked.status_code == 200, relinked.text
+
+    replay = await _flag(client, contributor_token, entry.site_log_event_id,
+                         create_client_id=key, job_id=str(job_a.job_id))
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["potential_variation_id"] == first.json()["potential_variation_id"]
+    assert replay.json()["job"]["job_id"] == str(job_a.job_id)  # the flag stays put
+
+    for other_job in (str(job_b.job_id), None):
+        misuse = await _flag(client, contributor_token, entry.site_log_event_id,
+                             create_client_id=key, job_id=other_job)
+        assert misuse.status_code == 409, (other_job, misuse.text)
+        assert misuse.json()["detail"] == (
+            "create_client_id reused with a different potential variation"
+        )
+
+    # A NEW flag made from the job the person saw before the move is refused.
+    stale = await _flag(client, contributor_token, entry.site_log_event_id,
+                        job_id=str(job_a.job_id))
+    assert stale.status_code == 409 and stale.json()["detail"].startswith("job_changed:")
+    fresh = await _flag(client, contributor_token, entry.site_log_event_id,
+                        job_id=str(job_b.job_id))
+    assert fresh.status_code == 201, fresh.text
+    assert await _count(db_session, PotentialVariation) == 2
+    assert [a.action for a in await _audit(db_session)] == ["created", "created"]
 
 
 async def test_a_job_a_flag_points_at_is_archived_not_deleted(

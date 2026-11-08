@@ -53,7 +53,28 @@ class PvSourceChanged(PvError):
     )
 
 
+class PvJobChanged(PvError):
+    """The entry's job is not the one the person confirmed: it moved to
+    another job, gained one where the person saw none, or lost one.
+
+    ``job_changed:`` is the machine-readable part, as ``source_changed:`` is
+    for the version: the app reloads the entry and asks the person to
+    confirm again, under a new key.
+    """
+
+    message = (
+        "job_changed: the entry's job has changed since it was opened; "
+        "check it and confirm again"
+    )
+
+
 class PvFingerprintMismatch(PvError):
+    """The key already made a flag, from a different request.
+
+    Something exists under the key, so the app keeps its request and looks
+    the flag up by the key; it never gives the key up for a new one.
+    """
+
     message = "create_client_id reused with a different potential variation"
 
 
@@ -65,6 +86,13 @@ class PvForbidden(PvError):
 
 class PvValidationError(PvError):
     message = "Invalid potential variation"
+
+
+class PvReasonRequired(PvError):
+    """Moving a flag that already has a job needs a reason (the Site Log
+    re-link and the task rule, same wording)."""
+
+    message = "A non-empty reason is required"
 
 
 class PvJobNotFound(PvError):

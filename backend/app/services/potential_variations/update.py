@@ -9,9 +9,11 @@ changes a flag, and a flag never changes a task.
   compared with the current one: comparing first would let a caller who may
   not read the note probe it with guesses that come back as no-ops.
 * ``job_id`` — set while empty by the builder or the flagger; changed once
-  set by the builder only; never cleared; never a completed job. A job sent
-  with its current value is not a change: it needs no permission and writes
-  nothing.
+  set by the builder only, with a non-empty ``reason`` kept in the
+  ``job_set`` audit row (the Site Log re-link and the task rule); never
+  cleared; never a completed job. A job sent with its current value is not
+  a change: it needs no permission or reason and writes nothing, so a
+  resent move answers 200 instead of failing.
 
 Denial order, as in the task service: not visible → 404; visible but not
 allowed → 403; then validation (422, or 404 for an unknown job).
@@ -32,7 +34,7 @@ from app.models.potential_variation import PvAuditAction, PvEndReason, PvReviewS
 from app.models.user import User
 
 from .access import can_change_job, can_decide, can_set_job
-from .errors import PvForbidden, PvValidationError
+from .errors import PvForbidden, PvReasonRequired, PvValidationError
 from .rules import audit_row, check_decision, clean_note, str_or_none, target_job
 from .views import PvView, build_detail, load_visible_pv
 
@@ -77,8 +79,13 @@ async def update_pv(
     decision: Decision | None,
     job_id_sent: bool,
     job_id: uuid.UUID | None,
+    reason: str | None = None,
 ) -> PvView:
-    """Apply a decision and/or a job change. Returns the detail view."""
+    """Apply a decision and/or a job change. Returns the detail view.
+
+    ``reason`` is why a flag that already has a job is moved; required
+    then, recorded when given for a first set, otherwise unused (as for
+    tasks)."""
     if decision is None and not job_id_sent:
         raise PvValidationError("nothing to change")
 
@@ -110,11 +117,14 @@ async def update_pv(
                 pv.ended_reason,
                 pv.decision_note,
             )
+        clean_reason = (reason or "").strip() or None
         if job_changes:
             if job_id is None:
                 raise PvValidationError(
                     "a potential variation's job can be changed but not removed"
                 )
+            if pv.job_id is not None and clean_reason is None:
+                raise PvReasonRequired()
             await target_job(db, user, job_id)
 
         if not decision_changes and not job_changes:
@@ -154,7 +164,11 @@ async def update_pv(
                     pv.potential_variation_id,
                     user.user_id,
                     PvAuditAction.job_set,
-                    {"from": str_or_none(pv.job_id), "to": str(job_id)},
+                    {
+                        "from": str_or_none(pv.job_id),
+                        "to": str(job_id),
+                        "reason": clean_reason,
+                    },
                 )
             )
             pv.job_id = job_id

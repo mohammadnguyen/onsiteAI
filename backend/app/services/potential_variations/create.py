@@ -10,11 +10,13 @@ handled one at a time (transaction-scoped advisory lock); a SAVEPOINT
 insert; a fingerprint in the created audit row. A replay with the same body
 returns the existing flag; the same key with a different body is refused.
 
-The version pin is the difference: the app sends the revision number the
-person actually saw and confirmed, and the server refuses (409
-``source_changed``) if the entry has moved on since — the person looks
-again and confirms again, under a new key. The server never pins a version
-the person did not see.
+The pin is the difference: the app sends the revision number AND the job
+(or no job) the person actually saw and confirmed. The server refuses (409
+``source_changed`` for the version, 409 ``job_changed`` for the job) if the
+entry has moved on since — the person looks again and confirms again, under
+a new key. The server never pins a version or a job the person did not see.
+Both are part of the fingerprint, so a resend under the same key replays
+only if it asks for the same version and the same job.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ from app.services.site_log_access import TENANT_ID
 
 from .errors import (
     PvFingerprintMismatch,
+    PvJobChanged,
     PvSourceChanged,
     PvSourceWithdrawn,
     PvValidationError,
@@ -109,21 +112,28 @@ async def create_pv(
     create_client_id: uuid.UUID,
     title: str | None,
     source_revision_no: int,
+    job_id: uuid.UUID | None,
 ) -> CreateResult:
     """Flag entry ``event_id`` or return the flag this key made.
+
+    ``job_id`` is the job the person saw on the entry when they confirmed
+    (``None``: the entry had no job). It is required, not defaulted: "no
+    job" is something the person confirmed, never an omission.
 
     Order: the title must be usable (422) → this creator's requests for this
     key, one at a time → a key already used is a replay (200) or a misuse
     (409) → the entry must be readable (404) → a withdrawn entry is refused
     (409) → the version the person confirmed must still be the entry's
-    current version (409 ``source_changed``) → insert.
+    current version (409 ``source_changed``) → the job the person confirmed
+    must still be the entry's job (409 ``job_changed``) → insert.
 
     A key already used is answered before any of the checks after it, on
     purpose: they read state that can change between two requests. A flag
     that was saved keeps answering with itself even if the entry was
-    corrected or withdrawn since; judged on its own instead, a resend could
-    be refused, the app would give up the key, and the first request would
-    still have made the flag - a second flag would follow.
+    corrected, moved to another job or withdrawn since; judged on its own
+    instead, a resend could be refused, the app would give up the key, and
+    the first request would still have made the flag - a second flag would
+    follow.
     """
     if source_revision_no < 1:
         raise PvValidationError("source_revision_no must be at least 1")
@@ -131,6 +141,7 @@ async def create_pv(
     fingerprint = create_fingerprint(
         source_site_log_event_id=event_id,
         source_revision_no=source_revision_no,
+        job_id=job_id,
         title=final_title,
     )
     # Transaction-scoped: released at this request's commit or rollback.
@@ -148,12 +159,16 @@ async def create_pv(
         raise PvSourceWithdrawn()
     if revision.revision_no != source_revision_no:
         raise PvSourceChanged()
+    if event.job_id != job_id:
+        raise PvJobChanged()
 
     proposed = proposed_title_from(revision.body_text)
     pv = PotentialVariation(
         potential_variation_id=uuid.uuid4(),
         tenant_id=TENANT_ID,
-        job_id=event.job_id,  # the flag's own copy, never synced later
+        # The job the person confirmed (checked equal to the entry's just
+        # above): the flag's own copy, never synced later.
+        job_id=job_id,
         source_site_log_event_id=event.site_log_event_id,
         source_revision_no=revision.revision_no,
         title=final_title,
@@ -181,14 +196,15 @@ async def create_pv(
             user.user_id,
             PvAuditAction.created,
             {
-                # Evidence ref: the entry and the version the person confirmed.
+                # Evidence ref: the entry, and the version and the job (None:
+                # no job) the person confirmed.
                 "source_site_log_event_id": str(event.site_log_event_id),
                 "source_revision_no": revision.revision_no,
                 # Proposed (server-derived), human edit, final.
                 "proposed_title": proposed,
                 "title_edited": final_title != proposed,
                 "final_title": final_title,
-                "job_id": str_or_none(event.job_id),
+                "job_id": str_or_none(job_id),
                 "review_state": PvReviewState.to_check.value,
                 "origin": PvOrigin.manual.value,
                 "create_fingerprint": fingerprint,
@@ -206,6 +222,6 @@ async def create_pv(
         pv.potential_variation_id,
         event.site_log_event_id,
         revision.revision_no,
-        event.job_id is not None,
+        job_id is not None,
     )
     return CreateResult(view=await build_view(db, user, pv), created=True)

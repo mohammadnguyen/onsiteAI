@@ -28,6 +28,10 @@ class PvCreateIn(BaseModel):
     title: str = Field(max_length=2000)
     # The entry version the person saw and confirmed.
     source_revision_no: int = Field(ge=1)
+    # The job the person saw on the entry and confirmed; null when the
+    # entry showed no job. Required either way: a request without it is
+    # refused (422), so "no job" is never assumed.
+    job_id: uuid.UUID | None
 
 
 class PvDecisionIn(BaseModel):
@@ -44,13 +48,15 @@ class PvPatchIn(BaseModel):
     """Only what is sent is changed (``model_fields_set`` for ``job_id``).
 
     ``decision`` is the builder's; ``job_id`` may be set or changed but never
-    cleared.
+    cleared. Changing a job that is already set needs ``reason`` (the
+    task API's field and limit), kept in the audit.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     decision: PvDecisionIn | None = None
     job_id: uuid.UUID | None = None
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class PvUserOut(BaseModel):
