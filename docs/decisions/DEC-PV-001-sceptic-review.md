@@ -32,3 +32,12 @@ Verdict: insufficient-evidence
 5. **Reliability and permissions.** The save request is kept on the phone before it is sent and recovered under the same key. The flag pins the version the user confirmed. Flagger and admin can view; only the admin decides and reads the note; source text and attachments stay behind the entry's own rule. Real account roles are confirmed before release.
 6. **Q6, the kill criterion.** Not adopted: no 16-week automatic removal. DEC-GATE-H3-001 stands as written: 6 weeks of founder use on a representative project; if no suitable event, at least one seed-builder project for 4 weeks; still no evidence, reassess. At that point the founder separates "no change happened", "it happened and nobody flagged it" and "it was flagged and did not help", because each leads to a different decision. Hiding the entry points is a later question; existing records stay.
 7. **Q4, flags left sitting in To Check.** Acknowledged. This package shows the admin a To Check count on Home and opens the list on To Check; whether that is enough is part of the H3 reading, not assumed here.
+
+## Founder decisions (2026-11-08)
+
+8. **End reasons.** The five proposed reasons are kept: already in the contract, client not going ahead, handled outside Forey, flagged by mistake or duplicate, and other ("other" needs a note).
+9. **Rule and implementation in one PR, this once.** PRODUCT.md §5 step 1 says the Charter changes via its own PR. For this package only, Amendment 11 and DEC-PV-001 stay in the first commit of the PR that implements them (`aeff8c6`, PR #25). This is a one-time exception. The general rule in §5 is unchanged and applies to every later Charter change.
+10. **Reliability, completed.** These points complete approval 5 above:
+    - A request whose key was already used for different content keeps the request and looks the existing flag up by that key. The app never drops the key to create the flag again under a new one.
+    - The version and the job (including "no job") the person confirmed are kept with the request and compared on every resend. If the entry's job changed before saving, the person confirms again.
+    - Moving a flag that already has a job needs a reason, written to the flag's audit.
