@@ -36,8 +36,9 @@ function sameSession(startedUnder: number): boolean {
  * cannot become a second task. Still unreachable: it says the result is
  * unknown and offers to check again. The server offers no tasks right now
  * (an older or rolled-back backend): it says so, keeps the record as it is
- * and offers to check again - never to send. Discard is offered once nothing
- * is out, and asks.
+ * and offers to check again - never to send. A resend the server answers
+ * "this key was already used" is followed by the same check, by the key.
+ * Discard is offered once nothing is out, and asks.
  */
 export function PendingCreatePanel({
   pending,
@@ -103,6 +104,10 @@ export function PendingCreatePanel({
       if (activeRef.current) router.replace(`/tasks/${outcome.task.task_id}` as never);
     } else if (outcome.kind === 'refused') {
       onRefused(outcome.detail, pending);
+    } else if (outcome.kind === 'conflict') {
+      // The server says this key already made a task: find it by the key,
+      // never send it under a new one. The record is still on the phone.
+      void check();
     } else if (outcome.kind === 'not_saved') {
       // Nothing was sent; the record is as it was.
       setPhase('not_found');

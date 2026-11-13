@@ -19,6 +19,11 @@ import {
  * background, and nothing is sent again until the server has been asked
  * whether the first one went through.
  *
+ * A key the server says it has already used for a different task
+ * (`conflict`) is never given up either: the record is kept and the task is
+ * looked up by that key. Giving the key up for a new one could make a
+ * second task next to the one that exists.
+ *
  * Every request is made for the session the user acted in - `startedUnder`,
  * the auth store's session nonce read BEFORE the first await - and only for
  * a record that belongs to the signed-in account. Saving the record is an
@@ -30,6 +35,12 @@ import {
 export type SendOutcome =
   | { kind: 'created'; task: TaskOut }
   | { kind: 'refused'; status: number; detail: string | null }
+  /**
+   * The server says something already exists under this key (or answered
+   * 409 for a reason this app does not know): the record is kept, and the
+   * task is looked up by the key. Never a new key.
+   */
+  | { kind: 'conflict' }
   /** The server offers no task routes right now; the record is kept. */
   | { kind: 'unavailable' }
   | { kind: 'unknown' }
@@ -95,6 +106,23 @@ function detailOf(err: unknown): string | null {
  */
 const SOURCE_NOT_FOUND = 'Site log event not found';
 
+/** The server's refusal of a withdrawn entry (backend `TaskSourceWithdrawn`). */
+const WITHDRAWN = 'The source entry is withdrawn';
+
+/**
+ * The 409s the server gives on purpose when NOTHING exists under the key:
+ * it answers a key it has already used before this check, so it means no
+ * task was made with it. Today that is only the withdrawn entry. Every
+ * other 409 - above all "this key was already used for a different task"
+ * (backend `TaskFingerprintMismatch`, which is that used-key answer) - may
+ * mean a task exists under the key: the record is kept and looked up
+ * (`conflict`), never dropped for a new key. A 409 whose wording this app
+ * does not know lands on that side too: the side that keeps the record.
+ */
+function nothingUnderKey(detail: string | null): boolean {
+  return detail === WITHDRAWN;
+}
+
 /** The server answered, but the task routes were not there to answer. */
 function routeMissing(status: number, detail: string | null): boolean {
   return (status === 404 && detail !== SOURCE_NOT_FOUND) || status === 405;
@@ -112,19 +140,25 @@ const NOT_NOW = new Set([408, 429]);
 
 /**
  * What a failed create request means. Refused: the server judged this
- * create and said no, on purpose - nothing exists under the key. Unavailable:
- * it answered without judging it. Unknown: no usable answer at all (a lost
- * connection, a server error, a "not now" answer - see `NOT_NOW` - or a
- * session that ended - a 401 is the shared client's to handle, and the
- * record stays for the same account's next sign-in).
+ * create and said no, on purpose - nothing exists under the key. Conflict:
+ * a 409 that may mean a task exists under the key (see `nothingUnderKey`).
+ * Unavailable: it answered without judging it. Unknown: no usable answer at
+ * all (a lost connection, a server error, a "not now" answer - see
+ * `NOT_NOW` - or a session that ended - a 401 is the shared client's to
+ * handle, and the record stays for the same account's next sign-in).
  */
 function classify(
   err: unknown,
-): { kind: 'refused'; status: number; detail: string | null } | { kind: 'unavailable' } | { kind: 'unknown' } {
+):
+  | { kind: 'refused'; status: number; detail: string | null }
+  | { kind: 'conflict' }
+  | { kind: 'unavailable' }
+  | { kind: 'unknown' } {
   const status = answeredStatus(err);
   if (status === null || status === 401 || NOT_NOW.has(status)) return { kind: 'unknown' };
   const detail = detailOf(err);
   if (routeMissing(status, detail)) return { kind: 'unavailable' };
+  if (status === 409 && !nothingUnderKey(detail)) return { kind: 'conflict' };
   return { kind: 'refused', status, detail };
 }
 
@@ -134,7 +168,8 @@ function classify(
  * The pending record is on disk BEFORE the request leaves, so a crash or a
  * kill at any later moment still leaves the key the server may have used.
  * If it cannot be written, nothing is sent. A definite answer removes it;
- * an unavailable or unknown result keeps it, with its key and values.
+ * a conflict, unavailable or unknown result keeps it, with its key and
+ * values.
  *
  * A 401 is not an answer about the task: the shared client refreshes and
  * replays it, and if it still ends in 401 the session is over - the record
@@ -201,8 +236,8 @@ async function send(
  * Find out what happened to an unresolved create - before anything is resent.
  *
  * If this app still has it out, that send's own answer is awaited instead of
- * asking the server (see `inFlight`); a send that ends unknown is followed by
- * the question below, as on any other return.
+ * asking the server (see `inFlight`); a send that ends in a conflict or
+ * unknown is followed by the question below, as on any other return.
  *
  * Found: the record is done with. Not found: the record stays, and the
  * caller offers to send the SAME values again under the SAME key. The
