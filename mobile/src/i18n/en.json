@@ -852,19 +852,19 @@
     "pending": {
       "checking": "Checking whether your earlier task was saved…",
       "found": "This task was already created.",
-      "not_found_title": "Your earlier task was not saved",
+      "not_found_title": "This task has not been found yet",
       "not_found_body": "Send it again with the same details? It cannot make a second task.",
       "unknown_title": "Not confirmed yet",
       "unknown_body": "The connection dropped, so it is not known whether the task was saved. Nothing is sent again until that has been checked.",
       "unavailable_title": "Tasks are not available right now",
-      "unavailable_body": "The server is not offering tasks at the moment, so it cannot be checked whether this task was saved. It is kept on this phone with the same details and checked again once tasks are back. Nothing is sent again until then.",
+      "unavailable_body": "The server is not offering tasks at the moment, so it cannot be checked whether this task was saved. It is kept on this phone with the same details. Nothing is checked or sent in the background: once tasks are back, come back here and tap \"Check again\".",
       "send_again": "Send again",
       "check_again": "Check again",
       "discard": "Discard",
       "discard_title": "Discard this task?",
       "discard_body": "If it was saved after all, it will still appear in Tasks.",
       "banner": "A task from this entry is not confirmed yet. Tap to check.",
-      "kept_unavailable": "A task from this entry is kept on this phone. It is checked again once tasks are available."
+      "kept_unavailable": "A task from this entry is kept on this phone. Once tasks are available again, open it and tap \"Check again\"."
     },
     "assignee": {
       "me": "Me",
