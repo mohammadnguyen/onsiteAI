@@ -4,8 +4,9 @@
  * replaced by a plain statement when the user may not read the entry; Save
  * sends one request however often it is tapped; an unresolved create is
  * resolved by asking the server before anything is sent again - unless its
- * request is still out, whose own answer is then awaited; and a mistyped due
- * date is never dropped silently.
+ * request is still out, whose own answer is then awaited; a key the server
+ * says it already used is looked up by that key, never given up; and a
+ * mistyped due date is never dropped silently.
  *
  * Lives under src/ because a file under app/ is a route.
  */
@@ -498,6 +499,67 @@ describe('creating a task', () => {
     await flush();
     expect(mockCreateTask).not.toHaveBeenCalled();
     expect(mockReplace).toHaveBeenCalledWith('/tasks/task-9?notice=already_created');
+    expect(useTaskPendingCreates.getState().forEvent('me-1', 'event-1')).toBeUndefined();
+  });
+
+  const http409 = (detail: string) =>
+    Object.assign(new Error('HTTP 409'), {
+      isAxiosError: true,
+      response: { status: 409, data: { detail } },
+    });
+
+  it.each([
+    ['the server says this key already made a task', 'create_client_id reused with a different task'],
+    ['a 409 this app does not know', 'Something new the server says'],
+  ])('Save answered 409 (%s): the record is kept, the task is found by that key and opened', async (_l, detail) => {
+    mockCreateTask.mockRejectedValueOnce(http409(detail));
+    mockFindMyCreate.mockResolvedValue(task({ task_id: 'task-7' }));
+    const tree = await render(<NewTaskScreen />);
+    press(tree, 'task-save');
+    await flush();
+    const [sent] = mockCreateTask.mock.calls.map((c) => c[1] as { create_client_id: string });
+    // Asked by the SAME key; nothing sent again, no new key.
+    expect(mockFindMyCreate).toHaveBeenCalledWith(sent.create_client_id);
+    expect(mockCreateTask).toHaveBeenCalledTimes(1);
+    expect(mockReplace).toHaveBeenCalledWith('/tasks/task-7?notice=already_created');
+    expect(useTaskPendingCreates.getState().forEvent('me-1', 'event-1')).toBeUndefined();
+    // Never shown as a refusal.
+    const shown = tree.root.findAll((n) => typeof n.type === 'string' && n.props.children === detail);
+    expect(shown).toHaveLength(0);
+  });
+
+  it('Send again answered "this key was already used": the record and its key are kept, and the task is found by that key', async () => {
+    await act(async () => {
+      await useTaskPendingCreates.getState().putDurable({
+        create_client_id: 'lost-key',
+        user_id: 'me-1',
+        site_log_event_id: 'event-1',
+        title: 'Brace the north roof',
+        assignee_user_id: null,
+        assignee_name: null,
+        due_date: null,
+        created_at: 1,
+      });
+    });
+    // Not `...Once`: a queued answer left unused would leak into the next test.
+    mockFindMyCreate.mockResolvedValue(null); // first check: not found yet
+    const tree = await render(<NewTaskScreen />);
+    await flush();
+    expect(byTestId(tree, 'pending-not-found')).toHaveLength(1);
+
+    mockCreateTask.mockRejectedValueOnce(http409('create_client_id reused with a different task'));
+    mockFindMyCreate.mockResolvedValue(task({ task_id: 'task-8' }));
+    press(tree, 'pending-send-again');
+    await flush();
+    expect(mockCreateTask.mock.calls).toEqual([
+      [
+        'event-1',
+        { create_client_id: 'lost-key', title: 'Brace the north roof', assignee_user_id: null, due_date: null },
+      ],
+    ]);
+    // Looked up again by the same key - not left "unknown", not dropped.
+    expect(mockFindMyCreate.mock.calls).toEqual([['lost-key'], ['lost-key']]);
+    expect(mockReplace).toHaveBeenCalledWith('/tasks/task-8?notice=already_created');
     expect(useTaskPendingCreates.getState().forEvent('me-1', 'event-1')).toBeUndefined();
   });
 
