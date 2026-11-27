@@ -3,9 +3,9 @@
 Runs against its own scratch database so neither ``sitetracker_test`` nor
 the Site Log migration test's scratch database is touched:
 
-    upgrade head → tasks tables, types, constraints, FKs present →
+    upgrade e1f2a3b4c5d6 → tasks tables, types, constraints, FKs present →
     downgrade d9e0f1a2b3c4 → task tables and types gone, Site Log intact →
-    upgrade head → present again
+    upgrade e1f2a3b4c5d6 → present again
 
 The downgrade is exercised here, on a disposable database, because it must
 work. It is NOT a rollback step: on a real database it deletes every task
@@ -171,7 +171,9 @@ async def _assert_task_schema() -> None:
 
 @pytest.mark.asyncio
 async def test_task_migration_round_trip(scratch_db):
-    up = _alembic("upgrade", "head")
+    # To this revision, not "head": later migrations build on it and have
+    # their own round trips.
+    up = _alembic("upgrade", TASK_REVISION)
     assert up.returncode == 0, f"upgrade failed:\n{up.stdout}\n{up.stderr}"
     assert await _version() == TASK_REVISION
     await _assert_task_schema()
@@ -188,7 +190,7 @@ async def test_task_migration_round_trip(scratch_db):
     # The Site Log tables the tasks referred to are untouched.
     assert {"site_log_events", "site_log_event_revisions", "jobs", "users"} <= tables
 
-    up2 = _alembic("upgrade", "head")
+    up2 = _alembic("upgrade", TASK_REVISION)
     assert up2.returncode == 0, f"re-upgrade failed:\n{up2.stdout}\n{up2.stderr}"
     assert await _version() == TASK_REVISION
     await _assert_task_schema()

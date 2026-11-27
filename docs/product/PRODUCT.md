@@ -121,6 +121,19 @@ Task is a Slice-1 Truth object producible as a Candidate from capture; initial s
 Source: DEC-TASK-001 (Charter §22)
 Ack: 4a8f0c5c6672
 
+### Potential Variation (human flag)
+
+A person flags an existing Site Log entry as a possible scope or commercial change for the builder to check, without retyping it, and finds it again by Job. Review states: To Check, Following Up, Follow-up Ended; ending keeps a reason (already in the contract, client not going ahead, handled outside Forey, flagged by mistake or duplicate, other — "other" needs a note). Independent of Task: neither changes the other. Not client approval, a price, entitlement to charge or authority to start work; no amount, approver or signature field exists.
+
+Evidence: the flag pins the entry version the user saw; if the entry changed before saving, the user confirms again. Attachments belong to the entry and are shown as its current list, never as a snapshot of the pinned version.
+
+Who: anyone who can read the entry may flag it; the flagger and the builder may view the flag; only the builder changes its state and reads the builder's note. A viewer who cannot read the entry sees no entry-derived text (the flag's title included) and no attachment summary. In v1 the builder is the admin role; before release the founder confirms that the real accounts' roles match this.
+
+Out: AI-proposed Potential Variations (extraction line paused) and every later stage of the §38 lifecycle (scope review, draft, send, sign, authorise, invoice, pay) stay DIRECTION. The build goes ahead of ADR-002's baseline step under a scoped exception (`docs/decisions/ADR-002-exception-001-manual-potential-variation.md`); validation stays with H3.
+
+Source: DEC-PV-001 (Charter §38, Amendment 11)
+Ack: 320ab15b0725
+
 ### Active recall / passive precision
 
 Deliberate captures: tune for recall (a missed client change is worse than one extra confirmation). Passive background detection (when it exists): tune for precision; no false-alert inbox.

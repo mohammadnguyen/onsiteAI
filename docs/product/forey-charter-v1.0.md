@@ -155,6 +155,11 @@ Applies-To: slice-1
 
 Task is a supported Slice-1 Truth object that may be produced as a Candidate from capture, with initial statuses To Do, In Progress, Blocked and Done. A Site Log Event may generate a Task without the user re-entering the same information.
 
+### DEC-PV-001 — Potential Variation as a human flag [DECIDED]
+Applies-To: slice-1
+
+In Slice 1 a Potential Variation is created by explicit human action from an existing Site Log Event, without the user re-entering its information. It records only that someone flagged a possible scope or commercial change for the builder to check, and it pins the entry version that person confirmed when flagging; if the entry changed before saving, the person confirms again. It is found by Job. Its review states are To Check, Following Up and Follow-up Ended; ending keeps a reason. Anyone who may read the source entry may flag it; the flagger and the builder may view the flag; only the builder changes its state and reads the builder's note; the source entry's text and attachments stay behind the entry's own read rule. A flag is not client approval, a price, entitlement to charge or authority to start work, and it is independent of Task status. AI-proposed Potential Variations and every later stage of the Variation lifecycle remain outside this decision.
+
 ### DEC-GATE-H4-001 — H4 action gate (provisional) [DECIDED]
 Applies-To: h4
 
@@ -1249,9 +1254,9 @@ It determines how financial information is rendered and interpreted.
 
 ---
 
-# 38. Variation — DECIDED (Potential Variation concept and builder-determination principle; full lifecycle: DIRECTION) (original: CORE COMMERCIAL CASE)
+# 38. Variation — DECIDED (Potential Variation concept, builder-determination principle, and the human flag with its three review states per Amendment 11; full lifecycle: DIRECTION) (original: CORE COMMERCIAL CASE)
 
-Registry: DEC-ONTOLOGY-001, DEC-AI-BOUNDARY-001
+Registry: DEC-ONTOLOGY-001, DEC-AI-BOUNDARY-001, DEC-PV-001
 
 Forey should help prevent additional work from being:
 
@@ -1984,6 +1989,12 @@ Registry IDs freeze at repository landing. The rename in Amendment 8 (draft DEC-
 ### Amendment 10 — Fact-category metadata inside the closed ontology (2026-08-15)
 
 DEC-ONTOLOGY-001's registry text is amended to state explicitly that the closed list applies to **top-level Candidate types**, that the earlier conditional Issue clause is removed (Slice 1 has exactly three Candidate types; a future Issue workflow requires formally reopening this decision first), and that optional classification metadata inside a Site Log Fact (a `fact_category` value such as attendance, progress, site_condition, quality, delivery, inspection, safety, delay, incident, instruction, weather, other) is **not** a Candidate type and is permitted, provided it creates no separate workflow, module or additional confirmation object. Rationale: Amendment 2's constraints target Candidate classes because each class multiplies confirmation volume and annotation cost; a tag on an already-confirmed atomic fact does neither. A complex capture is split into atomic facts rather than given a compound category; generic `issue` is not a category because quality/safety/delivery/delay issues would overlap. Expense and Labour remain outside the Slice-1 Candidate ontology in their existing structured modules. The amended registry text is re-acknowledged in PRODUCT.md through the drift mechanism in the same commit.
+
+### Amendment 11 — Potential Variation as a human flag (2026-11-07)
+
+Founder decision of 2026-11-07, new registry entry **DEC-PV-001**. It promotes one bounded part of §38 into Slice 1: a person flags an existing Site Log Event as a Potential Variation for the builder to check. The flag pins the entry version the person confirmed, is found by Job, and has three review states (To Check, Following Up, Follow-up Ended) with the reason kept when follow-up ends. Only the builder decides. A flag is never client approval, a price, entitlement to charge or authority to start work, and Task status never changes it. The rest of §38's lifecycle (Scope Review onwards) remains DIRECTION, and AI-proposed Potential Variations stay with the paused extraction line.
+
+Evidence position, stated plainly: the sceptic review returned `insufficient-evidence` (no documented case behind the variation-loss claim). The founder accepted that commercial value is unverified and chose to build a minimum test version. DEC-GATE-H3-001 is unchanged and remains the test of real usefulness; simulated cases used for design and testing are not H3 evidence; no automatic removal date is attached. Record: `docs/decisions/DEC-PV-001-sceptic-review.md`. The build goes ahead of ADR-002's baseline step under a separate exception limited to this package: `docs/decisions/ADR-002-exception-001-manual-potential-variation.md`. The amended §38 heading and the new registry entry are acknowledged in PRODUCT.md in the same commit.
 
 ### Repository Authority Split
 
