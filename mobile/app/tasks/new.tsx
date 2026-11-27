@@ -88,8 +88,9 @@ export default function NewTaskScreen() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // One key per attempt, kept across double taps. A refusal the server gave
-  // on purpose starts a new one; an unknown or unavailable result keeps it in
-  // the store (a server without the task routes is no refusal).
+  // on purpose starts a new one; a conflict, unknown or unavailable result
+  // keeps it in the store (a server without the task routes is no refusal,
+  // and neither is a key the server says it has already used).
   const keyRef = useRef<string>(newCaptureId());
   // This attempt's record is on the phone: from then on leaving loses nothing.
   const [recorded, setRecorded] = useState(false);
@@ -128,8 +129,10 @@ export default function NewTaskScreen() {
       setError(t('tasks.new.not_saved'));
       return;
     }
-    // Unknown or unavailable: the pending record stays - same key, same
-    // values - and the panel below takes over and says which it is.
+    // Conflict, unknown or unavailable: the pending record stays - same key,
+    // same values - and the panel below takes over. It asks the server by
+    // that key first (a conflict is looked up, never resent under a new
+    // key), then says what it found.
     setError(null);
   };
 
