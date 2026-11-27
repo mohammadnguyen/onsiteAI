@@ -4,7 +4,9 @@
  * What these pin: the pending record is on disk before the request leaves;
  * a definite answer removes it, an unknown one keeps it; a lost answer is
  * resolved by ASKING the server, and a resend reuses the same key and the
- * same values; a create still out is neither asked about nor sent again -
+ * same values; a key the server says it already used (409) is kept and
+ * looked up by that key, never given up for a new one; a create still out
+ * is neither asked about nor sent again -
  * its own answer is awaited; nothing is sent for an account other than the
  * one that acted; the phone's storage, not a copy in memory, is what every
  * change is applied to, so a failed load can never erase another account's
@@ -149,6 +151,9 @@ describe('sending a create', () => {
     ['a timeout', Object.assign(new Error('timeout'), { isAxiosError: true, code: 'ECONNABORTED' })],
     ['a server error (503)', httpError(503)],
     ['an ended session (401)', httpError(401)],
+    // "Not now", not "no": the first request may still be running.
+    ['a request timeout answered by the server or a proxy (408)', httpError(408)],
+    ['too many requests (429)', httpError(429, 'Too Many Requests')],
   ])('keeps the record when the result is unknown: %s', async (_label, err) => {
     const { flow, auth, AsyncStorage } = load();
     signIn(auth, 'user-a', 1);
@@ -289,6 +294,30 @@ describe('finding out what happened to a lost create', () => {
     expect(second).toEqual(first); // same event, same key, same body
     expect(store.getState().forEvent('user-a', 'event-1')).toBeUndefined();
   });
+
+  it.each([408, 429])(
+    'a resend answered %i keeps the record - same key, same values - and stays unknown',
+    async (status) => {
+      // The original timed out on the phone but may still be running on the
+      // server: the lookup finds nothing yet, and the resend is told "not
+      // now". Dropping the record here would let the next save take a new
+      // key while the original can still commit.
+      const { flow, auth, store, AsyncStorage } = load();
+      signIn(auth, 'user-a', 1);
+      mockCreateTask.mockRejectedValueOnce(networkError());
+      await flow.sendCreate(record(), 1);
+      mockFindMyCreate.mockResolvedValue(null);
+      const pending = store.getState().forEvent('user-a', 'event-1');
+      expect(pending).toBeDefined();
+      expect(await flow.resolvePending(pending!, 1)).toEqual({ kind: 'not_found' });
+
+      mockCreateTask.mockRejectedValueOnce(httpError(status));
+      expect(await flow.sendCreate(pending!, 1)).toEqual({ kind: 'unknown' });
+      expect(await persisted(AsyncStorage)).toEqual([record()]);
+      const [first, second] = mockCreateTask.mock.calls;
+      expect(second).toEqual(first); // same event, same key, same body
+    },
+  );
 
   it('still unreachable: unknown, and nothing changes', async () => {
     const { flow, auth, store, AsyncStorage } = load();
@@ -597,4 +626,90 @@ describe('a server without the task routes', () => {
       expect(await persisted(second.AsyncStorage)).toEqual([]);
     },
   );
+});
+
+/**
+ * A 409 that may mean a task already exists under the key - above all the
+ * server's "this key was already used for a different task" - is no
+ * refusal: giving the key up would let the next save make a second task
+ * next to that one. The record stays - the same key and values - and the
+ * task is looked up by that key. Only the 409 the server gives before
+ * anything exists under a key (the withdrawn entry, see "drops the record")
+ * is still a refusal.
+ */
+describe('a key the server says it already used (409 conflict)', () => {
+  const KEY_REUSED = 'create_client_id reused with a different task';
+  const sentKeys = () =>
+    mockCreateTask.mock.calls.map((c) => (c[1] as { create_client_id: string }).create_client_id);
+
+  it.each([
+    ['the key-reuse answer', httpError(409, KEY_REUSED)],
+    ['a 409 this app does not know', httpError(409, 'Something new the server says')],
+    ['a 409 with no body', httpError(409)],
+  ])('%s keeps the record - same key, same values - and says conflict', async (_l, err) => {
+    const { flow, auth, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreateTask.mockRejectedValue(err);
+    const original = record({ assignee_user_id: 'user-b', assignee_name: 'B' });
+    expect(await flow.sendCreate(original, 1)).toEqual({ kind: 'conflict' });
+    expect(await persisted(AsyncStorage)).toEqual([original]);
+    expect(mockCreateTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('is then resolved by asking the server by the SAME key: found, done with, nothing resent', async () => {
+    const { flow, auth, store, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreateTask.mockRejectedValueOnce(httpError(409, KEY_REUSED));
+    expect(await flow.sendCreate(record(), 1)).toEqual({ kind: 'conflict' });
+    mockFindMyCreate.mockResolvedValue(TASK);
+    const outcome = await flow.resolvePending(await shown(store, 'user-a', 'event-1'), 1);
+    expect(mockFindMyCreate).toHaveBeenCalledWith('key-1');
+    expect(outcome).toEqual({ kind: 'found', task: TASK });
+    expect(sentKeys()).toEqual(['key-1']);
+    expect(await persisted(AsyncStorage)).toEqual([]);
+  });
+
+  it('a resend answered "key already used" keeps the record and its key', async () => {
+    // Lost answer, lookup "not found yet", resend: the server now says the
+    // key is used (the first request committed meanwhile). Not a refusal:
+    // kept, and looked up by the same key.
+    const { flow, auth, store, AsyncStorage } = load();
+    signIn(auth, 'user-a', 1);
+    mockCreateTask.mockRejectedValueOnce(networkError());
+    await flow.sendCreate(record(), 1);
+    mockFindMyCreate.mockResolvedValueOnce(null);
+    const pending = await shown(store, 'user-a', 'event-1');
+    expect(await flow.resolvePending(pending, 1)).toEqual({ kind: 'not_found' });
+
+    mockCreateTask.mockRejectedValueOnce(httpError(409, KEY_REUSED));
+    expect(await flow.sendCreate(pending, 1)).toEqual({ kind: 'conflict' });
+    expect(await persisted(AsyncStorage)).toEqual([record()]);
+    expect(sentKeys()).toEqual(['key-1', 'key-1']);
+
+    mockFindMyCreate.mockResolvedValueOnce(TASK);
+    expect(await flow.resolvePending(pending, 1)).toEqual({ kind: 'found', task: TASK });
+    expect(mockFindMyCreate).toHaveBeenLastCalledWith('key-1');
+    expect(await persisted(AsyncStorage)).toEqual([]);
+  });
+
+  it('a create still out whose answer is a conflict is then asked about by its key', async () => {
+    const { flow, auth, store } = load();
+    signIn(auth, 'user-a', 1);
+    let fail: (e: unknown) => void = () => undefined;
+    mockCreateTask.mockImplementation(
+      () => new Promise((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
+    void flow.sendCreate(record(), 1);
+    await requestOut();
+    const asking = flow.resolvePending(await shown(store, 'user-a', 'event-1'), 1);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockFindMyCreate).not.toHaveBeenCalled(); // waits for the send's own answer first
+    mockFindMyCreate.mockResolvedValue(TASK);
+    fail(httpError(409, KEY_REUSED));
+    expect(await asking).toEqual({ kind: 'found', task: TASK });
+    expect(mockFindMyCreate).toHaveBeenCalledWith('key-1');
+    expect(mockCreateTask).toHaveBeenCalledTimes(1);
+  });
 });
