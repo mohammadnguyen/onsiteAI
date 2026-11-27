@@ -1,0 +1,17 @@
+{
+  "review": "Review",
+  "target": {
+    "mode": "branch",
+    "label": "branch diff against 0123456789abcdef0123456789abcdef01234567",
+    "baseRef": "0123456789abcdef0123456789abcdef01234567",
+    "explicit": true
+  },
+  "threadId": "01a0a366-0000-0000-0000-000000000002",
+  "sourceThreadId": "01a0a366-0000-0000-0000-000000000002",
+  "codex": {
+    "status": 0,
+    "stderr": "",
+    "stdout": "# Codex Review\n\nTarget: branch diff\n\nI read the range and the archived verification output. One thing worth a look: the new lock is taken after the state is loaded, so a reader can still see a partial write. No blocking defect.\n",
+    "reasoning": []
+  }
+}

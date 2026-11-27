@@ -33,7 +33,7 @@ Prompt boundary < application boundary < credential/schema boundary. Anything th
 
 ### 5. Skills are executable governance, not personas
 
-Only two true skills exist at present: **plan-review** and **sceptic-review**. Extraction evaluation is a script (L1) with human scoring, not a skill. Skills are stochastic programs: each skill needs fixtures with known-flaw inputs and expected-finding outputs, and is tested like code. A skill that has never caught a planted flaw is decoration.
+Three true skills exist in the tree at present: **plan-review**, **sceptic-review** and **dev-review-handoff**. The third arrives with ADR-003 and carries its own fixtures; ADR-003 is a trial that has not been accepted, so its skill existing here is a statement about the tree, not an endorsement of the decision behind it. Extraction evaluation is a script (L1) with human scoring, not a skill. Skills are stochastic programs: each skill needs fixtures with known-flaw inputs and expected-finding outputs, and is tested like code. A skill that has never caught a planted flaw is decoration.
 
 ### 6. Sceptic review
 

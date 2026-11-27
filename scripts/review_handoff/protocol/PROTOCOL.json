@@ -1,0 +1,9 @@
+{
+  "plugin": "codex@openai-codex",
+  "plugin_version": "1.0.6",
+  "schema": "review-output.schema.json",
+  "source_path": "C:/Users/User/.claude/plugins/cache/openai-codex/codex/1.0.6/schemas/review-output.schema.json",
+  "json_schema_draft": "https://json-schema.org/draft/2020-12/schema",
+  "note": "Vendored verbatim from the installed plugin so CI, which has no plugin, validates against the same protocol offline. The pin is the plugin version plus canonical_sha256 - a digest of the schema re-serialised as canonical JSON, which survives git's line-ending normalisation and any reformatting while still changing the instant the protocol does. tests/test_review_handoff.py compares this copy against the installed plugin wherever one is present, so an upgrade surfaces as a failure rather than as silent drift.",
+  "canonical_sha256": "9d52c7c8b6e33c1d4ba7649fe0abaf02a46ccdb3f212967d40adbf8851514707"
+}
